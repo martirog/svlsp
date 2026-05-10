@@ -1,0 +1,28 @@
+# C++ build artefacts
+build/
+*.o
+*.a
+*.so
+*.out
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+compile_commands.json
+
+# SQLite
+*.db-wal
+*.db-shm
+
+# Emacs
+*~
+\#*\#
+.\#*
+*.elc
+
+# IDE
+.vscode/
+.idea/
+*.swp
