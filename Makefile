@@ -46,10 +46,10 @@ build/docs/%.pdf: %.md
 .PHONY: configure build clean
 
 configure:
-	cmake -B build/cpp -DCMAKE_BUILD_TYPE=Debug
+	cmake --preset debug
 
 build: configure
-	cmake --build build/cpp
+	cmake --build --preset debug
 
 # ---------------------------------------------------------------------------
 # Tests
@@ -60,7 +60,7 @@ build: configure
 test: test-unit test-integration
 
 test-unit: build
-	./build/cpp/unit_tests
+	./build/debug/unit_tests
 
 test-integration:
 	bash tools/emacs-test-daemon.sh
@@ -75,4 +75,4 @@ clean-docs:
 	rm -rf build/docs
 
 clean: clean-docs
-	rm -rf build/cpp
+	rm -rf build/
