@@ -68,8 +68,8 @@ svlsp/
 - Targets: `svlsp` (server binary), `unit_tests` (test runner), ANTLR4 generated sources.
 - Integrate ANTLR4 C++ runtime via CMake FetchContent or a vendored submodule.
 - Integrate SQLite (amalgamation or system package).
-- Integrate a C++ unit-test framework (Catch2 recommended; decide in Phase 1).
-- Integrate lsp-framework (see Phase 1 evaluation).
+- Integrate a C++ unit-test framework (Catch2 recommended; decide in Phase 2).
+- Integrate lsp-framework (see Phase 2 evaluation).
 - `cmake --preset debug` and `cmake --preset release` presets defined.
 
 ### 0.4 Documentation Toolchain
@@ -82,11 +82,40 @@ svlsp/
 
 ---
 
-## Phase 1 — LSP Server Framework Evaluation and Setup
+## Phase 1 — Emacs Daemon Test Infrastructure
 
-**Goal:** Select and integrate a C/C++ LSP server library.
+**Goal:** Build the functional test harness before writing any LSP handler code, so that
+the first working connection can be verified against a real Emacs client immediately.
 
-### 1.1 Evaluate C++ LSP Frameworks
+### 1.1 Emacs Daemon Setup
+- Document how to start Emacs in daemon mode: `emacs --daemon=svlsp-test`.
+- Document how to connect: `emacsclient -s svlsp-test`.
+- Provide a shell script `tools/emacs-test-daemon.sh` that:
+  1. Starts the daemon with a minimal, reproducible init file.
+  2. Loads `lsp-mode` and points it at the local `svlsp` binary.
+  3. Opens a test SystemVerilog file.
+  4. Queries LSP results via `emacsclient -e`.
+  5. Compares results against expected output.
+  6. Kills the daemon and reports pass/fail.
+
+### 1.2 Emacs Test Init File (`tools/emacs-test-init.el`)
+- Minimal `init.el` that installs/loads only `lsp-mode` and `lsp-ui` (no other packages).
+- Registers `svlsp` as the LSP server for SystemVerilog files.
+- Defines helper Elisp functions used by the test harness.
+
+### 1.3 Test Runner Targets
+- `make test-integration` — runs `tools/emacs-test-daemon.sh`.
+- `make test-unit` — runs the C++ unit test binary.
+- `make test` — runs unit tests first, then functional tests.
+
+---
+
+## Phase 2 — LSP Server Framework Evaluation and Setup
+
+**Goal:** Select and integrate a C/C++ LSP server library; achieve a minimal server binary
+that Emacs can connect to and exchange `initialize`/`shutdown` messages with.
+
+### 2.1 Evaluate C++ LSP Frameworks
 Investigate and document the following candidates:
 
 | Candidate | Notes |
@@ -98,47 +127,12 @@ Investigate and document the following candidates:
 Decision: if no superior alternative is found, adopt **lsp-framework**. Record rationale
 in `docs/decisions/lsp-framework.md`.
 
-### 1.2 Integrate Chosen Framework
+### 2.2 Integrate Chosen Framework
 - Add as a git submodule or via CMake FetchContent.
 - Write a smoke-test target that compiles and links against the library.
 - Unit-test any thin wrappers written around the framework's API.
 
----
-
-## Phase 2 — Emacs Daemon Test Infrastructure
-
-**Goal:** Build the functional test harness before writing any LSP handler code, so that
-the first working connection can be verified against a real Emacs client immediately.
-
-### 2.1 Emacs Daemon Setup
-- Document how to start Emacs in daemon mode: `emacs --daemon=svlsp-test`.
-- Document how to connect: `emacsclient -s svlsp-test`.
-- Provide a shell script `tools/emacs-test-daemon.sh` that:
-  1. Starts the daemon with a minimal, reproducible init file.
-  2. Loads `lsp-mode` and points it at the local `svlsp` binary.
-  3. Opens a test SystemVerilog file.
-  4. Queries LSP results via `emacsclient -e`.
-  5. Compares results against expected output.
-  6. Kills the daemon and reports pass/fail.
-
-### 2.2 Emacs Test Init File (`tools/emacs-test-init.el`)
-- Minimal `init.el` that installs/loads only `lsp-mode` and `lsp-ui` (no other packages).
-- Registers `svlsp` as the LSP server for SystemVerilog files.
-- Defines helper Elisp functions used by the test harness.
-
-### 2.3 Test Runner Targets
-- `make test-integration` — runs `tools/emacs-test-daemon.sh`.
-- `make test-unit` — runs the C++ unit test binary.
-- `make test` — runs unit tests first, then functional tests.
-
----
-
-## Phase 1 (continued) — Minimal LSP Server and Framework Coverage
-
-**Goal:** Achieve a minimal server binary that Emacs can connect to, with a functional
-test firing immediately on first connection. Then cover all lsp-framework features.
-
-### 1.3 Minimal LSP Server (`initialize` / `shutdown`)
+### 2.3 Minimal LSP Server (`initialize` / `shutdown`)
 - Implement only the LSP lifecycle methods: `initialize`, `initialized`, `shutdown`, `exit`.
 - Transport: stdio (standard for LSP; simplest to test).
 - Unit tests: message serialisation/deserialisation, handler dispatch.
@@ -147,7 +141,7 @@ test firing immediately on first connection. Then cover all lsp-framework featur
 - The resulting binary should also be exercisable with a hand-crafted JSON-RPC request
   piped to stdin.
 
-### 1.4 Exercise All lsp-framework Features
+### 2.4 Exercise All lsp-framework Features
 - Work through every public API in lsp-framework systematically.
 - For each capability: write a unit test and a corresponding functional test using Emacs.
 - Document gaps or bugs found in `docs/decisions/lsp-framework.md`.
@@ -373,7 +367,7 @@ Branch strategy:
 
 ---
 
-## Appendix C — Open Questions (to resolve in Phase 1)
+## Appendix C — Open Questions (to resolve in Phase 2)
 
 1. Is there a C++ LSP framework more suitable than lsp-framework?
 2. Is Catch2 preferred over GoogleTest for this project?
