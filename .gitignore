@@ -22,6 +22,9 @@ compile_commands.json
 .\#*
 *.elc
 
+# Local Emacs test package cache (populated by tools/emacs-test-init.el)
+.emacs-test/
+
 # IDE
 .vscode/
 .idea/

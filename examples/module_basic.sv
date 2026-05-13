@@ -1,0 +1,12 @@
+// module_basic.sv — minimal module declaration used as a test fixture.
+// Exercises: module keyword, ANSI-style port list, wire/logic declarations.
+
+module adder #(
+    parameter int WIDTH = 8
+) (
+    input  logic [WIDTH-1:0] a,
+    input  logic [WIDTH-1:0] b,
+    output logic [WIDTH:0]   sum
+);
+    assign sum = a + b;
+endmodule
