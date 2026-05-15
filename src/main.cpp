@@ -1,9 +1,11 @@
-#include <cstdlib>
-#include <iostream>
+#include <lsp/io/standardio.h>
+#include "lsp/server.h"
 
-// Entry point — the LSP server reads JSON-RPC messages from stdin and
-// writes responses to stdout. stderr is reserved for diagnostic logging.
-int main() {
-    std::cerr << "svlsp: SystemVerilog Language Server (stub)\n";
-    return EXIT_SUCCESS;
+// Entry point — reads LSP JSON-RPC from stdin, writes responses to stdout.
+// stderr is reserved for diagnostic logging (lsp-mode ignores it).
+int main()
+{
+    auto& io = lsp::io::standardIO();
+    LanguageServer server(io);
+    return server.run();
 }

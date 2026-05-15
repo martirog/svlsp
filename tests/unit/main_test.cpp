@@ -1,5 +1,3 @@
-// Stub test entry point. Catch2 (or chosen framework) will be wired in
-// during Phase 2 once the unit-test framework decision is made.
-int main() {
-    return 0;
-}
+// Catch2 provides its own main when linking against Catch2::Catch2WithMain.
+// This file is intentionally empty — it exists only to give CMake a
+// compilation unit for the unit_tests target.

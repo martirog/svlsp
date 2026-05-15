@@ -1,0 +1,44 @@
+#include "server.h"
+#include <iostream>
+#include <lsp/messages.h>
+#include <lsp/process.h>
+
+LanguageServer::LanguageServer(lsp::io::Stream& io)
+    : m_connection{io}
+    , m_messageHandler{m_connection}
+{
+    registerHandlers();
+}
+
+int LanguageServer::run()
+{
+    try {
+        while (m_state.isRunning())
+            m_messageHandler.processIncomingMessages();
+    } catch (const std::exception& e) {
+        std::cerr << "svlsp: fatal error: " << e.what() << '\n';
+        return 1;
+    }
+    return 0;
+}
+
+void LanguageServer::registerHandlers()
+{
+    m_messageHandler
+        .add<lsp::requests::Initialize>(
+            [this](lsp::InitializeParams&& params) {
+                return m_state.handleInitialize(std::move(params));
+            })
+        .add<lsp::notifications::Initialized>(
+            [this](lsp::notifications::Initialized::Params&&) {
+                m_state.handleInitialized();
+            })
+        .add<lsp::requests::Shutdown>(
+            [this]() {
+                return m_state.handleShutdown();
+            })
+        .add<lsp::notifications::Exit>(
+            [this]() {
+                m_state.handleExit();
+            });
+}

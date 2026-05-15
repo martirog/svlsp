@@ -1,0 +1,3 @@
+[submodule "third_party/lsp-framework"]
+	path = third_party/lsp-framework
+	url = https://github.com/leon-bckl/lsp-framework.git

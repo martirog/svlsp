@@ -4,51 +4,75 @@ project(svlsp VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-
-# Export compile commands for editor tooling.
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # ---------------------------------------------------------------------------
-# Dependencies (populated in later phases)
+# Dependencies
 # ---------------------------------------------------------------------------
-# Phase 1: Emacs test harness — no C++ dependencies.
-# Phase 2: lsp-framework, evaluated and added here.
-# Phase 4: ANTLR4 C++ runtime, added here via FetchContent.
-# Phase 5: SQLite3 amalgamation, added here.
-# Unit-test framework (Catch2) chosen and added in Phase 2.
 
-# ---------------------------------------------------------------------------
-# Server binary
-# ---------------------------------------------------------------------------
-add_executable(svlsp
-    src/main.cpp
+# lsp-framework (Phase 2): LSP protocol layer — zero external dependencies,
+# LSP 3.17, header+generated types built as a static library.
+set(LSP_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(LSP_INSTALL        OFF CACHE BOOL "" FORCE)
+add_subdirectory(third_party/lsp-framework)
+
+# Catch2 (Phase 2): unit-test framework, fetched at configure time.
+include(FetchContent)
+FetchContent_Declare(
+    Catch2
+    GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+    GIT_TAG        v3.8.1
 )
+FetchContent_MakeAvailable(Catch2)
+list(APPEND CMAKE_MODULE_PATH "${catch2_SOURCE_DIR}/extras")
+include(Catch)
 
-target_include_directories(svlsp PRIVATE src)
+# Phase 4: ANTLR4 C++ runtime — added here.
+# Phase 5: SQLite3 amalgamation — added here.
 
-target_compile_options(svlsp PRIVATE
+# ---------------------------------------------------------------------------
+# Common compile options
+# ---------------------------------------------------------------------------
+add_library(svlsp_options INTERFACE)
+target_compile_options(svlsp_options INTERFACE
     -Wall
     -Wextra
     -Wpedantic
     $<$<CONFIG:Debug>:-fsanitize=address,undefined>
     $<$<CONFIG:Debug>:-fno-omit-frame-pointer>
 )
-
-target_link_options(svlsp PRIVATE
+target_link_options(svlsp_options INTERFACE
     $<$<CONFIG:Debug>:-fsanitize=address,undefined>
 )
 
 # ---------------------------------------------------------------------------
-# Unit-test binary (stub — test sources added in Phase 2)
+# Server library (business logic, shared by svlsp binary and unit_tests)
+# ---------------------------------------------------------------------------
+add_library(svlsp_lib STATIC
+    src/lsp/server_state.cpp
+    src/lsp/server.cpp
+)
+target_include_directories(svlsp_lib PUBLIC src)
+target_link_libraries(svlsp_lib PUBLIC lsp svlsp_options)
+
+# ---------------------------------------------------------------------------
+# Server binary
+# ---------------------------------------------------------------------------
+add_executable(svlsp src/main.cpp)
+target_link_libraries(svlsp PRIVATE svlsp_lib)
+
+# ---------------------------------------------------------------------------
+# Unit-test binary
 # ---------------------------------------------------------------------------
 add_executable(unit_tests
     tests/unit/main_test.cpp
+    tests/unit/lsp/test_server_state.cpp
 )
-
-target_include_directories(unit_tests PRIVATE src)
+target_link_libraries(unit_tests PRIVATE svlsp_lib Catch2::Catch2WithMain)
+catch_discover_tests(unit_tests)
 
 # ---------------------------------------------------------------------------
-# CTest integration
+# CTest
 # ---------------------------------------------------------------------------
 enable_testing()
 add_test(NAME unit COMMAND unit_tests)
