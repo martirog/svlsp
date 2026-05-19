@@ -40,5 +40,17 @@ void LanguageServer::registerHandlers()
         .add<lsp::notifications::Exit>(
             [this]() {
                 m_state.handleExit();
+            })
+        .add<lsp::notifications::TextDocument_DidOpen>(
+            [this](lsp::notifications::TextDocument_DidOpen::Params&& params) {
+                m_store.open(std::move(params));
+            })
+        .add<lsp::notifications::TextDocument_DidChange>(
+            [this](lsp::notifications::TextDocument_DidChange::Params&& params) {
+                m_store.update(std::move(params));
+            })
+        .add<lsp::notifications::TextDocument_DidClose>(
+            [this](lsp::notifications::TextDocument_DidClose::Params&& params) {
+                m_store.close(std::move(params));
             });
 }

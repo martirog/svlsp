@@ -3,6 +3,7 @@
 #include <lsp/connection.h>
 #include <lsp/messagehandler.h>
 #include <lsp/io/standardio.h>
+#include "document_store.h"
 #include "server_state.h"
 
 // LanguageServer wires the lsp-framework transport and dispatch layer to the
@@ -17,6 +18,7 @@ public:
 
 private:
     ServerState         m_state;
+    DocumentStore       m_store;
     lsp::Connection     m_connection;
     lsp::MessageHandler m_messageHandler;
 
