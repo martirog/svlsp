@@ -49,6 +49,7 @@ target_link_options(svlsp_options INTERFACE
 # Server library (business logic, shared by svlsp binary and unit_tests)
 # ---------------------------------------------------------------------------
 add_library(svlsp_lib STATIC
+    src/lsp/diagnostics.cpp
     src/lsp/document_store.cpp
     src/lsp/server_state.cpp
     src/lsp/server.cpp
@@ -69,6 +70,7 @@ add_executable(unit_tests
     tests/unit/main_test.cpp
     tests/unit/lsp/test_server_state.cpp
     tests/unit/lsp/test_document_store.cpp
+    tests/unit/lsp/test_diagnostics.cpp
 )
 target_link_libraries(unit_tests PRIVATE svlsp_lib Catch2::Catch2WithMain)
 catch_discover_tests(unit_tests)

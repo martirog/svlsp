@@ -3,6 +3,7 @@
 #include <lsp/connection.h>
 #include <lsp/messagehandler.h>
 #include <lsp/io/standardio.h>
+#include "diagnostics.h"
 #include "document_store.h"
 #include "server_state.h"
 
@@ -17,10 +18,11 @@ public:
     int run();
 
 private:
-    ServerState         m_state;
-    DocumentStore       m_store;
-    lsp::Connection     m_connection;
-    lsp::MessageHandler m_messageHandler;
+    ServerState          m_state;
+    DocumentStore        m_store;
+    lsp::Connection      m_connection;
+    lsp::MessageHandler  m_messageHandler;
+    DiagnosticsPublisher m_diagnostics;  // must follow m_messageHandler
 
     void registerHandlers();
 };

@@ -6,6 +6,7 @@
 LanguageServer::LanguageServer(lsp::io::Stream& io)
     : m_connection{io}
     , m_messageHandler{m_connection}
+    , m_diagnostics{m_messageHandler}
 {
     registerHandlers();
 }
@@ -43,11 +44,17 @@ void LanguageServer::registerHandlers()
             })
         .add<lsp::notifications::TextDocument_DidOpen>(
             [this](lsp::notifications::TextDocument_DidOpen::Params&& params) {
+                const auto uri     = params.textDocument.uri;
+                const auto version = params.textDocument.version;
                 m_store.open(std::move(params));
+                m_diagnostics.publish(uri, version);
             })
         .add<lsp::notifications::TextDocument_DidChange>(
             [this](lsp::notifications::TextDocument_DidChange::Params&& params) {
+                const auto uri     = params.textDocument.uri;
+                const auto version = params.textDocument.version;
                 m_store.update(std::move(params));
+                m_diagnostics.publish(uri, version);
             })
         .add<lsp::notifications::TextDocument_DidClose>(
             [this](lsp::notifications::TextDocument_DidClose::Params&& params) {
