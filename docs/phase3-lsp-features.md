@@ -82,11 +82,53 @@ fixture in the `didClose` test so closing one buffer does not shut down the serv
 
 ---
 
+---
+
+## 3.2 Diagnostics (`textDocument/publishDiagnostics`)
+
+**Status:** Complete (empty push — real parse errors wired in Phase 4)
+
+### What was added
+
+`src/lsp/diagnostics.h/.cpp` — `DiagnosticsPublisher` class:
+
+| Method | Description |
+|---|---|
+| `publish(uri, version, diags={})` | Sends `publishDiagnostics` via `MessageHandler` |
+| `static buildParams(uri, version, diags={})` | Builds params without sending — for unit tests |
+
+`LanguageServer` now owns a `DiagnosticsPublisher m_diagnostics{m_messageHandler}` (declared
+after `m_messageHandler` so member initialisation order is safe) and calls
+`m_diagnostics.publish(uri, version)` inside the `didOpen` and `didChange` handlers.
+
+### Design notes
+
+- `buildParams` is `static` so it can be unit-tested without a live connection or mock.
+- Publishing empty diagnostics on `didOpen`/`didChange` clears any stale client-side
+  errors from a previous session, which is correct even before Phase 4 adds parsing.
+- `didClose` deliberately does NOT publish diagnostics — lsp-mode automatically clears
+  the diagnostic overlay when the buffer is killed.
+
+### Unit tests
+
+`tests/unit/lsp/test_diagnostics.cpp` — 6 test cases covering URI, version, empty default,
+explicit empty vector, non-empty diagnostic array, and range preservation.
+
+### Functional test
+
+`tests/integration/test_04_diagnostics.sh` — 2 test cases:
+
+| Test | How it works |
+|---|---|
+| zero diagnostics after didOpen | Opens fixture, waits for LSP, sit-for 2s, checks `(lsp--get-buffer-diagnostics)` length == 0 |
+| zero diagnostics after didChange | Opens fixture, inserts a newline, sit-for 3s, checks length == 0 |
+
+---
+
 ## Remaining Phase 3 sub-phases
 
 | Sub-phase | Feature | LSP method | Status |
 |---|---|---|---|
-| 3.2 | Diagnostics | `textDocument/publishDiagnostics` | Pending |
 | 3.3 | Hover | `textDocument/hover` | Pending |
 | 3.4 | Go-to-definition | `textDocument/definition` | Pending |
 | 3.5 | Find references | `textDocument/references` | Pending |
