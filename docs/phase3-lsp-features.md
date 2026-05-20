@@ -186,12 +186,75 @@ bash tools/emacs-test-daemon.sh tests/integration/test_05_hover.sh
 
 ---
 
+---
+
+## 3.4 Go-to-Definition (`textDocument/definition`)
+
+**Status:** Complete (always returns null — real symbol resolution wired in Phase 4)
+
+### What was added
+
+`src/lsp/definition.h/.cpp` — `DefinitionProvider` class:
+
+| Method | Description |
+|---|---|
+| `static getDefinition(DefinitionParams)` | Returns `null` (`NullOrOneOf<Definition, Array<DefinitionLink>>`) — Phase 4 will resolve symbol locations |
+
+`LanguageServer::registerHandlers()` now registers a handler for
+`lsp::requests::TextDocument_Definition` that delegates to
+`DefinitionProvider::getDefinition`.
+
+`handleInitialize` now advertises:
+
+```cpp
+.definitionProvider = lsp::OneOf<bool, lsp::DefinitionOptions>(true)
+```
+
+### Design notes
+
+- The result type `lsp::TextDocument_DefinitionResult` is
+  `NullOrOneOf<Definition, Array<DefinitionLink>>` — a `NullableVariant` over
+  `std::variant<Definition, Array<DefinitionLink>>`.  Returning `nullptr` serialises to
+  JSON `null`; lsp-mode maps that to Emacs `nil` and performs no jump.
+- `getDefinition` is `static` for the same reason as `HoverProvider::getHover` — no
+  stored state or I/O side effects, so no instance setup is needed in tests.
+- Phase 4 will return a `Definition` (i.e. `OneOf<Location, Array<Location>>`) populated
+  from the ANTLR4 symbol table and the SQLite source-location index.
+
+### Unit tests
+
+`tests/unit/lsp/test_definition.cpp` — 3 test cases:
+
+| Test | What it checks |
+|---|---|
+| returns null at position (0,0) | `result.isNull()` is true at the start of the file |
+| returns null at arbitrary position | same at (10, 5) — no position is special |
+| returns null for any URI | two distinct files both yield null |
+
+Run with: `make test-unit` or `./build/debug/unit_tests`
+
+### Functional test
+
+`tests/integration/test_06_definition.sh` — 2 test cases:
+
+| Test | How it works |
+|---|---|
+| server alive after definition request | Opens fixture, waits for LSP, sends `textDocument/definition` via `lsp-request`, verifies workspace still `initialized` |
+| definition returns null (pre-ANTLR4) | Same setup, checks `(null result)` is true for the JSON null response |
+
+Run with:
+```bash
+bash tools/emacs-test-daemon.sh tests/integration/test_06_definition.sh
+```
+
+---
+
 ## Remaining Phase 3 sub-phases
 
 | Sub-phase | Feature | LSP method | Status |
 |---|---|---|---|
 | 3.3 | Hover | `textDocument/hover` | Complete |
-| 3.4 | Go-to-definition | `textDocument/definition` | Pending |
+| 3.4 | Go-to-definition | `textDocument/definition` | Complete |
 | 3.5 | Find references | `textDocument/references` | Pending |
 | 3.6 | Completion | `textDocument/completion` | Pending |
 | 3.7 | Document symbols | `textDocument/documentSymbol` | Pending |
