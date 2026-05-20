@@ -63,5 +63,9 @@ void LanguageServer::registerHandlers()
         .add<lsp::requests::TextDocument_Hover>(
             [](lsp::HoverParams&& params) {
                 return HoverProvider::getHover(params);
+            })
+        .add<lsp::requests::TextDocument_Definition>(
+            [](lsp::DefinitionParams&& params) {
+                return DefinitionProvider::getDefinition(params);
             });
 }

@@ -18,7 +18,8 @@ auto ServerState::handleInitialize(lsp::InitializeParams params)
                 .change    = lsp::TextDocumentSyncKind::Full,
                 .save      = true,
             },
-            .hoverProvider = lsp::OneOf<bool, lsp::HoverOptions>(true),
+            .hoverProvider      = lsp::OneOf<bool, lsp::HoverOptions>(true),
+            .definitionProvider = lsp::OneOf<bool, lsp::DefinitionOptions>(true),
         },
         .serverInfo = lsp::InitializeResultServerInfo{
             .name    = "svlsp",
