@@ -59,5 +59,9 @@ void LanguageServer::registerHandlers()
         .add<lsp::notifications::TextDocument_DidClose>(
             [this](lsp::notifications::TextDocument_DidClose::Params&& params) {
                 m_store.close(std::move(params));
+            })
+        .add<lsp::requests::TextDocument_Hover>(
+            [](lsp::HoverParams&& params) {
+                return HoverProvider::getHover(params);
             });
 }

@@ -5,6 +5,7 @@
 #include <lsp/io/standardio.h>
 #include "diagnostics.h"
 #include "document_store.h"
+#include "hover.h"
 #include "server_state.h"
 
 // LanguageServer wires the lsp-framework transport and dispatch layer to the
