@@ -125,11 +125,72 @@ explicit empty vector, non-empty diagnostic array, and range preservation.
 
 ---
 
+## 3.3 Hover (`textDocument/hover`)
+
+**Status:** Complete (always returns null — real symbol info wired in Phase 4)
+
+### What was added
+
+`src/lsp/hover.h/.cpp` — `HoverProvider` class:
+
+| Method | Description |
+|---|---|
+| `static getHover(HoverParams)` | Returns `null` (`NullOr<Hover>`) — Phase 4 will query the symbol database |
+
+`LanguageServer::registerHandlers()` in `server.cpp` now registers a handler for
+`lsp::requests::TextDocument_Hover` that delegates to `HoverProvider::getHover`.
+
+`handleInitialize` in `server_state.cpp` now advertises:
+
+```cpp
+.hoverProvider = lsp::OneOf<bool, lsp::HoverOptions>(true)
+```
+
+### Design notes
+
+- `HoverProvider::getHover` is `static` — the handler has no I/O side effects and no
+  stored state, so it is directly unit-testable without any mock or instance setup.
+- The result type `lsp::TextDocument_HoverResult` is `NullOr<Hover>` (`Nullable<Hover>`).
+  Returning `nullptr` (the `std::nullptr_t` overload) serialises to JSON `null`, which
+  lsp-mode maps to Emacs `nil`.  Editors handle a null hover gracefully — no popup shown.
+- `hoverProvider = true` must be advertised in capabilities so that lsp-mode actually sends
+  hover requests.  Without it the client silently suppresses them.
+- Phase 4 will inject a symbol-database lookup into `getHover` and return a populated
+  `lsp::Hover` with `MarkupContent{ .kind = MarkupKind::Markdown, .value = ... }`.
+
+### Unit tests
+
+`tests/unit/lsp/test_hover.cpp` — 3 test cases:
+
+| Test | What it checks |
+|---|---|
+| returns null at position (0,0) | `result.isNull()` is true at the start of the file |
+| returns null at arbitrary position | same at (10, 5) — no position is special |
+| returns null for any URI | two distinct files both yield null |
+
+Run with: `make test-unit` or `./build/debug/unit_tests`
+
+### Functional test
+
+`tests/integration/test_05_hover.sh` — 2 test cases:
+
+| Test | How it works |
+|---|---|
+| server alive after hover request | Opens fixture, waits for LSP, sends `textDocument/hover` via `lsp-request`, verifies workspace still `initialized` |
+| hover returns null (pre-ANTLR4) | Same setup, checks `(null result)` is true for the JSON null response |
+
+Run with:
+```bash
+bash tools/emacs-test-daemon.sh tests/integration/test_05_hover.sh
+```
+
+---
+
 ## Remaining Phase 3 sub-phases
 
 | Sub-phase | Feature | LSP method | Status |
 |---|---|---|---|
-| 3.3 | Hover | `textDocument/hover` | Pending |
+| 3.3 | Hover | `textDocument/hover` | Complete |
 | 3.4 | Go-to-definition | `textDocument/definition` | Pending |
 | 3.5 | Find references | `textDocument/references` | Pending |
 | 3.6 | Completion | `textDocument/completion` | Pending |
