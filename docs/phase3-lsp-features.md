@@ -442,6 +442,69 @@ bash tools/emacs-test-daemon.sh tests/integration/test_09_document_symbols.sh
 
 ---
 
+---
+
+## 3.8 Workspace Symbols (`workspace/symbol`)
+
+**Status:** Complete (always returns null — real cross-file search wired in Phase 4)
+
+### What was added
+
+`src/lsp/workspace_symbols.h/.cpp` — `WorkspaceSymbolsProvider` class:
+
+| Method | Description |
+|---|---|
+| `static getWorkspaceSymbols(WorkspaceSymbolParams)` | Returns `null` (`NullOrOneOf<Array<SymbolInformation>, Array<WorkspaceSymbol>>`) — Phase 4 will search the symbol database |
+
+`LanguageServer::registerHandlers()` now registers a handler for
+`lsp::requests::Workspace_Symbol` that delegates to
+`WorkspaceSymbolsProvider::getWorkspaceSymbols`.
+
+`handleInitialize` now advertises:
+
+```cpp
+.workspaceSymbolProvider = lsp::OneOf<bool, lsp::WorkspaceSymbolOptions>(true)
+```
+
+### Design notes
+
+- `WorkspaceSymbolParams` carries a `query` string — an empty string means "return all
+  symbols". Phase 4 will use this as a prefix or substring filter against the symbol
+  table built from ANTLR4 output.
+- The result type `NullOrOneOf<Array<SymbolInformation>, Array<WorkspaceSymbol>>` is a
+  `NullableVariant`. Phase 4 will return `Array<WorkspaceSymbol>` (the newer variant),
+  which allows lazy location resolution via a separate `workspaceSymbol/resolve` request.
+- Unlike `textDocument/documentSymbol`, this request is not buffer-local. The
+  `lsp-request` call in the integration test is made inside a `with-current-buffer` only
+  to ensure the workspace is reachable; the query itself spans all indexed files.
+
+### Unit tests
+
+`tests/unit/lsp/test_workspace_symbols.cpp` — 2 test cases:
+
+| Test | What it checks |
+|---|---|
+| returns null for empty query | `result.isNull()` is true for `""` |
+| returns null for non-empty query | `result.isNull()` is true for `"my_module"` |
+
+Run with: `make test-unit` or `./build/debug/unit_tests`
+
+### Functional test
+
+`tests/integration/test_10_workspace_symbols.sh` — 2 test cases:
+
+| Test | How it works |
+|---|---|
+| server alive after workspace/symbol request | Opens fixture, waits for LSP, sends `workspace/symbol` with empty query via `lsp-request`, verifies workspace still `initialized` |
+| workspace/symbol returns null (pre-ANTLR4) | Same setup with query `"my_module"`, checks `(null result)` is true |
+
+Run with:
+```bash
+bash tools/emacs-test-daemon.sh tests/integration/test_10_workspace_symbols.sh
+```
+
+---
+
 ## Remaining Phase 3 sub-phases
 
 | Sub-phase | Feature | LSP method | Status |
@@ -451,6 +514,6 @@ bash tools/emacs-test-daemon.sh tests/integration/test_09_document_symbols.sh
 | 3.5 | Find references | `textDocument/references` | Complete |
 | 3.6 | Completion | `textDocument/completion` | Complete |
 | 3.7 | Document symbols | `textDocument/documentSymbol` | Complete |
-| 3.8 | Workspace symbols | `workspace/symbol` | Pending |
+| 3.8 | Workspace symbols | `workspace/symbol` | Complete |
 | 3.9 | Rename | `textDocument/rename` | Pending |
 | 3.10 | Signature help | `textDocument/signatureHelp` | Pending |
