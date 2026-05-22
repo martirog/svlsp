@@ -567,10 +567,79 @@ bash tools/emacs-test-daemon.sh tests/integration/test_11_rename.sh
 
 ---
 
-## Remaining Phase 3 sub-phases
+---
+
+## 3.10 Signature Help (`textDocument/signatureHelp`)
+
+**Status:** Complete (always returns null — real signatures wired in Phase 4)
+
+### What was added
+
+`src/lsp/signature_help.h/.cpp` — `SignatureHelpProvider` class:
+
+| Method | Description |
+|---|---|
+| `static getSignatureHelp(SignatureHelpParams)` | Returns `null` (`NullOr<SignatureHelp>`) — Phase 4 will return port/parameter signatures for module instantiations and function calls |
+
+`LanguageServer::registerHandlers()` now registers a handler for
+`lsp::requests::TextDocument_SignatureHelp` that delegates to
+`SignatureHelpProvider::getSignatureHelp`.
+
+`handleInitialize` now advertises:
+
+```cpp
+.signatureHelpProvider = lsp::SignatureHelpOptions{}
+```
+
+### Design notes
+
+- Like `completionProvider`, `signatureHelpProvider` is typed as
+  `Opt<SignatureHelpOptions>` (not `OneOf<bool, SignatureHelpOptions>`), so it is
+  advertised with a default-constructed `SignatureHelpOptions{}`. Trigger characters
+  (e.g. `(`, `,`) will be configured in Phase 4 when the provider returns real data.
+- `signatureHelpProvider` is declared between `hoverProvider` and `definitionProvider`
+  in `ServerCapabilities`, so it must be inserted at that position in the
+  designated-initialiser list — not appended at the end.
+- Phase 4 will return a `SignatureHelp` with one `SignatureInformation` entry per
+  overload of the module/function, listing each port or parameter as a
+  `ParameterInformation` with label and documentation.
+
+### Unit tests
+
+`tests/unit/lsp/test_signature_help.cpp` — 3 test cases:
+
+| Test | What it checks |
+|---|---|
+| returns null at position (0,0) | `result.isNull()` is true at the start of the file |
+| returns null at arbitrary position | same at (10, 5) |
+| returns null for any URI | two distinct files both yield null |
+
+Run with: `make test-unit` or `./build/debug/unit_tests`
+
+### Functional test
+
+`tests/integration/test_12_signature_help.sh` — 2 test cases:
+
+| Test | How it works |
+|---|---|
+| server alive after signatureHelp request | Opens fixture, waits for LSP, sends `textDocument/signatureHelp` via `lsp-request`, verifies workspace still `initialized` |
+| signatureHelp returns null (pre-ANTLR4) | Same setup, checks `(null result)` is true for the JSON null response |
+
+Run with:
+```bash
+bash tools/emacs-test-daemon.sh tests/integration/test_12_signature_help.sh
+```
+
+---
+
+## Phase 3 complete
+
+All ten LSP feature sub-phases are implemented and tested.
 
 | Sub-phase | Feature | LSP method | Status |
 |---|---|---|---|
+| 3.1 | Text document sync | `didOpen` / `didChange` / `didClose` | Complete |
+| 3.2 | Diagnostics | `textDocument/publishDiagnostics` | Complete |
 | 3.3 | Hover | `textDocument/hover` | Complete |
 | 3.4 | Go-to-definition | `textDocument/definition` | Complete |
 | 3.5 | Find references | `textDocument/references` | Complete |
@@ -578,4 +647,7 @@ bash tools/emacs-test-daemon.sh tests/integration/test_11_rename.sh
 | 3.7 | Document symbols | `textDocument/documentSymbol` | Complete |
 | 3.8 | Workspace symbols | `workspace/symbol` | Complete |
 | 3.9 | Rename | `textDocument/rename` | Complete |
-| 3.10 | Signature help | `textDocument/signatureHelp` | Pending |
+| 3.10 | Signature help | `textDocument/signatureHelp` | Complete |
+
+Unit tests: 48 test cases, 72 assertions. Integration tests: 31 test cases, all passing.
+Phase 4 (ANTLR4 compiler front-end) will replace every null return with real data.
