@@ -379,6 +379,69 @@ bash tools/emacs-test-daemon.sh tests/integration/test_08_completion.sh
 
 ---
 
+---
+
+## 3.7 Document Symbols (`textDocument/documentSymbol`)
+
+**Status:** Complete (always returns null — real symbol outline wired in Phase 4)
+
+### What was added
+
+`src/lsp/document_symbols.h/.cpp` — `DocumentSymbolsProvider` class:
+
+| Method | Description |
+|---|---|
+| `static getDocumentSymbols(DocumentSymbolParams)` | Returns `null` (`NullOrOneOf<Array<SymbolInformation>, Array<DocumentSymbol>>`) — Phase 4 will return module/interface/function/task declarations |
+
+`LanguageServer::registerHandlers()` now registers a handler for
+`lsp::requests::TextDocument_DocumentSymbol` that delegates to
+`DocumentSymbolsProvider::getDocumentSymbols`.
+
+`handleInitialize` now advertises:
+
+```cpp
+.documentSymbolProvider = lsp::OneOf<bool, lsp::DocumentSymbolOptions>(true)
+```
+
+### Design notes
+
+- `DocumentSymbolParams` carries only a `TextDocumentIdentifier` (no position) — the
+  request is for the full symbol outline of the file, not a cursor-local query.
+- The result type `NullOrOneOf<Array<SymbolInformation>, Array<DocumentSymbol>>` is a
+  `NullableVariant`.  Phase 4 will return `Array<DocumentSymbol>` (the hierarchical
+  variant), which lets editors render a tree outline with nesting for module ports,
+  parameters, and internal signals.
+- `documentSymbolProvider` is declared after `referencesProvider` in
+  `ServerCapabilities`, so it appends cleanly to the existing designated-initialiser
+  list without reordering.
+
+### Unit tests
+
+`tests/unit/lsp/test_document_symbols.cpp` — 2 test cases:
+
+| Test | What it checks |
+|---|---|
+| returns null for a basic fixture | `result.isNull()` is true |
+| returns null for any URI | two distinct files both yield null |
+
+Run with: `make test-unit` or `./build/debug/unit_tests`
+
+### Functional test
+
+`tests/integration/test_09_document_symbols.sh` — 2 test cases:
+
+| Test | How it works |
+|---|---|
+| server alive after documentSymbol request | Opens fixture, waits for LSP, sends `textDocument/documentSymbol` via `lsp-request`, verifies workspace still `initialized` |
+| documentSymbol returns null (pre-ANTLR4) | Same setup, checks `(null result)` is true |
+
+Run with:
+```bash
+bash tools/emacs-test-daemon.sh tests/integration/test_09_document_symbols.sh
+```
+
+---
+
 ## Remaining Phase 3 sub-phases
 
 | Sub-phase | Feature | LSP method | Status |
@@ -387,7 +450,7 @@ bash tools/emacs-test-daemon.sh tests/integration/test_08_completion.sh
 | 3.4 | Go-to-definition | `textDocument/definition` | Complete |
 | 3.5 | Find references | `textDocument/references` | Complete |
 | 3.6 | Completion | `textDocument/completion` | Complete |
-| 3.7 | Document symbols | `textDocument/documentSymbol` | Pending |
+| 3.7 | Document symbols | `textDocument/documentSymbol` | Complete |
 | 3.8 | Workspace symbols | `workspace/symbol` | Pending |
 | 3.9 | Rename | `textDocument/rename` | Pending |
 | 3.10 | Signature help | `textDocument/signatureHelp` | Pending |
