@@ -75,5 +75,9 @@ void LanguageServer::registerHandlers()
         .add<lsp::requests::TextDocument_Completion>(
             [](lsp::CompletionParams&& params) {
                 return CompletionProvider::getCompletion(params);
+            })
+        .add<lsp::requests::TextDocument_DocumentSymbol>(
+            [](lsp::DocumentSymbolParams&& params) {
+                return DocumentSymbolsProvider::getDocumentSymbols(params);
             });
 }

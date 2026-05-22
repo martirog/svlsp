@@ -51,6 +51,7 @@ target_link_options(svlsp_options INTERFACE
 add_library(svlsp_lib STATIC
     src/lsp/completion.cpp
     src/lsp/definition.cpp
+    src/lsp/document_symbols.cpp
     src/lsp/diagnostics.cpp
     src/lsp/document_store.cpp
     src/lsp/hover.cpp
@@ -77,6 +78,7 @@ add_executable(unit_tests
     tests/unit/lsp/test_completion.cpp
     tests/unit/lsp/test_definition.cpp
     tests/unit/lsp/test_diagnostics.cpp
+    tests/unit/lsp/test_document_symbols.cpp
     tests/unit/lsp/test_hover.cpp
     tests/unit/lsp/test_references.cpp
 )

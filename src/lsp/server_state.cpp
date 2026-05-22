@@ -21,7 +21,8 @@ auto ServerState::handleInitialize(lsp::InitializeParams params)
             .completionProvider  = lsp::CompletionOptions{},
             .hoverProvider       = lsp::OneOf<bool, lsp::HoverOptions>(true),
             .definitionProvider  = lsp::OneOf<bool, lsp::DefinitionOptions>(true),
-            .referencesProvider  = lsp::OneOf<bool, lsp::ReferenceOptions>(true),
+            .referencesProvider      = lsp::OneOf<bool, lsp::ReferenceOptions>(true),
+            .documentSymbolProvider  = lsp::OneOf<bool, lsp::DocumentSymbolOptions>(true),
         },
         .serverInfo = lsp::InitializeResultServerInfo{
             .name    = "svlsp",

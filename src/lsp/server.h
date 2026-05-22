@@ -6,6 +6,7 @@
 #include "completion.h"
 #include "definition.h"
 #include "diagnostics.h"
+#include "document_symbols.h"
 #include "document_store.h"
 #include "hover.h"
 #include "references.h"
