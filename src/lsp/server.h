@@ -3,6 +3,7 @@
 #include <lsp/connection.h>
 #include <lsp/messagehandler.h>
 #include <lsp/io/standardio.h>
+#include "completion.h"
 #include "definition.h"
 #include "diagnostics.h"
 #include "document_store.h"

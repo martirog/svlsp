@@ -71,5 +71,9 @@ void LanguageServer::registerHandlers()
         .add<lsp::requests::TextDocument_References>(
             [](lsp::ReferenceParams&& params) {
                 return ReferencesProvider::getReferences(params);
+            })
+        .add<lsp::requests::TextDocument_Completion>(
+            [](lsp::CompletionParams&& params) {
+                return CompletionProvider::getCompletion(params);
             });
 }

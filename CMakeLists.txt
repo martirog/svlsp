@@ -49,6 +49,7 @@ target_link_options(svlsp_options INTERFACE
 # Server library (business logic, shared by svlsp binary and unit_tests)
 # ---------------------------------------------------------------------------
 add_library(svlsp_lib STATIC
+    src/lsp/completion.cpp
     src/lsp/definition.cpp
     src/lsp/diagnostics.cpp
     src/lsp/document_store.cpp
@@ -73,6 +74,7 @@ add_executable(unit_tests
     tests/unit/main_test.cpp
     tests/unit/lsp/test_server_state.cpp
     tests/unit/lsp/test_document_store.cpp
+    tests/unit/lsp/test_completion.cpp
     tests/unit/lsp/test_definition.cpp
     tests/unit/lsp/test_diagnostics.cpp
     tests/unit/lsp/test_hover.cpp
