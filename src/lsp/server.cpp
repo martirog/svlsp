@@ -83,5 +83,9 @@ void LanguageServer::registerHandlers()
         .add<lsp::requests::Workspace_Symbol>(
             [](lsp::WorkspaceSymbolParams&& params) {
                 return WorkspaceSymbolsProvider::getWorkspaceSymbols(params);
+            })
+        .add<lsp::requests::TextDocument_Rename>(
+            [](lsp::RenameParams&& params) {
+                return RenameProvider::getRename(params);
             });
 }

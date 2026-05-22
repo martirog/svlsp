@@ -10,6 +10,7 @@
 #include "document_store.h"
 #include "hover.h"
 #include "references.h"
+#include "rename.h"
 #include "server_state.h"
 #include "workspace_symbols.h"
 

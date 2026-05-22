@@ -24,6 +24,7 @@ auto ServerState::handleInitialize(lsp::InitializeParams params)
             .referencesProvider      = lsp::OneOf<bool, lsp::ReferenceOptions>(true),
             .documentSymbolProvider  = lsp::OneOf<bool, lsp::DocumentSymbolOptions>(true),
             .workspaceSymbolProvider = lsp::OneOf<bool, lsp::WorkspaceSymbolOptions>(true),
+            .renameProvider          = lsp::OneOf<bool, lsp::RenameOptions>(true),
         },
         .serverInfo = lsp::InitializeResultServerInfo{
             .name    = "svlsp",
