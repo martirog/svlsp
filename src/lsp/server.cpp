@@ -79,5 +79,9 @@ void LanguageServer::registerHandlers()
         .add<lsp::requests::TextDocument_DocumentSymbol>(
             [](lsp::DocumentSymbolParams&& params) {
                 return DocumentSymbolsProvider::getDocumentSymbols(params);
+            })
+        .add<lsp::requests::Workspace_Symbol>(
+            [](lsp::WorkspaceSymbolParams&& params) {
+                return WorkspaceSymbolsProvider::getWorkspaceSymbols(params);
             });
 }

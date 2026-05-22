@@ -11,6 +11,7 @@
 #include "hover.h"
 #include "references.h"
 #include "server_state.h"
+#include "workspace_symbols.h"
 
 // LanguageServer wires the lsp-framework transport and dispatch layer to the
 // ServerState business logic.  All I/O happens here; ServerState stays pure.
