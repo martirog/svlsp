@@ -57,6 +57,7 @@ add_library(svlsp_lib STATIC
     src/lsp/hover.cpp
     src/lsp/references.cpp
     src/lsp/rename.cpp
+    src/lsp/signature_help.cpp
     src/lsp/server_state.cpp
     src/lsp/workspace_symbols.cpp
     src/lsp/server.cpp
@@ -84,6 +85,7 @@ add_executable(unit_tests
     tests/unit/lsp/test_hover.cpp
     tests/unit/lsp/test_references.cpp
     tests/unit/lsp/test_rename.cpp
+    tests/unit/lsp/test_signature_help.cpp
     tests/unit/lsp/test_workspace_symbols.cpp
 )
 target_link_libraries(unit_tests PRIVATE svlsp_lib Catch2::Catch2WithMain)

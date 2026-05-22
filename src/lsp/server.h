@@ -12,6 +12,7 @@
 #include "references.h"
 #include "rename.h"
 #include "server_state.h"
+#include "signature_help.h"
 #include "workspace_symbols.h"
 
 // LanguageServer wires the lsp-framework transport and dispatch layer to the

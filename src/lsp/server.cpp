@@ -87,5 +87,9 @@ void LanguageServer::registerHandlers()
         .add<lsp::requests::TextDocument_Rename>(
             [](lsp::RenameParams&& params) {
                 return RenameProvider::getRename(params);
+            })
+        .add<lsp::requests::TextDocument_SignatureHelp>(
+            [](lsp::SignatureHelpParams&& params) {
+                return SignatureHelpProvider::getSignatureHelp(params);
             });
 }
