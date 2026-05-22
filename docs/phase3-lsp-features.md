@@ -505,6 +505,68 @@ bash tools/emacs-test-daemon.sh tests/integration/test_10_workspace_symbols.sh
 
 ---
 
+---
+
+## 3.9 Rename (`textDocument/rename`)
+
+**Status:** Complete (always returns null — real workspace edits wired in Phase 4)
+
+### What was added
+
+`src/lsp/rename.h/.cpp` — `RenameProvider` class:
+
+| Method | Description |
+|---|---|
+| `static getRename(RenameParams)` | Returns `null` (`NullOr<WorkspaceEdit>`) — Phase 4 will build a `WorkspaceEdit` covering all reference sites |
+
+`LanguageServer::registerHandlers()` now registers a handler for
+`lsp::requests::TextDocument_Rename` that delegates to `RenameProvider::getRename`.
+
+`handleInitialize` now advertises:
+
+```cpp
+.renameProvider = lsp::OneOf<bool, lsp::RenameOptions>(true)
+```
+
+### Design notes
+
+- `RenameParams` carries `textDocument`, `position`, and `newName` — the new identifier
+  the client wants all occurrences of the symbol replaced with.
+- The result type `NullOr<WorkspaceEdit>` is `Nullable<WorkspaceEdit>`. A `WorkspaceEdit`
+  contains a map of URI → `Array<TextEdit>`, allowing the server to return edits spanning
+  multiple files in a single response. Phase 4 will populate this from the reference list
+  produced by the symbol database.
+- Returning `null` (rather than an empty `WorkspaceEdit`) is correct at this stage —
+  lsp-mode treats a null rename response as a no-op and does not apply any edits.
+
+### Unit tests
+
+`tests/unit/lsp/test_rename.cpp` — 3 test cases:
+
+| Test | What it checks |
+|---|---|
+| returns null at position (0,0) | `result.isNull()` is true |
+| returns null at arbitrary position | same at (10, 5) |
+| returns null regardless of new name | both short and long `newName` values yield null |
+
+Run with: `make test-unit` or `./build/debug/unit_tests`
+
+### Functional test
+
+`tests/integration/test_11_rename.sh` — 2 test cases:
+
+| Test | How it works |
+|---|---|
+| server alive after rename request | Opens fixture, waits for LSP, sends `textDocument/rename` with `newName: "new_signal"` via `lsp-request`, verifies workspace still `initialized` |
+| rename returns null (pre-ANTLR4) | Same setup with `newName: "renamed_signal"`, checks `(null result)` is true |
+
+Run with:
+```bash
+bash tools/emacs-test-daemon.sh tests/integration/test_11_rename.sh
+```
+
+---
+
 ## Remaining Phase 3 sub-phases
 
 | Sub-phase | Feature | LSP method | Status |
@@ -515,5 +577,5 @@ bash tools/emacs-test-daemon.sh tests/integration/test_10_workspace_symbols.sh
 | 3.6 | Completion | `textDocument/completion` | Complete |
 | 3.7 | Document symbols | `textDocument/documentSymbol` | Complete |
 | 3.8 | Workspace symbols | `workspace/symbol` | Complete |
-| 3.9 | Rename | `textDocument/rename` | Pending |
+| 3.9 | Rename | `textDocument/rename` | Complete |
 | 3.10 | Signature help | `textDocument/signatureHelp` | Pending |
