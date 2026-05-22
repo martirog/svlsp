@@ -67,5 +67,9 @@ void LanguageServer::registerHandlers()
         .add<lsp::requests::TextDocument_Definition>(
             [](lsp::DefinitionParams&& params) {
                 return DefinitionProvider::getDefinition(params);
+            })
+        .add<lsp::requests::TextDocument_References>(
+            [](lsp::ReferenceParams&& params) {
+                return ReferencesProvider::getReferences(params);
             });
 }

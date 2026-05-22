@@ -19,7 +19,8 @@ auto ServerState::handleInitialize(lsp::InitializeParams params)
                 .save      = true,
             },
             .hoverProvider      = lsp::OneOf<bool, lsp::HoverOptions>(true),
-            .definitionProvider = lsp::OneOf<bool, lsp::DefinitionOptions>(true),
+            .definitionProvider  = lsp::OneOf<bool, lsp::DefinitionOptions>(true),
+            .referencesProvider  = lsp::OneOf<bool, lsp::ReferenceOptions>(true),
         },
         .serverInfo = lsp::InitializeResultServerInfo{
             .name    = "svlsp",
