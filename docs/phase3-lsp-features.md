@@ -311,6 +311,74 @@ bash tools/emacs-test-daemon.sh tests/integration/test_07_references.sh
 
 ---
 
+---
+
+## 3.6 Completion (`textDocument/completion`)
+
+**Status:** Complete (always returns null — real candidates wired in Phase 4)
+
+### What was added
+
+`src/lsp/completion.h/.cpp` — `CompletionProvider` class:
+
+| Method | Description |
+|---|---|
+| `static getCompletion(CompletionParams)` | Returns `null` (`NullOrOneOf<Array<CompletionItem>, CompletionList>`) — Phase 4 will return keyword and symbol candidates |
+
+`LanguageServer::registerHandlers()` now registers a handler for
+`lsp::requests::TextDocument_Completion` that delegates to
+`CompletionProvider::getCompletion`.
+
+`handleInitialize` now advertises:
+
+```cpp
+.completionProvider = lsp::CompletionOptions{}
+```
+
+### Design notes
+
+- Unlike hover, definition, and references, `completionProvider` is typed as
+  `Opt<CompletionOptions>` (not `OneOf<bool, CompletionOptions>`), so the capability
+  is advertised with a default-constructed `CompletionOptions{}`.  No trigger characters
+  or resolve support are configured at this stage.
+- The result type `NullOrOneOf<Array<CompletionItem>, CompletionList>` is a
+  `NullableVariant`.  Returning `nullptr` yields JSON `null`; lsp-mode silently closes
+  the completion popup when it receives a null result.
+- `CompletionOptions` must appear before `hoverProvider` in the `ServerCapabilities`
+  designated-initialiser list — C++ requires initialiser order to match declaration order
+  in the struct, and `completionProvider` is declared ahead of `hoverProvider` in the
+  lsp-framework-generated `ServerCapabilities`.
+- Phase 4 will populate candidates from the ANTLR4 symbol table: SV keywords,
+  module/interface names, port names, and signal names in scope.
+
+### Unit tests
+
+`tests/unit/lsp/test_completion.cpp` — 3 test cases:
+
+| Test | What it checks |
+|---|---|
+| returns null at position (0,0) | `result.isNull()` is true at the start of the file |
+| returns null at arbitrary position | same at (10, 5) |
+| returns null for any URI | two distinct files both yield null |
+
+Run with: `make test-unit` or `./build/debug/unit_tests`
+
+### Functional test
+
+`tests/integration/test_08_completion.sh` — 2 test cases:
+
+| Test | How it works |
+|---|---|
+| server alive after completion request | Opens fixture, waits for LSP, sends `textDocument/completion` via `lsp-request`, verifies workspace still `initialized` |
+| completion returns null (pre-ANTLR4) | Same setup, checks `(null result)` is true for the JSON null response |
+
+Run with:
+```bash
+bash tools/emacs-test-daemon.sh tests/integration/test_08_completion.sh
+```
+
+---
+
 ## Remaining Phase 3 sub-phases
 
 | Sub-phase | Feature | LSP method | Status |
@@ -318,7 +386,7 @@ bash tools/emacs-test-daemon.sh tests/integration/test_07_references.sh
 | 3.3 | Hover | `textDocument/hover` | Complete |
 | 3.4 | Go-to-definition | `textDocument/definition` | Complete |
 | 3.5 | Find references | `textDocument/references` | Complete |
-| 3.6 | Completion | `textDocument/completion` | Pending |
+| 3.6 | Completion | `textDocument/completion` | Complete |
 | 3.7 | Document symbols | `textDocument/documentSymbol` | Pending |
 | 3.8 | Workspace symbols | `workspace/symbol` | Pending |
 | 3.9 | Rename | `textDocument/rename` | Pending |
