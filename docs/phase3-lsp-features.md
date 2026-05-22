@@ -249,13 +249,75 @@ bash tools/emacs-test-daemon.sh tests/integration/test_06_definition.sh
 
 ---
 
+---
+
+## 3.5 Find References (`textDocument/references`)
+
+**Status:** Complete (always returns null — real reference lists wired in Phase 4)
+
+### What was added
+
+`src/lsp/references.h/.cpp` — `ReferencesProvider` class:
+
+| Method | Description |
+|---|---|
+| `static getReferences(ReferenceParams)` | Returns `null` (`NullOr<Array<Location>>`) — Phase 4 will query all reference sites from the symbol database |
+
+`LanguageServer::registerHandlers()` now registers a handler for
+`lsp::requests::TextDocument_References` that delegates to
+`ReferencesProvider::getReferences`.
+
+`handleInitialize` now advertises:
+
+```cpp
+.referencesProvider = lsp::OneOf<bool, lsp::ReferenceOptions>(true)
+```
+
+### Design notes
+
+- `ReferenceParams` carries a `ReferenceContext` with an `includeDeclaration` bool.
+  Phase 4 will use this flag to decide whether to include the declaration site in the
+  returned location list alongside usage sites.
+- The result type `NullOr<Array<Location>>` is `Nullable<Array<Location>>`.  Returning
+  `nullptr` serialises to JSON `null`; lsp-mode maps that to Emacs `nil` and shows an
+  empty reference list.
+- `getReferences` is `static` — no stored state or I/O side effects at this stage.
+
+### Unit tests
+
+`tests/unit/lsp/test_references.cpp` — 3 test cases:
+
+| Test | What it checks |
+|---|---|
+| returns null at position (0,0) | `result.isNull()` is true at the start of the file |
+| returns null at arbitrary position | same at (10, 5) — no position is special |
+| returns null regardless of includeDeclaration | both `false` and `true` yield null |
+
+Run with: `make test-unit` or `./build/debug/unit_tests`
+
+### Functional test
+
+`tests/integration/test_07_references.sh` — 2 test cases:
+
+| Test | How it works |
+|---|---|
+| server alive after references request | Opens fixture, waits for LSP, sends `textDocument/references` via `lsp-request` (with `includeDeclaration: true`), verifies workspace still `initialized` |
+| references returns null (pre-ANTLR4) | Same setup with `includeDeclaration: false`, checks `(null result)` is true |
+
+Run with:
+```bash
+bash tools/emacs-test-daemon.sh tests/integration/test_07_references.sh
+```
+
+---
+
 ## Remaining Phase 3 sub-phases
 
 | Sub-phase | Feature | LSP method | Status |
 |---|---|---|---|
 | 3.3 | Hover | `textDocument/hover` | Complete |
 | 3.4 | Go-to-definition | `textDocument/definition` | Complete |
-| 3.5 | Find references | `textDocument/references` | Pending |
+| 3.5 | Find references | `textDocument/references` | Complete |
 | 3.6 | Completion | `textDocument/completion` | Pending |
 | 3.7 | Document symbols | `textDocument/documentSymbol` | Pending |
 | 3.8 | Workspace symbols | `workspace/symbol` | Pending |
