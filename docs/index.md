@@ -46,16 +46,20 @@ make docs        # Both
 
 - [Project Plan](../plan.md) — phased development plan
 - [Architecture Decisions](decisions/) — rationale for key technology choices
+- [Phase 1 — Emacs Test Infrastructure](phase1-emacs-test-infrastructure.md)
+- [Phase 2 — LSP Server Setup](phase2-lsp-server-setup.md)
+- [Phase 3 — LSP Feature Implementation](phase3-lsp-features.md)
+- [Phase 4 — ANTLR4 Compiler Front-End](phase4-antlr4-compiler.md)
 - `usage.md` — end-user guide *(added in Phase 6)*
 
 ## Project Phases
 
 | Phase | Description | Status |
 |---|---|---|
-| 0 | Project Infrastructure | In progress |
-| 1 | Emacs Daemon Test Infrastructure | Pending |
-| 2 | LSP Server Framework Evaluation and Setup | Pending |
-| 3 | LSP Feature Implementation | Pending |
-| 4 | SystemVerilog ANTLR4 Compiler Front-End | Pending |
+| 0 | Project Infrastructure | Complete |
+| 1 | Emacs Daemon Test Infrastructure | Complete |
+| 2 | LSP Server Framework Evaluation and Setup | Complete |
+| 3 | LSP Feature Implementation | Complete |
+| 4 | SystemVerilog ANTLR4 Compiler Front-End | In progress |
 | 5 | SQLite Database Layer | Pending |
 | 6 | End-to-End Integration and Polishing | Pending |

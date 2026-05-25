@@ -27,6 +27,10 @@ FetchContent_MakeAvailable(Catch2)
 list(APPEND CMAKE_MODULE_PATH "${catch2_SOURCE_DIR}/extras")
 include(Catch)
 
+# Phase 4: ANTLR4 code-generation tool (antlr4 from PATH, or JAR download fallback).
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
+include(ANTLR4Tool)
+
 # Phase 4: ANTLR4 C++ runtime — added here.
 # Phase 5: SQLite3 amalgamation — added here.
 
