@@ -31,7 +31,59 @@ include(Catch)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 include(ANTLR4Tool)
 
-# Phase 4: ANTLR4 C++ runtime — added here.
+# Phase 4: ANTLR4 C++ runtime — fetched from the official source zip (C++ only,
+# much smaller than cloning the whole antlr4 repo).
+FetchContent_Declare(
+    antlr4_runtime
+    GIT_REPOSITORY https://github.com/antlr/antlr4.git
+    GIT_TAG        4.13.2
+    GIT_SHALLOW    TRUE
+    SOURCE_SUBDIR  runtime/Cpp
+)
+set(ANTLR4_BUILD_CPP_TESTS OFF CACHE BOOL "" FORCE)
+set(ANTLR4_INSTALL         OFF CACHE BOOL "" FORCE)
+set(WITH_DEMO              FALSE CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(antlr4_runtime)
+
+# Grammar code generation: Sv.g4 → C++ lexer/parser/visitor sources.
+set(SV_GRAMMAR "${CMAKE_SOURCE_DIR}/grammar/Sv.g4")
+set(ANTLR4_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated/antlr4")
+file(MAKE_DIRECTORY "${ANTLR4_GENERATED_DIR}")
+
+set(ANTLR4_GENERATED_CPP
+    "${ANTLR4_GENERATED_DIR}/SvLexer.cpp"
+    "${ANTLR4_GENERATED_DIR}/SvParser.cpp"
+    "${ANTLR4_GENERATED_DIR}/SvListener.cpp"
+    "${ANTLR4_GENERATED_DIR}/SvVisitor.cpp"
+    "${ANTLR4_GENERATED_DIR}/SvBaseListener.cpp"
+    "${ANTLR4_GENERATED_DIR}/SvBaseVisitor.cpp"
+)
+
+add_custom_command(
+    OUTPUT
+        ${ANTLR4_GENERATED_CPP}
+        "${ANTLR4_GENERATED_DIR}/SvLexer.h"
+        "${ANTLR4_GENERATED_DIR}/SvParser.h"
+        "${ANTLR4_GENERATED_DIR}/SvListener.h"
+        "${ANTLR4_GENERATED_DIR}/SvVisitor.h"
+        "${ANTLR4_GENERATED_DIR}/SvBaseListener.h"
+        "${ANTLR4_GENERATED_DIR}/SvBaseVisitor.h"
+    COMMAND ${ANTLR4_TOOL_COMMAND}
+            -Dlanguage=Cpp
+            -visitor
+            -o "${ANTLR4_GENERATED_DIR}"
+            "${SV_GRAMMAR}"
+    DEPENDS "${SV_GRAMMAR}"
+    COMMENT "Generating ANTLR4 C++ parser/lexer from Sv.g4"
+    VERBATIM
+)
+
+# Generated parser target — strict warnings suppressed (machine-generated code).
+add_library(svlsp_antlr4 STATIC ${ANTLR4_GENERATED_CPP})
+target_include_directories(svlsp_antlr4 PUBLIC "${ANTLR4_GENERATED_DIR}")
+target_link_libraries(svlsp_antlr4 PUBLIC antlr4_static)
+target_compile_options(svlsp_antlr4 PRIVATE -w)
+
 # Phase 5: SQLite3 amalgamation — added here.
 
 # ---------------------------------------------------------------------------
@@ -91,8 +143,12 @@ add_executable(unit_tests
     tests/unit/lsp/test_rename.cpp
     tests/unit/lsp/test_signature_help.cpp
     tests/unit/lsp/test_workspace_symbols.cpp
+    tests/unit/compiler/test_sv_parser.cpp
 )
-target_link_libraries(unit_tests PRIVATE svlsp_lib Catch2::Catch2WithMain)
+target_compile_definitions(unit_tests PRIVATE
+    SV_EXAMPLES_DIR="${CMAKE_SOURCE_DIR}/examples"
+)
+target_link_libraries(unit_tests PRIVATE svlsp_lib svlsp_antlr4 Catch2::Catch2WithMain)
 catch_discover_tests(unit_tests)
 
 # ---------------------------------------------------------------------------
