@@ -1,8 +1,8 @@
 # svlsp — Handoff Document
 
-**Date:** 2026-05-25  
-**Last completed phase:** Phase 3 complete (all ten sub-phases)  
-**Current work:** Phase 4.1 — ANTLR4 grammar integration (tool detection done; grammar + runtime pending)
+**Date:** 2026-05-28  
+**Last completed phase:** Phase 3 complete (all ten sub-phases); Phase 4.1 complete; Phase 4.2 complete  
+**Current work:** Phase 4.2a — SystemVerilog preprocessor selection
 
 ---
 
@@ -28,13 +28,14 @@ src/lsp/           server_state, server, document_store, diagnostics,
 src/compiler/      (empty — Phase 4, parser/listener go here)
 src/db/            (empty — Phase 5)
 src/main.cpp       entry point
-tests/unit/        Catch2 unit tests (48 cases, 72 assertions)
+tests/unit/        Catch2 unit tests (70 cases, 97 assertions — see counts below)
 tests/integration/ Emacs functional test scripts (31 test cases across 13 files)
 tools/             emacs-test-daemon.sh, emacs-test-init.el, emacs-test-lib.sh
-examples/          .sv fixture files (module_basic.sv, module_params.sv; 18 more in Phase 4.2)
-grammar/           (empty — Sv.g4 goes here, Phase 4.1)
+examples/          20 .sv fixture files (all created in Phase 4.2)
+grammar/           Sv.g4 — 3828-line SystemVerilog grammar (Phase 4.1 complete)
 cmake/             CMake helper modules
   ANTLR4Tool.cmake  tool detection: PATH → antlr4 cmd; fallback → download JAR
+build/debug/generated/antlr4/   generated SvLexer/SvParser/SvVisitor sources (not committed)
 docs/              per-phase docs and architecture decision records
 plan.md            full phased plan — read this first
 ```
@@ -50,9 +51,12 @@ cmake --build --preset debug
 # or:
 make configure build
 
-# Unit tests (48 cases, 72 assertions)
+# Unit tests
 make test-unit
 # or: build/debug/unit_tests
+
+# Parser tests only
+build/debug/unit_tests "[compiler][parser]"
 
 # Integration tests (Emacs daemon, requires display or Xvfb)
 DISPLAY=:99 make test-integration   # runs all 13 test files
@@ -202,8 +206,9 @@ Helper functions: `svlsp-test/open-file`, `svlsp-test/wait-for-lsp`, `svlsp-test
 | Unit test framework | Catch2 v3.8.1 (FetchContent) | `CMakeLists.txt` |
 | Transport | stdio (stdin/stdout) | `src/main.cpp` |
 | Compiler | g++-13 | `CMakePresets.json` |
-| Parser generator | ANTLR4 (Phase 4, not started) | `plan.md` §4 |
+| Parser generator | ANTLR4 v4.13.2 (FetchContent) | `CMakeLists.txt` |
 | Database | SQLite3 (Phase 5, not started) | `plan.md` §5 |
+| SV preprocessor | To be decided — Phase 4.2a | `plan.md §4.2a`, `docs/decisions/sv-preprocessor.md` (pending) |
 
 ---
 
@@ -235,25 +240,69 @@ Helper functions: `svlsp-test/open-file`, `svlsp-test/wait-for-lsp`, `svlsp-test
 
 ## Phase 4 status — In progress
 
-### 4.1 Grammar Integration — partially done
+### 4.1 Grammar Integration — Complete
 
 | Step | Status | Notes |
 |---|---|---|
 | ANTLR4 tool detection in CMake | **Done** | `cmake/ANTLR4Tool.cmake` — PATH first, JAR fallback |
-| Fetch `Sv.g4` → `grammar/Sv.g4` | Pending | URL: `miguel-guerrero/antlr4_system_verilog_parser` |
-| ANTLR4 C++ runtime (FetchContent) | Pending | `antlr/antlr4` `runtime/Cpp`, v4.13.2 |
-| CMake `add_custom_command` for generation | Pending | Uses `${ANTLR4_TOOL_COMMAND} -Dlanguage=Cpp` |
-| Unit test: parse minimal SV snippet | Pending | |
+| Fetch `Sv.g4` → `grammar/Sv.g4` | **Done** | 3828 lines from `miguel-guerrero/antlr4_system_verilog_parser` |
+| ANTLR4 C++ runtime (FetchContent) | **Done** | `antlr/antlr4` GIT_SHALLOW + `SOURCE_SUBDIR runtime/Cpp`, v4.13.2 |
+| CMake `add_custom_command` for generation | **Done** | Generates SvLexer/SvParser/SvListener/SvVisitor/SvBase* |
+| `svlsp_antlr4` static lib target | **Done** | Strict warnings suppressed (`-w`) on machine-generated code |
+| Unit tests: parse fixtures + error detection | **Done** | 4 tests in `tests/unit/compiler/test_sv_parser.cpp` |
 
-### 4.2–4.6 — Pending
+#### Architecture note — generated targets
 
-4.2 Add 18 remaining `.sv` example files (module_basic.sv + module_params.sv exist).  
+```
+grammar/Sv.g4
+    └─(add_custom_command: antlr4 -Dlanguage=Cpp -visitor)
+        └─ build/debug/generated/antlr4/
+               SvLexer.{h,cpp}  SvParser.{h,cpp}
+               SvListener.{h,cpp}  SvBaseListener.{h,cpp}
+               SvVisitor.{h,cpp}   SvBaseVisitor.{h,cpp}
+               └─ svlsp_antlr4 (static lib, links antlr4_static)
+                      └─ unit_tests (links svlsp_antlr4 directly)
+                         (svlsp_lib will link svlsp_antlr4 in Phase 4.5)
+```
+
+### 4.2 SystemVerilog Example Library — Complete
+
+All 20 fixture files exist in `examples/`. All 22 parser test cases pass.
+
+**Grammar quirks discovered during Phase 4.2** (see section below).
+
+Unit test count: 70 cases, 97 assertions (was 52/79 before Phase 4.2).
+
+### 4.2a SystemVerilog Preprocessor — Pending
+
+Research and select an SV preprocessor (see `plan.md §4.2a`).
+`Sv.g4` is a pure parser grammar — backtick directives are not handled at all.
+`examples/macros.sv` and `examples/timescale.sv` were rewritten to avoid backtick
+syntax (using `parameter`/`localparam`/`generate if` and `timeunit`/`timeprecision`).
+
+### 4.3–4.6 — Pending
+
 4.3 ANTLR4 listener / AST visitor.  
 4.4 Symbol extraction (modules, ports, signals, functions, classes, macros).  
 4.5 Error recovery → `lsp::Diagnostic` objects → `DiagnosticsPublisher`.  
 4.6 Incremental parsing (depends on Phase 5 DB for file hashing).  
 
 After Phase 4 is complete, replace `nullptr` returns in all Phase 3 providers with real symbol queries.
+
+---
+
+## Sv.g4 grammar quirks (discovered in Phase 4.2)
+
+These are bugs or limitations in the `miguel-guerrero` grammar that fixture authors must work around:
+
+| Construct | Expected SV | Grammar behaviour | Workaround |
+|---|---|---|---|
+| Backtick directives | `` `define ``, `` `ifdef ``, `` `timescale `` | Not in grammar at all — no lexer rules | Must be preprocessed before parsing (Phase 4.2a) |
+| `bind` double semicolon | `bind M C u (.p(p));` | `bind_directive` adds `';'` on top of `module_instantiation`'s own `';'` | Write `bind M C u (.p(p));;` |
+| `bind` parameter override | `bind M C #(.W(W)) u (.p(p));;` | LL(\*) prediction fails after `#(...)` | Omit parameter override; use default params |
+| Void cast | `void'(f())` | `void SINGLE_QUOTE '('` not in grammar | Use `void(f())` form (grammar line 2421) |
+| Cross body `ignore_bins` | `cross A, B { ignore_bins x = ...; }` | `cross_body_item` already consumes `';'`, then `cross_body` adds another — double semicolon | Use `cross A, B;` (empty cross body) |
+| `timeunit`/`timeprecision` vs `` `timescale `` | `` `timescale 1ns/1ps `` | No backtick directive support | Use `timeunit 1ns; timeprecision 1ps;` inside module |
 
 ---
 

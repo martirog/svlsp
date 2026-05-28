@@ -242,6 +242,29 @@ One example `.sv` file per major language feature, used as test fixtures:
 | `checker.sv` | Checker blocks |
 | `dpi.sv` | DPI-C imports/exports |
 
+### 4.2a SystemVerilog Preprocessor
+
+**Goal:** Determine whether a suitable open-source SV preprocessor exists that can be
+integrated as a library before ANTLR4 parsing; if not, scope a minimal in-house
+implementation.
+
+The `Sv.g4` grammar is a pure parser grammar — it expects already-preprocessed source.
+Backtick directives (`` `define ``, `` `ifdef ``, `` `timescale ``, `` `include ``, macro
+invocations) are not handled by the lexer and must be resolved in a preprocessing pass.
+
+Candidates to evaluate:
+
+| Candidate | Language | Licence | Notes |
+|---|---|---|---|
+| `slang` preprocessor | C++ | MIT | Full IEEE 1800-2017, embeddable |
+| `verilator --preproc` | C++ | LGPL | Mature; can run as a filter pass |
+| `sv-parser` | Rust | MIT | Full SV 2017 with preprocessing; FFI needed |
+| Minimal in-house | C++ | — | Handle only `define/undef/ifdef/include/timescale` |
+
+Deliverable: ADR in `docs/decisions/sv-preprocessor.md` recording the choice.
+Unit test: source string with `` `define WIDTH 8 `` + usage; preprocessed output
+replaces `` `WIDTH `` with `8` before the ANTLR4 parser sees it.
+
 ### 4.3 AST Visitor / Listener
 - Implement a C++ ANTLR4 listener that walks the parse tree and emits structured records.
 - Unit test each listener callback against the corresponding example file.
@@ -317,9 +340,16 @@ any gaps discovered.
 - Tests run headless via `make test-integration`.
 
 ### 6.2 Multi-File Project Support
-- Support a `compile_commands.json` or a project configuration file listing all source
-  files in the project.
+- Support a `compile_commands.json` or a custom `.svlsp.json` project configuration file
+  listing all source files in the project.
+- Compile switches supported per-project and per-file:
+  - `-D NAME[=VALUE]` — preprocessor defines (passed to the SV preprocessor from §4.2a)
+  - `-I DIR` — include search directories for `` `include `` resolution
+  - `--top MODULE` — root module for elaboration
+  - `--sv` / `--v` — force SystemVerilog or Verilog 2005 mode
 - Batch-compile all listed files at server startup; background re-compile on change.
+- The `CompilationDriver` (§4.2a / §5.4) reads these switches from the project file and
+  threads them through the preprocess → parse → extract pipeline.
 
 ### 6.3 Performance Baseline
 - Measure and document: time to parse a large SystemVerilog file, time to answer a
