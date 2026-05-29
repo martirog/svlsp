@@ -106,10 +106,13 @@ token-pasting are not implemented. 23 unit tests, 52 assertions.
 
 ## 4.3 AST Visitor / Listener
 
-**Status:** Pending
+**Status:** Complete
 
-ANTLR4 listener that walks the parse tree and emits structured records.
-Unit test each callback against the corresponding example file.
+`SvTreeWalker::walk(source)` in `src/compiler/sv_tree_walker.h/.cpp` runs the full
+ANTLR4 pipeline and returns `WalkResult { records, parseErrors }`. Internal
+`SvRecordListener` hooks nine grammar rules to emit `ParseRecord { kind, name, line, column }`:
+modules (ANSI + non-ANSI), interfaces, packages, classes, functions, tasks, ANSI ports.
+`svlsp_antlr4` linked into `svlsp_lib`. 17 unit tests, 51 assertions.
 
 ---
 

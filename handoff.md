@@ -1,8 +1,8 @@
 # svlsp — Handoff Document
 
 **Date:** 2026-05-28  
-**Last completed phase:** Phase 3 complete (all ten sub-phases); Phase 4.1 complete; Phase 4.2 complete; Phase 4.2a complete; Phase 4.2b complete; Phase 4.2c complete  
-**Current work:** Phase 4.3 — AST Visitor / Listener
+**Last completed phase:** Phase 3 complete (all ten sub-phases); Phase 4.1 complete; Phase 4.2 complete; Phase 4.2a–4.2c complete; Phase 4.3 complete  
+**Current work:** Phase 4.4 — Symbol Extraction
 
 ---
 
@@ -331,9 +331,34 @@ Key implementation notes:
 
 23 unit tests, 52 assertions. Full suite: 112 tests, 234 assertions.
 
-### 4.3–4.6 — Pending
+### 4.3 AST Visitor / Listener — Complete
 
-4.3 ANTLR4 listener / AST visitor.  
+`SvTreeWalker` in `src/compiler/sv_tree_walker.h/.cpp`. Wraps the full ANTLR4 pipeline
+(lexer → parser → tree walk) behind a single `SvTreeWalker::walk(source)` call that
+returns `WalkResult { records, parseErrors }`.
+
+Internal `SvRecordListener : SvBaseListener` (named to avoid collision with the generated
+`SvListener` interface) hooks nine grammar rules:
+
+| Rule hooked | Record kind |
+|---|---|
+| `module_ansi_header` / `module_nonansi_header` | Module |
+| `interface_ansi_header` / `interface_nonansi_header` | Interface |
+| `package_declaration` | Package |
+| `class_declaration` | Class |
+| `function_body_declaration` | Function |
+| `task_body_declaration` | Task |
+| `ansi_port_declaration` | Port |
+
+Each record carries `{ kind, name, line, column }`. `svlsp_antlr4` is now linked into
+`svlsp_lib` so all compiler sources can include generated headers without extra wiring.
+
+Files added: `src/compiler/parse_record.h`, `src/compiler/sv_tree_walker.h/.cpp`,
+`tests/unit/compiler/test_sv_listener.cpp`.
+17 unit tests, 51 assertions. Full suite: 129 tests, 285 assertions.
+
+### 4.4–4.6 — Pending
+
 4.4 Symbol extraction (modules, ports, signals, functions, classes, macros).  
 4.5 Error recovery → `lsp::Diagnostic` objects → `DiagnosticsPublisher`.  
 4.6 Incremental parsing (depends on Phase 5 DB for file hashing).  
