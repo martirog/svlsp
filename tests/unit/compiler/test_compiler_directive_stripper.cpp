@@ -155,6 +155,13 @@ TEST_CASE("multiline: directives replaced with blank lines preserving line numbe
     CHECK(dirs[1].line == 4);
 }
 
+TEST_CASE("trailing line comment excluded from recorded value", "[compiler][stripper]") {
+    auto [out, dirs] = CompilerDirectiveStripper::strip("`timescale 1ns/1ps // sim unit\n", "f.sv");
+    REQUIRE(out == "\n");
+    REQUIRE(dirs.size() == 1);
+    CHECK(dirs[0].value == "1ns/1ps");
+}
+
 TEST_CASE("directive with leading whitespace is detected", "[compiler][stripper]") {
     auto [out, dirs] = CompilerDirectiveStripper::strip("  `resetall\n", "f.sv");
     REQUIRE(out == "\n");

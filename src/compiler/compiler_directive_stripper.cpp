@@ -35,6 +35,9 @@ static std::optional<DirectiveRecord> matchDirective(const std::string& line, in
             size_t vstart = rest.find_first_not_of(" \t");
             if (vstart != std::string_view::npos) {
                 rest = rest.substr(vstart);
+                // Strip trailing line comment
+                size_t comment = rest.find("//");
+                if (comment != std::string_view::npos) rest = rest.substr(0, comment);
                 size_t vend = rest.find_last_not_of(" \t\r");
                 value = std::string(vend != std::string_view::npos
                                         ? rest.substr(0, vend + 1)
