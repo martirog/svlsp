@@ -1,8 +1,8 @@
 # svlsp — Handoff Document
 
 **Date:** 2026-05-28  
-**Last completed phase:** Phase 3 complete (all ten sub-phases); Phase 4.1 complete; Phase 4.2 complete; Phase 4.2a complete  
-**Current work:** Phase 4.2b — Compiler directive strip pass
+**Last completed phase:** Phase 3 complete (all ten sub-phases); Phase 4.1 complete; Phase 4.2 complete; Phase 4.2a complete; Phase 4.2b complete  
+**Current work:** Phase 4.2c — Preprocessor tool selection and integration
 
 ---
 
@@ -291,29 +291,19 @@ Two-pass pipeline:
 - **Pass 2 — preprocessor (§4.2c):** text-stream transformers (`define/`undef/`undefineall,
   `ifdef/`ifndef/`elsif/`else/`endif, `include, macro invocations).
 
-### 4.2b Compiler Directive Strip Pass — Pending
+### 4.2b Compiler Directive Strip Pass — Complete
 
-Implement a dependency-free, line-oriented C++ pass. Compiler directives do not nest and
-do not transform text, so a line-oriented lexer is sufficient.
+Dependency-free, line-oriented C++ pass. Each stripped directive line is replaced with a
+blank line so downstream passes see the same line numbers as the original source.
+`__FILE__` and `__LINE__` are substituted inline before directive detection runs.
 
-New files:
-- `src/compiler/compiler_directive_stripper.h` — `CompilerDirectiveStripper` class +
-  `DirectiveRecord` struct `{ kind, value, location }`
+Files added:
+- `src/compiler/compiler_directive_stripper.h` — `DirectiveKind` enum, `DirectiveRecord`
+  struct `{ kind, value, line }`, `StripResult` struct, `CompilerDirectiveStripper` class
 - `src/compiler/compiler_directive_stripper.cpp`
 - `tests/unit/compiler/test_compiler_directive_stripper.cpp`
 
-Pipeline shape:
-```
-raw SV source  +  original file path
-    └─(CompilerDirectiveStripper)
-        ├─ cleaned source (metadata directives removed; `__FILE__/`__LINE__ substituted)
-        └─ DirectiveRecord[] { kind, value, location }
-```
-
-Unit tests cover: `timescale`, `default_nettype`, `celldefine`/`endcelldefine`, `resetall`,
-`begin_keywords`/`end_keywords` stripped and recorded; `__FILE__` replaced with the
-original path (not any temp buffer); `__LINE__` replaced with the decimal source line;
-non-directive lines pass through unchanged.
+18 unit tests, 64 assertions. Full suite: 88 tests, 179 assertions.
 
 ### 4.2c Preprocessor Tool Selection and Integration — Pending
 
