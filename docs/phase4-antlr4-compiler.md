@@ -57,10 +57,36 @@ cmake -S . -B /tmp/test-fallback -DCMAKE_CXX_COMPILER=g++-13 \
 
 ## 4.2 SystemVerilog Example Library
 
+**Status:** Complete — 20 fixture files in `examples/`, 22 parser tests pass.
+
+---
+
+## 4.2a Directive Taxonomy and Scope
+
+**Status:** Complete
+
+Classified all IEEE 1800-2017 §22 backtick directives into two processing passes.
+ADR: `docs/decisions/sv-preprocessor.md`.
+
+**Pass 1 (compiler directive strip):** `timescale, `default_nettype, `celldefine/`endcelldefine,
+`unconnected_drive/`nounconnected_drive, `resetall, `begin_keywords/`end_keywords, `pragma, `line.
+`__FILE__` and `__LINE__` also resolved here — substituted with the original source path/line
+before any include insertion shifts line counts or a temp buffer obscures the filename.
+
+**Pass 2 (preprocessor):** `define/`undef/`undefineall, `ifdef/`ifndef/`elsif/`else/`endif,
+`include, macro invocations.
+
+---
+
+## 4.2b Compiler Directive Strip Pass
+
 **Status:** Pending
 
-20 `.sv` fixture files covering major SystemVerilog language features, used as parser
-test inputs. `module_basic.sv` and `module_params.sv` already exist.
+---
+
+## 4.2c Preprocessor Tool Selection and Integration
+
+**Status:** Pending
 
 ---
 

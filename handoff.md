@@ -1,8 +1,8 @@
 # svlsp — Handoff Document
 
 **Date:** 2026-05-28  
-**Last completed phase:** Phase 3 complete (all ten sub-phases); Phase 4.1 complete; Phase 4.2 complete  
-**Current work:** Phase 4.2a — SystemVerilog preprocessor selection
+**Last completed phase:** Phase 3 complete (all ten sub-phases); Phase 4.1 complete; Phase 4.2 complete; Phase 4.2a complete  
+**Current work:** Phase 4.2b — Compiler directive strip pass
 
 ---
 
@@ -208,7 +208,9 @@ Helper functions: `svlsp-test/open-file`, `svlsp-test/wait-for-lsp`, `svlsp-test
 | Compiler | g++-13 | `CMakePresets.json` |
 | Parser generator | ANTLR4 v4.13.2 (FetchContent) | `CMakeLists.txt` |
 | Database | SQLite3 (Phase 5, not started) | `plan.md` §5 |
-| SV preprocessor | To be decided — Phase 4.2a | `plan.md §4.2a`, `docs/decisions/sv-preprocessor.md` (pending) |
+| SV directive taxonomy | Two-pass: strip compiler directives first, preprocess second | `docs/decisions/sv-preprocessor.md` (complete) |
+| `__FILE__` / `__LINE__` | Resolved in pass 1 against original source, before include shifts line numbers | `plan.md §4.2b` |
+| SV preprocessor tool | To be decided — Phase 4.2c | `plan.md §4.2c`, `docs/decisions/sv-preprocessor.md` (pending) |
 
 ---
 
@@ -273,12 +275,58 @@ All 20 fixture files exist in `examples/`. All 22 parser test cases pass.
 
 Unit test count: 70 cases, 97 assertions (was 52/79 before Phase 4.2).
 
-### 4.2a SystemVerilog Preprocessor — Pending
+### 4.2a Directive Taxonomy and Scope — Complete
 
-Research and select an SV preprocessor (see `plan.md §4.2a`).
-`Sv.g4` is a pure parser grammar — backtick directives are not handled at all.
-`examples/macros.sv` and `examples/timescale.sv` were rewritten to avoid backtick
-syntax (using `parameter`/`localparam`/`generate if` and `timeunit`/`timeprecision`).
+All IEEE 1800-2017 §22 backtick directives classified into two processing passes.
+ADR created: `docs/decisions/sv-preprocessor.md` (taxonomy section complete; tool decision
+added in §4.2c).
+
+Two-pass pipeline:
+- **Pass 1 — compiler directive strip (§4.2b):** metadata directives that do not transform
+  text (`timescale, `default_nettype, `celldefine/`endcelldefine, `unconnected_drive/
+  `nounconnected_drive, `resetall, `begin_keywords/`end_keywords, `pragma, `line).
+  `__FILE__` and `__LINE__` are also resolved here — substituted with the original source
+  path and line number before include insertions shift line counts or a temp buffer is
+  created.
+- **Pass 2 — preprocessor (§4.2c):** text-stream transformers (`define/`undef/`undefineall,
+  `ifdef/`ifndef/`elsif/`else/`endif, `include, macro invocations).
+
+### 4.2b Compiler Directive Strip Pass — Pending
+
+Implement a dependency-free, line-oriented C++ pass. Compiler directives do not nest and
+do not transform text, so a line-oriented lexer is sufficient.
+
+New files:
+- `src/compiler/compiler_directive_stripper.h` — `CompilerDirectiveStripper` class +
+  `DirectiveRecord` struct `{ kind, value, location }`
+- `src/compiler/compiler_directive_stripper.cpp`
+- `tests/unit/compiler/test_compiler_directive_stripper.cpp`
+
+Pipeline shape:
+```
+raw SV source  +  original file path
+    └─(CompilerDirectiveStripper)
+        ├─ cleaned source (metadata directives removed; `__FILE__/`__LINE__ substituted)
+        └─ DirectiveRecord[] { kind, value, location }
+```
+
+Unit tests cover: `timescale`, `default_nettype`, `celldefine`/`endcelldefine`, `resetall`,
+`begin_keywords`/`end_keywords` stripped and recorded; `__FILE__` replaced with the
+original path (not any temp buffer); `__LINE__` replaced with the decimal source line;
+non-directive lines pass through unchanged.
+
+### 4.2c Preprocessor Tool Selection and Integration — Pending
+
+Evaluate candidates (slang preprocessor, verilator --preproc, sv-parser Rust FFI, minimal
+in-house) and integrate the chosen tool between the §4.2b output and the ANTLR4 parser.
+
+New files (exact names depend on chosen tool):
+- `src/compiler/sv_preprocessor.h/.cpp` — wraps the chosen tool behind a common interface
+- `tests/unit/compiler/test_sv_preprocessor.cpp`
+
+Deliverable: tool decision appended to `docs/decisions/sv-preprocessor.md`.
+Unit test: `` `define WIDTH 8 `` + `` wire [`WIDTH-1:0] bus; `` → `wire [8-1:0] bus;` with no
+remaining backtick tokens.
 
 ### 4.3–4.6 — Pending
 

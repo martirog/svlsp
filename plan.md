@@ -242,28 +242,102 @@ One example `.sv` file per major language feature, used as test fixtures:
 | `checker.sv` | Checker blocks |
 | `dpi.sv` | DPI-C imports/exports |
 
-### 4.2a SystemVerilog Preprocessor
+### 4.2a Directive Taxonomy and Scope
 
-**Goal:** Determine whether a suitable open-source SV preprocessor exists that can be
-integrated as a library before ANTLR4 parsing; if not, scope a minimal in-house
-implementation.
+**Goal:** Classify every IEEE 1800 backtick directive into one of two processing passes
+and define the LSP scope for each. Deliverable: taxonomy table committed as the opening
+section of `docs/decisions/sv-preprocessor.md` (tool decision recorded in §4.2c).
 
-The `Sv.g4` grammar is a pure parser grammar — it expects already-preprocessed source.
-Backtick directives (`` `define ``, `` `ifdef ``, `` `timescale ``, `` `include ``, macro
-invocations) are not handled by the lexer and must be resolved in a preprocessing pass.
+IEEE 1800-2017 §22 calls all backtick directives "compiler directives", but from an
+implementation standpoint they split into two fundamentally different kinds:
 
-Candidates to evaluate:
+**Pass 1 — compiler directive strip:** directives that change compilation metadata/state
+but do NOT transform the text stream. Handled by a simple line-oriented pass (§4.2b)
+before any preprocessor runs. `__FILE__` and `__LINE__` are also resolved here, against
+the original source file, so they expand to the real filename and the real source line
+number — before `include insertions shift line counts and before any temp buffer is created.
+
+| Directive | Description |
+|---|---|
+| `` `timescale <unit>/<prec> `` | Time unit and precision — strip, record value |
+| `` `default_nettype <type> `` | Default net type for implicit wires — strip, record value |
+| `` `celldefine `` / `` `endcelldefine `` | Mark/unmark module as a cell — strip |
+| `` `unconnected_drive pull0\|pull1 `` / `` `nounconnected_drive `` | Unconnected port drive — strip |
+| `` `resetall `` | Reset all compiler-directive state — strip |
+| `` `begin_keywords "version" `` / `` `end_keywords `` | Keyword set selection — strip (assume SV-2017) |
+| `` `pragma `` | Tool-specific hints — strip |
+| `` `line N "file" level `` | Source location override — strip |
+| `` `__FILE__ `` | Substitute with original source filename (not a temp buffer path) |
+| `` `__LINE__ `` | Substitute with line number in original source (before include expansion) |
+
+**Pass 2 — preprocessor:** directives that transform the token stream; the ANTLR4 parser
+never sees them. Handled by the chosen preprocessor tool (§4.2c).
+
+| Directive | Description |
+|---|---|
+| `` `define NAME[(args)] body `` | Macro definition |
+| `` `undef NAME `` | Remove a named macro |
+| `` `undefineall `` | Remove all macros |
+| `` `ifdef `` / `` `ifndef `` / `` `elsif `` / `` `else `` / `` `endif `` | Conditional compilation |
+| `` `include "file" `` | File inclusion — pastes content into token stream |
+| `` `NAME `` (invocation) | Macro expansion |
+
+### 4.2b Compiler Directive Strip Pass
+
+**Goal:** Implement a simple, dependency-free C++ pass that removes compiler directives
+and resolves `__FILE__`/`__LINE__` from SV source before it reaches the preprocessor or
+parser.
+
+Compiler directives do not nest and do not transform text — a line-oriented lexer is
+sufficient. The pass records directives that carry semantic values (e.g. `default_nettype`)
+so later phases can query them.
+
+```
+raw SV source  +  original file path
+    └─(CompilerDirectiveStripper)
+        ├─ cleaned source (`__FILE__/`__LINE__ substituted; metadata directives removed)
+        └─ DirectiveRecord[] { kind, value, location }
+```
+
+Implementation: `src/compiler/compiler_directive_stripper.h/.cpp`
+
+Unit tests (`tests/unit/compiler/test_compiler_directive_stripper.cpp`):
+- `` `timescale 1ns/1ps `` removed from output; recorded in DirectiveRecord
+- `` `default_nettype none `` removed and recorded
+- `` `celldefine `` / `` `endcelldefine `` stripped
+- `` `resetall `` stripped
+- `` `begin_keywords "1800-2017" `` / `` `end_keywords `` stripped
+- `` `__FILE__ `` replaced with the original file path string literal
+- `` `__LINE__ `` replaced with the decimal line number from original source
+- `__FILE__` value is the path passed in, not any temp-buffer path
+- Non-directive lines pass through unchanged
+- Multiline source with directives interspersed: output matches expected stripped form
+
+### 4.2c Preprocessor Tool Selection and Integration
+
+**Goal:** Select and integrate a tool to resolve pass-2 preprocessor directives (macro
+expansion, conditional compilation, file inclusion) against the cleaned source from §4.2b.
+
+Candidates:
 
 | Candidate | Language | Licence | Notes |
 |---|---|---|---|
-| `slang` preprocessor | C++ | MIT | Full IEEE 1800-2017, embeddable |
-| `verilator --preproc` | C++ | LGPL | Mature; can run as a filter pass |
-| `sv-parser` | Rust | MIT | Full SV 2017 with preprocessing; FFI needed |
-| Minimal in-house | C++ | — | Handle only `define/undef/ifdef/include/timescale` |
+| `slang` preprocessor | C++ | MIT | Full IEEE 1800-2017; `slang::parsing::Preprocessor` is embeddable |
+| `verilator --preproc` | C++ | LGPL | Mature; spawnable as a filter subprocess |
+| `sv-parser` | Rust | MIT | Full SV 2017 with preprocessing; requires C FFI wrapper |
+| Minimal in-house | C++ | — | Handle `` `define/undef/undefineall/ifdef/include `` + macro invocation |
 
-Deliverable: ADR in `docs/decisions/sv-preprocessor.md` recording the choice.
-Unit test: source string with `` `define WIDTH 8 `` + usage; preprocessed output
-replaces `` `WIDTH `` with `8` before the ANTLR4 parser sees it.
+Evaluation criteria: C++ embeddability, licence compatibility, recursive macro support,
+stringification (`` `" ``) and token-pasting (`` `​`` `​`` ``), `` `include `` path
+resolution, function-like macros with arguments.
+
+New files (exact names depend on chosen tool):
+- `src/compiler/sv_preprocessor.h/.cpp` — wraps the chosen tool behind a common interface
+- `tests/unit/compiler/test_sv_preprocessor.cpp`
+
+Deliverable: tool decision appended to `docs/decisions/sv-preprocessor.md`.
+Unit test: source string with `` `define WIDTH 8 `` + `` wire [`WIDTH-1:0] bus; ``; output
+contains `wire [8-1:0] bus;` with no remaining backtick tokens.
 
 ### 4.3 AST Visitor / Listener
 - Implement a C++ ANTLR4 listener that walks the parse tree and emits structured records.
