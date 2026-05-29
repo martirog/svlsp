@@ -1,8 +1,8 @@
 # svlsp — Handoff Document
 
 **Date:** 2026-05-28  
-**Last completed phase:** Phase 3 complete (all ten sub-phases); Phase 4.1 complete; Phase 4.2 complete; Phase 4.2a complete; Phase 4.2b complete  
-**Current work:** Phase 4.2c — Preprocessor tool selection and integration
+**Last completed phase:** Phase 3 complete (all ten sub-phases); Phase 4.1 complete; Phase 4.2 complete; Phase 4.2a complete; Phase 4.2b complete; Phase 4.2c complete  
+**Current work:** Phase 4.3 — AST Visitor / Listener
 
 ---
 
@@ -210,7 +210,7 @@ Helper functions: `svlsp-test/open-file`, `svlsp-test/wait-for-lsp`, `svlsp-test
 | Database | SQLite3 (Phase 5, not started) | `plan.md` §5 |
 | SV directive taxonomy | Two-pass: strip compiler directives first, preprocess second | `docs/decisions/sv-preprocessor.md` (complete) |
 | `__FILE__` / `__LINE__` | Resolved in pass 1 against original source, before include shifts line numbers | `plan.md §4.2b` |
-| SV preprocessor tool | To be decided — Phase 4.2c | `plan.md §4.2c`, `docs/decisions/sv-preprocessor.md` (pending) |
+| SV preprocessor tool | Minimal in-house C++ — slang upgrade path documented | `docs/decisions/sv-preprocessor.md` (complete) |
 
 ---
 
@@ -308,18 +308,28 @@ Files added:
 Note: trailing `//` line comments are stripped from recorded directive values
 (e.g. `` `timescale 1ns/1ps // comment `` records value `"1ns/1ps"`).
 
-### 4.2c Preprocessor Tool Selection and Integration — Pending
+### 4.2c Preprocessor Tool Selection and Integration — Complete
 
-Evaluate candidates (slang preprocessor, verilator --preproc, sv-parser Rust FFI, minimal
-in-house) and integrate the chosen tool between the §4.2b output and the ANTLR4 parser.
+**Decision:** minimal in-house C++ implementation (see `docs/decisions/sv-preprocessor.md`).
+slang was the preferred external option (MIT, embeddable) but its preprocessor outputs a
+token stream rather than source text, making reconstruction complex. The `SvPreprocessor`
+interface isolates the choice — slang can be swapped in later without changing callers.
 
-New files (exact names depend on chosen tool):
-- `src/compiler/sv_preprocessor.h/.cpp` — wraps the chosen tool behind a common interface
+Files added:
+- `src/compiler/sv_preprocessor.h` — `PreprocessorResult` struct, `SvPreprocessor` class
+- `src/compiler/sv_preprocessor.cpp` — object-like and function-like macros, conditional
+  compilation, `include, recursive expansion (32-level guard), undefined macro errors
 - `tests/unit/compiler/test_sv_preprocessor.cpp`
 
-Deliverable: tool decision appended to `docs/decisions/sv-preprocessor.md`.
-Unit test: `` `define WIDTH 8 `` + `` wire [`WIDTH-1:0] bus; `` → `wire [8-1:0] bus;` with no
-remaining backtick tokens.
+Key implementation notes:
+- Function-like param substitution uses bare-identifier replacement (not backtick) before
+  the backtick expansion pass — params in SV macro bodies are plain identifiers per LRM
+- Directive lines replaced with blank lines; `include inserts content inline (no blank line)
+- `undefineall` clears the entire macro table
+- Stringification (`` `" ``) and token-pasting (`` `​`` ``) not implemented — record as
+  future enhancement if UVM support is needed
+
+23 unit tests, 52 assertions. Full suite: 112 tests, 234 assertions.
 
 ### 4.3–4.6 — Pending
 

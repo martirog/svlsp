@@ -92,7 +92,15 @@ stripped from recorded values. 19 unit tests, 67 assertions.
 
 ## 4.2c Preprocessor Tool Selection and Integration
 
-**Status:** Pending
+**Status:** Complete
+
+**Decision:** minimal in-house C++ (see `docs/decisions/sv-preprocessor.md`).
+
+`SvPreprocessor` in `src/compiler/sv_preprocessor.h/.cpp`. Handles object-like and
+function-like macros, `ifdef`/`ifndef`/`elsif`/`else`/`endif`, `include` (with include
+paths and cycle detection), `undef`/`undefineall`, recursive expansion (32-level guard).
+Undefined macros expand to empty string and record an error. Stringification and
+token-pasting are not implemented. 23 unit tests, 52 assertions.
 
 ---
 

@@ -98,17 +98,52 @@ original source file
 
 ---
 
-## Preprocessor Tool Candidates (Phase 4.2c)
+## Preprocessor Tool Decision (Phase 4.2c)
 
-| Candidate | Language | Licence | Notes |
+**Status:** Accepted — Phase 4.2c
+
+### Candidates Evaluated
+
+| Candidate | Language | Licence | Verdict |
 |---|---|---|---|
-| `slang` preprocessor | C++ | MIT | Full IEEE 1800-2017; `slang::parsing::Preprocessor` is embeddable as a library |
-| `verilator --preproc` | C++ | LGPL | Mature; can be spawned as a filter subprocess |
-| `sv-parser` | Rust | MIT | Full SV 2017 with preprocessing; requires a C FFI wrapper |
-| Minimal in-house | C++ | — | Handle `` `define/undef/undefineall/ifdef/include `` + invocation |
+| `slang` preprocessor | C++ | MIT | Preferred external option, but see below |
+| `verilator --preproc` | C++ | LGPL | Subprocess-only; LGPL static-linking restrictions |
+| `sv-parser` | Rust | MIT | Requires Rust toolchain + C FFI — build complexity |
+| **Minimal in-house** | C++ | — | **Selected** |
 
-Evaluation criteria: C++ embeddability, licence compatibility, recursive macro support,
-stringification (`` `" ``), token-pasting (`` `​`` `​`` ``), function-like macros with
-arguments, `include path resolution.
+### Decision
 
-Tool decision to be recorded here after Phase 4.2c evaluation.
+**Use a minimal in-house C++ preprocessor** (`src/compiler/sv_preprocessor.h/.cpp`).
+
+### Rationale
+
+1. **slang** is technically the best external option (MIT, full IEEE 1800-2017,
+   `slang::parsing::Preprocessor` is a public embeddable class). However, its preprocessor
+   produces a **token stream**, not source text. Reconstructing preprocessed source from
+   tokens is lossy (whitespace and comments discarded) and adds significant integration
+   complexity. slang also adds a large build-time dependency (~100 KLOC).
+
+2. **verilator** is subprocess-only (no library API) and LGPL adds static-linking
+   compliance burden.
+
+3. **sv-parser** requires the Rust toolchain as a hard CMake dependency — not acceptable
+   for a C++-only project.
+
+4. **Minimal in-house** covers the directive subset needed for RTL indexing (object-like
+   and function-like macros, conditional compilation, file inclusion) with zero extra
+   dependencies. The `SvPreprocessor` class provides a stable interface so slang can be
+   swapped in later (e.g. for full UVM support) without changing callers.
+
+### Limitations of Current Implementation
+
+- Stringification (`` `" ``) and token-pasting (`` `​`` ``) are not implemented. These are
+  used heavily in UVM base macros but are rare in RTL. Record as an error if encountered.
+- No line-mapping across `include boundaries (positions in preprocessed output do not map
+  back to original source lines for included files).
+
+### Upgrade Path
+
+To add slang: implement `SvPreprocessor` backed by `slang::parsing::Preprocessor`, feed it
+the pass-1 output, and collect the token stream. Reconstruct source text by joining token
+spellings with their trailing trivia (whitespace). Swap the implementation in CMakeLists by
+replacing `src/compiler/sv_preprocessor.cpp` — callers are unchanged.
