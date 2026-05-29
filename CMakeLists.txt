@@ -117,6 +117,7 @@ add_library(svlsp_lib STATIC
     src/lsp/server_state.cpp
     src/lsp/workspace_symbols.cpp
     src/lsp/server.cpp
+    src/compiler/compiler_directive_stripper.cpp
 )
 target_include_directories(svlsp_lib PUBLIC src)
 target_link_libraries(svlsp_lib PUBLIC lsp svlsp_options)
@@ -144,6 +145,7 @@ add_executable(unit_tests
     tests/unit/lsp/test_signature_help.cpp
     tests/unit/lsp/test_workspace_symbols.cpp
     tests/unit/compiler/test_sv_parser.cpp
+    tests/unit/compiler/test_compiler_directive_stripper.cpp
 )
 target_compile_definitions(unit_tests PRIVATE
     SV_EXAMPLES_DIR="${CMAKE_SOURCE_DIR}/examples"
