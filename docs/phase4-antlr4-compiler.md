@@ -85,7 +85,8 @@ before any include insertion shifts line counts or a temp buffer obscures the fi
 `CompilerDirectiveStripper` in `src/compiler/compiler_directive_stripper.h/.cpp`.
 Strips all IEEE 1800 compiler directives; replaces each line with a blank to preserve
 line numbers. Substitutes `` `__FILE__ `` / `` `__LINE__ `` against the original source
-path and line before any include insertion can corrupt them. 18 unit tests, 64 assertions.
+path and line before any include insertion can corrupt them. Trailing `//` comments are
+stripped from recorded values. 19 unit tests, 67 assertions.
 
 ---
 

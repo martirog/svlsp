@@ -303,7 +303,10 @@ Files added:
 - `src/compiler/compiler_directive_stripper.cpp`
 - `tests/unit/compiler/test_compiler_directive_stripper.cpp`
 
-18 unit tests, 64 assertions. Full suite: 88 tests, 179 assertions.
+19 unit tests, 67 assertions. Full suite: 89 tests, 182 assertions.
+
+Note: trailing `//` line comments are stripped from recorded directive values
+(e.g. `` `timescale 1ns/1ps // comment `` records value `"1ns/1ps"`).
 
 ### 4.2c Preprocessor Tool Selection and Integration — Pending
 
