@@ -2,9 +2,16 @@
 #include <string>
 #include <vector>
 
+struct MacroRecord {
+    std::string name;
+    std::string body;  // macro body text (trailing comment already stripped)
+    int         line;  // 1-based line number in the processed file
+};
+
 struct PreprocessorResult {
     std::string source;
     std::vector<std::string> errors;
+    std::vector<MacroRecord> macros; // all `define macros encountered in active branches
 };
 
 // Pass 2 of the two-pass SV preprocessing pipeline.

@@ -184,3 +184,200 @@ TEST_CASE("zero parse errors for valid source", "[compiler][listener]") {
     auto [recs, errs] = walkSource("module ok; endmodule\n");
     CHECK(errs == 0);
 }
+
+// ---------------------------------------------------------------------------
+// Signal declarations — data_declaration
+// ---------------------------------------------------------------------------
+
+TEST_CASE("signal record from data_declaration inside module", "[compiler][listener][phase44]") {
+    auto [recs, errs] = walkSource(
+        "module m;\n"
+        "  logic [7:0] data;\n"
+        "endmodule\n");
+    REQUIRE(errs == 0);
+    REQUIRE(findRecord(recs, ParseRecordKind::Signal, "data") != nullptr);
+}
+
+TEST_CASE("multiple signals from comma-separated data_declaration", "[compiler][listener][phase44]") {
+    auto [recs, errs] = walkSource(
+        "module m;\n"
+        "  logic a, b, c;\n"
+        "endmodule\n");
+    REQUIRE(errs == 0);
+    REQUIRE(findRecord(recs, ParseRecordKind::Signal, "a") != nullptr);
+    REQUIRE(findRecord(recs, ParseRecordKind::Signal, "b") != nullptr);
+    REQUIRE(findRecord(recs, ParseRecordKind::Signal, "c") != nullptr);
+}
+
+TEST_CASE("signal record from net_declaration inside module", "[compiler][listener][phase44]") {
+    auto [recs, errs] = walkSource(
+        "module m;\n"
+        "  wire w;\n"
+        "endmodule\n");
+    REQUIRE(errs == 0);
+    REQUIRE(findRecord(recs, ParseRecordKind::Signal, "w") != nullptr);
+}
+
+TEST_CASE("signals from functions_tasks.sv captured", "[compiler][listener][phase44]") {
+    auto [recs, errs] = walkFile(SV_EXAMPLES_DIR "/functions_tasks.sv");
+    REQUIRE(errs == 0);
+    REQUIRE(findRecord(recs, ParseRecordKind::Signal, "data") != nullptr);
+    REQUIRE(findRecord(recs, ParseRecordKind::Signal, "clk")  != nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// Parent scope tracking
+// ---------------------------------------------------------------------------
+
+TEST_CASE("signal parent is the enclosing module name", "[compiler][listener][phase44]") {
+    auto [recs, errs] = walkSource(
+        "module my_mod;\n"
+        "  logic sig;\n"
+        "endmodule\n");
+    REQUIRE(errs == 0);
+    auto* r = findRecord(recs, ParseRecordKind::Signal, "sig");
+    REQUIRE(r != nullptr);
+    CHECK(r->parent == "my_mod");
+}
+
+TEST_CASE("port parent is the enclosing module name", "[compiler][listener][phase44]") {
+    auto [recs, errs] = walkSource(
+        "module top (input logic clk);\n"
+        "endmodule\n");
+    REQUIRE(errs == 0);
+    auto* r = findRecord(recs, ParseRecordKind::Port, "clk");
+    REQUIRE(r != nullptr);
+    CHECK(r->parent == "top");
+}
+
+TEST_CASE("function parent is the enclosing module name", "[compiler][listener][phase44]") {
+    auto [recs, errs] = walkSource(
+        "module m;\n"
+        "  function automatic int add(input int a, b); return a+b; endfunction\n"
+        "endmodule\n");
+    REQUIRE(errs == 0);
+    auto* r = findRecord(recs, ParseRecordKind::Function, "add");
+    REQUIRE(r != nullptr);
+    CHECK(r->parent == "m");
+}
+
+TEST_CASE("top-level module has empty parent", "[compiler][listener][phase44]") {
+    auto [recs, errs] = walkSource("module top_level; endmodule\n");
+    REQUIRE(errs == 0);
+    auto* r = findRecord(recs, ParseRecordKind::Module, "top_level");
+    REQUIRE(r != nullptr);
+    CHECK(r->parent == "");
+}
+
+// ---------------------------------------------------------------------------
+// Port direction in detail
+// ---------------------------------------------------------------------------
+
+TEST_CASE("input port detail is 'input'", "[compiler][listener][phase44]") {
+    auto [recs, errs] = walkSource(
+        "module m (input logic clk);\n"
+        "endmodule\n");
+    REQUIRE(errs == 0);
+    auto* r = findRecord(recs, ParseRecordKind::Port, "clk");
+    REQUIRE(r != nullptr);
+    CHECK(r->detail == "input");
+}
+
+TEST_CASE("output port detail is 'output'", "[compiler][listener][phase44]") {
+    auto [recs, errs] = walkSource(
+        "module m (output logic q);\n"
+        "endmodule\n");
+    REQUIRE(errs == 0);
+    auto* r = findRecord(recs, ParseRecordKind::Port, "q");
+    REQUIRE(r != nullptr);
+    CHECK(r->detail == "output");
+}
+
+TEST_CASE("inout port detail is 'inout'", "[compiler][listener][phase44]") {
+    auto [recs, errs] = walkSource(
+        "module m (inout wire bus);\n"
+        "endmodule\n");
+    REQUIRE(errs == 0);
+    auto* r = findRecord(recs, ParseRecordKind::Port, "bus");
+    REQUIRE(r != nullptr);
+    CHECK(r->detail == "inout");
+}
+
+// ---------------------------------------------------------------------------
+// Class hierarchy
+// ---------------------------------------------------------------------------
+
+TEST_CASE("class with extends has parent class in detail", "[compiler][listener][phase44]") {
+    auto [recs, errs] = walkSource(
+        "class Base; endclass\n"
+        "class Child extends Base; endclass\n");
+    REQUIRE(errs == 0);
+    auto* r = findRecord(recs, ParseRecordKind::Class, "Child");
+    REQUIRE(r != nullptr);
+    CHECK(r->detail == "Base");
+}
+
+TEST_CASE("class without extends has empty detail", "[compiler][listener][phase44]") {
+    auto [recs, errs] = walkSource("class Standalone; endclass\n");
+    REQUIRE(errs == 0);
+    auto* r = findRecord(recs, ParseRecordKind::Class, "Standalone");
+    REQUIRE(r != nullptr);
+    CHECK(r->detail == "");
+}
+
+TEST_CASE("class hierarchy from classes.sv detail fields", "[compiler][listener][phase44]") {
+    auto [recs, errs] = walkFile(SV_EXAMPLES_DIR "/classes.sv");
+    REQUIRE(errs == 0);
+    auto* err_pkt = findRecord(recs, ParseRecordKind::Class, "ErrPacket");
+    REQUIRE(err_pkt != nullptr);
+    CHECK(err_pkt->detail == "Packet");
+    auto* burst = findRecord(recs, ParseRecordKind::Class, "BurstPacket");
+    REQUIRE(burst != nullptr);
+    CHECK(burst->detail == "Packet");
+}
+
+// ---------------------------------------------------------------------------
+// Function return type in detail
+// ---------------------------------------------------------------------------
+
+TEST_CASE("function detail contains return type text", "[compiler][listener][phase44]") {
+    auto [recs, errs] = walkSource(
+        "module m;\n"
+        "  function automatic int add(input int a, b); return a+b; endfunction\n"
+        "endmodule\n");
+    REQUIRE(errs == 0);
+    auto* r = findRecord(recs, ParseRecordKind::Function, "add");
+    REQUIRE(r != nullptr);
+    CHECK(!r->detail.empty());
+}
+
+// ---------------------------------------------------------------------------
+// Parameters
+// ---------------------------------------------------------------------------
+
+TEST_CASE("parameter record emitted for module parameter port", "[compiler][listener][phase44]") {
+    auto [recs, errs] = walkSource(
+        "module m #(parameter int WIDTH = 8) (input logic clk);\n"
+        "endmodule\n");
+    REQUIRE(errs == 0);
+    REQUIRE(findRecord(recs, ParseRecordKind::Parameter, "WIDTH") != nullptr);
+}
+
+TEST_CASE("localparam record emitted inside module body", "[compiler][listener][phase44]") {
+    auto [recs, errs] = walkSource(
+        "module m;\n"
+        "  localparam int DEPTH = 16;\n"
+        "endmodule\n");
+    REQUIRE(errs == 0);
+    REQUIRE(findRecord(recs, ParseRecordKind::Parameter, "DEPTH") != nullptr);
+}
+
+TEST_CASE("parameter parent is the enclosing module", "[compiler][listener][phase44]") {
+    auto [recs, errs] = walkSource(
+        "module param_mod #(parameter int N = 4) ();\n"
+        "endmodule\n");
+    REQUIRE(errs == 0);
+    auto* r = findRecord(recs, ParseRecordKind::Parameter, "N");
+    REQUIRE(r != nullptr);
+    CHECK(r->parent == "param_mod");
+}

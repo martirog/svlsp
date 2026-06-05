@@ -3,6 +3,7 @@
 #include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <unordered_map>
 
@@ -33,6 +34,7 @@ struct Ctx {
     std::vector<std::string> includeStack{}; // cycle detection
     const std::vector<std::string>& includePaths;
     std::string output{};
+    std::vector<MacroRecord> macroRecords{};
 
     bool isOutputting() const {
         for (const auto& e : condStack) if (!e.active) return false;
@@ -182,14 +184,16 @@ static std::string expandStr(const std::string& src, const MacroMap& macros,
 // `define parsing
 // ---------------------------------------------------------------------------
 
-// `rest` is everything after "`define"
-static void parseMacroDefinition(std::string_view rest, MacroMap& macros,
-                                  std::vector<std::string>& errors) {
+struct ParsedMacro { std::string name; std::string body; };
+
+// `rest` is everything after "`define". Returns {name, body} on success, nullopt on error.
+static std::optional<ParsedMacro> parseMacroDefinition(std::string_view rest, MacroMap& macros,
+                                                        std::vector<std::string>& errors) {
     std::string line(rest);
     size_t i = 0;
     skipSpaces(line, i);
     std::string name = readIdent(line, i);
-    if (name.empty()) { errors.push_back("`define: missing macro name"); return; }
+    if (name.empty()) { errors.push_back("`define: missing macro name"); return std::nullopt; }
 
     MacroDef def;
     // Function-like: '(' immediately after name with no intervening space
@@ -207,7 +211,9 @@ static void parseMacroDefinition(std::string_view rest, MacroMap& macros,
     }
     skipSpaces(line, i);
     def.body = std::string(stripLineComment(std::string_view(line).substr(i)));
+    std::string body = def.body;
     macros[name] = std::move(def);
+    return ParsedMacro{std::move(name), std::move(body)};
 }
 
 // ---------------------------------------------------------------------------
@@ -276,8 +282,10 @@ static void processSource(const std::string& source, const std::string& filepath
                            Ctx& ctx, int depth) {
     std::istringstream iss(source);
     std::string line;
+    int lineNo = 0;
 
     while (std::getline(iss, line)) {
+        ++lineNo;
         if (!line.empty() && line.back() == '\r') line.pop_back();
 
         // Locate first non-whitespace character
@@ -348,7 +356,8 @@ static void processSource(const std::string& source, const std::string& filepath
         if (!ctx.isOutputting()) { ctx.output += '\n'; continue; }
 
         if (dir == "define") {
-            parseMacroDefinition(rest, ctx.macros, ctx.errors);
+            if (auto opt = parseMacroDefinition(rest, ctx.macros, ctx.errors))
+                ctx.macroRecords.push_back({opt->name, opt->body, lineNo});
             ctx.output += '\n';
         } else if (dir == "undef") {
             ctx.macros.erase(std::string(trimSV(stripLineComment(rest))));
@@ -403,5 +412,5 @@ PreprocessorResult SvPreprocessor::process(const std::string& source,
     if (!ctx.condStack.empty())
         ctx.errors.push_back("unterminated `ifdef/`ifndef block");
 
-    return {std::move(ctx.output), std::move(ctx.errors)};
+    return {std::move(ctx.output), std::move(ctx.errors), std::move(ctx.macroRecords)};
 }
