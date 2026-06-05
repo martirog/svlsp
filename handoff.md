@@ -1,8 +1,8 @@
 # svlsp — Handoff Document
 
 **Date:** 2026-05-28  
-**Last completed phase:** Phase 3 complete (all ten sub-phases); Phase 4.1 complete; Phase 4.2 complete; Phase 4.2a–4.2c complete; Phase 4.3 complete  
-**Current work:** Phase 4.4 — Symbol Extraction
+**Last completed phase:** Phase 3 complete (all ten sub-phases); Phase 4.1 complete; Phase 4.2 complete; Phase 4.2a–4.2c complete; Phase 4.3 complete; Phase 4.4 complete  
+**Current work:** Phase 4.5 — Error Recovery
 
 ---
 
@@ -355,11 +355,26 @@ Each record carries `{ kind, name, line, column }`. `svlsp_antlr4` is now linked
 
 Files added: `src/compiler/parse_record.h`, `src/compiler/sv_tree_walker.h/.cpp`,
 `tests/unit/compiler/test_sv_listener.cpp`.
-17 unit tests, 51 assertions. Full suite: 129 tests, 285 assertions.
+17 unit tests, 51 assertions. Full suite: 129 tests, 285 assertions (before Phase 4.4).
 
-### 4.4–4.6 — Pending
+### 4.4 Symbol Extraction — Complete
 
-4.4 Symbol extraction (modules, ports, signals, functions, classes, macros).  
+`ParseRecord` extended with `parent` (containing scope name) and `detail` (direction,
+parent class, return type, macro body) fields. Three new kinds added: `Signal`, `Parameter`,
+`Macro`.
+
+`SvRecordListener` gains a scope stack; all Module/Interface/Package/Class/Function/Task
+enter hooks push the name, exit hooks pop. Signal records emitted from `enterData_declaration`
+and `enterNet_declaration`; Parameter records from `enterParameter_declaration` and
+`enterLocal_parameter_declaration`; port direction in `detail`.
+
+`SvPreprocessor::process()` now returns `PreprocessorResult::macros` — a vector of
+`MacroRecord { name, body, line }` for every `` `define `` in an active branch.
+
+24 new tests. Full suite: **153 tests, 363 assertions**.
+
+### 4.5–4.6 — Pending
+
 4.5 Error recovery → `lsp::Diagnostic` objects → `DiagnosticsPublisher`.  
 4.6 Incremental parsing (depends on Phase 5 DB for file hashing).  
 

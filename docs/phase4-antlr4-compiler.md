@@ -118,10 +118,56 @@ modules (ANSI + non-ANSI), interfaces, packages, classes, functions, tasks, ANSI
 
 ## 4.4 Symbol Extraction
 
-**Status:** Pending
+**Status:** Complete
 
-Extract: module/interface/package names, port declarations, signal declarations,
-function/task signatures, class hierarchies, macro definitions.
+### ParseRecord extended fields
+
+```cpp
+struct ParseRecord {
+    ParseRecordKind kind;    // Module|Interface|Package|Class|Function|Task|Port|Signal|Parameter|Macro
+    std::string     name;
+    int             line;    // 1-based, from the identifier token
+    int             column;  // 0-based
+    std::string     parent;  // containing scope name ("" if top-level)
+    std::string     detail;  // kind-specific: see table below
+};
+```
+
+| Kind | detail contents |
+|---|---|
+| `Port` | Direction keyword: `"input"`, `"output"`, `"inout"`, `"ref"` (empty if inherited) |
+| `Class` | Parent class name from `extends` clause (empty if no inheritance) |
+| `Function` | Return type text from `function_data_type_or_implicit` (ANTLR4 getText(), no spaces) |
+| `Signal`, `Parameter`, `Macro` | Macro body text; empty for Signal/Parameter in this phase |
+
+### New record kinds
+
+| Kind | Source | Grammar rule hooked |
+|---|---|---|
+| `Signal` | `SvTreeWalker` | `enterData_declaration`, `enterNet_declaration` |
+| `Parameter` | `SvTreeWalker` | `enterParameter_declaration`, `enterLocal_parameter_declaration` |
+| `Macro` | `SvPreprocessor` | `\`define` line capture during pass 2 |
+
+### Scope stack
+
+`SvRecordListener` maintains a `std::vector<std::string> m_scopeStack`. Every named
+scope (Module, Interface, Package, Class, Function, Task) pushes its name when its
+`enter` hook fires and pops in the corresponding `exit` hook. The `parent` field of each
+record is the top of the scope stack at the time of emission.
+
+### Macro capture in SvPreprocessor
+
+`PreprocessorResult` now carries:
+```cpp
+std::vector<MacroRecord> macros; // {name, body, line} for each `define in active branches
+```
+
+Macros inside inactive `\`ifdef` / `\`ifndef` branches are not recorded (they are never
+added to the macro table). The line number is 1-based relative to the processed file.
+
+### Test counts
+
+24 new tests (15 listener, 6 preprocessor). Full suite: **153 tests, 363 assertions**.
 
 ---
 
