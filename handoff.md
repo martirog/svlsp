@@ -1,8 +1,8 @@
 # svlsp — Handoff Document
 
 **Date:** 2026-05-28  
-**Last completed phase:** Phase 3 complete (all ten sub-phases); Phase 4.1 complete; Phase 4.2 complete; Phase 4.2a–4.2c complete; Phase 4.3 complete; Phase 4.4 complete  
-**Current work:** Phase 4.5 — Error Recovery
+**Last completed phase:** Phase 3 complete (all ten sub-phases); Phase 4.1 complete; Phase 4.2 complete; Phase 4.2a–4.2c complete; Phase 4.3 complete; Phase 4.4 complete; Phase 4.5 complete  
+**Current work:** Phase 4.6 — Incremental Parsing
 
 ---
 
@@ -373,9 +373,24 @@ and `enterNet_declaration`; Parameter records from `enterParameter_declaration` 
 
 24 new tests. Full suite: **153 tests, 363 assertions**.
 
-### 4.5–4.6 — Pending
+### 4.5 Error Recovery — Complete
 
-4.5 Error recovery → `lsp::Diagnostic` objects → `DiagnosticsPublisher`.  
+`ParseError { line, column, message }` added to `src/compiler/parse_record.h`.
+`WalkResult::parseErrors` changed from `int` to `std::vector<ParseError>`.
+
+`SvErrorListener : public antlr4::BaseErrorListener` installed on both lexer
+and parser inside `SvTreeWalker::walk()` — collects all syntax errors from both
+tokenisation and parsing into a single vector.
+
+`DiagnosticsPublisher::buildDiagnostic(ParseError)` converts a compiler error to
+an `lsp::Diagnostic` (ANTLR4 1-based lines → LSP 0-based, single-char range,
+`DiagnosticSeverity::Error`). Declared in `src/lsp/diagnostics.h`.
+
+11 new tests in `tests/unit/compiler/test_sv_error_recovery.cpp`.
+Full suite: **164 tests, 382 assertions**.
+
+### 4.6 — Pending
+
 4.6 Incremental parsing (depends on Phase 5 DB for file hashing).  
 
 After Phase 4 is complete, replace `nullptr` returns in all Phase 3 providers with real symbol queries.
