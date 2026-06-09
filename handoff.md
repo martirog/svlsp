@@ -1,8 +1,8 @@
 # svlsp — Handoff Document
 
 **Date:** 2026-05-28  
-**Last completed phase:** Phase 3 complete (all ten sub-phases); Phase 4.1 complete; Phase 4.2 complete; Phase 4.2a–4.2c complete; Phase 4.3 complete; Phase 4.4 complete; Phase 4.5 complete  
-**Current work:** Phase 4.6 — Incremental Parsing
+**Last completed phase:** Phase 3 complete; Phase 4.1–4.6 complete  
+**Current work:** Phase 5 — SQLite Database Layer
 
 ---
 
@@ -396,9 +396,23 @@ the filesystem path from the LSP URI.
 (zero diags for valid file; non-zero for `fixtures/syntax_error.sv`; cleared after fix).
 Full unit suite: **164 tests, 382 assertions**.
 
-### 4.6 — Pending
+### 4.6 Incremental Parsing — Complete
 
-4.6 Incremental parsing (depends on Phase 5 DB for file hashing).  
+`ParseCache` in `src/compiler/parse_cache.h/.cpp` maps `uri.toString() →
+{std::hash<string> content hash, WalkResult}`.
+
+`LanguageServer::parseDiagnostics()` checks `m_parseCache.isUpToDate()` before
+running the pipeline; on a hash match the cached `WalkResult` is returned
+directly, skipping the full CompilerDirectiveStripper → SvPreprocessor →
+SvTreeWalker pipeline. `didClose` calls `m_parseCache.evict()` so the next
+open triggers a fresh parse.
+
+Phase 5.4 will replace the in-memory hash with SQLite-backed persistence so
+the cache survives across server restarts.
+
+10 new unit tests in `tests/unit/compiler/test_parse_cache.cpp`.
+4 new integration tests in `tests/integration/test_14_incremental_parsing.sh`.
+Full unit suite: **174 tests, 398 assertions**.
 
 After Phase 4 is complete, replace `nullptr` returns in all Phase 3 providers with real symbol queries.
 
