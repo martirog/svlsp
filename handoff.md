@@ -386,8 +386,15 @@ tokenisation and parsing into a single vector.
 an `lsp::Diagnostic` (ANTLR4 1-based lines → LSP 0-based, single-char range,
 `DiagnosticSeverity::Error`). Declared in `src/lsp/diagnostics.h`.
 
-11 new tests in `tests/unit/compiler/test_sv_error_recovery.cpp`.
-Full suite: **164 tests, 382 assertions**.
+`LanguageServer::parseDiagnostics()` in `src/lsp/server.cpp` wires the full
+pipeline (CompilerDirectiveStripper → SvPreprocessor → SvTreeWalker) and is
+called from both `didOpen` and `didChange` handlers. `FileUri::path()` provides
+the filesystem path from the LSP URI.
+
+11 new unit tests in `tests/unit/compiler/test_sv_error_recovery.cpp`.
+3 new integration tests in `tests/integration/test_13_diagnostics_parse_errors.sh`
+(zero diags for valid file; non-zero for `fixtures/syntax_error.sv`; cleared after fix).
+Full unit suite: **164 tests, 382 assertions**.
 
 ### 4.6 — Pending
 
