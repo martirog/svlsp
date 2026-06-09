@@ -14,6 +14,9 @@
 #include "server_state.h"
 #include "signature_help.h"
 #include "workspace_symbols.h"
+#include "compiler/compiler_directive_stripper.h"
+#include "compiler/sv_preprocessor.h"
+#include "compiler/sv_tree_walker.h"
 
 // LanguageServer wires the lsp-framework transport and dispatch layer to the
 // ServerState business logic.  All I/O happens here; ServerState stays pure.
@@ -33,4 +36,8 @@ private:
     DiagnosticsPublisher m_diagnostics;  // must follow m_messageHandler
 
     void registerHandlers();
+
+    // Run the full compiler pipeline on `text` and return LSP diagnostics.
+    lsp::Array<lsp::Diagnostic> parseDiagnostics(const lsp::DocumentUri& uri,
+                                                  const std::string& text);
 };

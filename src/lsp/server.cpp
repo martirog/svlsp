@@ -23,6 +23,21 @@ int LanguageServer::run()
     return 0;
 }
 
+lsp::Array<lsp::Diagnostic> LanguageServer::parseDiagnostics(
+    const lsp::DocumentUri& uri, const std::string& text)
+{
+    const std::string path{uri.path()};
+    auto stripped     = CompilerDirectiveStripper::strip(text, path);
+    SvPreprocessor preprocessor;
+    auto preprocessed = preprocessor.process(stripped.source, path);
+    auto walked       = SvTreeWalker::walk(preprocessed.source);
+
+    lsp::Array<lsp::Diagnostic> diags;
+    for (const auto& err : walked.parseErrors)
+        diags.push_back(DiagnosticsPublisher::buildDiagnostic(err));
+    return diags;
+}
+
 void LanguageServer::registerHandlers()
 {
     m_messageHandler
@@ -47,14 +62,16 @@ void LanguageServer::registerHandlers()
                 const auto uri     = params.textDocument.uri;
                 const auto version = params.textDocument.version;
                 m_store.open(std::move(params));
-                m_diagnostics.publish(uri, version);
+                m_diagnostics.publish(uri, version,
+                    parseDiagnostics(uri, m_store.get(uri).text));
             })
         .add<lsp::notifications::TextDocument_DidChange>(
             [this](lsp::notifications::TextDocument_DidChange::Params&& params) {
                 const auto uri     = params.textDocument.uri;
                 const auto version = params.textDocument.version;
                 m_store.update(std::move(params));
-                m_diagnostics.publish(uri, version);
+                m_diagnostics.publish(uri, version,
+                    parseDiagnostics(uri, m_store.get(uri).text));
             })
         .add<lsp::notifications::TextDocument_DidClose>(
             [this](lsp::notifications::TextDocument_DidClose::Params&& params) {
