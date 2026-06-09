@@ -15,6 +15,7 @@
 #include "signature_help.h"
 #include "workspace_symbols.h"
 #include "compiler/compiler_directive_stripper.h"
+#include "compiler/parse_cache.h"
 #include "compiler/sv_preprocessor.h"
 #include "compiler/sv_tree_walker.h"
 
@@ -31,13 +32,14 @@ public:
 private:
     ServerState          m_state;
     DocumentStore        m_store;
+    ParseCache           m_parseCache;
     lsp::Connection      m_connection;
     lsp::MessageHandler  m_messageHandler;
     DiagnosticsPublisher m_diagnostics;  // must follow m_messageHandler
 
     void registerHandlers();
 
-    // Run the full compiler pipeline on `text` and return LSP diagnostics.
+    // Run the compiler pipeline (or return cached result) and publish diagnostics.
     lsp::Array<lsp::Diagnostic> parseDiagnostics(const lsp::DocumentUri& uri,
                                                   const std::string& text);
 };

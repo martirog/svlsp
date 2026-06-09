@@ -118,6 +118,7 @@ add_library(svlsp_lib STATIC
     src/lsp/workspace_symbols.cpp
     src/lsp/server.cpp
     src/compiler/compiler_directive_stripper.cpp
+    src/compiler/parse_cache.cpp
     src/compiler/sv_preprocessor.cpp
     src/compiler/sv_tree_walker.cpp
 )
@@ -151,6 +152,7 @@ add_executable(unit_tests
     tests/unit/compiler/test_sv_preprocessor.cpp
     tests/unit/compiler/test_sv_listener.cpp
     tests/unit/compiler/test_sv_error_recovery.cpp
+    tests/unit/compiler/test_parse_cache.cpp
 )
 target_compile_definitions(unit_tests PRIVATE
     SV_EXAMPLES_DIR="${CMAKE_SOURCE_DIR}/examples"
