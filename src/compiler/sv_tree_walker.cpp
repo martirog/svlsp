@@ -5,6 +5,28 @@
 #include <antlr4-runtime.h>
 
 // ---------------------------------------------------------------------------
+// SvErrorListener — collects ANTLR4 syntax errors into ParseError[]
+// ---------------------------------------------------------------------------
+
+class SvErrorListener : public antlr4::BaseErrorListener {
+public:
+    void syntaxError(antlr4::Recognizer* /*recognizer*/,
+                     antlr4::Token* /*offendingSymbol*/,
+                     size_t line, size_t charPositionInLine,
+                     const std::string& msg,
+                     std::exception_ptr /*e*/) override {
+        m_errors.push_back({static_cast<int>(line),
+                            static_cast<int>(charPositionInLine),
+                            msg});
+    }
+
+    const std::vector<ParseError>& errors() const { return m_errors; }
+
+private:
+    std::vector<ParseError> m_errors;
+};
+
+// ---------------------------------------------------------------------------
 // SvRecordListener — internal ANTLR4 listener that fills ParseRecord[]
 // ---------------------------------------------------------------------------
 
@@ -211,14 +233,16 @@ WalkResult SvTreeWalker::walk(const std::string& source) {
     antlr4::CommonTokenStream tokens(&lexer);
     SvParser parser(&tokens);
 
+    SvErrorListener errListener;
     lexer.removeErrorListeners();
+    lexer.addErrorListener(&errListener);
     parser.removeErrorListeners();
+    parser.addErrorListener(&errListener);
 
     antlr4::tree::ParseTree* tree = parser.source_text();
-    int parseErrors = static_cast<int>(parser.getNumberOfSyntaxErrors());
 
     SvRecordListener listener;
     antlr4::tree::ParseTreeWalker::DEFAULT.walk(&listener, tree);
 
-    return {listener.records(), parseErrors};
+    return {listener.records(), errListener.errors()};
 }

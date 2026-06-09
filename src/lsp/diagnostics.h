@@ -2,6 +2,7 @@
 
 #include <lsp/messages.h>
 #include <lsp/messagehandler.h>
+#include "compiler/parse_record.h"
 
 // DiagnosticsPublisher sends textDocument/publishDiagnostics notifications
 // to the client.  At this stage (pre-ANTLR4) all published diagnostic sets
@@ -20,6 +21,10 @@ public:
     static lsp::PublishDiagnosticsParams buildParams(
         const lsp::DocumentUri& uri, int version,
         lsp::Array<lsp::Diagnostic> diags = {});
+
+    // Convert a compiler ParseError to an LSP Diagnostic.
+    // ANTLR4 lines are 1-based; LSP positions are 0-based.
+    static lsp::Diagnostic buildDiagnostic(const ParseError& err);
 
 private:
     lsp::MessageHandler& m_handler;

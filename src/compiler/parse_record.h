@@ -22,3 +22,9 @@ struct ParseRecord {
     std::string     parent; // containing scope name (empty if top-level)
     std::string     detail; // kind-specific: port direction, class parent, return type, macro body
 };
+
+struct ParseError {
+    int         line;    // 1-based (ANTLR4 convention)
+    int         column;  // 0-based
+    std::string message;
+};

@@ -150,6 +150,7 @@ add_executable(unit_tests
     tests/unit/compiler/test_compiler_directive_stripper.cpp
     tests/unit/compiler/test_sv_preprocessor.cpp
     tests/unit/compiler/test_sv_listener.cpp
+    tests/unit/compiler/test_sv_error_recovery.cpp
 )
 target_compile_definitions(unit_tests PRIVATE
     SV_EXAMPLES_DIR="${CMAKE_SOURCE_DIR}/examples"

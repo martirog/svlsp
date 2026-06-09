@@ -1,4 +1,5 @@
 #include "diagnostics.h"
+#include <lsp/types.h>
 
 DiagnosticsPublisher::DiagnosticsPublisher(lsp::MessageHandler& handler)
     : m_handler{handler}
@@ -21,4 +22,20 @@ lsp::PublishDiagnosticsParams DiagnosticsPublisher::buildParams(
         .diagnostics = std::move(diags),
         .version     = version,
     };
+}
+
+lsp::Diagnostic DiagnosticsPublisher::buildDiagnostic(const ParseError& err)
+{
+    // ANTLR4 lines are 1-based; LSP positions are 0-based.
+    lsp::uint lspLine = static_cast<lsp::uint>(err.line - 1);
+    lsp::uint lspCol  = static_cast<lsp::uint>(err.column);
+
+    lsp::Diagnostic diag;
+    diag.range = {
+        .start = {.line = lspLine, .character = lspCol},
+        .end   = {.line = lspLine, .character = lspCol + 1},
+    };
+    diag.message  = err.message;
+    diag.severity = lsp::DiagnosticSeverityEnum{lsp::DiagnosticSeverity::Error};
+    return diag;
 }
