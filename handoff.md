@@ -1,8 +1,8 @@
 # svlsp — Handoff Document
 
-**Date:** 2026-06-09  
-**Last completed phase:** Phase 3 complete; Phase 4.1–4.6 complete  
-**Current work:** Phase 5 — SQLite Database Layer (in progress, build not yet green)
+**Date:** 2026-06-10  
+**Last completed phase:** Phase 3 complete; Phase 4.1–4.6 complete; Phase 5.1–5.4 complete  
+**Current work:** Phase 6 — wire DB-backed symbol queries into LSP feature providers
 
 ---
 
@@ -25,8 +25,10 @@ src/lsp/           server_state, server, document_store, diagnostics,
                    hover, definition, references, completion,
                    document_symbols, workspace_symbols, rename,
                    signature_help — LSP layer (Phase 3 complete)
-src/compiler/      (empty — Phase 4, parser/listener go here)
-src/db/            (empty — Phase 5)
+src/compiler/      compiler_directive_stripper, sv_preprocessor, sv_tree_walker,
+                   parse_record, parse_cache — compiler front-end (Phase 4 complete)
+src/db/            database, symbol_database, compilation_controller,
+                   schema — SQLite persistence layer (Phase 5 complete)
 src/main.cpp       entry point
 tests/unit/        Catch2 unit tests (70 cases, 97 assertions — see counts below)
 tests/integration/ Emacs functional test scripts (31 test cases across 13 files)
@@ -418,7 +420,7 @@ After Phase 4 is complete, replace `nullptr` returns in all Phase 3 providers wi
 
 ---
 
-## Phase 5 — SQLite Database Layer (in progress)
+## Phase 5 — SQLite Database Layer — Complete
 
 ### 5.1 Schema Design — Complete
 
@@ -435,7 +437,7 @@ Three tables:
 Foreign keys use `ON DELETE CASCADE` so deleting a file row cleans up its
 symbols and diagnostics automatically.
 
-### 5.2 Database Abstraction Layer — Complete (code written, build in progress)
+### 5.2 Database Abstraction Layer — Complete
 
 `src/db/database.h/.cpp` — RAII `Database` wrapper around `sqlite3*`:
 - `Database(path)` — opens or creates; `":memory:"` for unit tests
@@ -450,7 +452,7 @@ symbols and diagnostics automatically.
 
 13 unit tests in `tests/unit/db/test_database.cpp`.
 
-### 5.3 Query API — Complete (code written, build in progress)
+### 5.3 Query API — Complete
 
 `src/db/symbol_database.h/.cpp` — typed access layer over the schema:
 - `upsertFile(path, hash) → file_id` — INSERT or UPDATE; stable id for same path
@@ -466,7 +468,7 @@ symbols and diagnostics automatically.
 
 15 unit tests in `tests/unit/db/test_symbol_database.cpp`.
 
-### 5.4 Incremental Compilation Controller — Complete (code written, build in progress)
+### 5.4 Incremental Compilation Controller — Complete
 
 `src/db/compilation_controller.h/.cpp` — replaces `ParseCache` (Phase 4.6):
 - `CompilationController(SymbolDatabase&)`
@@ -483,7 +485,9 @@ symbols and diagnostics automatically.
 
 9 unit tests in `tests/unit/db/test_compilation_controller.cpp`.
 
-### Build issues encountered (in progress)
+Full unit suite: **211 tests, 471 assertions**.
+
+### Build issues resolved
 
 1. `project(LANGUAGES CXX C)` needed for SQLite amalgamation `.c` file.
 2. `target_link_libraries(svlsp_sqlite3 PUBLIC ${CMAKE_DL_LIBS})` needed for
@@ -491,14 +495,36 @@ symbols and diagnostics automatically.
 3. `CMAKE_C_COMPILER gcc-13` added to `CMakePresets.json` — system `gcc-7`
    was being used, which injected `-L/usr/lib/gcc/x86_64-linux-gnu/7` and
    hid the UBSan/ASan runtime. Stale `CMakeCache.txt` required deletion.
-4. Build not yet confirmed green — work in progress.
+4. **Circular dependency** — `compilation_controller.cpp` (in `svlsp_db`) uses
+   `CompilerDirectiveStripper`, `SvPreprocessor`, `SvTreeWalker` which were in
+   `svlsp_lib`, but `svlsp_lib` also linked `svlsp_db`. Fixed by extracting those
+   compiler sources into a new `svlsp_compiler` static lib; `svlsp_db` links
+   `svlsp_compiler`; `svlsp_lib` links both.
+5. **ODR violation in tests** — both `test_symbol_database.cpp` and
+   `test_compilation_controller.cpp` defined `struct Fixture` at global scope.
+   The linker selected the wrong constructor, leaving `CompilationController::m_sdb`
+   as a null reference (visible only under ASan/UBSan). Fixed by wrapping both
+   `Fixture` definitions in `namespace { }`.
 
 ### SQLite3 dependency in CMake
 
 `find_package(SQLite3 QUIET)` first; falls back to FetchContent amalgamation
 3.47.0 from `https://www.sqlite.org/2024/sqlite-amalgamation-3470000.zip`.
-Builds as `svlsp_sqlite3` static library; linked into `svlsp_db`; `svlsp_db`
-linked PUBLIC into `svlsp_lib`.
+Builds as `svlsp_sqlite3` static library. Final library dependency graph:
+
+```
+svlsp_compiler  (compiler_directive_stripper, sv_preprocessor, sv_tree_walker, parse_cache)
+    → svlsp_antlr4
+
+svlsp_db  (database, symbol_database, compilation_controller)
+    → svlsp_sqlite3
+    → svlsp_compiler
+
+svlsp_lib  (lsp/*, no compiler sources)
+    → lsp
+    → svlsp_compiler
+    → svlsp_db
+```
 
 ---
 
