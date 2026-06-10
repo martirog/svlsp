@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(svlsp VERSION 0.1.0 LANGUAGES CXX)
+project(svlsp VERSION 0.1.0 LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -84,7 +84,29 @@ target_include_directories(svlsp_antlr4 PUBLIC "${ANTLR4_GENERATED_DIR}")
 target_link_libraries(svlsp_antlr4 PUBLIC antlr4_static)
 target_compile_options(svlsp_antlr4 PRIVATE -w)
 
-# Phase 5: SQLite3 amalgamation — added here.
+# Phase 5: SQLite3 — use system library if available, otherwise fetch the
+# official amalgamation (single sqlite3.c + sqlite3.h) at configure time.
+find_package(SQLite3 QUIET)
+if(SQLite3_FOUND)
+    message(STATUS "SQLite3 found: ${SQLite3_VERSION}")
+    add_library(svlsp_sqlite3 INTERFACE)
+    target_link_libraries(svlsp_sqlite3 INTERFACE SQLite::SQLite3)
+else()
+    message(STATUS "SQLite3 not found — fetching amalgamation 3.47.0")
+    FetchContent_Declare(
+        sqlite3_amalgamation
+        URL      https://www.sqlite.org/2024/sqlite-amalgamation-3470000.zip
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+    FetchContent_Populate(sqlite3_amalgamation)
+    add_library(svlsp_sqlite3 STATIC
+        "${sqlite3_amalgamation_SOURCE_DIR}/sqlite3.c")
+    target_include_directories(svlsp_sqlite3 PUBLIC
+        "${sqlite3_amalgamation_SOURCE_DIR}")
+    target_compile_options(svlsp_sqlite3 PRIVATE -w)
+    set_property(TARGET svlsp_sqlite3 PROPERTY C_STANDARD 99)
+    target_link_libraries(svlsp_sqlite3 PUBLIC ${CMAKE_DL_LIBS})
+endif()
 
 # ---------------------------------------------------------------------------
 # Common compile options
@@ -102,6 +124,30 @@ target_link_options(svlsp_options INTERFACE
 )
 
 # ---------------------------------------------------------------------------
+# Compiler library — no LSP or DB dependencies; used by both svlsp_db and
+# svlsp_lib to avoid a circular dependency.
+# ---------------------------------------------------------------------------
+add_library(svlsp_compiler STATIC
+    src/compiler/compiler_directive_stripper.cpp
+    src/compiler/parse_cache.cpp
+    src/compiler/sv_preprocessor.cpp
+    src/compiler/sv_tree_walker.cpp
+)
+target_include_directories(svlsp_compiler PUBLIC src)
+target_link_libraries(svlsp_compiler PUBLIC svlsp_antlr4 svlsp_options)
+
+# ---------------------------------------------------------------------------
+# Database library (Phase 5)
+# ---------------------------------------------------------------------------
+add_library(svlsp_db STATIC
+    src/db/database.cpp
+    src/db/symbol_database.cpp
+    src/db/compilation_controller.cpp
+)
+target_include_directories(svlsp_db PUBLIC src)
+target_link_libraries(svlsp_db PUBLIC svlsp_sqlite3 svlsp_compiler svlsp_options)
+
+# ---------------------------------------------------------------------------
 # Server library (business logic, shared by svlsp binary and unit_tests)
 # ---------------------------------------------------------------------------
 add_library(svlsp_lib STATIC
@@ -117,13 +163,9 @@ add_library(svlsp_lib STATIC
     src/lsp/server_state.cpp
     src/lsp/workspace_symbols.cpp
     src/lsp/server.cpp
-    src/compiler/compiler_directive_stripper.cpp
-    src/compiler/parse_cache.cpp
-    src/compiler/sv_preprocessor.cpp
-    src/compiler/sv_tree_walker.cpp
 )
 target_include_directories(svlsp_lib PUBLIC src)
-target_link_libraries(svlsp_lib PUBLIC lsp svlsp_antlr4 svlsp_options)
+target_link_libraries(svlsp_lib PUBLIC lsp svlsp_compiler svlsp_db svlsp_options)
 
 # ---------------------------------------------------------------------------
 # Server binary
@@ -153,11 +195,14 @@ add_executable(unit_tests
     tests/unit/compiler/test_sv_listener.cpp
     tests/unit/compiler/test_sv_error_recovery.cpp
     tests/unit/compiler/test_parse_cache.cpp
+    tests/unit/db/test_database.cpp
+    tests/unit/db/test_symbol_database.cpp
+    tests/unit/db/test_compilation_controller.cpp
 )
 target_compile_definitions(unit_tests PRIVATE
     SV_EXAMPLES_DIR="${CMAKE_SOURCE_DIR}/examples"
 )
-target_link_libraries(unit_tests PRIVATE svlsp_lib svlsp_antlr4 Catch2::Catch2WithMain)
+target_link_libraries(unit_tests PRIVATE svlsp_lib svlsp_antlr4 svlsp_db Catch2::Catch2WithMain)
 catch_discover_tests(unit_tests)
 
 # ---------------------------------------------------------------------------

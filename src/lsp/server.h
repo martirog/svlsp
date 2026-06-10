@@ -14,10 +14,9 @@
 #include "server_state.h"
 #include "signature_help.h"
 #include "workspace_symbols.h"
-#include "compiler/compiler_directive_stripper.h"
-#include "compiler/parse_cache.h"
-#include "compiler/sv_preprocessor.h"
-#include "compiler/sv_tree_walker.h"
+#include "db/database.h"
+#include "db/symbol_database.h"
+#include "db/compilation_controller.h"
 
 // LanguageServer wires the lsp-framework transport and dispatch layer to the
 // ServerState business logic.  All I/O happens here; ServerState stays pure.
@@ -30,16 +29,18 @@ public:
     int run();
 
 private:
-    ServerState          m_state;
-    DocumentStore        m_store;
-    ParseCache           m_parseCache;
-    lsp::Connection      m_connection;
-    lsp::MessageHandler  m_messageHandler;
-    DiagnosticsPublisher m_diagnostics;  // must follow m_messageHandler
+    ServerState           m_state;
+    DocumentStore         m_store;
+    Database              m_db;          // in-memory for now; file path in Phase 6
+    SymbolDatabase        m_symbolDb;
+    CompilationController m_compiler;
+    lsp::Connection       m_connection;
+    lsp::MessageHandler   m_messageHandler;
+    DiagnosticsPublisher  m_diagnostics; // must follow m_messageHandler
 
     void registerHandlers();
 
-    // Run the compiler pipeline (or return cached result) and publish diagnostics.
+    // Run the compiler pipeline (or return cached DB result) and publish diagnostics.
     lsp::Array<lsp::Diagnostic> parseDiagnostics(const lsp::DocumentUri& uri,
                                                   const std::string& text);
 };

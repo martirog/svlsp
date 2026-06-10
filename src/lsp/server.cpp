@@ -4,10 +4,14 @@
 #include <lsp/process.h>
 
 LanguageServer::LanguageServer(lsp::io::Stream& io)
-    : m_connection{io}
+    : m_db{":memory:"}
+    , m_symbolDb{m_db}
+    , m_compiler{m_symbolDb}
+    , m_connection{io}
     , m_messageHandler{m_connection}
     , m_diagnostics{m_messageHandler}
 {
+    m_db.initSchema();
     registerHandlers();
 }
 
@@ -26,27 +30,12 @@ int LanguageServer::run()
 lsp::Array<lsp::Diagnostic> LanguageServer::parseDiagnostics(
     const lsp::DocumentUri& uri, const std::string& text)
 {
-    const std::string key{uri.toString()};
-
-    if (m_parseCache.isUpToDate(key, text)) {
-        const auto& cached = m_parseCache.get(key);
-        lsp::Array<lsp::Diagnostic> diags;
-        for (const auto& err : cached.parseErrors)
-            diags.push_back(DiagnosticsPublisher::buildDiagnostic(err));
-        return diags;
-    }
-
     const std::string path{uri.path()};
-    auto stripped     = CompilerDirectiveStripper::strip(text, path);
-    SvPreprocessor preprocessor;
-    auto preprocessed = preprocessor.process(stripped.source, path);
-    auto walked       = SvTreeWalker::walk(preprocessed.source);
+    auto parseErrors = m_compiler.compile(path, text);
 
     lsp::Array<lsp::Diagnostic> diags;
-    for (const auto& err : walked.parseErrors)
+    for (const auto& err : parseErrors)
         diags.push_back(DiagnosticsPublisher::buildDiagnostic(err));
-
-    m_parseCache.store(key, text, std::move(walked));
     return diags;
 }
 
@@ -87,9 +76,7 @@ void LanguageServer::registerHandlers()
             })
         .add<lsp::notifications::TextDocument_DidClose>(
             [this](lsp::notifications::TextDocument_DidClose::Params&& params) {
-                const std::string key = params.textDocument.uri.toString();
                 m_store.close(std::move(params));
-                m_parseCache.evict(key);
             })
         .add<lsp::requests::TextDocument_Hover>(
             [](lsp::HoverParams&& params) {

@@ -1,8 +1,8 @@
 # svlsp — Handoff Document
 
-**Date:** 2026-05-28  
+**Date:** 2026-06-09  
 **Last completed phase:** Phase 3 complete; Phase 4.1–4.6 complete  
-**Current work:** Phase 5 — SQLite Database Layer
+**Current work:** Phase 5 — SQLite Database Layer (in progress, build not yet green)
 
 ---
 
@@ -415,6 +415,90 @@ the cache survives across server restarts.
 Full unit suite: **174 tests, 398 assertions**.
 
 After Phase 4 is complete, replace `nullptr` returns in all Phase 3 providers with real symbol queries.
+
+---
+
+## Phase 5 — SQLite Database Layer (in progress)
+
+### 5.1 Schema Design — Complete
+
+Schema defined as an embedded SQL string in `src/db/schema.h`.
+Version constant `db::SCHEMA_VERSION = 1`, DDL string `db::SCHEMA_DDL`.
+
+Three tables:
+- `files (id, path UNIQUE, content_hash, parsed_at)` — one row per compiled file
+- `symbols (id, file_id→files, kind, name, line, col, parent, detail)` — all
+  `ParseRecord` kinds in a single table; indexes on `name` and `file_id`
+- `diagnostics (id, file_id→files, line, col, message)` — `ParseError` records;
+  index on `file_id`
+
+Foreign keys use `ON DELETE CASCADE` so deleting a file row cleans up its
+symbols and diagnostics automatically.
+
+### 5.2 Database Abstraction Layer — Complete (code written, build in progress)
+
+`src/db/database.h/.cpp` — RAII `Database` wrapper around `sqlite3*`:
+- `Database(path)` — opens or creates; `":memory:"` for unit tests
+- `initSchema()` — idempotent; creates tables on first call, migration hook
+  for future versions
+- `schemaVersion()` — reads `schema_version` table; returns 0 if absent
+- `execute(sql)` — DDL / non-query statements; throws `std::runtime_error`
+- `prepare(sql) → Statement` — RAII prepared statement
+- `Statement::bind(idx, int|int64|string)`, `step()`, `columnInt/Text()`,
+  `reset()`, chaining returns `Statement&`
+- `lastInsertRowId()` — delegates to `sqlite3_last_insert_rowid`
+
+13 unit tests in `tests/unit/db/test_database.cpp`.
+
+### 5.3 Query API — Complete (code written, build in progress)
+
+`src/db/symbol_database.h/.cpp` — typed access layer over the schema:
+- `upsertFile(path, hash) → file_id` — INSERT or UPDATE; stable id for same path
+- `getFileHash(path) → string` — returns `""` for unknown paths
+- `replaceSymbols(file_id, records)` — DELETE + INSERT in a transaction
+- `replaceDiagnostics(file_id, errors)` — DELETE + INSERT in a transaction
+- `symbolsForFile(path) → vector<SymbolRow>` — ordered by line
+- `findSymbolsByName(name) → vector<SymbolRow>` — cross-file, with path
+- `diagnosticsForFile(path) → vector<DiagnosticRow>`
+
+`SymbolRow { id, kind, name, line, col, parent, detail, filePath }`,
+`DiagnosticRow { line, col, message, filePath }`.
+
+15 unit tests in `tests/unit/db/test_symbol_database.cpp`.
+
+### 5.4 Incremental Compilation Controller — Complete (code written, build in progress)
+
+`src/db/compilation_controller.h/.cpp` — replaces `ParseCache` (Phase 4.6):
+- `CompilationController(SymbolDatabase&)`
+- `compile(path, text) → vector<ParseError>` — checks `getFileHash(path)`
+  against `std::hash<string>(text)`; on match returns diagnostics from DB
+  (no re-parse); on mismatch runs full pipeline, updates DB, returns errors
+- `hashContent(text)` — `std::to_string(std::hash<string>{}(text))`; upgrade
+  path to SHA-256 noted for cross-session persistence
+
+`LanguageServer` updated: `ParseCache` removed; `m_db (":memory:")`,
+`m_symbolDb`, `m_compiler` added as members (in that construction order).
+`parseDiagnostics()` now delegates to `m_compiler.compile(path, text)`.
+`didClose` no longer needs to evict — DB hash comparison handles re-opens.
+
+9 unit tests in `tests/unit/db/test_compilation_controller.cpp`.
+
+### Build issues encountered (in progress)
+
+1. `project(LANGUAGES CXX C)` needed for SQLite amalgamation `.c` file.
+2. `target_link_libraries(svlsp_sqlite3 PUBLIC ${CMAKE_DL_LIBS})` needed for
+   `dlsym` on Linux.
+3. `CMAKE_C_COMPILER gcc-13` added to `CMakePresets.json` — system `gcc-7`
+   was being used, which injected `-L/usr/lib/gcc/x86_64-linux-gnu/7` and
+   hid the UBSan/ASan runtime. Stale `CMakeCache.txt` required deletion.
+4. Build not yet confirmed green — work in progress.
+
+### SQLite3 dependency in CMake
+
+`find_package(SQLite3 QUIET)` first; falls back to FetchContent amalgamation
+3.47.0 from `https://www.sqlite.org/2024/sqlite-amalgamation-3470000.zip`.
+Builds as `svlsp_sqlite3` static library; linked into `svlsp_db`; `svlsp_db`
+linked PUBLIC into `svlsp_lib`.
 
 ---
 
