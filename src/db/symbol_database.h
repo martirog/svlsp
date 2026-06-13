@@ -15,6 +15,8 @@ struct SymbolRow {
     std::string parent;
     std::string detail;
     std::string filePath;
+    int         endLine; // last line of scope body; 0 for leaf symbols
+    std::string scope;   // full enclosing scope chain, e.g. "MyModule::MyClass"
 };
 
 struct DiagnosticRow {
@@ -48,6 +50,24 @@ public:
     std::vector<SymbolRow>     symbolsForFile(const std::string& path) const;
     std::vector<SymbolRow>     findSymbolsByName(const std::string& name) const;
     std::vector<DiagnosticRow> diagnosticsForFile(const std::string& path) const;
+
+    // All symbols whose direct enclosing scope equals `scope`
+    // (pass "" for top-level symbols).  Ordered by name.
+    std::vector<SymbolRow> findSymbolsInScope(const std::string& scope) const;
+
+    // Cross-file prefix search: symbols whose name starts with `prefix`.
+    // Used for workspace/symbol queries and completion filtering.
+    std::vector<SymbolRow> findSymbolsByNamePrefix(const std::string& prefix) const;
+
+    // Returns the full scope path (e.g. "MyModule::MyClass::myFunc") of the
+    // innermost scope-defining symbol that contains `line` in `path`.
+    // Returns "" when the position is outside all named scopes.
+    std::string scopeAtPosition(const std::string& path, int line) const;
+
+    // All symbols visible from `(path, line)`: every symbol in the scope chain
+    // at that position (local → enclosing scopes) plus all top-level symbols
+    // from every file.  Ordered innermost-scope-first, then by name.
+    std::vector<SymbolRow> findSymbolsVisibleAt(const std::string& path, int line) const;
 
 private:
     Database& m_db;

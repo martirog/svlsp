@@ -40,8 +40,27 @@ public:
         return m_scopeStack.empty() ? "" : m_scopeStack.back();
     }
 
+    // Full "::" chain of all enclosing scopes, e.g. "MyModule::MyClass".
+    std::string currentScopeChain() const {
+        if (m_scopeStack.empty()) return "";
+        std::string result = m_scopeStack[0];
+        for (size_t i = 1; i < m_scopeStack.size(); ++i)
+            result += "::" + m_scopeStack[i];
+        return result;
+    }
+
     void pushScope(const std::string& name) { m_scopeStack.push_back(name); }
     void popScope()                          { if (!m_scopeStack.empty()) m_scopeStack.pop_back(); }
+
+    // Set endLine on the most-recently-emitted record with the given name.
+    void backpatchEndLine(const std::string& name, int endLine) {
+        for (int i = static_cast<int>(m_records.size()) - 1; i >= 0; --i) {
+            if (m_records[i].name == name) {
+                m_records[i].endLine = endLine;
+                return;
+            }
+        }
+    }
 
     // ---- Modules ----
 
@@ -55,7 +74,10 @@ public:
         pushId(ParseRecordKind::Module, id, ctx, currentScope());
     }
 
-    void exitModule_declaration(SvParser::Module_declarationContext*) override { popScope(); }
+    void exitModule_declaration(SvParser::Module_declarationContext* ctx) override {
+        backpatchEndLine(currentScope(), ctx->stop ? (int)ctx->stop->getLine() : 0);
+        popScope();
+    }
 
     // ---- Interfaces ----
 
@@ -69,7 +91,10 @@ public:
         pushId(ParseRecordKind::Interface, id, ctx, currentScope());
     }
 
-    void exitInterface_declaration(SvParser::Interface_declarationContext*) override { popScope(); }
+    void exitInterface_declaration(SvParser::Interface_declarationContext* ctx) override {
+        backpatchEndLine(currentScope(), ctx->stop ? (int)ctx->stop->getLine() : 0);
+        popScope();
+    }
 
     // ---- Packages ----
 
@@ -79,7 +104,10 @@ public:
         pushId(ParseRecordKind::Package, id, ctx, currentScope());
     }
 
-    void exitPackage_declaration(SvParser::Package_declarationContext*) override { popScope(); }
+    void exitPackage_declaration(SvParser::Package_declarationContext* ctx) override {
+        backpatchEndLine(currentScope(), ctx->stop ? (int)ctx->stop->getLine() : 0);
+        popScope();
+    }
 
     // ---- Classes ----
 
@@ -95,7 +123,10 @@ public:
         pushId(ParseRecordKind::Class, id, ctx, currentScope(), parentClass);
     }
 
-    void exitClass_declaration(SvParser::Class_declarationContext*) override { popScope(); }
+    void exitClass_declaration(SvParser::Class_declarationContext* ctx) override {
+        backpatchEndLine(currentScope(), ctx->stop ? (int)ctx->stop->getLine() : 0);
+        popScope();
+    }
 
     // ---- Functions ----
 
@@ -109,7 +140,8 @@ public:
         pushId(ParseRecordKind::Function, id, ctx, currentScope(), retType);
     }
 
-    void exitFunction_body_declaration(SvParser::Function_body_declarationContext*) override {
+    void exitFunction_body_declaration(SvParser::Function_body_declarationContext* ctx) override {
+        backpatchEndLine(currentScope(), ctx->stop ? (int)ctx->stop->getLine() : 0);
         popScope();
     }
 
@@ -122,7 +154,8 @@ public:
         pushId(ParseRecordKind::Task, id, ctx, currentScope());
     }
 
-    void exitTask_body_declaration(SvParser::Task_body_declarationContext*) override {
+    void exitTask_body_declaration(SvParser::Task_body_declarationContext* ctx) override {
+        backpatchEndLine(currentScope(), ctx->stop ? (int)ctx->stop->getLine() : 0);
         popScope();
     }
 
@@ -200,7 +233,7 @@ private:
         m_records.push_back({kind, id->getText(),
                               static_cast<int>(tok->getLine()),
                               static_cast<int>(tok->getCharPositionInLine()),
-                              parent, detail});
+                              parent, detail, 0, currentScopeChain()});
         // Push this record's name onto the scope stack so nested declarations
         // have it as their parent. Only top-level named scopes push here.
         if (kind == ParseRecordKind::Module   ||

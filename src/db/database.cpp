@@ -52,8 +52,10 @@ void Database::initSchema()
         execute(db::SCHEMA_DDL);
         execute("INSERT INTO schema_version VALUES ("
                 + std::to_string(db::SCHEMA_VERSION) + ")");
+        return;
     }
-    // Future migrations: else if (v < 2) { /* ALTER TABLE ... */ }
+    if (v < 2)
+        execute(db::MIGRATION_V1_TO_V2);
 }
 
 void Database::execute(const std::string& sql)

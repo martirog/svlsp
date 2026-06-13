@@ -4,9 +4,9 @@ namespace db {
 
 // Current schema version.  Increment and add a migration in Database::initSchema
 // whenever the schema changes.
-inline constexpr int SCHEMA_VERSION = 1;
+inline constexpr int SCHEMA_VERSION = 2;
 
-// DDL executed on a fresh (version-0) database.
+// DDL executed on a fresh (version-0) database — always reflects the latest schema.
 inline constexpr const char* SCHEMA_DDL = R"sql(
 CREATE TABLE schema_version (
     version INTEGER NOT NULL
@@ -20,18 +20,28 @@ CREATE TABLE files (
 );
 
 CREATE TABLE symbols (
-    id      INTEGER PRIMARY KEY AUTOINCREMENT,
-    file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
-    kind    TEXT    NOT NULL,
-    name    TEXT    NOT NULL,
-    line    INTEGER NOT NULL,
-    col     INTEGER NOT NULL,
-    parent  TEXT    NOT NULL DEFAULT '',
-    detail  TEXT    NOT NULL DEFAULT ''
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id  INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    kind     TEXT    NOT NULL,
+    name     TEXT    NOT NULL,
+    line     INTEGER NOT NULL,
+    col      INTEGER NOT NULL,
+    parent   TEXT    NOT NULL DEFAULT '',
+    detail   TEXT    NOT NULL DEFAULT '',
+    end_line INTEGER NOT NULL DEFAULT 0,
+    scope    TEXT    NOT NULL DEFAULT ''
 );
 
-CREATE INDEX idx_symbols_name    ON symbols(name);
-CREATE INDEX idx_symbols_file_id ON symbols(file_id);
+-- Exact-name lookup (workspace/definition queries).
+CREATE INDEX idx_symbols_name       ON symbols(name);
+-- All symbols in a file (document-symbol and diagnostics queries).
+CREATE INDEX idx_symbols_file_id    ON symbols(file_id);
+-- All symbols whose direct enclosing scope is X (completion, hover context).
+CREATE INDEX idx_symbols_scope      ON symbols(scope);
+-- Scope + name together (context-aware exact lookup).
+CREATE INDEX idx_symbols_scope_name ON symbols(scope, name);
+-- Position queries: find which scope contains a given line.
+CREATE INDEX idx_symbols_file_line  ON symbols(file_id, line, end_line);
 
 CREATE TABLE diagnostics (
     id      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,6 +52,16 @@ CREATE TABLE diagnostics (
 );
 
 CREATE INDEX idx_diagnostics_file_id ON diagnostics(file_id);
+)sql";
+
+// SQL applied when migrating an existing v1 database to v2.
+inline constexpr const char* MIGRATION_V1_TO_V2 = R"sql(
+ALTER TABLE symbols ADD COLUMN end_line INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE symbols ADD COLUMN scope    TEXT    NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_symbols_scope      ON symbols(scope);
+CREATE INDEX IF NOT EXISTS idx_symbols_scope_name ON symbols(scope, name);
+CREATE INDEX IF NOT EXISTS idx_symbols_file_line  ON symbols(file_id, line, end_line);
+UPDATE schema_version SET version = 2;
 )sql";
 
 } // namespace db

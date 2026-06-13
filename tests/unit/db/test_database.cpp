@@ -10,17 +10,17 @@ TEST_CASE("open in-memory database succeeds", "[db][database]") {
     CHECK_NOTHROW(Database(":memory:"));
 }
 
-TEST_CASE("initSchema creates tables and sets version 1", "[db][database]") {
+TEST_CASE("initSchema creates tables and sets current version", "[db][database]") {
     Database db(":memory:");
     db.initSchema();
-    CHECK(db.schemaVersion() == 1);
+    CHECK(db.schemaVersion() == 2);
 }
 
 TEST_CASE("initSchema is idempotent", "[db][database]") {
     Database db(":memory:");
     db.initSchema();
     CHECK_NOTHROW(db.initSchema());
-    CHECK(db.schemaVersion() == 1);
+    CHECK(db.schemaVersion() == 2);
 }
 
 TEST_CASE("schemaVersion returns 0 on fresh database", "[db][database]") {
