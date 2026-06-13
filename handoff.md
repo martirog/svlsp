@@ -1,8 +1,8 @@
 # svlsp — Handoff Document
 
-**Date:** 2026-06-10  
-**Last completed phase:** Phase 3 complete; Phase 4.1–4.6 complete; Phase 5.1–5.4 complete  
-**Current work:** Phase 6 — wire DB-backed symbol queries into LSP feature providers
+**Date:** 2026-06-13  
+**Last completed phase:** Phase 3 complete; Phase 4.1–4.6 complete; Phase 5.1–5.4 complete; Phase 6.1 complete  
+**Current work:** Phase 6.2+ — multi-file project support, package import resolution, cross-file invalidation
 
 ---
 
@@ -24,14 +24,14 @@ The full scope is documented in `plan.md`. Short version:
 src/lsp/           server_state, server, document_store, diagnostics,
                    hover, definition, references, completion,
                    document_symbols, workspace_symbols, rename,
-                   signature_help — LSP layer (Phase 3 complete)
+                   signature_help, symbol_utils — LSP layer (Phase 6.1 complete)
 src/compiler/      compiler_directive_stripper, sv_preprocessor, sv_tree_walker,
                    parse_record, parse_cache — compiler front-end (Phase 4 complete)
 src/db/            database, symbol_database, compilation_controller,
-                   schema — SQLite persistence layer (Phase 5 complete)
+                   schema — SQLite persistence layer (Phase 5 complete, schema v2)
 src/main.cpp       entry point
-tests/unit/        Catch2 unit tests (70 cases, 97 assertions — see counts below)
-tests/integration/ Emacs functional test scripts (31 test cases across 13 files)
+tests/unit/        Catch2 unit tests (228 cases, 550 assertions)
+tests/integration/ Emacs functional test scripts (15 files, ~45 test cases)
 tools/             emacs-test-daemon.sh, emacs-test-init.el, emacs-test-lib.sh
 examples/          20 .sv fixture files (all created in Phase 4.2)
 grammar/           Sv.g4 — 3828-line SystemVerilog grammar (Phase 4.1 complete)
@@ -61,7 +61,7 @@ make test-unit
 build/debug/unit_tests "[compiler][parser]"
 
 # Integration tests (Emacs daemon, requires display or Xvfb)
-DISPLAY=:99 make test-integration   # runs all 13 test files
+DISPLAY=:99 make test-integration   # runs all 15 test files
 # or individually:
 bash tools/emacs-test-daemon.sh tests/integration/test_05_hover.sh
 
@@ -130,29 +130,45 @@ Sends `textDocument/publishDiagnostics` notifications to the client.
 | `publish(uri, version, diags={})` | Sends `publishDiagnostics` via `MessageHandler` |
 | `static buildParams(uri, version, diags={})` | Builds params without sending — for unit tests |
 
-Currently publishes empty diagnostics on `didOpen`/`didChange`. Phase 4 will pass real parse errors.
+### Symbol utilities (`src/lsp/symbol_utils.h/.cpp`)
 
-### Phase 3 LSP feature providers
+Shared helpers used by all LSP feature providers:
 
-Each lives in `src/lsp/<name>.h/.cpp` and follows the same pattern:
-- `static getXxx(Params)` → result type — currently returns `nullptr` (JSON null)
-- No stored state, no I/O dependencies → directly unit-testable without mocks
+| Function | Description |
+|---|---|
+| `symbolKindFor(kind)` | Maps DB kind string → `lsp::SymbolKind` |
+| `completionKindFor(kind)` | Maps DB kind string → `lsp::CompletionItemKind` |
+| `wordAtPosition(text, line, char)` | Extracts identifier at 0-based cursor position; walks left even when cursor is on a non-id character (intentional — completion needs the prefix to the left of the insertion point) |
+| `makeRange(line1, col0, nameLen)` | Converts 1-based line to 0-based `lsp::Range` |
+| `pathToUri(path)` | Calls `lsp::FileUri::fromPath(path)` |
 
-| File | Class | Method | Result type |
+### LSP feature providers (Phase 6.1 — DB-backed)
+
+Each lives in `src/lsp/<name>.h/.cpp`. All five providers now accept a
+`SymbolDatabase&` and return real results from the SQLite database.
+
+| File | Class | Signature | Behaviour |
 |---|---|---|---|
-| `hover.h/.cpp` | `HoverProvider` | `getHover(HoverParams)` | `NullOr<Hover>` |
-| `definition.h/.cpp` | `DefinitionProvider` | `getDefinition(DefinitionParams)` | `NullOrOneOf<Definition, Array<DefinitionLink>>` |
-| `references.h/.cpp` | `ReferencesProvider` | `getReferences(ReferenceParams)` | `NullOr<Array<Location>>` |
-| `completion.h/.cpp` | `CompletionProvider` | `getCompletion(CompletionParams)` | `NullOrOneOf<Array<CompletionItem>, CompletionList>` |
-| `document_symbols.h/.cpp` | `DocumentSymbolsProvider` | `getDocumentSymbols(DocumentSymbolParams)` | `NullOrOneOf<Array<SymbolInformation>, Array<DocumentSymbol>>` |
-| `workspace_symbols.h/.cpp` | `WorkspaceSymbolsProvider` | `getWorkspaceSymbols(WorkspaceSymbolParams)` | `NullOrOneOf<Array<SymbolInformation>, Array<WorkspaceSymbol>>` |
-| `rename.h/.cpp` | `RenameProvider` | `getRename(RenameParams)` | `NullOr<WorkspaceEdit>` |
-| `signature_help.h/.cpp` | `SignatureHelpProvider` | `getSignatureHelp(SignatureHelpParams)` | `NullOr<SignatureHelp>` |
+| `hover.h/.cpp` | `HoverProvider` | `getHover(HoverParams, SymbolDatabase&, docText)` | `wordAtPosition` → `findSymbolsByName` → Markdown `**Kind** \`name\`` |
+| `definition.h/.cpp` | `DefinitionProvider` | `getDefinition(DefinitionParams, SymbolDatabase&, docText)` | `wordAtPosition` → `findSymbolsByName` → `Location` |
+| `completion.h/.cpp` | `CompletionProvider` | `getCompletion(CompletionParams, SymbolDatabase&, docText)` | `findSymbolsVisibleAt(path, line1)` → filter by prefix → `CompletionItem[]` |
+| `document_symbols.h/.cpp` | `DocumentSymbolsProvider` | `getDocumentSymbols(DocumentSymbolParams, SymbolDatabase&)` | `symbolsForFile` → `DocumentSymbol[]` with scope ranges |
+| `workspace_symbols.h/.cpp` | `WorkspaceSymbolsProvider` | `getWorkspaceSymbols(WorkspaceSymbolParams, SymbolDatabase&)` | `findSymbolsByNamePrefix(query)` → `WorkspaceSymbol[]` |
+| `references.h/.cpp` | `ReferencesProvider` | `getReferences(ReferenceParams)` | Returns `nullptr` — Phase 6.2+ |
+| `rename.h/.cpp` | `RenameProvider` | `getRename(RenameParams)` | Returns `nullptr` — Phase 6.2+ |
+| `signature_help.h/.cpp` | `SignatureHelpProvider` | `getSignatureHelp(SignatureHelpParams)` | Returns `nullptr` — Phase 6.2+ |
+
+Position-based providers (hover, definition, completion) check `m_store.contains(uri)`
+before querying the DB and return `nullptr` if the document is not open.
 
 ### I/O wrapper (`src/lsp/server.h/.cpp`)
 
-`LanguageServer` owns `m_connection`, `m_messageHandler`, `m_store`, and `m_diagnostics`.
-Member declaration order matters: `m_diagnostics` must be declared after `m_messageHandler`.
+`LanguageServer` owns (in construction order):
+`m_db`, `m_symbolDb`, `m_compiler`, `m_connection`, `m_messageHandler`, `m_store`, `m_diagnostics`.
+
+`m_db` is opened as `":memory:"` — symbols persist across requests within one server session
+but are lost on restart. The DB is re-populated on every `didOpen`/`didChange` via
+`m_compiler.compile(path, text)`.
 
 `registerHandlers()` wires all message types:
 
@@ -162,17 +178,17 @@ Member declaration order matters: `m_diagnostics` must be declared after `m_mess
 | `initialized` | notification | `handleInitialized` — no-op |
 | `shutdown` | request | `handleShutdown` — transitions to Shutdown |
 | `exit` | notification | `handleExit` — transitions to Inactive, breaks run() loop |
-| `textDocument/didOpen` | notification | `m_store.open()` → `m_diagnostics.publish()` |
-| `textDocument/didChange` | notification | `m_store.update()` → `m_diagnostics.publish()` |
+| `textDocument/didOpen` | notification | `m_store.open()` → `m_compiler.compile()` → `m_diagnostics.publish()` |
+| `textDocument/didChange` | notification | `m_store.update()` → `m_compiler.compile()` → `m_diagnostics.publish()` |
 | `textDocument/didClose` | notification | `m_store.close()` |
-| `textDocument/hover` | request | `HoverProvider::getHover()` |
-| `textDocument/definition` | request | `DefinitionProvider::getDefinition()` |
-| `textDocument/references` | request | `ReferencesProvider::getReferences()` |
-| `textDocument/completion` | request | `CompletionProvider::getCompletion()` |
-| `textDocument/documentSymbol` | request | `DocumentSymbolsProvider::getDocumentSymbols()` |
-| `workspace/symbol` | request | `WorkspaceSymbolsProvider::getWorkspaceSymbols()` |
-| `textDocument/rename` | request | `RenameProvider::getRename()` |
-| `textDocument/signatureHelp` | request | `SignatureHelpProvider::getSignatureHelp()` |
+| `textDocument/hover` | request | `HoverProvider::getHover(params, m_symbolDb, docText)` |
+| `textDocument/definition` | request | `DefinitionProvider::getDefinition(params, m_symbolDb, docText)` |
+| `textDocument/references` | request | `ReferencesProvider::getReferences(params)` — null |
+| `textDocument/completion` | request | `CompletionProvider::getCompletion(params, m_symbolDb, docText)` |
+| `textDocument/documentSymbol` | request | `DocumentSymbolsProvider::getDocumentSymbols(params, m_symbolDb)` |
+| `workspace/symbol` | request | `WorkspaceSymbolsProvider::getWorkspaceSymbols(params, m_symbolDb)` |
+| `textDocument/rename` | request | `RenameProvider::getRename(params)` — null |
+| `textDocument/signatureHelp` | request | `SignatureHelpProvider::getSignatureHelp(params)` — null |
 
 ---
 
@@ -209,10 +225,11 @@ Helper functions: `svlsp-test/open-file`, `svlsp-test/wait-for-lsp`, `svlsp-test
 | Transport | stdio (stdin/stdout) | `src/main.cpp` |
 | Compiler | g++-13 | `CMakePresets.json` |
 | Parser generator | ANTLR4 v4.13.2 (FetchContent) | `CMakeLists.txt` |
-| Database | SQLite3 (Phase 5, not started) | `plan.md` §5 |
+| Database | SQLite3 (amalgamation, schema v2) | `src/db/schema.h` |
 | SV directive taxonomy | Two-pass: strip compiler directives first, preprocess second | `docs/decisions/sv-preprocessor.md` (complete) |
 | `__FILE__` / `__LINE__` | Resolved in pass 1 against original source, before include shifts line numbers | `plan.md §4.2b` |
 | SV preprocessor tool | Minimal in-house C++ — slang upgrade path documented | `docs/decisions/sv-preprocessor.md` (complete) |
+| SQLite ORDER BY after UNION ALL | Expressions like `length(scope)` are not allowed; sort in C++ | `src/db/symbol_database.cpp findSymbolsVisibleAt` |
 
 ---
 
@@ -230,19 +247,19 @@ Helper functions: `svlsp-test/open-file`, `svlsp-test/wait-for-lsp`, `svlsp-test
 | Sub-phase | Feature | LSP method | Status |
 |---|---|---|---|
 | 3.1 | Text document sync | `didOpen`, `didChange`, `didClose` | Complete |
-| 3.2 | Diagnostics | `textDocument/publishDiagnostics` | Complete (empty push — real errors in Phase 4) |
-| 3.3 | Hover | `textDocument/hover` | Complete (null — Phase 4) |
-| 3.4 | Go-to-definition | `textDocument/definition` | Complete (null — Phase 4) |
-| 3.5 | Find references | `textDocument/references` | Complete (null — Phase 4) |
-| 3.6 | Completion | `textDocument/completion` | Complete (null — Phase 4) |
-| 3.7 | Document symbols | `textDocument/documentSymbol` | Complete (null — Phase 4) |
-| 3.8 | Workspace symbols | `workspace/symbol` | Complete (null — Phase 4) |
-| 3.9 | Rename | `textDocument/rename` | Complete (null — Phase 4) |
-| 3.10 | Signature help | `textDocument/signatureHelp` | Complete (null — Phase 4) |
+| 3.2 | Diagnostics | `textDocument/publishDiagnostics` | Complete |
+| 3.3 | Hover | `textDocument/hover` | Complete (real results — Phase 6.1) |
+| 3.4 | Go-to-definition | `textDocument/definition` | Complete (real results — Phase 6.1) |
+| 3.5 | Find references | `textDocument/references` | Wired (null — Phase 6.2+) |
+| 3.6 | Completion | `textDocument/completion` | Complete (real results — Phase 6.1) |
+| 3.7 | Document symbols | `textDocument/documentSymbol` | Complete (real results — Phase 6.1) |
+| 3.8 | Workspace symbols | `workspace/symbol` | Complete (real results — Phase 6.1) |
+| 3.9 | Rename | `textDocument/rename` | Wired (null — Phase 6.2+) |
+| 3.10 | Signature help | `textDocument/signatureHelp` | Wired (null — Phase 6.2+) |
 
 ---
 
-## Phase 4 status — In progress
+## Phase 4 status — Complete
 
 ### 4.1 Grammar Integration — Complete
 
@@ -275,242 +292,96 @@ All 20 fixture files exist in `examples/`. All 22 parser test cases pass.
 
 **Grammar quirks discovered during Phase 4.2** (see section below).
 
-Unit test count: 70 cases, 97 assertions (was 52/79 before Phase 4.2).
-
 ### 4.2a Directive Taxonomy and Scope — Complete
 
-All IEEE 1800-2017 §22 backtick directives classified into two processing passes.
-ADR created: `docs/decisions/sv-preprocessor.md` (taxonomy section complete; tool decision
-added in §4.2c).
-
 Two-pass pipeline:
-- **Pass 1 — compiler directive strip (§4.2b):** metadata directives that do not transform
-  text (`timescale, `default_nettype, `celldefine/`endcelldefine, `unconnected_drive/
-  `nounconnected_drive, `resetall, `begin_keywords/`end_keywords, `pragma, `line).
-  `__FILE__` and `__LINE__` are also resolved here — substituted with the original source
-  path and line number before include insertions shift line counts or a temp buffer is
-  created.
-- **Pass 2 — preprocessor (§4.2c):** text-stream transformers (`define/`undef/`undefineall,
-  `ifdef/`ifndef/`elsif/`else/`endif, `include, macro invocations).
+- **Pass 1 — compiler directive strip (§4.2b):** metadata directives, `__FILE__`, `__LINE__`
+- **Pass 2 — preprocessor (§4.2c):** `` `define ``, `` `ifdef ``, `` `include ``, macro invocations
 
 ### 4.2b Compiler Directive Strip Pass — Complete
 
-Dependency-free, line-oriented C++ pass. Each stripped directive line is replaced with a
-blank line so downstream passes see the same line numbers as the original source.
-`__FILE__` and `__LINE__` are substituted inline before directive detection runs.
-
-Files added:
-- `src/compiler/compiler_directive_stripper.h` — `DirectiveKind` enum, `DirectiveRecord`
-  struct `{ kind, value, line }`, `StripResult` struct, `CompilerDirectiveStripper` class
-- `src/compiler/compiler_directive_stripper.cpp`
-- `tests/unit/compiler/test_compiler_directive_stripper.cpp`
-
-19 unit tests, 67 assertions. Full suite: 89 tests, 182 assertions.
-
-Note: trailing `//` line comments are stripped from recorded directive values
-(e.g. `` `timescale 1ns/1ps // comment `` records value `"1ns/1ps"`).
+`src/compiler/compiler_directive_stripper.h/.cpp`, `tests/unit/compiler/test_compiler_directive_stripper.cpp`
 
 ### 4.2c Preprocessor Tool Selection and Integration — Complete
 
-**Decision:** minimal in-house C++ implementation (see `docs/decisions/sv-preprocessor.md`).
-slang was the preferred external option (MIT, embeddable) but its preprocessor outputs a
-token stream rather than source text, making reconstruction complex. The `SvPreprocessor`
-interface isolates the choice — slang can be swapped in later without changing callers.
-
-Files added:
-- `src/compiler/sv_preprocessor.h` — `PreprocessorResult` struct, `SvPreprocessor` class
-- `src/compiler/sv_preprocessor.cpp` — object-like and function-like macros, conditional
-  compilation, `include, recursive expansion (32-level guard), undefined macro errors
-- `tests/unit/compiler/test_sv_preprocessor.cpp`
-
-Key implementation notes:
-- Function-like param substitution uses bare-identifier replacement (not backtick) before
-  the backtick expansion pass — params in SV macro bodies are plain identifiers per LRM
-- Directive lines replaced with blank lines; `include inserts content inline (no blank line)
-- `undefineall` clears the entire macro table
-- Stringification (`` `" ``) and token-pasting (`` `​`` ``) not implemented — record as
-  future enhancement if UVM support is needed
-
-23 unit tests, 52 assertions. Full suite: 112 tests, 234 assertions.
+`src/compiler/sv_preprocessor.h/.cpp`, `tests/unit/compiler/test_sv_preprocessor.cpp`
 
 ### 4.3 AST Visitor / Listener — Complete
 
-`SvTreeWalker` in `src/compiler/sv_tree_walker.h/.cpp`. Wraps the full ANTLR4 pipeline
-(lexer → parser → tree walk) behind a single `SvTreeWalker::walk(source)` call that
-returns `WalkResult { records, parseErrors }`.
+`SvTreeWalker` in `src/compiler/sv_tree_walker.h/.cpp`.
 
-Internal `SvRecordListener : SvBaseListener` (named to avoid collision with the generated
-`SvListener` interface) hooks nine grammar rules:
-
-| Rule hooked | Record kind |
-|---|---|
-| `module_ansi_header` / `module_nonansi_header` | Module |
-| `interface_ansi_header` / `interface_nonansi_header` | Interface |
-| `package_declaration` | Package |
-| `class_declaration` | Class |
-| `function_body_declaration` | Function |
-| `task_body_declaration` | Task |
-| `ansi_port_declaration` | Port |
-
-Each record carries `{ kind, name, line, column }`. `svlsp_antlr4` is now linked into
-`svlsp_lib` so all compiler sources can include generated headers without extra wiring.
-
-Files added: `src/compiler/parse_record.h`, `src/compiler/sv_tree_walker.h/.cpp`,
-`tests/unit/compiler/test_sv_listener.cpp`.
-17 unit tests, 51 assertions. Full suite: 129 tests, 285 assertions (before Phase 4.4).
+Scope stack tracks Module/Interface/Package/Class/Function/Task — names are pushed on
+enter hooks and popped on exit hooks. Each `ParseRecord` carries the `scope` chain
+(e.g. `"MyModule::MyClass"`) and `endLine` (last line of scope body, for range building).
+Exit hooks call `backpatchEndLine` to patch the record after the closing token is seen.
 
 ### 4.4 Symbol Extraction — Complete
 
-`ParseRecord` extended with `parent` (containing scope name) and `detail` (direction,
-parent class, return type, macro body) fields. Three new kinds added: `Signal`, `Parameter`,
-`Macro`.
+`ParseRecord` fields: `kind, name, line, column, parent, detail, endLine, scope`.
 
-`SvRecordListener` gains a scope stack; all Module/Interface/Package/Class/Function/Task
-enter hooks push the name, exit hooks pop. Signal records emitted from `enterData_declaration`
-and `enterNet_declaration`; Parameter records from `enterParameter_declaration` and
-`enterLocal_parameter_declaration`; port direction in `detail`.
-
-`SvPreprocessor::process()` now returns `PreprocessorResult::macros` — a vector of
-`MacroRecord { name, body, line }` for every `` `define `` in an active branch.
-
-24 new tests. Full suite: **153 tests, 363 assertions**.
+- `endLine` — 1-based last line of scope body; 0 for leaf symbols (ports, signals, parameters)
+- `scope` — full enclosing scope chain (e.g. `"MyModule::MyClass"`); `""` for top-level symbols
 
 ### 4.5 Error Recovery — Complete
 
-`ParseError { line, column, message }` added to `src/compiler/parse_record.h`.
-`WalkResult::parseErrors` changed from `int` to `std::vector<ParseError>`.
-
-`SvErrorListener : public antlr4::BaseErrorListener` installed on both lexer
-and parser inside `SvTreeWalker::walk()` — collects all syntax errors from both
-tokenisation and parsing into a single vector.
-
-`DiagnosticsPublisher::buildDiagnostic(ParseError)` converts a compiler error to
-an `lsp::Diagnostic` (ANTLR4 1-based lines → LSP 0-based, single-char range,
-`DiagnosticSeverity::Error`). Declared in `src/lsp/diagnostics.h`.
-
-`LanguageServer::parseDiagnostics()` in `src/lsp/server.cpp` wires the full
-pipeline (CompilerDirectiveStripper → SvPreprocessor → SvTreeWalker) and is
-called from both `didOpen` and `didChange` handlers. `FileUri::path()` provides
-the filesystem path from the LSP URI.
-
-11 new unit tests in `tests/unit/compiler/test_sv_error_recovery.cpp`.
-3 new integration tests in `tests/integration/test_13_diagnostics_parse_errors.sh`
-(zero diags for valid file; non-zero for `fixtures/syntax_error.sv`; cleared after fix).
-Full unit suite: **164 tests, 382 assertions**.
+`ParseError { line, column, message }`. `SvErrorListener` installed on lexer + parser.
+`DiagnosticsPublisher::buildDiagnostic(ParseError)` converts to `lsp::Diagnostic`.
 
 ### 4.6 Incremental Parsing — Complete
 
-`ParseCache` in `src/compiler/parse_cache.h/.cpp` maps `uri.toString() →
-{std::hash<string> content hash, WalkResult}`.
-
-`LanguageServer::parseDiagnostics()` checks `m_parseCache.isUpToDate()` before
-running the pipeline; on a hash match the cached `WalkResult` is returned
-directly, skipping the full CompilerDirectiveStripper → SvPreprocessor →
-SvTreeWalker pipeline. `didClose` calls `m_parseCache.evict()` so the next
-open triggers a fresh parse.
-
-Phase 5.4 will replace the in-memory hash with SQLite-backed persistence so
-the cache survives across server restarts.
-
-10 new unit tests in `tests/unit/compiler/test_parse_cache.cpp`.
-4 new integration tests in `tests/integration/test_14_incremental_parsing.sh`.
-Full unit suite: **174 tests, 398 assertions**.
-
-After Phase 4 is complete, replace `nullptr` returns in all Phase 3 providers with real symbol queries.
+`ParseCache` replaced by `CompilationController` (Phase 5.4) which uses SQLite hash storage.
 
 ---
 
 ## Phase 5 — SQLite Database Layer — Complete
 
-### 5.1 Schema Design — Complete
+### Schema v2
 
-Schema defined as an embedded SQL string in `src/db/schema.h`.
-Version constant `db::SCHEMA_VERSION = 1`, DDL string `db::SCHEMA_DDL`.
+Defined in `src/db/schema.h`. `db::SCHEMA_VERSION = 2`.
 
 Three tables:
-- `files (id, path UNIQUE, content_hash, parsed_at)` — one row per compiled file
-- `symbols (id, file_id→files, kind, name, line, col, parent, detail)` — all
-  `ParseRecord` kinds in a single table; indexes on `name` and `file_id`
-- `diagnostics (id, file_id→files, line, col, message)` — `ParseError` records;
-  index on `file_id`
+- `files (id, path UNIQUE, content_hash, parsed_at)`
+- `symbols (id, file_id→files, kind, name, line, col, parent, detail, end_line, scope)` —
+  indexes on `name`, `file_id`, `scope`, `(scope,name)`, `(file_id,line,end_line)`
+- `diagnostics (id, file_id→files, line, col, message)`
 
-Foreign keys use `ON DELETE CASCADE` so deleting a file row cleans up its
-symbols and diagnostics automatically.
+Migration `MIGRATION_V1_TO_V2` adds `end_line` and `scope` columns plus three new indexes;
+`initSchema()` in `database.cpp` runs it automatically when `schemaVersion() < 2`.
 
 ### 5.2 Database Abstraction Layer — Complete
 
-`src/db/database.h/.cpp` — RAII `Database` wrapper around `sqlite3*`:
-- `Database(path)` — opens or creates; `":memory:"` for unit tests
-- `initSchema()` — idempotent; creates tables on first call, migration hook
-  for future versions
-- `schemaVersion()` — reads `schema_version` table; returns 0 if absent
-- `execute(sql)` — DDL / non-query statements; throws `std::runtime_error`
-- `prepare(sql) → Statement` — RAII prepared statement
-- `Statement::bind(idx, int|int64|string)`, `step()`, `columnInt/Text()`,
-  `reset()`, chaining returns `Statement&`
-- `lastInsertRowId()` — delegates to `sqlite3_last_insert_rowid`
-
-13 unit tests in `tests/unit/db/test_database.cpp`.
+`src/db/database.h/.cpp` — RAII `Database` wrapper around `sqlite3*`.
 
 ### 5.3 Query API — Complete
 
-`src/db/symbol_database.h/.cpp` — typed access layer over the schema:
-- `upsertFile(path, hash) → file_id` — INSERT or UPDATE; stable id for same path
-- `getFileHash(path) → string` — returns `""` for unknown paths
-- `replaceSymbols(file_id, records)` — DELETE + INSERT in a transaction
-- `replaceDiagnostics(file_id, errors)` — DELETE + INSERT in a transaction
-- `symbolsForFile(path) → vector<SymbolRow>` — ordered by line
-- `findSymbolsByName(name) → vector<SymbolRow>` — cross-file, with path
-- `diagnosticsForFile(path) → vector<DiagnosticRow>`
+`src/db/symbol_database.h/.cpp`:
 
-`SymbolRow { id, kind, name, line, col, parent, detail, filePath }`,
-`DiagnosticRow { line, col, message, filePath }`.
+| Method | Description |
+|---|---|
+| `upsertFile(path, hash) → file_id` | INSERT or UPDATE; stable id for same path |
+| `getFileHash(path) → string` | Returns `""` for unknown paths |
+| `replaceSymbols(file_id, records)` | DELETE + INSERT in a transaction (9 columns incl. end_line, scope) |
+| `replaceDiagnostics(file_id, errors)` | DELETE + INSERT in a transaction |
+| `symbolsForFile(path) → vector<SymbolRow>` | Ordered by line |
+| `findSymbolsByName(name) → vector<SymbolRow>` | Cross-file, with path |
+| `diagnosticsForFile(path) → vector<DiagnosticRow>` | |
+| `findSymbolsInScope(scope) → vector<SymbolRow>` | All symbols with exactly this scope value |
+| `findSymbolsByNamePrefix(prefix) → vector<SymbolRow>` | LIKE `prefix%`, cross-file |
+| `scopeAtPosition(path, line) → string` | Innermost scope-defining symbol containing `line` (1-based); returns `""` if top-level |
+| `findSymbolsVisibleAt(path, line) → vector<SymbolRow>` | UNION ALL: file-local symbols in scope chain + cross-file top-level symbols; C++ sorted by scope depth then name |
 
-15 unit tests in `tests/unit/db/test_symbol_database.cpp`.
+`SymbolRow { id, kind, name, line, col, parent, detail, filePath, endLine, scope }`.
+
+**SQLite UNION ALL ORDER BY limitation:** expressions like `length(scope)` are not
+allowed in `ORDER BY` after a compound SELECT — only bare output column names are valid.
+`findSymbolsVisibleAt` therefore omits the `ORDER BY` clause and sorts with `std::sort`
+in C++ after fetching all rows.
 
 ### 5.4 Incremental Compilation Controller — Complete
 
-`src/db/compilation_controller.h/.cpp` — replaces `ParseCache` (Phase 4.6):
-- `CompilationController(SymbolDatabase&)`
-- `compile(path, text) → vector<ParseError>` — checks `getFileHash(path)`
-  against `std::hash<string>(text)`; on match returns diagnostics from DB
-  (no re-parse); on mismatch runs full pipeline, updates DB, returns errors
-- `hashContent(text)` — `std::to_string(std::hash<string>{}(text))`; upgrade
-  path to SHA-256 noted for cross-session persistence
+`src/db/compilation_controller.h/.cpp` — hash check → skip or recompile → update DB.
 
-`LanguageServer` updated: `ParseCache` removed; `m_db (":memory:")`,
-`m_symbolDb`, `m_compiler` added as members (in that construction order).
-`parseDiagnostics()` now delegates to `m_compiler.compile(path, text)`.
-`didClose` no longer needs to evict — DB hash comparison handles re-opens.
-
-9 unit tests in `tests/unit/db/test_compilation_controller.cpp`.
-
-Full unit suite: **211 tests, 471 assertions**.
-
-### Build issues resolved
-
-1. `project(LANGUAGES CXX C)` needed for SQLite amalgamation `.c` file.
-2. `target_link_libraries(svlsp_sqlite3 PUBLIC ${CMAKE_DL_LIBS})` needed for
-   `dlsym` on Linux.
-3. `CMAKE_C_COMPILER gcc-13` added to `CMakePresets.json` — system `gcc-7`
-   was being used, which injected `-L/usr/lib/gcc/x86_64-linux-gnu/7` and
-   hid the UBSan/ASan runtime. Stale `CMakeCache.txt` required deletion.
-4. **Circular dependency** — `compilation_controller.cpp` (in `svlsp_db`) uses
-   `CompilerDirectiveStripper`, `SvPreprocessor`, `SvTreeWalker` which were in
-   `svlsp_lib`, but `svlsp_lib` also linked `svlsp_db`. Fixed by extracting those
-   compiler sources into a new `svlsp_compiler` static lib; `svlsp_db` links
-   `svlsp_compiler`; `svlsp_lib` links both.
-5. **ODR violation in tests** — both `test_symbol_database.cpp` and
-   `test_compilation_controller.cpp` defined `struct Fixture` at global scope.
-   The linker selected the wrong constructor, leaving `CompilationController::m_sdb`
-   as a null reference (visible only under ASan/UBSan). Fixed by wrapping both
-   `Fixture` definitions in `namespace { }`.
-
-### SQLite3 dependency in CMake
-
-`find_package(SQLite3 QUIET)` first; falls back to FetchContent amalgamation
-3.47.0 from `https://www.sqlite.org/2024/sqlite-amalgamation-3470000.zip`.
-Builds as `svlsp_sqlite3` static library. Final library dependency graph:
+### Library dependency graph
 
 ```
 svlsp_compiler  (compiler_directive_stripper, sv_preprocessor, sv_tree_walker, parse_cache)
@@ -528,9 +399,43 @@ svlsp_lib  (lsp/*, no compiler sources)
 
 ---
 
-## Sv.g4 grammar quirks (discovered in Phase 4.2)
+## Phase 6.1 — DB-Backed LSP Providers — Complete
 
-These are bugs or limitations in the `miguel-guerrero` grammar that fixture authors must work around:
+All five active providers rewritten to query `SymbolDatabase`:
+
+- **DocumentSymbols** (`symbolsForFile`) — builds `DocumentSymbol[]`; scope symbols get a
+  multi-line `range` (`endLine`-based) and a point `selectionRange` at the identifier.
+  Leaf symbols (endLine = 0) get `range == selectionRange`.
+- **WorkspaceSymbols** (`findSymbolsByNamePrefix`) — builds `WorkspaceSymbol[]` with `Location`.
+- **Hover** (`wordAtPosition` + `findSymbolsByName`) — prefers same-file match; returns
+  Markdown `**Kind** \`name\`` with optional detail and scope.
+- **Definition** (`wordAtPosition` + `findSymbolsByName`) — returns first matching `Location`.
+- **Completion** (`findSymbolsVisibleAt`) — scope-aware; filters by any already-typed prefix;
+  returns `CompletionItem[]` with `completionKindFor` and optional `detail`.
+
+Integration tests 05/06/08/09/10 updated from "expect null" to verify real results.
+Unit test suite: **228 tests, 550 assertions**.
+
+### Pending in Phase 6
+
+| Sub-phase | Feature | Status |
+|---|---|---|
+| 6.2 | Multi-file project support (`compile_commands.json`) | Not started |
+| 6.3 | Package import resolution (`import pkg::*`) | Not started — see `plan.md §6.3` |
+| 6.4 | Cross-file invalidation (dependency graph) | Not started — see `plan.md §6.4` |
+| 6.5 | Performance baseline | Not started |
+| 6.6 | Packaging / `make install` | Not started |
+
+**Phase 6.3 note:** `findSymbolsVisibleAt` currently pulls only `scope = ""` symbols from
+other files (the package declarations themselves), not their contents. To fix:
+1. Hook `enterPackage_import_item` in `SvRecordListener` to emit import records.
+2. Add `imports (id, file_id, pkg_name, item)` table (`item = "*"` for wildcard).
+3. Extend `findSymbolsVisibleAt` to consult the imports table and add the imported
+   package scope(s) to the search list.
+
+---
+
+## Sv.g4 grammar quirks (discovered in Phase 4.2)
 
 | Construct | Expected SV | Grammar behaviour | Workaround |
 |---|---|---|---|
@@ -553,5 +458,8 @@ These are bugs or limitations in the `miguel-guerrero` grammar that fixture auth
   in a headless environment.
 - lsp-framework's `messages.h` is generated at build time by `lspgen`. A clean build takes
   longer than a rebuild. This is normal.
-- All Phase 3 providers return `nullptr` (JSON null) until Phase 4 wires in the ANTLR4
-  parser. Editors handle null responses gracefully — no popup, no jump, no list shown.
+- `CompilationController` uses `":memory:"` SQLite — symbols are lost on server restart.
+  Each file must be re-opened for its symbols to reappear. Cross-session persistence
+  requires a file-backed DB path (straightforward swap, just change the path in `server.cpp`).
+- References, rename, and signature help providers still return `nullptr`. These are next
+  after Phase 6.3/6.4.

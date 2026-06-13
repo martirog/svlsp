@@ -50,7 +50,9 @@ make docs        # Both
 - [Phase 2 — LSP Server Setup](phase2-lsp-server-setup.md)
 - [Phase 3 — LSP Feature Implementation](phase3-lsp-features.md)
 - [Phase 4 — ANTLR4 Compiler Front-End](phase4-antlr4-compiler.md)
-- `usage.md` — end-user guide *(added in Phase 6)*
+- [Phase 5 — SQLite Database Layer](phase5-sqlite-database.md)
+- [Phase 6 — End-to-End Integration and Polishing](phase6-lsp-providers.md)
+- `usage.md` — end-user guide *(added in Phase 6.6)*
 
 ## Project Phases
 
@@ -60,6 +62,6 @@ make docs        # Both
 | 1 | Emacs Daemon Test Infrastructure | Complete |
 | 2 | LSP Server Framework Evaluation and Setup | Complete |
 | 3 | LSP Feature Implementation | Complete |
-| 4 | SystemVerilog ANTLR4 Compiler Front-End | In progress |
-| 5 | SQLite Database Layer | Pending |
-| 6 | End-to-End Integration and Polishing | Pending |
+| 4 | SystemVerilog ANTLR4 Compiler Front-End | Complete |
+| 5 | SQLite Database Layer | Complete |
+| 6 | End-to-End Integration and Polishing | In progress (6.1 complete) |
