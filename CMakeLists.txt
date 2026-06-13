@@ -161,6 +161,7 @@ add_library(svlsp_lib STATIC
     src/lsp/rename.cpp
     src/lsp/signature_help.cpp
     src/lsp/server_state.cpp
+    src/lsp/symbol_utils.cpp
     src/lsp/workspace_symbols.cpp
     src/lsp/server.cpp
 )
@@ -180,6 +181,7 @@ add_executable(unit_tests
     tests/unit/main_test.cpp
     tests/unit/lsp/test_server_state.cpp
     tests/unit/lsp/test_document_store.cpp
+    tests/unit/lsp/test_symbol_utils.cpp
     tests/unit/lsp/test_completion.cpp
     tests/unit/lsp/test_definition.cpp
     tests/unit/lsp/test_diagnostics.cpp

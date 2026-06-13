@@ -1,0 +1,88 @@
+#include <catch2/catch_test_macros.hpp>
+#include "lsp/symbol_utils.h"
+
+// ---------------------------------------------------------------------------
+// wordAtPosition
+// ---------------------------------------------------------------------------
+
+TEST_CASE("wordAtPosition: extracts word at cursor", "[symbol_utils]")
+{
+    // 0-based line 0, "module adder"
+    //                   0123456789...
+    CHECK(wordAtPosition("module adder", 0, 0) == "module");
+    CHECK(wordAtPosition("module adder", 0, 2) == "module"); // mid-word
+    CHECK(wordAtPosition("module adder", 0, 7) == "adder");
+    CHECK(wordAtPosition("module adder", 0, 11) == "adder");  // last char
+}
+
+TEST_CASE("wordAtPosition: works on multi-line text", "[symbol_utils]")
+{
+    const std::string src = "module adder (\n  input clk\n);\nendmodule";
+    // line 0: "module adder ("
+    CHECK(wordAtPosition(src, 0, 7)  == "adder");
+    // line 1: "  input clk"
+    CHECK(wordAtPosition(src, 1, 8)  == "clk");
+    // line 2: ");"
+    CHECK(wordAtPosition(src, 2, 0)  == "");
+    // line 3: "endmodule"
+    CHECK(wordAtPosition(src, 3, 0)  == "endmodule");
+}
+
+TEST_CASE("wordAtPosition: returns empty on out-of-range positions", "[symbol_utils]")
+{
+    CHECK(wordAtPosition("module", 1, 0) == ""); // line 1 doesn't exist
+    CHECK(wordAtPosition("module", 0, 99) == ""); // character past EOL
+}
+
+TEST_CASE("wordAtPosition: handles identifiers with $ and _", "[symbol_utils]")
+{
+    const std::string src = "$display _my_var end";
+    CHECK(wordAtPosition(src, 0, 0)  == "$display");
+    CHECK(wordAtPosition(src, 0, 9)  == "_my_var");
+}
+
+TEST_CASE("wordAtPosition: cursor on whitespace finds word to the left", "[symbol_utils]")
+{
+    // Space between 'a' and 'b': cursor is directly after 'a', so 'a' is returned.
+    // This is intentional — completion needs to find the partial word to the left
+    // of the insertion point.
+    CHECK(wordAtPosition("a b", 0, 1) == "a");
+    // But a leading space has nothing to the left.
+    CHECK(wordAtPosition(" b", 0, 0) == "");
+}
+
+// ---------------------------------------------------------------------------
+// symbolKindFor
+// ---------------------------------------------------------------------------
+
+TEST_CASE("symbolKindFor: maps all known kinds", "[symbol_utils]")
+{
+    CHECK(symbolKindFor("Module")    == lsp::SymbolKind::Module);
+    CHECK(symbolKindFor("Interface") == lsp::SymbolKind::Interface);
+    CHECK(symbolKindFor("Package")   == lsp::SymbolKind::Package);
+    CHECK(symbolKindFor("Class")     == lsp::SymbolKind::Class);
+    CHECK(symbolKindFor("Function")  == lsp::SymbolKind::Function);
+    CHECK(symbolKindFor("Task")      == lsp::SymbolKind::Method);
+    CHECK(symbolKindFor("Port")      == lsp::SymbolKind::Field);
+    CHECK(symbolKindFor("Signal")    == lsp::SymbolKind::Variable);
+    CHECK(symbolKindFor("Parameter") == lsp::SymbolKind::Constant);
+    CHECK(symbolKindFor("Macro")     == lsp::SymbolKind::Constant);
+}
+
+TEST_CASE("symbolKindFor: unknown kind falls back to Variable", "[symbol_utils]")
+{
+    CHECK(symbolKindFor("Unknown") == lsp::SymbolKind::Variable);
+}
+
+// ---------------------------------------------------------------------------
+// makeRange
+// ---------------------------------------------------------------------------
+
+TEST_CASE("makeRange: converts 1-based line to 0-based LSP range", "[symbol_utils]")
+{
+    auto r = makeRange(4, 7, 5); // line 4 (1-based) col 7, name len 5
+    CHECK(r.start.line      == 3u);
+    CHECK(r.start.character == 7u);
+    CHECK(r.end.line        == 3u);
+    CHECK(r.end.character   == 12u);
+}

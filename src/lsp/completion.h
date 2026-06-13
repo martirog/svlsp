@@ -1,12 +1,11 @@
 #pragma once
 
 #include <lsp/messages.h>
+#include "db/symbol_database.h"
 
 // CompletionProvider handles textDocument/completion requests.
-// Phase 3: always returns null — no completion candidates until the ANTLR4
-// parser (Phase 4) populates the symbol database.
 class CompletionProvider {
 public:
     static lsp::TextDocument_CompletionResult getCompletion(
-        const lsp::CompletionParams& params);
+        const lsp::CompletionParams& params, SymbolDatabase& db, const std::string& docText);
 };

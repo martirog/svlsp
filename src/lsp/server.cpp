@@ -79,28 +79,37 @@ void LanguageServer::registerHandlers()
                 m_store.close(std::move(params));
             })
         .add<lsp::requests::TextDocument_Hover>(
-            [](lsp::HoverParams&& params) {
-                return HoverProvider::getHover(params);
+            [this](lsp::HoverParams&& params) {
+                if (!m_store.contains(params.textDocument.uri))
+                    return lsp::TextDocument_HoverResult{nullptr};
+                return HoverProvider::getHover(
+                    params, m_symbolDb, m_store.get(params.textDocument.uri).text);
             })
         .add<lsp::requests::TextDocument_Definition>(
-            [](lsp::DefinitionParams&& params) {
-                return DefinitionProvider::getDefinition(params);
+            [this](lsp::DefinitionParams&& params) {
+                if (!m_store.contains(params.textDocument.uri))
+                    return lsp::TextDocument_DefinitionResult{nullptr};
+                return DefinitionProvider::getDefinition(
+                    params, m_symbolDb, m_store.get(params.textDocument.uri).text);
             })
         .add<lsp::requests::TextDocument_References>(
             [](lsp::ReferenceParams&& params) {
                 return ReferencesProvider::getReferences(params);
             })
         .add<lsp::requests::TextDocument_Completion>(
-            [](lsp::CompletionParams&& params) {
-                return CompletionProvider::getCompletion(params);
+            [this](lsp::CompletionParams&& params) {
+                if (!m_store.contains(params.textDocument.uri))
+                    return lsp::TextDocument_CompletionResult{nullptr};
+                return CompletionProvider::getCompletion(
+                    params, m_symbolDb, m_store.get(params.textDocument.uri).text);
             })
         .add<lsp::requests::TextDocument_DocumentSymbol>(
-            [](lsp::DocumentSymbolParams&& params) {
-                return DocumentSymbolsProvider::getDocumentSymbols(params);
+            [this](lsp::DocumentSymbolParams&& params) {
+                return DocumentSymbolsProvider::getDocumentSymbols(params, m_symbolDb);
             })
         .add<lsp::requests::Workspace_Symbol>(
-            [](lsp::WorkspaceSymbolParams&& params) {
-                return WorkspaceSymbolsProvider::getWorkspaceSymbols(params);
+            [this](lsp::WorkspaceSymbolParams&& params) {
+                return WorkspaceSymbolsProvider::getWorkspaceSymbols(params, m_symbolDb);
             })
         .add<lsp::requests::TextDocument_Rename>(
             [](lsp::RenameParams&& params) {

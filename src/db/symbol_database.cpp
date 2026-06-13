@@ -1,5 +1,6 @@
 #include "db/symbol_database.h"
 #include "compiler/parse_record.h"
+#include <algorithm>
 #include <ctime>
 
 // Stringify ParseRecordKind for storage.
@@ -272,6 +273,8 @@ std::vector<SymbolRow> SymbolDatabase::findSymbolsVisibleAt(
         if (i) placeholders += ',';
         placeholders += '?';
     }
+    // SQLite does not allow expressions (e.g. length(…)) in ORDER BY after UNION ALL;
+    // only column names from the first SELECT are permitted.  Sort in C++ instead.
     std::string sql =
         "SELECT s.id,s.kind,s.name,s.line,s.col,s.parent,s.detail,s.end_line,s.scope,f.path "
         "FROM symbols s JOIN files f ON f.id = s.file_id "
@@ -279,8 +282,7 @@ std::vector<SymbolRow> SymbolDatabase::findSymbolsVisibleAt(
         "UNION ALL "
         "SELECT s.id,s.kind,s.name,s.line,s.col,s.parent,s.detail,s.end_line,s.scope,f.path "
         "FROM symbols s JOIN files f ON f.id = s.file_id "
-        "WHERE f.path != ? AND s.scope = '' "
-        "ORDER BY length(s.scope) DESC, s.name";
+        "WHERE f.path != ? AND s.scope = ''";
 
     auto stmt = m_db.prepare(sql);
     int idx = 1;
@@ -290,5 +292,12 @@ std::vector<SymbolRow> SymbolDatabase::findSymbolsVisibleAt(
 
     std::vector<SymbolRow> rows;
     while (stmt.step()) rows.push_back(rowFromStmt(stmt));
+
+    // SQLite forbids expressions in ORDER BY after UNION ALL; sort in C++.
+    std::sort(rows.begin(), rows.end(), [](const SymbolRow& a, const SymbolRow& b) {
+        if (a.scope.size() != b.scope.size())
+            return a.scope.size() > b.scope.size();
+        return a.name < b.name;
+    });
     return rows;
 }

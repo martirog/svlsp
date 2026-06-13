@@ -1,22 +1,20 @@
 #!/usr/bin/env bash
-# test_09_document_symbols.sh — verify that svlsp handles
-# textDocument/documentSymbol without crashing and returns a null result
-# (pre-ANTLR4, no symbol outline yet).
+# test_09_document_symbols.sh — verify that textDocument/documentSymbol returns
+# the real symbol outline from the DB-backed provider (Phase 6).
 #
-# Phase 3.7: the document-symbol handler is wired and routing works, but the
-# server has no parser, so it always responds with JSON null.
-# Phase 4 will return module, interface, function, and task declarations.
-#
-# lsp-request sends a synchronous textDocument/documentSymbol RPC.  JSON null
-# maps to Emacs nil, so a null response is verified with (null result).
+# module_basic.sv contains module adder with ports and a parameter.  After
+# didOpen the server parses the file and stores symbols.  A documentSymbol
+# request should return a non-null array of DocumentSymbol objects.
+# An unknown file URI returns null.
 
 SV_FIXTURE="${SVLSP_ROOT}/examples/module_basic.sv"
 
 section "document symbols (textDocument/documentSymbol)"
 
 if [ ! -x "${SVLSP_BIN}" ]; then
-    skip_test "server alive after documentSymbol request" "svlsp binary not found at ${SVLSP_BIN}"
-    skip_test "documentSymbol returns null (pre-ANTLR4)"  "svlsp binary not found at ${SVLSP_BIN}"
+    skip_test "server alive after documentSymbol request"          "svlsp binary not found at ${SVLSP_BIN}"
+    skip_test "documentSymbol returns symbols for open file"       "svlsp binary not found at ${SVLSP_BIN}"
+    skip_test "documentSymbol returns null for unknown file"       "svlsp binary not found at ${SVLSP_BIN}"
 else
     # --- server survives a documentSymbol request -------------------------
     run_test "server alive after documentSymbol request" \
@@ -38,8 +36,8 @@ else
          (error (format \"elisp-error: %s\" (error-message-string err))))" \
         "t"
 
-    # --- null result (no parser yet) --------------------------------------
-    run_test "documentSymbol returns null (pre-ANTLR4)" \
+    # --- documentSymbol returns a non-null list for an open file ----------
+    run_test "documentSymbol returns symbols for open file" \
         "(condition-case err
            (let* ((buf    (svlsp-test/open-file \"${SV_FIXTURE}\"))
                    (ok     (with-current-buffer buf
@@ -49,6 +47,23 @@ else
                        (with-current-buffer buf
                          (lsp-request \"textDocument/documentSymbol\"
                                       (list :textDocument (list :uri (lsp--buffer-uri))))))))
+             (svlsp-test/close-file buf)
+             (if (and ok (not (null result))) t nil))
+         (error (format \"elisp-error: %s\" (error-message-string err))))" \
+        "t"
+
+    # --- documentSymbol returns null for a file not in the DB -------------
+    run_test "documentSymbol returns null for unknown file" \
+        "(condition-case err
+           (let* ((buf    (svlsp-test/open-file \"${SV_FIXTURE}\"))
+                   (ok     (with-current-buffer buf
+                             (svlsp-test/wait-for-lsp 15)))
+                   (result
+                     (when ok
+                       (with-current-buffer buf
+                         (lsp-request \"textDocument/documentSymbol\"
+                                      (list :textDocument
+                                            (list :uri \"file:///nonexistent/unknown.sv\")))))))
              (svlsp-test/close-file buf)
              (if (and ok (null result)) t nil))
          (error (format \"elisp-error: %s\" (error-message-string err))))" \

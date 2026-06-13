@@ -1,21 +1,20 @@
 #!/usr/bin/env bash
-# test_10_workspace_symbols.sh — verify that svlsp handles workspace/symbol
-# without crashing and returns a null result (pre-ANTLR4, no symbol DB yet).
+# test_10_workspace_symbols.sh — verify that workspace/symbol returns real
+# results from the DB-backed workspace symbol provider (Phase 6).
 #
-# Phase 3.8: the workspace-symbol handler is wired and routing works, but the
-# server has no parser or database, so it always responds with JSON null.
-# Phase 4 will search the symbol table across all open files.
-#
-# lsp-request sends a synchronous workspace/symbol RPC.  JSON null maps to
-# Emacs nil, so a null response is verified with (null result).
+# After opening module_basic.sv the server parses it, so workspace/symbol
+# with query "adder" should return a non-null list containing the module.
+# An empty query ("") also returns all symbols (non-null).
+# A query that matches nothing ("zzz_no_match") returns null.
 
 SV_FIXTURE="${SVLSP_ROOT}/examples/module_basic.sv"
 
 section "workspace symbols (workspace/symbol)"
 
 if [ ! -x "${SVLSP_BIN}" ]; then
-    skip_test "server alive after workspace/symbol request" "svlsp binary not found at ${SVLSP_BIN}"
-    skip_test "workspace/symbol returns null (pre-ANTLR4)"  "svlsp binary not found at ${SVLSP_BIN}"
+    skip_test "server alive after workspace/symbol request"      "svlsp binary not found at ${SVLSP_BIN}"
+    skip_test "workspace/symbol returns adder for query 'adder'" "svlsp binary not found at ${SVLSP_BIN}"
+    skip_test "workspace/symbol returns null for no-match query" "svlsp binary not found at ${SVLSP_BIN}"
 else
     # --- server survives a workspace/symbol request -----------------------
     run_test "server alive after workspace/symbol request" \
@@ -38,8 +37,8 @@ else
          (error (format \"elisp-error: %s\" (error-message-string err))))" \
         "t"
 
-    # --- null result (no symbol DB yet) -----------------------------------
-    run_test "workspace/symbol returns null (pre-ANTLR4)" \
+    # --- query "adder" returns the adder module ---------------------------
+    run_test "workspace/symbol returns adder for query 'adder'" \
         "(condition-case err
            (let* ((buf    (svlsp-test/open-file \"${SV_FIXTURE}\"))
                    (ok     (with-current-buffer buf
@@ -48,7 +47,23 @@ else
                      (when ok
                        (with-current-buffer buf
                          (lsp-request \"workspace/symbol\"
-                                      (list :query \"my_module\"))))))
+                                      (list :query \"adder\"))))))
+             (svlsp-test/close-file buf)
+             (if (and ok (not (null result))) t nil))
+         (error (format \"elisp-error: %s\" (error-message-string err))))" \
+        "t"
+
+    # --- query with no match returns null ---------------------------------
+    run_test "workspace/symbol returns null for no-match query" \
+        "(condition-case err
+           (let* ((buf    (svlsp-test/open-file \"${SV_FIXTURE}\"))
+                   (ok     (with-current-buffer buf
+                             (svlsp-test/wait-for-lsp 15)))
+                   (result
+                     (when ok
+                       (with-current-buffer buf
+                         (lsp-request \"workspace/symbol\"
+                                      (list :query \"zzz_no_match\"))))))
              (svlsp-test/close-file buf)
              (if (and ok (null result)) t nil))
          (error (format \"elisp-error: %s\" (error-message-string err))))" \

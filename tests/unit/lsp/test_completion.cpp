@@ -1,8 +1,20 @@
 #include <catch2/catch_test_macros.hpp>
 #include "lsp/completion.h"
+#include "db/database.h"
+#include "db/symbol_database.h"
+#include "compiler/parse_record.h"
+#include <algorithm>
 
-static lsp::CompletionParams makeParams(std::string_view path, unsigned line, unsigned col)
-{
+namespace {
+
+struct Fixture {
+    Database       db{":memory:"};
+    SymbolDatabase sdb{db};
+
+    Fixture() { db.initSchema(); }
+};
+
+lsp::CompletionParams makeParams(std::string_view path, unsigned line, unsigned col) {
     lsp::CompletionParams p;
     p.textDocument.uri   = lsp::DocumentUri::fromPath(path);
     p.position.line      = line;
@@ -10,26 +22,80 @@ static lsp::CompletionParams makeParams(std::string_view path, unsigned line, un
     return p;
 }
 
-// ---------------------------------------------------------------------------
-// Phase 3: always returns null (no symbol DB yet)
-// ---------------------------------------------------------------------------
+bool hasItem(const lsp::Array<lsp::CompletionItem>& items, std::string_view name) {
+    return std::any_of(items.begin(), items.end(),
+                       [&](const auto& i){ return i.label == name; });
+}
 
-TEST_CASE("CompletionProvider: returns null at position (0,0)", "[completion]")
+} // namespace
+
+TEST_CASE("CompletionProvider: null when no symbols visible", "[completion]")
 {
-    auto result = CompletionProvider::getCompletion(makeParams("/tmp/test.sv", 0, 0));
+    Fixture f;
+    // Empty DB — no symbols to complete
+    const std::string text = "module top;\n  \nendmodule";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 1, 2), f.sdb, text);
     REQUIRE(result.isNull());
 }
 
-TEST_CASE("CompletionProvider: returns null at arbitrary position", "[completion]")
+TEST_CASE("CompletionProvider: returns top-level symbols from all files", "[completion]")
 {
-    auto result = CompletionProvider::getCompletion(makeParams("/tmp/test.sv", 10, 5));
-    REQUIRE(result.isNull());
+    Fixture f;
+    // Two separate files, both define modules at the top level (scope = "")
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/a.sv", "h"),
+        {{ParseRecordKind::Module, "adder",   1, 7, "", "", 10, ""}});
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/b.sv", "h"),
+        {{ParseRecordKind::Module, "arbiter", 1, 7, "", "", 20, ""}});
+
+    // Cursor at line 0 char 0 of /top.sv (not in DB — empty scope)
+    const std::string text = " ";
+    auto result = CompletionProvider::getCompletion(makeParams("/top.sv", 0, 0), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "adder"));
+    CHECK(hasItem(items, "arbiter"));
 }
 
-TEST_CASE("CompletionProvider: returns null for any URI", "[completion]")
+TEST_CASE("CompletionProvider: filters by typed prefix", "[completion]")
 {
-    auto r1 = CompletionProvider::getCompletion(makeParams("/proj/a.sv",  0,  0));
-    auto r2 = CompletionProvider::getCompletion(makeParams("/proj/b.sv", 99, 42));
-    REQUIRE(r1.isNull());
-    REQUIRE(r2.isNull());
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module,    "adder",   1, 7, "", "", 10, ""},
+        {ParseRecordKind::Parameter, "WIDTH",   5, 4, "adder", "", 0, "adder"},
+        {ParseRecordKind::Port,      "clk",     7, 4, "adder", "input", 0, "adder"},
+    });
+
+    // Cursor is positioned right after the partial token "W" on line 4 (inside adder scope)
+    // We're looking for completions starting with "W"
+    // Use line=4 (0-based, maps to 1-based 5 which is inside adder's scope)
+    const std::string text = "module adder #(\n    parameter int WIDTH = 8\n) (\n    input clk\n    W";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 4, 5), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "WIDTH"));
+    CHECK_FALSE(hasItem(items, "clk"));   // doesn't start with "W"
+    CHECK_FALSE(hasItem(items, "adder")); // doesn't start with "W"
+}
+
+TEST_CASE("CompletionProvider: completion items have correct kind", "[completion]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module,   "top",  1, 7, "", "", 20, ""},
+        {ParseRecordKind::Function, "calc", 3, 9, "top", "logic", 8, "top"},
+    });
+
+    const std::string text = " ";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 0, 0), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    for (const auto& item : items) {
+        if (item.label == "top")
+            CHECK(static_cast<lsp::CompletionItemKind>(item.kind.value()) == lsp::CompletionItemKind::Module);
+        if (item.label == "calc")
+            CHECK(static_cast<lsp::CompletionItemKind>(item.kind.value()) == lsp::CompletionItemKind::Function);
+    }
 }
