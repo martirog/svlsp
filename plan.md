@@ -425,12 +425,64 @@ any gaps discovered.
 - The `CompilationDriver` (§4.2a / §5.4) reads these switches from the project file and
   threads them through the preprocess → parse → extract pipeline.
 
-### 6.3 Performance Baseline
+### 6.3 Package Import Resolution
+
+**Why this is needed:** After `import pkg::MyClass` or `import pkg::*`, the identifier
+`MyClass` must resolve to `pkg::MyClass` without the `pkg::` prefix. The current
+`findSymbolsVisibleAt` only pulls `scope = ""` symbols from other files (i.e. the
+packages themselves), not their contents. A class inside a package has
+`scope = "pkg"` and is invisible at the caller's scope chain unless imports are tracked.
+
+**What is missing:**
+- `SvRecordListener` must hook `enterPackage_import_item` (grammar rule 696) and emit
+  an `ImportRecord { pkgName, itemName /* or "*" */, line }`.
+- A new DB table `imports (id, file_id → files, pkg_name, item TEXT)` where
+  `item = "*"` means wildcard.
+- `findSymbolsVisibleAt(path, line)` must consult `imports` for the current file:
+  - `import pkg::ClassName` — add scope `"pkg"` to the search list, filtered to
+    that single name (or add `pkg::ClassName` directly to a candidate set).
+  - `import pkg::*` — add scope `"pkg"` to the search list unconditionally.
+
+**Integration tests (once Phase 6 LSP providers are wired):**
+- `test_15_import_single.sh`: open a file that does `import util_pkg::MyClass`, hover
+  over `MyClass`, verify the definition points into `util_pkg.sv`.
+- `test_16_import_star.sh`: `import util_pkg::*`, request completion inside the module,
+  verify all package-level symbols appear in the list.
+
+### 6.4 Cross-File Invalidation
+
+**Why this is needed:** `CompilationController` is single-file: it recompiles a file
+when its own content hash changes, but does not detect that other files referencing its
+symbols may now be broken. If `MyClass` in `a.sv` loses a field and `b.sv` uses that
+field, editing `a.sv` must eventually flag `b.sv` as stale and re-check it.
+
+**What is missing:**
+- A `file_dependencies` table `(dependent_file_id → files, dependency_file_id → files)`
+  recording "dependent uses at least one symbol defined in dependency".
+  - Populated during compilation: for each identifier reference resolved to a symbol
+    in another file, record the edge. (Requires a reference-resolution pass, which is
+    part of Phase 6 provider wiring anyway.)
+- `CompilationController::compile(path, text)` after updating file A must:
+  1. Query `file_dependencies` for all files that depend on A.
+  2. For each dependent file, call `compile` recursively (or queue it for background
+     recompilation) so its diagnostics are refreshed.
+- Cycle guard: a file may indirectly depend on itself (mutual use); use a visited set.
+
+**Integration tests (once provider wiring and import resolution are done):**
+- `test_17_cross_file_error_propagation.sh`:
+  1. Compile a project with `class_def.sv` (defines `MyClass` with field `x`) and
+     `consumer.sv` (uses `MyClass.x`). Both show no diagnostics.
+  2. Edit `class_def.sv` to remove field `x` via `didChange`.
+  3. Verify that `consumer.sv` now has a diagnostic on the broken reference,
+     without the user explicitly touching `consumer.sv`.
+- `test_18_cross_file_error_cleared.sh`: restore field `x`, verify consumer clears.
+
+### 6.5 Performance Baseline
 - Measure and document: time to parse a large SystemVerilog file, time to answer a
   `definition` query, memory footprint.
 - Set minimum acceptable thresholds; add a `make benchmark` target.
 
-### 6.4 Packaging
+### 6.6 Packaging
 - A `make install` CMake target that places the `svlsp` binary and a sample `lsp-mode`
   Emacs snippet in a known location.
 - A brief user guide in `docs/usage.md`.
