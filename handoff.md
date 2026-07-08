@@ -1,8 +1,8 @@
 # svlsp — Handoff Document
 
-**Date:** 2026-06-13  
-**Last completed phase:** Phase 3 complete; Phase 4.1–4.6 complete; Phase 5.1–5.4 complete; Phase 6.1 complete  
-**Current work:** Phase 6.2+ — multi-file project support, package import resolution, cross-file invalidation
+**Date:** 2026-07-08  
+**Last completed phase:** Phase 6.3 complete (6.1 — DB-backed providers; 6.3 — package import resolution)  
+**Current work:** None in progress; next is Phase 6.2 (multi-file project support) or 6.4 (cross-file invalidation)
 
 ---
 
@@ -28,10 +28,10 @@ src/lsp/           server_state, server, document_store, diagnostics,
 src/compiler/      compiler_directive_stripper, sv_preprocessor, sv_tree_walker,
                    parse_record, parse_cache — compiler front-end (Phase 4 complete)
 src/db/            database, symbol_database, compilation_controller,
-                   schema — SQLite persistence layer (Phase 5 complete, schema v2)
+                   schema — SQLite persistence layer (Phase 5 complete, schema v3)
 src/main.cpp       entry point
-tests/unit/        Catch2 unit tests (228 cases, 550 assertions)
-tests/integration/ Emacs functional test scripts (15 files, ~45 test cases)
+tests/unit/        Catch2 unit tests (246 cases, 618 assertions)
+tests/integration/ Emacs functional test scripts (17 files, 73 test cases)
 tools/             emacs-test-daemon.sh, emacs-test-init.el, emacs-test-lib.sh
 examples/          20 .sv fixture files (all created in Phase 4.2)
 grammar/           Sv.g4 — 3828-line SystemVerilog grammar (Phase 4.1 complete)
@@ -61,7 +61,7 @@ make test-unit
 build/debug/unit_tests "[compiler][parser]"
 
 # Integration tests (Emacs daemon, requires display or Xvfb)
-DISPLAY=:99 make test-integration   # runs all 15 test files
+DISPLAY=:99 make test-integration   # runs all 17 test files
 # or individually:
 bash tools/emacs-test-daemon.sh tests/integration/test_05_hover.sh
 
@@ -225,7 +225,7 @@ Helper functions: `svlsp-test/open-file`, `svlsp-test/wait-for-lsp`, `svlsp-test
 | Transport | stdio (stdin/stdout) | `src/main.cpp` |
 | Compiler | g++-13 | `CMakePresets.json` |
 | Parser generator | ANTLR4 v4.13.2 (FetchContent) | `CMakeLists.txt` |
-| Database | SQLite3 (amalgamation, schema v2) | `src/db/schema.h` |
+| Database | SQLite3 (amalgamation, schema v3) | `src/db/schema.h` |
 | SV directive taxonomy | Two-pass: strip compiler directives first, preprocess second | `docs/decisions/sv-preprocessor.md` (complete) |
 | `__FILE__` / `__LINE__` | Resolved in pass 1 against original source, before include shifts line numbers | `plan.md §4.2b` |
 | SV preprocessor tool | Minimal in-house C++ — slang upgrade path documented | `docs/decisions/sv-preprocessor.md` (complete) |
@@ -335,18 +335,21 @@ Exit hooks call `backpatchEndLine` to patch the record after the closing token i
 
 ## Phase 5 — SQLite Database Layer — Complete
 
-### Schema v2
+### Schema v3
 
-Defined in `src/db/schema.h`. `db::SCHEMA_VERSION = 2`.
+Defined in `src/db/schema.h`. `db::SCHEMA_VERSION = 3`.
 
-Three tables:
+Four tables:
 - `files (id, path UNIQUE, content_hash, parsed_at)`
 - `symbols (id, file_id→files, kind, name, line, col, parent, detail, end_line, scope)` —
   indexes on `name`, `file_id`, `scope`, `(scope,name)`, `(file_id,line,end_line)`
 - `diagnostics (id, file_id→files, line, col, message)`
+- `imports (id, file_id→files, pkg_name, item)` — `item = "*"` for wildcard imports;
+  index on `file_id`
 
-Migration `MIGRATION_V1_TO_V2` adds `end_line` and `scope` columns plus three new indexes;
-`initSchema()` in `database.cpp` runs it automatically when `schemaVersion() < 2`.
+Migrations run automatically in `database.cpp`:
+- `MIGRATION_V1_TO_V2`: adds `end_line` and `scope` columns plus three new indexes
+- `MIGRATION_V2_TO_V3`: adds the `imports` table and its index
 
 ### 5.2 Database Abstraction Layer — Complete
 
@@ -368,7 +371,9 @@ Migration `MIGRATION_V1_TO_V2` adds `end_line` and `scope` columns plus three ne
 | `findSymbolsInScope(scope) → vector<SymbolRow>` | All symbols with exactly this scope value |
 | `findSymbolsByNamePrefix(prefix) → vector<SymbolRow>` | LIKE `prefix%`, cross-file |
 | `scopeAtPosition(path, line) → string` | Innermost scope-defining symbol containing `line` (1-based); returns `""` if top-level |
-| `findSymbolsVisibleAt(path, line) → vector<SymbolRow>` | UNION ALL: file-local symbols in scope chain + cross-file top-level symbols; C++ sorted by scope depth then name |
+| `findSymbolsVisibleAt(path, line) → vector<SymbolRow>` | UNION ALL: (1) file-local scope chain, (2) cross-file top-level + wildcard-imported package scopes, (3) one arm per specific import; C++ sorted by scope depth then name |
+| `replaceImports(file_id, imports)` | DELETE + INSERT import records in a transaction |
+| `importsForFileId(file_id) → vector<ImportRow>` | Returns `{ pkgName, item }` pairs for the given file |
 
 `SymbolRow { id, kind, name, line, col, parent, detail, filePath, endLine, scope }`.
 
@@ -399,6 +404,75 @@ svlsp_lib  (lsp/*, no compiler sources)
 
 ---
 
+## Preprocessor source map — Complete
+
+`SvPreprocessor::process` returns a `sourceMap: vector<SourceLine>` alongside the
+expanded text. Each entry maps one output line (index = line − 1) back to its
+original `{file, line}`:
+
+- `SourceLine.file == ""` → line belongs to the primary compiled file
+- `SourceLine.file == "/path/to/inc.sv"` → line belongs to that included file
+
+`SvTreeWalker::walk` consumes the map via `translateLine`, converting every
+`ParseRecord` and `ParseError` to original-file coordinates before they leave the
+compiler layer. `CompilationController::compile` groups by `file` and calls
+`replaceSymbols`/`replaceDiagnostics` per distinct file, routing included-file
+records to their own `file_id`.
+
+Integration tests 15 (`test_15_preprocessor_lsp.sh`, 9 tests) verify that
+hover, definition, completion, documentSymbol, and workspaceSymbol all report
+correct paths and line numbers through the source map.
+
+---
+
+## Phase 6.3 — Package Import Resolution — Complete
+
+`import pkg::*` (wildcard) and `import pkg::Foo` (specific) imports are now tracked
+and used to extend `findSymbolsVisibleAt`.
+
+### New components
+
+**`ImportRecord`** (`src/compiler/parse_record.h`):
+```cpp
+struct ImportRecord {
+    std::string pkgName;   // package being imported
+    std::string item;      // symbol name, or "*" for wildcard
+    int         line{0};
+    std::string file{};    // empty = primary compiled file
+};
+```
+
+**ANTLR4 hook** (`SvRecordListener::enterPackage_import_item`):
+Fires on every `import pkg::item` statement. Translates the token line via the
+source map and pushes an `ImportRecord` onto `m_imports`. `WalkResult` gains a
+third field: `imports`.
+
+**`imports` DB table** (schema v3):
+`(id, file_id, pkg_name, item)` — `item = "*"` for wildcards. `replaceImports`
+is called by `CompilationController::compile` alongside `replaceSymbols`.
+
+**Extended `findSymbolsVisibleAt`** (`src/db/symbol_database.cpp`):
+Loads the file's import records, then builds a three-part UNION ALL query:
+1. File-local symbols in the scope chain (unchanged)
+2. Cross-file symbols where `scope IN ('', ...wildcardPkgs)` — adds each
+   wildcard-imported package scope to the permitted set
+3. One additional UNION ALL arm per specific import: `scope = pkg AND name = item`
+
+### Tests
+
+Unit: 8 new `[import]` test cases across `test_sv_listener.cpp`,
+`test_symbol_database.cpp`, and `test_compilation_controller.cpp`.
+
+Integration (`test_17_import_resolution.sh`, 10 tests):
+- Prerequisite: open `util_pkg.sv` to seed DB
+- Wildcard: completion includes all three util_pkg symbols (DataItem, Logger, compute)
+- Wildcard: hover on DataItem → non-null; definition → util_pkg.sv at LSP line 2
+- Specific: completion includes DataItem; excludes Logger and compute
+
+Fixtures: `tests/integration/fixtures/{util_pkg,import_wildcard,import_specific}.sv`
+
+---
+
 ## Phase 6.1 — DB-Backed LSP Providers — Complete
 
 All five active providers rewritten to query `SymbolDatabase`:
@@ -414,24 +488,17 @@ All five active providers rewritten to query `SymbolDatabase`:
   returns `CompletionItem[]` with `completionKindFor` and optional `detail`.
 
 Integration tests 05/06/08/09/10 updated from "expect null" to verify real results.
-Unit test suite: **228 tests, 550 assertions**.
 
-### Pending in Phase 6
+### Phase 6 sub-phase status
 
 | Sub-phase | Feature | Status |
 |---|---|---|
+| 6.1 | DB-backed LSP providers | **Complete** |
 | 6.2 | Multi-file project support (`compile_commands.json`) | Not started |
-| 6.3 | Package import resolution (`import pkg::*`) | Not started — see `plan.md §6.3` |
+| 6.3 | Package import resolution (`import pkg::*`) | **Complete** |
 | 6.4 | Cross-file invalidation (dependency graph) | Not started — see `plan.md §6.4` |
 | 6.5 | Performance baseline | Not started |
 | 6.6 | Packaging / `make install` | Not started |
-
-**Phase 6.3 note:** `findSymbolsVisibleAt` currently pulls only `scope = ""` symbols from
-other files (the package declarations themselves), not their contents. To fix:
-1. Hook `enterPackage_import_item` in `SvRecordListener` to emit import records.
-2. Add `imports (id, file_id, pkg_name, item)` table (`item = "*"` for wildcard).
-3. Extend `findSymbolsVisibleAt` to consult the imports table and add the imported
-   package scope(s) to the search list.
 
 ---
 

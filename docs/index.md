@@ -64,4 +64,4 @@ make docs        # Both
 | 3 | LSP Feature Implementation | Complete |
 | 4 | SystemVerilog ANTLR4 Compiler Front-End | Complete |
 | 5 | SQLite Database Layer | Complete |
-| 6 | End-to-End Integration and Polishing | In progress (6.1 complete) |
+| 6 | End-to-End Integration and Polishing | In progress (6.1, 6.3 complete) |

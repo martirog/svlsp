@@ -262,7 +262,7 @@ at line 4, `adder` identifier at character 7):
 
 ### Unit test totals after Phase 6.1
 
-**228 tests, 550 assertions**
+**228 tests, 550 assertions** (246/618 after Phase 6.3)
 
 ---
 
@@ -277,19 +277,101 @@ files. Batch-compile at startup; background re-compile on change. See `plan.md �
 
 ## 6.3 Package Import Resolution
 
-**Status:** Not started
+**Status:** Complete
 
-`findSymbolsVisibleAt` currently only surfaces `scope = ""` symbols from other
-files (the package declarations themselves). Symbols *inside* a package
-(e.g. a class with `scope = "util_pkg"`) remain invisible at the caller's scope
-unless `import util_pkg::MyClass` or `import util_pkg::*` is tracked.
+### Problem
 
-Required work:
-1. Hook `enterPackage_import_item` in `SvRecordListener` — emit import records.
-2. Add `imports (id, file_id, pkg_name, item)` table (`item = "*"` for wildcard).
-3. Extend `findSymbolsVisibleAt` to consult imports and add the imported scope(s).
+`findSymbolsVisibleAt` was surfacing only `scope = ""` symbols from other files
+(the package declarations themselves). Symbols *inside* a package — e.g. a class
+with `scope = "util_pkg"` — remained invisible at the caller's scope even when
+`import util_pkg::*` appeared at the top of the file.
 
-Integration test stubs: `test_15_import_single.sh`, `test_16_import_star.sh`. See `plan.md §6.3`.
+### Design
+
+Three-part extension to `findSymbolsVisibleAt`:
+
+```sql
+-- Part 1 (unchanged): file-local scope chain
+SELECT … WHERE f.path = ? AND s.scope IN (?, …)
+
+UNION ALL
+
+-- Part 2: cross-file top-level + wildcard-imported package scopes
+SELECT … WHERE f.path != ? AND s.scope IN ('', 'util_pkg', …)
+
+UNION ALL
+
+-- Part 3 (one arm per specific import): import pkg::Foo
+SELECT … WHERE s.scope = 'util_pkg' AND s.name = 'Foo'
+```
+
+### New components
+
+**`ImportRecord`** (`src/compiler/parse_record.h`):
+```cpp
+struct ImportRecord {
+    std::string pkgName;   // package being imported
+    std::string item;      // symbol name, or "*" for wildcard
+    int         line{0};
+    std::string file{};    // empty = primary compiled file
+};
+```
+
+`WalkResult` gains a third field `imports`; `SvRecordListener::enterPackage_import_item`
+fires on each `import` statement and pushes an `ImportRecord` (source-map translated).
+
+**`imports` table** (`src/db/schema.h`, schema v3):
+```sql
+CREATE TABLE imports (
+    id       INTEGER PRIMARY KEY,
+    file_id  INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    pkg_name TEXT    NOT NULL,
+    item     TEXT    NOT NULL
+);
+CREATE INDEX idx_imports_file_id ON imports(file_id);
+```
+`item = "*"` for wildcard imports. `replaceImports(file_id, imports)` is called by
+`CompilationController::compile` alongside `replaceSymbols`.
+
+**`SymbolDatabase`** gains:
+- `void replaceImports(int64_t fileId, const std::vector<ImportRecord>&)`
+- `std::vector<ImportRow> importsForFileId(int64_t fileId)` (private)
+- `ImportRow { pkgName, item }`
+
+### Tests
+
+#### Unit tests (8 new cases)
+
+- `test_sv_listener.cpp` (`[import]`): wildcard and specific imports parsed and
+  emitted; source-map translation applies to import line numbers.
+- `test_symbol_database.cpp` (`[import]`): wildcard makes package scope visible;
+  specific import makes exactly that symbol visible; other-package symbols excluded;
+  `replaceImports` clears and rewrites records atomically.
+- `test_compilation_controller.cpp`: import records stored and replaced on recompile.
+
+#### Integration tests (`test_17_import_resolution.sh`, 10 tests)
+
+Fixtures:
+- `util_pkg.sv` — `package util_pkg { class DataItem; class Logger; function compute }`
+- `import_wildcard.sv` — `import util_pkg::*; module wildcard_user { DataItem item; Logger log_obj; }`
+- `import_specific.sv` — `import util_pkg::DataItem; module specific_user { … }`
+
+| Test | Assertion |
+|---|---|
+| prerequisite | util_pkg.sv opens and LSP initialises (seeds DB) |
+| wildcard completion | includes DataItem |
+| wildcard completion | includes Logger |
+| wildcard completion | includes compute |
+| wildcard hover | DataItem → non-null result |
+| wildcard definition | DataItem URI ends with `util_pkg.sv` |
+| wildcard definition | DataItem range.start.line = 2 (LSP 0-based) |
+| specific completion | includes DataItem |
+| specific completion | excludes Logger (not imported) |
+| specific completion | excludes compute (not imported) |
+
+### Unit test totals after Phase 6.3
+
+**246 tests, 618 assertions**
 
 ---
 
@@ -305,8 +387,8 @@ Required work:
 2. `CompilationController::compile` queries dependents and recompiles them.
 3. Cycle guard using a visited set.
 
-Integration test stubs: `test_17_cross_file_error_propagation.sh`,
-`test_18_cross_file_error_cleared.sh`. See `plan.md §6.4`.
+Integration tests: `test_18_cross_file_error_propagation.sh`,
+`test_19_cross_file_error_cleared.sh` (not yet written). See `plan.md §6.4`.
 
 ---
 
