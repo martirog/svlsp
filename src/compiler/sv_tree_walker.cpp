@@ -5,24 +5,43 @@
 #include <antlr4-runtime.h>
 
 // ---------------------------------------------------------------------------
+// Source map translation helper
+// ---------------------------------------------------------------------------
+
+// Translates a 1-based compiled line number through the source map.
+// Returns the original {file, line}; file is empty when the position belongs
+// to the primary compiled file (same-file, no attribution change needed).
+static std::pair<std::string, int> translateLine(int compiledLine,
+                                                  const std::vector<SourceLine>& map)
+{
+    int idx = compiledLine - 1;
+    if (idx >= 0 && idx < static_cast<int>(map.size()))
+        return {map[idx].file, map[idx].line};
+    return {"", compiledLine};
+}
+
+// ---------------------------------------------------------------------------
 // SvErrorListener — collects ANTLR4 syntax errors into ParseError[]
 // ---------------------------------------------------------------------------
 
 class SvErrorListener : public antlr4::BaseErrorListener {
 public:
+    explicit SvErrorListener(const std::vector<SourceLine>& sourceMap)
+        : m_sourceMap(sourceMap) {}
+
     void syntaxError(antlr4::Recognizer* /*recognizer*/,
                      antlr4::Token* /*offendingSymbol*/,
                      size_t line, size_t charPositionInLine,
                      const std::string& msg,
                      std::exception_ptr /*e*/) override {
-        m_errors.push_back({static_cast<int>(line),
-                            static_cast<int>(charPositionInLine),
-                            msg});
+        auto [file, origLine] = translateLine(static_cast<int>(line), m_sourceMap);
+        m_errors.push_back({origLine, static_cast<int>(charPositionInLine), msg, file});
     }
 
     const std::vector<ParseError>& errors() const { return m_errors; }
 
 private:
+    const std::vector<SourceLine>& m_sourceMap;
     std::vector<ParseError> m_errors;
 };
 
@@ -32,7 +51,11 @@ private:
 
 class SvRecordListener : public SvBaseListener {
 public:
-    const std::vector<ParseRecord>& records() const { return m_records; }
+    explicit SvRecordListener(const std::vector<SourceLine>& sourceMap)
+        : m_sourceMap(sourceMap) {}
+
+    const std::vector<ParseRecord>&  records() const { return m_records; }
+    const std::vector<ImportRecord>& imports() const { return m_imports; }
 
     // ---- Scope helpers ----
 
@@ -75,7 +98,7 @@ public:
     }
 
     void exitModule_declaration(SvParser::Module_declarationContext* ctx) override {
-        backpatchEndLine(currentScope(), ctx->stop ? (int)ctx->stop->getLine() : 0);
+        backpatchEndLine(currentScope(), translatedEndLine(ctx->stop));
         popScope();
     }
 
@@ -92,7 +115,7 @@ public:
     }
 
     void exitInterface_declaration(SvParser::Interface_declarationContext* ctx) override {
-        backpatchEndLine(currentScope(), ctx->stop ? (int)ctx->stop->getLine() : 0);
+        backpatchEndLine(currentScope(), translatedEndLine(ctx->stop));
         popScope();
     }
 
@@ -105,7 +128,7 @@ public:
     }
 
     void exitPackage_declaration(SvParser::Package_declarationContext* ctx) override {
-        backpatchEndLine(currentScope(), ctx->stop ? (int)ctx->stop->getLine() : 0);
+        backpatchEndLine(currentScope(), translatedEndLine(ctx->stop));
         popScope();
     }
 
@@ -124,7 +147,7 @@ public:
     }
 
     void exitClass_declaration(SvParser::Class_declarationContext* ctx) override {
-        backpatchEndLine(currentScope(), ctx->stop ? (int)ctx->stop->getLine() : 0);
+        backpatchEndLine(currentScope(), translatedEndLine(ctx->stop));
         popScope();
     }
 
@@ -141,7 +164,7 @@ public:
     }
 
     void exitFunction_body_declaration(SvParser::Function_body_declarationContext* ctx) override {
-        backpatchEndLine(currentScope(), ctx->stop ? (int)ctx->stop->getLine() : 0);
+        backpatchEndLine(currentScope(), translatedEndLine(ctx->stop));
         popScope();
     }
 
@@ -155,7 +178,7 @@ public:
     }
 
     void exitTask_body_declaration(SvParser::Task_body_declarationContext* ctx) override {
-        backpatchEndLine(currentScope(), ctx->stop ? (int)ctx->stop->getLine() : 0);
+        backpatchEndLine(currentScope(), translatedEndLine(ctx->stop));
         popScope();
     }
 
@@ -209,6 +232,20 @@ public:
         }
     }
 
+    // ---- Package imports ----
+
+    void enterPackage_import_item(SvParser::Package_import_itemContext* ctx) override {
+        auto* pkgCtx = ctx->package_identifier();
+        if (!pkgCtx) return;
+        auto* pkgId = pkgCtx->IDENTIFIER();
+        if (!pkgId) return;
+        std::string pkg  = pkgId->getText();
+        std::string item = ctx->IDENTIFIER() ? ctx->IDENTIFIER()->getText() : "*";
+        auto* tok = pkgId->getSymbol();
+        auto [file, line] = translateLine(static_cast<int>(tok->getLine()), m_sourceMap);
+        m_imports.push_back({pkg, item, line, file});
+    }
+
     // ---- Parameters ----
 
     void enterParameter_declaration(SvParser::Parameter_declarationContext* ctx) override {
@@ -221,8 +258,17 @@ public:
     }
 
 private:
-    std::vector<ParseRecord> m_records;
-    std::vector<std::string> m_scopeStack;
+    const std::vector<SourceLine>& m_sourceMap;
+    std::vector<ParseRecord>  m_records;
+    std::vector<ImportRecord> m_imports;
+    std::vector<std::string>  m_scopeStack;
+
+    // Translate a stop token's line through the source map; returns 0 if token is null.
+    int translatedEndLine(antlr4::Token* stop) const {
+        if (!stop) return 0;
+        auto [f, line] = translateLine(static_cast<int>(stop->getLine()), m_sourceMap);
+        return line;
+    }
 
     // Push using the identifier token's position (more precise than the rule start).
     void pushId(ParseRecordKind kind, antlr4::tree::TerminalNode* id,
@@ -230,10 +276,10 @@ private:
                 const std::string& parent = "", const std::string& detail = "") {
         if (!id) return;
         auto* tok = id->getSymbol();
-        m_records.push_back({kind, id->getText(),
-                              static_cast<int>(tok->getLine()),
+        auto [file, line] = translateLine(static_cast<int>(tok->getLine()), m_sourceMap);
+        m_records.push_back({kind, id->getText(), line,
                               static_cast<int>(tok->getCharPositionInLine()),
-                              parent, detail, 0, currentScopeChain()});
+                              parent, detail, 0, currentScopeChain(), file});
         // Push this record's name onto the scope stack so nested declarations
         // have it as their parent. Only top-level named scopes push here.
         if (kind == ParseRecordKind::Module   ||
@@ -260,13 +306,14 @@ private:
 // SvTreeWalker::walk
 // ---------------------------------------------------------------------------
 
-WalkResult SvTreeWalker::walk(const std::string& source) {
+WalkResult SvTreeWalker::walk(const std::string& source,
+                               const std::vector<SourceLine>& sourceMap) {
     antlr4::ANTLRInputStream input(source);
     SvLexer lexer(&input);
     antlr4::CommonTokenStream tokens(&lexer);
     SvParser parser(&tokens);
 
-    SvErrorListener errListener;
+    SvErrorListener errListener(sourceMap);
     lexer.removeErrorListeners();
     lexer.addErrorListener(&errListener);
     parser.removeErrorListeners();
@@ -274,8 +321,8 @@ WalkResult SvTreeWalker::walk(const std::string& source) {
 
     antlr4::tree::ParseTree* tree = parser.source_text();
 
-    SvRecordListener listener;
+    SvRecordListener listener(sourceMap);
     antlr4::tree::ParseTreeWalker::DEFAULT.walk(&listener, tree);
 
-    return {listener.records(), errListener.errors()};
+    return {listener.records(), errListener.errors(), listener.imports()};
 }

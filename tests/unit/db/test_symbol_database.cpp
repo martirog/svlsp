@@ -152,3 +152,101 @@ TEST_CASE("diagnosticsForFile returns empty for unknown path", "[db][symbol-db]"
     Fixture f;
     CHECK(f.sdb.diagnosticsForFile("/none.sv").empty());
 }
+
+// ---------------------------------------------------------------------------
+// Package imports
+// ---------------------------------------------------------------------------
+
+TEST_CASE("replaceImports stores wildcard import", "[db][symbol-db][import]") {
+    Fixture f;
+    auto fid = f.sdb.upsertFile("/a.sv", "h");
+    f.sdb.replaceImports(fid, {{"util_pkg", "*"}});
+    // Verify indirectly via findSymbolsVisibleAt: after storing a symbol in
+    // util_pkg, it should appear in completion for /a.sv.
+    auto pkgFid = f.sdb.upsertFile("/util_pkg.sv", "h");
+    f.sdb.replaceSymbols(pkgFid, {
+        {ParseRecordKind::Class, "MyClass", 2, 0, "util_pkg", "", 5, "util_pkg"}
+    });
+    // Module in a.sv so scopeAtPosition can return a scope for line 10.
+    f.sdb.replaceSymbols(fid, {
+        {ParseRecordKind::Module, "top", 1, 0, "", "", 20, ""}
+    });
+    auto visible = f.sdb.findSymbolsVisibleAt("/a.sv", 10);
+    auto it = std::find_if(visible.begin(), visible.end(),
+                           [](const SymbolRow& r){ return r.name == "MyClass"; });
+    CHECK(it != visible.end());
+}
+
+TEST_CASE("replaceImports: wildcard import excludes other package symbols",
+          "[db][symbol-db][import]") {
+    Fixture f;
+    auto fid = f.sdb.upsertFile("/a.sv", "h");
+    // Import only pkg_a::*, not pkg_b
+    f.sdb.replaceImports(fid, {{"pkg_a", "*"}});
+
+    auto fidA = f.sdb.upsertFile("/pkg_a.sv", "h");
+    f.sdb.replaceSymbols(fidA, {
+        {ParseRecordKind::Class, "Alpha", 2, 0, "pkg_a", "", 5, "pkg_a"}
+    });
+    auto fidB = f.sdb.upsertFile("/pkg_b.sv", "h");
+    f.sdb.replaceSymbols(fidB, {
+        {ParseRecordKind::Class, "Beta", 2, 0, "pkg_b", "", 5, "pkg_b"}
+    });
+    f.sdb.replaceSymbols(fid, {
+        {ParseRecordKind::Module, "top", 1, 0, "", "", 20, ""}
+    });
+
+    auto visible = f.sdb.findSymbolsVisibleAt("/a.sv", 10);
+    auto hasAlpha = std::any_of(visible.begin(), visible.end(),
+                                [](const SymbolRow& r){ return r.name == "Alpha"; });
+    auto hasBeta  = std::any_of(visible.begin(), visible.end(),
+                                [](const SymbolRow& r){ return r.name == "Beta"; });
+    CHECK(hasAlpha);
+    CHECK_FALSE(hasBeta);
+}
+
+TEST_CASE("replaceImports: specific import makes only that symbol visible",
+          "[db][symbol-db][import]") {
+    Fixture f;
+    auto fid = f.sdb.upsertFile("/a.sv", "h");
+    // Specific import: only Foo, not Bar
+    f.sdb.replaceImports(fid, {{"util_pkg", "Foo"}});
+
+    auto pkgFid = f.sdb.upsertFile("/util_pkg.sv", "h");
+    f.sdb.replaceSymbols(pkgFid, {
+        {ParseRecordKind::Class, "Foo", 2, 0, "util_pkg", "", 4, "util_pkg"},
+        {ParseRecordKind::Class, "Bar", 5, 0, "util_pkg", "", 7, "util_pkg"}
+    });
+    f.sdb.replaceSymbols(fid, {
+        {ParseRecordKind::Module, "top", 1, 0, "", "", 20, ""}
+    });
+
+    auto visible = f.sdb.findSymbolsVisibleAt("/a.sv", 10);
+    auto hasFoo = std::any_of(visible.begin(), visible.end(),
+                              [](const SymbolRow& r){ return r.name == "Foo"; });
+    auto hasBar = std::any_of(visible.begin(), visible.end(),
+                              [](const SymbolRow& r){ return r.name == "Bar"; });
+    CHECK(hasFoo);
+    CHECK_FALSE(hasBar);
+}
+
+TEST_CASE("replaceImports replaces previous imports", "[db][symbol-db][import]") {
+    Fixture f;
+    auto fid    = f.sdb.upsertFile("/a.sv", "h");
+    auto pkgFid = f.sdb.upsertFile("/pkg.sv", "h");
+    f.sdb.replaceSymbols(pkgFid, {
+        {ParseRecordKind::Class, "C", 2, 0, "pkg", "", 4, "pkg"}
+    });
+    f.sdb.replaceSymbols(fid, {
+        {ParseRecordKind::Module, "top", 1, 0, "", "", 20, ""}
+    });
+
+    // Store wildcard import then replace with empty.
+    f.sdb.replaceImports(fid, {{"pkg", "*"}});
+    f.sdb.replaceImports(fid, {});
+
+    auto visible = f.sdb.findSymbolsVisibleAt("/a.sv", 10);
+    auto hasC = std::any_of(visible.begin(), visible.end(),
+                            [](const SymbolRow& r){ return r.name == "C"; });
+    CHECK_FALSE(hasC);
+}

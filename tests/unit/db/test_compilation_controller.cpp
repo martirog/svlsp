@@ -2,6 +2,7 @@
 #include "db/database.h"
 #include "db/symbol_database.h"
 #include "db/compilation_controller.h"
+#include <fstream>
 
 // ---------------------------------------------------------------------------
 // Phase 5.4 — CompilationController (DB-backed incremental compilation)
@@ -126,4 +127,23 @@ TEST_CASE("independent files are cached independently", "[db][ctrl]") {
     REQUIRE(b.size() == 1);
     CHECK(a[0].name == "a_mod");
     CHECK(b[0].name == "b_mod");
+}
+
+TEST_CASE("symbols from included file are stored under included file path",
+          "[db][ctrl]") {
+    Fixture f;
+
+    std::string incPath = "/tmp/svlsp_test_ctrl_inc.sv";
+    { std::ofstream ofs(incPath); ofs << "module from_include; endmodule\n"; }
+
+    std::string src = "`include \"" + incPath + "\"\nmodule main_mod; endmodule\n";
+    f.ctrl.compile("/main.sv", src);
+
+    auto incSyms = f.sdb.symbolsForFile(incPath);
+    REQUIRE(incSyms.size() == 1);
+    CHECK(incSyms[0].name == "from_include");
+
+    auto mainSyms = f.sdb.symbolsForFile("/main.sv");
+    REQUIRE(mainSyms.size() == 1);
+    CHECK(mainSyms[0].name == "main_mod");
 }

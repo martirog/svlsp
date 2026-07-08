@@ -112,6 +112,37 @@ void SymbolDatabase::replaceDiagnostics(int64_t fileId,
     m_db.execute("COMMIT");
 }
 
+void SymbolDatabase::replaceImports(int64_t fileId,
+                                    const std::vector<ImportRecord>& imports)
+{
+    m_db.execute("BEGIN");
+    auto del = m_db.prepare("DELETE FROM imports WHERE file_id = ?");
+    del.bind(1, fileId);
+    del.step();
+
+    auto ins = m_db.prepare(
+        "INSERT INTO imports (file_id, pkg_name, item) VALUES (?,?,?)");
+    for (const auto& imp : imports) {
+        ins.reset();
+        ins.bind(1, fileId)
+           .bind(2, imp.pkgName)
+           .bind(3, imp.item);
+        ins.step();
+    }
+    m_db.execute("COMMIT");
+}
+
+std::vector<ImportRow> SymbolDatabase::importsForFileId(int64_t fileId) const
+{
+    auto stmt = m_db.prepare(
+        "SELECT pkg_name, item FROM imports WHERE file_id = ?");
+    stmt.bind(1, fileId);
+    std::vector<ImportRow> rows;
+    while (stmt.step())
+        rows.push_back({stmt.columnText(0), stmt.columnText(1)});
+    return rows;
+}
+
 std::vector<SymbolRow> SymbolDatabase::symbolsForFile(
     const std::string& path) const
 {
@@ -252,8 +283,6 @@ std::vector<SymbolRow> SymbolDatabase::findSymbolsVisibleAt(
     const std::string& path, int line) const
 {
     // Build the scope chain from innermost outward, ending with "".
-    // e.g. "MyModule::MyClass::myFunc" → ["MyModule::MyClass::myFunc",
-    //                                      "MyModule::MyClass", "MyModule", ""]
     std::string inner = scopeAtPosition(path, line);
     std::vector<std::string> scopes;
     std::string cur = inner;
@@ -266,34 +295,62 @@ std::vector<SymbolRow> SymbolDatabase::findSymbolsVisibleAt(
     if (scopes.empty() || !scopes.back().empty())
         scopes.push_back("");
 
-    // Part 1: file-local symbols in any scope in the chain.
-    // Part 2: top-level symbols (scope = "") from all other files.
-    std::string placeholders;
-    for (size_t i = 0; i < scopes.size(); ++i) {
-        if (i) placeholders += ',';
-        placeholders += '?';
+    // Load imports for this file: wildcard (`import pkg::*`) and specific
+    // (`import pkg::Name`).  Wildcards extend the cross-file scope search;
+    // specific imports are fetched with an extra name-filtered UNION ALL.
+    int64_t fid = fileIdFor(path);
+    std::vector<std::string> wildcardPkgs;
+    std::vector<std::pair<std::string, std::string>> specificImports; // {pkg, name}
+    if (fid >= 0) {
+        for (auto& imp : importsForFileId(fid)) {
+            if (imp.item == "*")
+                wildcardPkgs.push_back(imp.pkgName);
+            else
+                specificImports.emplace_back(imp.pkgName, imp.item);
+        }
     }
-    // SQLite does not allow expressions (e.g. length(…)) in ORDER BY after UNION ALL;
-    // only column names from the first SELECT are permitted.  Sort in C++ instead.
+
+    // Part 1 placeholders: one ? per local scope.
+    std::string localPh;
+    for (size_t i = 0; i < scopes.size(); ++i) { if (i) localPh += ','; localPh += '?'; }
+
+    // Part 2 cross-file scopes: always '' for top-level, plus wildcard packages.
+    std::vector<std::string> crossScopes = {""};
+    for (auto& pkg : wildcardPkgs) crossScopes.push_back(pkg);
+    std::string crossPh;
+    for (size_t i = 0; i < crossScopes.size(); ++i) { if (i) crossPh += ','; crossPh += '?'; }
+
+    // SQLite does not allow expressions in ORDER BY after UNION ALL; sort in C++.
     std::string sql =
         "SELECT s.id,s.kind,s.name,s.line,s.col,s.parent,s.detail,s.end_line,s.scope,f.path "
         "FROM symbols s JOIN files f ON f.id = s.file_id "
-        "WHERE f.path = ? AND s.scope IN (" + placeholders + ") "
+        "WHERE f.path = ? AND s.scope IN (" + localPh + ") "
         "UNION ALL "
         "SELECT s.id,s.kind,s.name,s.line,s.col,s.parent,s.detail,s.end_line,s.scope,f.path "
         "FROM symbols s JOIN files f ON f.id = s.file_id "
-        "WHERE f.path != ? AND s.scope = ''";
+        "WHERE f.path != ? AND s.scope IN (" + crossPh + ")";
+
+    // Part 3: one UNION ALL per specific import, filtered by scope + name.
+    for (size_t i = 0; i < specificImports.size(); ++i)
+        sql += " UNION ALL "
+               "SELECT s.id,s.kind,s.name,s.line,s.col,s.parent,s.detail,s.end_line,s.scope,f.path "
+               "FROM symbols s JOIN files f ON f.id = s.file_id "
+               "WHERE s.scope = ? AND s.name = ?";
 
     auto stmt = m_db.prepare(sql);
     int idx = 1;
     stmt.bind(idx++, path);
-    for (const auto& sc : scopes) stmt.bind(idx++, sc);
-    stmt.bind(idx,   path);
+    for (const auto& sc : scopes)      stmt.bind(idx++, sc);
+    stmt.bind(idx++, path);
+    for (const auto& sc : crossScopes) stmt.bind(idx++, sc);
+    for (auto& [pkg, name] : specificImports) {
+        stmt.bind(idx++, pkg);
+        stmt.bind(idx++, name);
+    }
 
     std::vector<SymbolRow> rows;
     while (stmt.step()) rows.push_back(rowFromStmt(stmt));
 
-    // SQLite forbids expressions in ORDER BY after UNION ALL; sort in C++.
     std::sort(rows.begin(), rows.end(), [](const SymbolRow& a, const SymbolRow& b) {
         if (a.scope.size() != b.scope.size())
             return a.scope.size() > b.scope.size();

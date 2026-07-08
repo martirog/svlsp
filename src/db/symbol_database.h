@@ -26,6 +26,11 @@ struct DiagnosticRow {
     std::string filePath;
 };
 
+struct ImportRow {
+    std::string pkgName;
+    std::string item;  // symbol name, or "*" for wildcard
+};
+
 // Typed access layer over the svlsp SQLite schema.
 // All methods operate on the database reference supplied at construction.
 class SymbolDatabase {
@@ -45,6 +50,9 @@ public:
 
     // Delete all diagnostics for `fileId` then insert `errors`.
     void replaceDiagnostics(int64_t fileId, const std::vector<ParseError>& errors);
+
+    // Delete all imports for `fileId` then insert `imports`.
+    void replaceImports(int64_t fileId, const std::vector<ImportRecord>& imports);
 
     // LSP query helpers (used by Phase-6 feature providers).
     std::vector<SymbolRow>     symbolsForFile(const std::string& path) const;
@@ -72,6 +80,6 @@ public:
 private:
     Database& m_db;
 
-    // Returns the file_id for `path`, or -1 if not found.
     int64_t fileIdFor(const std::string& path) const;
+    std::vector<ImportRow> importsForFileId(int64_t fileId) const;
 };
