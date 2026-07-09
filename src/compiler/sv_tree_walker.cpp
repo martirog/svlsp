@@ -56,6 +56,7 @@ public:
 
     const std::vector<ParseRecord>&  records() const { return m_records; }
     const std::vector<ImportRecord>& imports() const { return m_imports; }
+    const std::vector<InstantiationRecord>& instantiations() const { return m_instantiations; }
 
     // ---- Scope helpers ----
 
@@ -115,6 +116,23 @@ public:
     }
 
     void exitInterface_declaration(SvParser::Interface_declarationContext* ctx) override {
+        backpatchEndLine(currentScope(), translatedEndLine(ctx->stop));
+        popScope();
+    }
+
+    // ---- Programs ----
+
+    void enterProgram_ansi_header(SvParser::Program_ansi_headerContext* ctx) override {
+        auto* id = ctx->program_identifier()->IDENTIFIER();
+        pushId(ParseRecordKind::Program, id, ctx, currentScope());
+    }
+
+    void enterProgram_nonansi_header(SvParser::Program_nonansi_headerContext* ctx) override {
+        auto* id = ctx->program_identifier()->IDENTIFIER();
+        pushId(ParseRecordKind::Program, id, ctx, currentScope());
+    }
+
+    void exitProgram_declaration(SvParser::Program_declarationContext* ctx) override {
         backpatchEndLine(currentScope(), translatedEndLine(ctx->stop));
         popScope();
     }
@@ -256,6 +274,20 @@ public:
         m_imports.push_back({pkg, item, line, file, m_inExport});
     }
 
+    // ---- Instantiations (module/interface/program references) ----
+
+    void enterModule_instantiation(SvParser::Module_instantiationContext* ctx) override {
+        recordInstantiations(ctx->module_identifier()->IDENTIFIER(), ctx->hierarchical_instance());
+    }
+
+    void enterInterface_instantiation(SvParser::Interface_instantiationContext* ctx) override {
+        recordInstantiations(ctx->interface_identifier()->IDENTIFIER(), ctx->hierarchical_instance());
+    }
+
+    void enterProgram_instantiation(SvParser::Program_instantiationContext* ctx) override {
+        recordInstantiations(ctx->program_identifier()->IDENTIFIER(), ctx->hierarchical_instance());
+    }
+
     // ---- Parameters ----
 
     void enterParameter_declaration(SvParser::Parameter_declarationContext* ctx) override {
@@ -271,6 +303,7 @@ private:
     const std::vector<SourceLine>& m_sourceMap;
     std::vector<ParseRecord>  m_records;
     std::vector<ImportRecord> m_imports;
+    std::vector<InstantiationRecord> m_instantiations;
     std::vector<std::string>  m_scopeStack;
     bool                      m_inExport{false};
 
@@ -298,7 +331,8 @@ private:
             kind == ParseRecordKind::Package   ||
             kind == ParseRecordKind::Class     ||
             kind == ParseRecordKind::Function  ||
-            kind == ParseRecordKind::Task) {
+            kind == ParseRecordKind::Task      ||
+            kind == ParseRecordKind::Program) {
             pushScope(id->getText());
         }
     }
@@ -309,6 +343,30 @@ private:
             auto* pi = pa->parameter_identifier();
             if (!pi || !pi->IDENTIFIER()) continue;
             pushId(ParseRecordKind::Parameter, pi->IDENTIFIER(), pa, currentScope());
+        }
+    }
+
+    // Emits one InstantiationRecord per hierarchical_instance sharing `typeId`
+    // (covers comma-separated instances: `Foo u0(...), u1(...);`).
+    void recordInstantiations(
+        antlr4::tree::TerminalNode* typeId,
+        const std::vector<SvParser::Hierarchical_instanceContext*>& instances) {
+        if (!typeId) return;
+        std::string type = typeId->getText();
+        int fallbackLine = static_cast<int>(typeId->getSymbol()->getLine());
+        for (auto* hi : instances) {
+            std::string instName;
+            int line = fallbackLine;
+            if (auto* noi = hi->name_of_instance()) {
+                if (auto* ii = noi->instance_identifier()) {
+                    if (auto* id = ii->IDENTIFIER()) {
+                        instName = id->getText();
+                        line = static_cast<int>(id->getSymbol()->getLine());
+                    }
+                }
+            }
+            auto [file, origLine] = translateLine(line, m_sourceMap);
+            m_instantiations.push_back({type, instName, origLine, file});
         }
     }
 };
@@ -335,5 +393,5 @@ WalkResult SvTreeWalker::walk(const std::string& source,
     SvRecordListener listener(sourceMap);
     antlr4::tree::ParseTreeWalker::DEFAULT.walk(&listener, tree);
 
-    return {listener.records(), errListener.errors(), listener.imports()};
+    return {listener.records(), errListener.errors(), listener.imports(), listener.instantiations()};
 }

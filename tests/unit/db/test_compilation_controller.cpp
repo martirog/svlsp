@@ -2,6 +2,7 @@
 #include "db/database.h"
 #include "db/symbol_database.h"
 #include "db/compilation_controller.h"
+#include <algorithm>
 #include <fstream>
 
 // ---------------------------------------------------------------------------
@@ -146,4 +147,42 @@ TEST_CASE("symbols from included file are stored under included file path",
     auto mainSyms = f.sdb.symbolsForFile("/main.sv");
     REQUIRE(mainSyms.size() == 1);
     CHECK(mainSyms[0].name == "main_mod");
+}
+
+TEST_CASE("compile persists an instantiation as unresolved when its type isn't declared",
+          "[db][ctrl][instantiation]") {
+    Fixture f;
+    f.ctrl.compile("/top.sv", "module top; sub u0(); endmodule\n");
+
+    auto unresolved = f.sdb.unresolvedInstantiatedTypeNames();
+    CHECK(std::find(unresolved.begin(), unresolved.end(), "sub") != unresolved.end());
+}
+
+TEST_CASE("compile persists an instantiation attributed to the correct file",
+          "[db][ctrl][instantiation]") {
+    Fixture f;
+
+    std::string incPath = "/tmp/svlsp_test_ctrl_inc_inst.sv";
+    { std::ofstream ofs(incPath); ofs << "module from_include; sub u0(); endmodule\n"; }
+
+    std::string src = "`include \"" + incPath + "\"\nmodule main_mod; endmodule\n";
+    f.ctrl.compile("/main.sv", src);
+
+    auto incFid = f.sdb.upsertFile(incPath, "");
+    auto stmt = f.db.prepare(
+        "SELECT type_name, inst_name FROM instantiations WHERE file_id = ?");
+    stmt.bind(1, incFid);
+    REQUIRE(stmt.step());
+    CHECK(stmt.columnText(0) == "sub");
+    CHECK(stmt.columnText(1) == "u0");
+}
+
+TEST_CASE("compile resolves an instantiation once its type is declared elsewhere",
+          "[db][ctrl][instantiation]") {
+    Fixture f;
+    f.ctrl.compile("/sub.sv", "module sub; endmodule\n");
+    f.ctrl.compile("/top.sv", "module top; sub u0(); endmodule\n");
+
+    auto unresolved = f.sdb.unresolvedInstantiatedTypeNames();
+    CHECK(std::find(unresolved.begin(), unresolved.end(), "sub") == unresolved.end());
 }

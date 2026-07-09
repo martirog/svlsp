@@ -18,6 +18,7 @@ enum class ParseRecordKind {
     Signal,    // variable or net declaration (logic, wire, reg, …)
     Parameter, // parameter or localparam declaration
     Macro,     // `define macro (populated by SvPreprocessor, not the grammar walker)
+    Program,
 };
 
 struct ParseRecord {
@@ -47,4 +48,13 @@ struct ImportRecord {
     int         line{0};   // 1-based line in `file`
     std::string file{};    // empty = same as compiled file
     bool        isExport{false}; // true for `export`, false for plain `import`
+};
+
+// One module/interface/program instantiation: `Foo u0 (...);` — a reference
+// to a design unit that may or may not be declared anywhere yet known.
+struct InstantiationRecord {
+    std::string typeName;   // module/interface/program identifier being instantiated
+    std::string instName;   // instance_identifier text (name_of_instance)
+    int         line{0};    // 1-based line in `file`
+    std::string file{};     // empty = same as compiled file
 };

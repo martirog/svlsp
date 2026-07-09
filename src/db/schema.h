@@ -4,7 +4,7 @@ namespace db {
 
 // Current schema version.  Increment and add a migration in Database::initSchema
 // whenever the schema changes.
-inline constexpr int SCHEMA_VERSION = 4;
+inline constexpr int SCHEMA_VERSION = 5;
 
 // DDL executed on a fresh (version-0) database — always reflects the latest schema.
 inline constexpr const char* SCHEMA_DDL = R"sql(
@@ -62,6 +62,31 @@ CREATE TABLE imports (
 );
 
 CREATE INDEX idx_imports_file_id ON imports(file_id);
+
+CREATE TABLE instantiations (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id   INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    type_name TEXT    NOT NULL,
+    inst_name TEXT    NOT NULL DEFAULT '',
+    line      INTEGER NOT NULL
+);
+
+CREATE INDEX idx_instantiations_file_id   ON instantiations(file_id);
+CREATE INDEX idx_instantiations_type_name ON instantiations(type_name);
+)sql";
+
+// SQL applied when migrating an existing v4 database to v5.
+inline constexpr const char* MIGRATION_V4_TO_V5 = R"sql(
+CREATE TABLE IF NOT EXISTS instantiations (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id   INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    type_name TEXT    NOT NULL,
+    inst_name TEXT    NOT NULL DEFAULT '',
+    line      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_instantiations_file_id   ON instantiations(file_id);
+CREATE INDEX IF NOT EXISTS idx_instantiations_type_name ON instantiations(type_name);
+UPDATE schema_version SET version = 5;
 )sql";
 
 // SQL applied when migrating an existing v3 database to v4.

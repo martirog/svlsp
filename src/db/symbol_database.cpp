@@ -17,6 +17,7 @@ static std::string kindStr(ParseRecordKind k)
     case ParseRecordKind::Signal:    return "Signal";
     case ParseRecordKind::Parameter: return "Parameter";
     case ParseRecordKind::Macro:     return "Macro";
+    case ParseRecordKind::Program:   return "Program";
     }
     return "Unknown";
 }
@@ -142,6 +143,56 @@ std::vector<ImportRow> SymbolDatabase::importsForFileId(int64_t fileId) const
     while (stmt.step())
         rows.push_back({stmt.columnText(0), stmt.columnText(1), stmt.columnInt(2) != 0});
     return rows;
+}
+
+void SymbolDatabase::replaceInstantiations(int64_t fileId,
+                                           const std::vector<InstantiationRecord>& insts)
+{
+    m_db.execute("BEGIN");
+    auto del = m_db.prepare("DELETE FROM instantiations WHERE file_id = ?");
+    del.bind(1, fileId);
+    del.step();
+
+    auto ins = m_db.prepare(
+        "INSERT INTO instantiations (file_id, type_name, inst_name, line) VALUES (?,?,?,?)");
+    for (const auto& inst : insts) {
+        ins.reset();
+        ins.bind(1, fileId)
+           .bind(2, inst.typeName)
+           .bind(3, inst.instName)
+           .bind(4, inst.line);
+        ins.step();
+    }
+    m_db.execute("COMMIT");
+}
+
+std::vector<std::string> SymbolDatabase::unresolvedInstantiatedTypeNames() const
+{
+    auto stmt = m_db.prepare(
+        "SELECT DISTINCT i.type_name FROM instantiations i "
+        "WHERE NOT EXISTS ("
+        "  SELECT 1 FROM symbols s "
+        "  WHERE s.name = i.type_name AND s.kind IN ('Module','Interface','Program')"
+        ")");
+    std::vector<std::string> names;
+    while (stmt.step()) names.push_back(stmt.columnText(0));
+    return names;
+}
+
+void SymbolDatabase::appendDiagnostics(int64_t fileId, const std::vector<ParseError>& extra)
+{
+    m_db.execute("BEGIN");
+    auto ins = m_db.prepare(
+        "INSERT INTO diagnostics (file_id,line,col,message) VALUES (?,?,?,?)");
+    for (const auto& e : extra) {
+        ins.reset();
+        ins.bind(1, fileId)
+           .bind(2, e.line)
+           .bind(3, e.column)
+           .bind(4, e.message);
+        ins.step();
+    }
+    m_db.execute("COMMIT");
 }
 
 int64_t SymbolDatabase::fileIdForPackage(const std::string& pkgName) const

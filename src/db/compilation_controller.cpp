@@ -38,29 +38,34 @@ std::vector<ParseError> CompilationController::compile(const std::string& path,
     auto preprocessed = preprocessor.process(stripped.source, path);
     auto walked       = SvTreeWalker::walk(preprocessed.source, preprocessed.sourceMap);
 
-    // Partition records, errors, and imports by their original source file.
-    // An empty `file` field means the record belongs to the primary compiled file.
+    // Partition records, errors, imports, and instantiations by their
+    // original source file. An empty `file` field means the record belongs
+    // to the primary compiled file.
     std::unordered_map<std::string, std::vector<ParseRecord>>  recsByFile;
     std::unordered_map<std::string, std::vector<ParseError>>   errsByFile;
     std::unordered_map<std::string, std::vector<ImportRecord>> importsByFile;
+    std::unordered_map<std::string, std::vector<InstantiationRecord>> instsByFile;
 
     for (const auto& rec : walked.records)     recsByFile[rec.file].push_back(rec);
     for (const auto& err : walked.parseErrors) errsByFile[err.file].push_back(err);
     for (const auto& imp : walked.imports)     importsByFile[imp.file].push_back(imp);
+    for (const auto& inst : walked.instantiations) instsByFile[inst.file].push_back(inst);
 
     // Persist primary file.
     int64_t fid = m_sdb.upsertFile(path, hash);
-    m_sdb.replaceSymbols(fid,      recsByFile[""]   );
-    m_sdb.replaceDiagnostics(fid,  errsByFile[""]   );
-    m_sdb.replaceImports(fid,      importsByFile[""] );
+    m_sdb.replaceSymbols(fid,        recsByFile[""]  );
+    m_sdb.replaceDiagnostics(fid,    errsByFile[""]  );
+    m_sdb.replaceImports(fid,        importsByFile[""]);
+    m_sdb.replaceInstantiations(fid, instsByFile[""]  );
 
-    // Persist records/errors/imports attributed to included files.
+    // Persist records/errors/imports/instantiations attributed to included files.
     for (const auto& [filePath, recs] : recsByFile) {
         if (filePath.empty()) continue;
         int64_t incFid = m_sdb.upsertFile(filePath, "");
-        m_sdb.replaceSymbols(incFid,     recs);
-        m_sdb.replaceDiagnostics(incFid, errsByFile[filePath]  );
-        m_sdb.replaceImports(incFid,     importsByFile[filePath]);
+        m_sdb.replaceSymbols(incFid,        recs);
+        m_sdb.replaceDiagnostics(incFid,    errsByFile[filePath]  );
+        m_sdb.replaceImports(incFid,        importsByFile[filePath]);
+        m_sdb.replaceInstantiations(incFid, instsByFile[filePath]  );
     }
 
     return errsByFile[""];

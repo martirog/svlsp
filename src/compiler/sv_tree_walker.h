@@ -7,6 +7,7 @@ struct WalkResult {
     std::vector<ParseRecord>  records;
     std::vector<ParseError>   parseErrors;
     std::vector<ImportRecord> imports;
+    std::vector<InstantiationRecord> instantiations;
 };
 
 // Runs the full ANTLR4 parse pipeline on already-preprocessed SV source and

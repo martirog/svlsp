@@ -35,7 +35,7 @@ static int countKind(const std::vector<ParseRecord>& recs, ParseRecordKind kind)
 // ---------------------------------------------------------------------------
 
 TEST_CASE("module record emitted for inline source", "[compiler][listener]") {
-    auto [recs, errs, imps] = walkSource("module top; endmodule\n");
+    auto [recs, errs, imps, insts] = walkSource("module top; endmodule\n");
     REQUIRE(errs.empty());
     auto* r = findRecord(recs, ParseRecordKind::Module, "top");
     REQUIRE(r != nullptr);
@@ -43,13 +43,13 @@ TEST_CASE("module record emitted for inline source", "[compiler][listener]") {
 }
 
 TEST_CASE("module record from module_basic.sv", "[compiler][listener]") {
-    auto [recs, errs, imps] = walkFile(SV_EXAMPLES_DIR "/module_basic.sv");
+    auto [recs, errs, imps, insts] = walkFile(SV_EXAMPLES_DIR "/module_basic.sv");
     REQUIRE(errs.empty());
     REQUIRE(findRecord(recs, ParseRecordKind::Module, "adder") != nullptr);
 }
 
 TEST_CASE("multiple modules produce multiple records", "[compiler][listener]") {
-    auto [recs, errs, imps] = walkSource(
+    auto [recs, errs, imps, insts] = walkSource(
         "module a; endmodule\n"
         "module b; endmodule\n");
     REQUIRE(errs.empty());
@@ -59,7 +59,7 @@ TEST_CASE("multiple modules produce multiple records", "[compiler][listener]") {
 }
 
 TEST_CASE("module line number is correct", "[compiler][listener]") {
-    auto [recs, errs, imps] = walkSource(
+    auto [recs, errs, imps, insts] = walkSource(
         "\n"
         "\n"
         "module positioned; endmodule\n");
@@ -74,13 +74,13 @@ TEST_CASE("module line number is correct", "[compiler][listener]") {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("interface record from interfaces.sv", "[compiler][listener]") {
-    auto [recs, errs, imps] = walkFile(SV_EXAMPLES_DIR "/interfaces.sv");
+    auto [recs, errs, imps, insts] = walkFile(SV_EXAMPLES_DIR "/interfaces.sv");
     REQUIRE(errs.empty());
     REQUIRE(findRecord(recs, ParseRecordKind::Interface, "bus_if") != nullptr);
 }
 
 TEST_CASE("interface record emitted for inline source", "[compiler][listener]") {
-    auto [recs, errs, imps] = walkSource("interface my_if; endinterface\n");
+    auto [recs, errs, imps, insts] = walkSource("interface my_if; endinterface\n");
     REQUIRE(errs.empty());
     REQUIRE(findRecord(recs, ParseRecordKind::Interface, "my_if") != nullptr);
 }
@@ -90,14 +90,14 @@ TEST_CASE("interface record emitted for inline source", "[compiler][listener]") 
 // ---------------------------------------------------------------------------
 
 TEST_CASE("package record from packages.sv", "[compiler][listener]") {
-    auto [recs, errs, imps] = walkFile(SV_EXAMPLES_DIR "/packages.sv");
+    auto [recs, errs, imps, insts] = walkFile(SV_EXAMPLES_DIR "/packages.sv");
     REQUIRE(errs.empty());
     REQUIRE(findRecord(recs, ParseRecordKind::Package, "math_pkg") != nullptr);
     REQUIRE(findRecord(recs, ParseRecordKind::Package, "bus_pkg") != nullptr);
 }
 
 TEST_CASE("package record emitted for inline source", "[compiler][listener]") {
-    auto [recs, errs, imps] = walkSource("package my_pkg; endpackage\n");
+    auto [recs, errs, imps, insts] = walkSource("package my_pkg; endpackage\n");
     REQUIRE(errs.empty());
     REQUIRE(findRecord(recs, ParseRecordKind::Package, "my_pkg") != nullptr);
 }
@@ -107,7 +107,7 @@ TEST_CASE("package record emitted for inline source", "[compiler][listener]") {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("class records from classes.sv", "[compiler][listener]") {
-    auto [recs, errs, imps] = walkFile(SV_EXAMPLES_DIR "/classes.sv");
+    auto [recs, errs, imps, insts] = walkFile(SV_EXAMPLES_DIR "/classes.sv");
     REQUIRE(errs.empty());
     REQUIRE(findRecord(recs, ParseRecordKind::Class, "Packet") != nullptr);
     REQUIRE(findRecord(recs, ParseRecordKind::Class, "ErrPacket") != nullptr);
@@ -115,7 +115,7 @@ TEST_CASE("class records from classes.sv", "[compiler][listener]") {
 }
 
 TEST_CASE("class record emitted for inline source", "[compiler][listener]") {
-    auto [recs, errs, imps] = walkSource("class Foo; endclass\n");
+    auto [recs, errs, imps, insts] = walkSource("class Foo; endclass\n");
     REQUIRE(errs.empty());
     REQUIRE(findRecord(recs, ParseRecordKind::Class, "Foo") != nullptr);
 }
@@ -125,7 +125,7 @@ TEST_CASE("class record emitted for inline source", "[compiler][listener]") {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("function and task records from functions_tasks.sv", "[compiler][listener]") {
-    auto [recs, errs, imps] = walkFile(SV_EXAMPLES_DIR "/functions_tasks.sv");
+    auto [recs, errs, imps, insts] = walkFile(SV_EXAMPLES_DIR "/functions_tasks.sv");
     REQUIRE(errs.empty());
     REQUIRE(findRecord(recs, ParseRecordKind::Function, "byte_reverse") != nullptr);
     REQUIRE(findRecord(recs, ParseRecordKind::Function, "clog2") != nullptr);
@@ -134,7 +134,7 @@ TEST_CASE("function and task records from functions_tasks.sv", "[compiler][liste
 }
 
 TEST_CASE("function record emitted for inline source", "[compiler][listener]") {
-    auto [recs, errs, imps] = walkSource(
+    auto [recs, errs, imps, insts] = walkSource(
         "module m;\n"
         "  function automatic int add(input int a, b); return a+b; endfunction\n"
         "endmodule\n");
@@ -143,7 +143,7 @@ TEST_CASE("function record emitted for inline source", "[compiler][listener]") {
 }
 
 TEST_CASE("task record emitted for inline source", "[compiler][listener]") {
-    auto [recs, errs, imps] = walkSource(
+    auto [recs, errs, imps, insts] = walkSource(
         "module m;\n"
         "  task automatic delay(input int n); repeat(n) @(posedge clk); endtask\n"
         "endmodule\n");
@@ -156,7 +156,7 @@ TEST_CASE("task record emitted for inline source", "[compiler][listener]") {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("ANSI port records emitted", "[compiler][listener]") {
-    auto [recs, errs, imps] = walkSource(
+    auto [recs, errs, imps, insts] = walkSource(
         "module m (input logic clk, input logic rst, output logic q);\n"
         "endmodule\n");
     REQUIRE(errs.empty());
@@ -167,7 +167,7 @@ TEST_CASE("ANSI port records emitted", "[compiler][listener]") {
 }
 
 TEST_CASE("port records from module_basic.sv", "[compiler][listener]") {
-    auto [recs, errs, imps] = walkFile(SV_EXAMPLES_DIR "/module_basic.sv");
+    auto [recs, errs, imps, insts] = walkFile(SV_EXAMPLES_DIR "/module_basic.sv");
     REQUIRE(errs.empty());
     CHECK(countKind(recs, ParseRecordKind::Port) > 0);
 }
@@ -177,12 +177,12 @@ TEST_CASE("port records from module_basic.sv", "[compiler][listener]") {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("parse errors reported for malformed source", "[compiler][listener]") {
-    auto [recs, errs, imps] = walkSource("module bad { endmodule\n");
+    auto [recs, errs, imps, insts] = walkSource("module bad { endmodule\n");
     CHECK(!errs.empty());
 }
 
 TEST_CASE("zero parse errors for valid source", "[compiler][listener]") {
-    auto [recs, errs, imps] = walkSource("module ok; endmodule\n");
+    auto [recs, errs, imps, insts] = walkSource("module ok; endmodule\n");
     CHECK(errs.empty());
 }
 
@@ -191,7 +191,7 @@ TEST_CASE("zero parse errors for valid source", "[compiler][listener]") {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("signal record from data_declaration inside module", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps] = walkSource(
+    auto [recs, errs, imps, insts] = walkSource(
         "module m;\n"
         "  logic [7:0] data;\n"
         "endmodule\n");
@@ -200,7 +200,7 @@ TEST_CASE("signal record from data_declaration inside module", "[compiler][liste
 }
 
 TEST_CASE("multiple signals from comma-separated data_declaration", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps] = walkSource(
+    auto [recs, errs, imps, insts] = walkSource(
         "module m;\n"
         "  logic a, b, c;\n"
         "endmodule\n");
@@ -211,7 +211,7 @@ TEST_CASE("multiple signals from comma-separated data_declaration", "[compiler][
 }
 
 TEST_CASE("signal record from net_declaration inside module", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps] = walkSource(
+    auto [recs, errs, imps, insts] = walkSource(
         "module m;\n"
         "  wire w;\n"
         "endmodule\n");
@@ -220,7 +220,7 @@ TEST_CASE("signal record from net_declaration inside module", "[compiler][listen
 }
 
 TEST_CASE("signals from functions_tasks.sv captured", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps] = walkFile(SV_EXAMPLES_DIR "/functions_tasks.sv");
+    auto [recs, errs, imps, insts] = walkFile(SV_EXAMPLES_DIR "/functions_tasks.sv");
     REQUIRE(errs.empty());
     REQUIRE(findRecord(recs, ParseRecordKind::Signal, "data") != nullptr);
     REQUIRE(findRecord(recs, ParseRecordKind::Signal, "clk")  != nullptr);
@@ -231,7 +231,7 @@ TEST_CASE("signals from functions_tasks.sv captured", "[compiler][listener][phas
 // ---------------------------------------------------------------------------
 
 TEST_CASE("signal parent is the enclosing module name", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps] = walkSource(
+    auto [recs, errs, imps, insts] = walkSource(
         "module my_mod;\n"
         "  logic sig;\n"
         "endmodule\n");
@@ -242,7 +242,7 @@ TEST_CASE("signal parent is the enclosing module name", "[compiler][listener][ph
 }
 
 TEST_CASE("port parent is the enclosing module name", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps] = walkSource(
+    auto [recs, errs, imps, insts] = walkSource(
         "module top (input logic clk);\n"
         "endmodule\n");
     REQUIRE(errs.empty());
@@ -252,7 +252,7 @@ TEST_CASE("port parent is the enclosing module name", "[compiler][listener][phas
 }
 
 TEST_CASE("function parent is the enclosing module name", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps] = walkSource(
+    auto [recs, errs, imps, insts] = walkSource(
         "module m;\n"
         "  function automatic int add(input int a, b); return a+b; endfunction\n"
         "endmodule\n");
@@ -263,7 +263,7 @@ TEST_CASE("function parent is the enclosing module name", "[compiler][listener][
 }
 
 TEST_CASE("top-level module has empty parent", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps] = walkSource("module top_level; endmodule\n");
+    auto [recs, errs, imps, insts] = walkSource("module top_level; endmodule\n");
     REQUIRE(errs.empty());
     auto* r = findRecord(recs, ParseRecordKind::Module, "top_level");
     REQUIRE(r != nullptr);
@@ -275,7 +275,7 @@ TEST_CASE("top-level module has empty parent", "[compiler][listener][phase44]") 
 // ---------------------------------------------------------------------------
 
 TEST_CASE("input port detail is 'input'", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps] = walkSource(
+    auto [recs, errs, imps, insts] = walkSource(
         "module m (input logic clk);\n"
         "endmodule\n");
     REQUIRE(errs.empty());
@@ -285,7 +285,7 @@ TEST_CASE("input port detail is 'input'", "[compiler][listener][phase44]") {
 }
 
 TEST_CASE("output port detail is 'output'", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps] = walkSource(
+    auto [recs, errs, imps, insts] = walkSource(
         "module m (output logic q);\n"
         "endmodule\n");
     REQUIRE(errs.empty());
@@ -295,7 +295,7 @@ TEST_CASE("output port detail is 'output'", "[compiler][listener][phase44]") {
 }
 
 TEST_CASE("inout port detail is 'inout'", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps] = walkSource(
+    auto [recs, errs, imps, insts] = walkSource(
         "module m (inout wire bus);\n"
         "endmodule\n");
     REQUIRE(errs.empty());
@@ -309,7 +309,7 @@ TEST_CASE("inout port detail is 'inout'", "[compiler][listener][phase44]") {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("class with extends has parent class in detail", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps] = walkSource(
+    auto [recs, errs, imps, insts] = walkSource(
         "class Base; endclass\n"
         "class Child extends Base; endclass\n");
     REQUIRE(errs.empty());
@@ -319,7 +319,7 @@ TEST_CASE("class with extends has parent class in detail", "[compiler][listener]
 }
 
 TEST_CASE("class without extends has empty detail", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps] = walkSource("class Standalone; endclass\n");
+    auto [recs, errs, imps, insts] = walkSource("class Standalone; endclass\n");
     REQUIRE(errs.empty());
     auto* r = findRecord(recs, ParseRecordKind::Class, "Standalone");
     REQUIRE(r != nullptr);
@@ -327,7 +327,7 @@ TEST_CASE("class without extends has empty detail", "[compiler][listener][phase4
 }
 
 TEST_CASE("class hierarchy from classes.sv detail fields", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps] = walkFile(SV_EXAMPLES_DIR "/classes.sv");
+    auto [recs, errs, imps, insts] = walkFile(SV_EXAMPLES_DIR "/classes.sv");
     REQUIRE(errs.empty());
     auto* err_pkt = findRecord(recs, ParseRecordKind::Class, "ErrPacket");
     REQUIRE(err_pkt != nullptr);
@@ -342,7 +342,7 @@ TEST_CASE("class hierarchy from classes.sv detail fields", "[compiler][listener]
 // ---------------------------------------------------------------------------
 
 TEST_CASE("function detail contains return type text", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps] = walkSource(
+    auto [recs, errs, imps, insts] = walkSource(
         "module m;\n"
         "  function automatic int add(input int a, b); return a+b; endfunction\n"
         "endmodule\n");
@@ -357,7 +357,7 @@ TEST_CASE("function detail contains return type text", "[compiler][listener][pha
 // ---------------------------------------------------------------------------
 
 TEST_CASE("parameter record emitted for module parameter port", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps] = walkSource(
+    auto [recs, errs, imps, insts] = walkSource(
         "module m #(parameter int WIDTH = 8) (input logic clk);\n"
         "endmodule\n");
     REQUIRE(errs.empty());
@@ -365,7 +365,7 @@ TEST_CASE("parameter record emitted for module parameter port", "[compiler][list
 }
 
 TEST_CASE("localparam record emitted inside module body", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps] = walkSource(
+    auto [recs, errs, imps, insts] = walkSource(
         "module m;\n"
         "  localparam int DEPTH = 16;\n"
         "endmodule\n");
@@ -374,7 +374,7 @@ TEST_CASE("localparam record emitted inside module body", "[compiler][listener][
 }
 
 TEST_CASE("parameter parent is the enclosing module", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps] = walkSource(
+    auto [recs, errs, imps, insts] = walkSource(
         "module param_mod #(parameter int N = 4) ();\n"
         "endmodule\n");
     REQUIRE(errs.empty());
@@ -389,7 +389,7 @@ TEST_CASE("parameter parent is the enclosing module", "[compiler][listener][phas
 
 TEST_CASE("walk without source map leaves file field empty",
           "[compiler][listener][sourcemap]") {
-    auto [recs, errs, imps] = walkSource("module m; endmodule\n");
+    auto [recs, errs, imps, insts] = walkSource("module m; endmodule\n");
     REQUIRE(errs.empty());
     auto* r = findRecord(recs, ParseRecordKind::Module, "m");
     REQUIRE(r != nullptr);
@@ -547,4 +547,78 @@ TEST_CASE("import inside a package that also exports is recorded distinctly",
     CHECK_FALSE(result.imports[0].isExport);
     CHECK(result.imports[1].pkgName == "base_pkg");
     CHECK(result.imports[1].isExport);
+}
+
+// ---------------------------------------------------------------------------
+// Programs
+// ---------------------------------------------------------------------------
+
+TEST_CASE("program record emitted for inline source", "[compiler][listener][program]") {
+    auto [recs, errs, imps, insts] = walkSource("program my_prog; endprogram\n");
+    REQUIRE(errs.empty());
+    auto* r = findRecord(recs, ParseRecordKind::Program, "my_prog");
+    REQUIRE(r != nullptr);
+    CHECK(r->line == 1);
+}
+
+TEST_CASE("program endLine is backpatched", "[compiler][listener][program]") {
+    auto [recs, errs, imps, insts] = walkSource(
+        "program my_prog;\n"
+        "  initial begin end\n"
+        "endprogram\n");
+    REQUIRE(errs.empty());
+    auto* r = findRecord(recs, ParseRecordKind::Program, "my_prog");
+    REQUIRE(r != nullptr);
+    CHECK(r->endLine == 3);
+}
+
+// ---------------------------------------------------------------------------
+// Module/interface/program instantiations
+// ---------------------------------------------------------------------------
+
+TEST_CASE("module instantiation emits InstantiationRecord",
+          "[compiler][listener][instantiation]") {
+    auto result = walkSource("module top; sub u0(); endmodule\n");
+    REQUIRE(result.instantiations.size() == 1);
+    CHECK(result.instantiations[0].typeName == "sub");
+    CHECK(result.instantiations[0].instName == "u0");
+    CHECK(result.instantiations[0].line == 1);
+}
+
+TEST_CASE("multiple comma-separated instances emit one record each",
+          "[compiler][listener][instantiation]") {
+    auto result = walkSource("module top; sub u0(), u1(); endmodule\n");
+    REQUIRE(result.instantiations.size() == 2);
+    CHECK(result.instantiations[0].typeName == "sub");
+    CHECK(result.instantiations[0].instName == "u0");
+    CHECK(result.instantiations[1].typeName == "sub");
+    CHECK(result.instantiations[1].instName == "u1");
+}
+
+TEST_CASE("interface instantiation emits InstantiationRecord",
+          "[compiler][listener][instantiation]") {
+    auto result = walkSource(
+        "interface bus_if; endinterface\n"
+        "module top; bus_if u_bus(); endmodule\n");
+    auto it = std::find_if(result.instantiations.begin(), result.instantiations.end(),
+                           [](const InstantiationRecord& r){ return r.typeName == "bus_if"; });
+    REQUIRE(it != result.instantiations.end());
+    CHECK(it->instName == "u_bus");
+}
+
+TEST_CASE("program instantiation emits InstantiationRecord",
+          "[compiler][listener][instantiation]") {
+    auto result = walkSource(
+        "program my_prog; endprogram\n"
+        "module top; my_prog u_prog(); endmodule\n");
+    auto it = std::find_if(result.instantiations.begin(), result.instantiations.end(),
+                           [](const InstantiationRecord& r){ return r.typeName == "my_prog"; });
+    REQUIRE(it != result.instantiations.end());
+    CHECK(it->instName == "u_prog");
+}
+
+TEST_CASE("file with no instantiations produces empty instantiations vector",
+          "[compiler][listener][instantiation]") {
+    auto result = walkSource("module m; endmodule\n");
+    CHECK(result.instantiations.empty());
 }

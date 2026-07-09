@@ -359,3 +359,75 @@ TEST_CASE("export of a specific symbol re-exports only that item",
     CHECK(hasFoo);
     CHECK_FALSE(hasBar);
 }
+
+// ---------------------------------------------------------------------------
+// Instantiations
+// ---------------------------------------------------------------------------
+
+TEST_CASE("replaceInstantiations stores records", "[db][symbol-db][instantiation]") {
+    Fixture f;
+    auto fid = f.sdb.upsertFile("/top.sv", "h");
+    f.sdb.replaceInstantiations(fid, {{"sub", "u0", 3, ""}});
+
+    // Indirect check via unresolvedInstantiatedTypeNames: with no "sub" symbol
+    // declared anywhere, it must show up as unresolved.
+    auto unresolved = f.sdb.unresolvedInstantiatedTypeNames();
+    CHECK(std::find(unresolved.begin(), unresolved.end(), "sub") != unresolved.end());
+}
+
+TEST_CASE("replaceInstantiations replaces previous instantiations",
+          "[db][symbol-db][instantiation]") {
+    Fixture f;
+    auto fid = f.sdb.upsertFile("/top.sv", "h");
+    f.sdb.replaceInstantiations(fid, {{"old_sub", "u0", 3, ""}});
+    f.sdb.replaceInstantiations(fid, {{"new_sub", "u0", 3, ""}});
+
+    auto unresolved = f.sdb.unresolvedInstantiatedTypeNames();
+    CHECK(std::find(unresolved.begin(), unresolved.end(), "old_sub") == unresolved.end());
+    CHECK(std::find(unresolved.begin(), unresolved.end(), "new_sub") != unresolved.end());
+}
+
+TEST_CASE("unresolvedInstantiatedTypeNames excludes declared-and-instantiated names",
+          "[db][symbol-db][instantiation]") {
+    Fixture f;
+    auto fidTop = f.sdb.upsertFile("/top.sv", "h");
+    auto fidSub = f.sdb.upsertFile("/sub.sv", "h");
+    f.sdb.replaceSymbols(fidSub, {
+        {ParseRecordKind::Module, "sub", 1, 0, "", "", 5, ""}
+    });
+    f.sdb.replaceInstantiations(fidTop, {{"sub", "u0", 3, ""}});
+
+    auto unresolved = f.sdb.unresolvedInstantiatedTypeNames();
+    CHECK(std::find(unresolved.begin(), unresolved.end(), "sub") == unresolved.end());
+}
+
+TEST_CASE("unresolvedInstantiatedTypeNames excludes names declared in a different file",
+          "[db][symbol-db][instantiation]") {
+    Fixture f;
+    auto fidTop = f.sdb.upsertFile("/top.sv", "h");
+    auto fidLib = f.sdb.upsertFile("/lib/sub.sv", "h");
+    f.sdb.replaceSymbols(fidLib, {
+        {ParseRecordKind::Interface, "bus_if", 1, 0, "", "", 5, ""}
+    });
+    f.sdb.replaceInstantiations(fidTop, {{"bus_if", "u_bus", 4, ""}});
+
+    auto unresolved = f.sdb.unresolvedInstantiatedTypeNames();
+    CHECK(std::find(unresolved.begin(), unresolved.end(), "bus_if") == unresolved.end());
+}
+
+TEST_CASE("appendDiagnostics adds without deleting existing diagnostics",
+          "[db][symbol-db][instantiation]") {
+    Fixture f;
+    auto fid = f.sdb.upsertFile("/top.sv", "h");
+    f.sdb.replaceDiagnostics(fid, {{1, 0, "existing error"}});
+    f.sdb.appendDiagnostics(fid, {{3, 0, "unresolved instantiation of 'sub'"}});
+
+    auto diags = f.sdb.diagnosticsForFile("/top.sv");
+    REQUIRE(diags.size() == 2);
+    auto hasExisting = std::any_of(diags.begin(), diags.end(),
+                                   [](const DiagnosticRow& d){ return d.message == "existing error"; });
+    auto hasNew = std::any_of(diags.begin(), diags.end(),
+                              [](const DiagnosticRow& d){ return d.message.find("unresolved") != std::string::npos; });
+    CHECK(hasExisting);
+    CHECK(hasNew);
+}

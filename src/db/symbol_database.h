@@ -55,6 +55,17 @@ public:
     // Delete all imports for `fileId` then insert `imports`.
     void replaceImports(int64_t fileId, const std::vector<ImportRecord>& imports);
 
+    // Delete all instantiations for `fileId` then insert `insts`.
+    void replaceInstantiations(int64_t fileId, const std::vector<InstantiationRecord>& insts);
+
+    // Distinct type names instantiated somewhere with no matching Module/
+    // Interface/Program declaration anywhere in the DB. Drives library resolution.
+    std::vector<std::string> unresolvedInstantiatedTypeNames() const;
+
+    // Insert-only: appends diagnostics without deleting existing rows for
+    // `fileId` (unlike replaceDiagnostics, which is delete-then-insert).
+    void appendDiagnostics(int64_t fileId, const std::vector<ParseError>& extra);
+
     // LSP query helpers (used by Phase-6 feature providers).
     std::vector<SymbolRow>     symbolsForFile(const std::string& path) const;
     std::vector<SymbolRow>     findSymbolsByName(const std::string& name) const;
