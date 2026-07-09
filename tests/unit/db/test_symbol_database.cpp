@@ -250,3 +250,112 @@ TEST_CASE("replaceImports replaces previous imports", "[db][symbol-db][import]")
                             [](const SymbolRow& r){ return r.name == "C"; });
     CHECK_FALSE(hasC);
 }
+
+// ---------------------------------------------------------------------------
+// Package exports — transitive visibility
+// ---------------------------------------------------------------------------
+
+TEST_CASE("plain import is not transitive: second-level import stays hidden",
+          "[db][symbol-db][import][export]") {
+    Fixture f;
+    // a.sv imports pkg_a::* only.
+    auto fid = f.sdb.upsertFile("/a.sv", "h");
+    f.sdb.replaceImports(fid, {{"pkg_a", "*"}});
+
+    // pkg_a itself plainly imports pkg_b::* — no export, so this must not leak.
+    auto fidA = f.sdb.upsertFile("/pkg_a.sv", "h");
+    f.sdb.replaceSymbols(fidA, {
+        {ParseRecordKind::Package, "pkg_a", 1, 0, "", "", 10, ""},
+        {ParseRecordKind::Class,   "Alpha", 2, 0, "pkg_a", "", 5, "pkg_a"}
+    });
+    f.sdb.replaceImports(fidA, {{"pkg_b", "*"}});
+
+    auto fidB = f.sdb.upsertFile("/pkg_b.sv", "h");
+    f.sdb.replaceSymbols(fidB, {
+        {ParseRecordKind::Package, "pkg_b", 1, 0, "", "", 10, ""},
+        {ParseRecordKind::Class,   "Beta",  2, 0, "pkg_b", "", 5, "pkg_b"}
+    });
+
+    f.sdb.replaceSymbols(fid, {
+        {ParseRecordKind::Module, "top", 1, 0, "", "", 20, ""}
+    });
+
+    auto visible = f.sdb.findSymbolsVisibleAt("/a.sv", 10);
+    auto hasAlpha = std::any_of(visible.begin(), visible.end(),
+                                [](const SymbolRow& r){ return r.name == "Alpha"; });
+    auto hasBeta  = std::any_of(visible.begin(), visible.end(),
+                                [](const SymbolRow& r){ return r.name == "Beta"; });
+    CHECK(hasAlpha);      // the immediately imported scope is visible
+    CHECK_FALSE(hasBeta); // its own (non-exported) import is not
+}
+
+TEST_CASE("export re-exports a wildcard-imported package transitively",
+          "[db][symbol-db][import][export]") {
+    Fixture f;
+    // base_pkg declares Alpha.
+    auto fidBase = f.sdb.upsertFile("/base_pkg.sv", "h");
+    f.sdb.replaceSymbols(fidBase, {
+        {ParseRecordKind::Package, "base_pkg", 1, 0, "", "", 10, ""},
+        {ParseRecordKind::Class,   "Alpha",    2, 0, "base_pkg", "", 5, "base_pkg"}
+    });
+
+    // middle_pkg declares Beta, imports base_pkg::*, and re-exports it.
+    auto fidMiddle = f.sdb.upsertFile("/middle_pkg.sv", "h");
+    f.sdb.replaceSymbols(fidMiddle, {
+        {ParseRecordKind::Package, "middle_pkg", 1, 0, "", "", 10, ""},
+        {ParseRecordKind::Class,   "Beta",       2, 0, "middle_pkg", "", 5, "middle_pkg"}
+    });
+    f.sdb.replaceImports(fidMiddle, {
+        {"base_pkg", "*", 0, "", false}, // import base_pkg::*;
+        {"base_pkg", "*", 0, "", true}   // export base_pkg::*;
+    });
+
+    // a.sv imports middle_pkg::* only — never mentions base_pkg.
+    auto fid = f.sdb.upsertFile("/a.sv", "h");
+    f.sdb.replaceImports(fid, {{"middle_pkg", "*"}});
+    f.sdb.replaceSymbols(fid, {
+        {ParseRecordKind::Module, "top", 1, 0, "", "", 20, ""}
+    });
+
+    auto visible = f.sdb.findSymbolsVisibleAt("/a.sv", 10);
+    auto hasBeta  = std::any_of(visible.begin(), visible.end(),
+                                [](const SymbolRow& r){ return r.name == "Beta"; });
+    auto hasAlpha = std::any_of(visible.begin(), visible.end(),
+                                [](const SymbolRow& r){ return r.name == "Alpha"; });
+    CHECK(hasBeta);   // middle_pkg's own symbol
+    CHECK(hasAlpha);  // re-exported from base_pkg via export base_pkg::*
+}
+
+TEST_CASE("export of a specific symbol re-exports only that item",
+          "[db][symbol-db][import][export]") {
+    Fixture f;
+    auto fidBase = f.sdb.upsertFile("/base_pkg.sv", "h");
+    f.sdb.replaceSymbols(fidBase, {
+        {ParseRecordKind::Package, "base_pkg", 1, 0, "", "", 10, ""},
+        {ParseRecordKind::Class,   "Foo", 2, 0, "base_pkg", "", 4, "base_pkg"},
+        {ParseRecordKind::Class,   "Bar", 5, 0, "base_pkg", "", 7, "base_pkg"}
+    });
+
+    auto fidMiddle = f.sdb.upsertFile("/middle_pkg.sv", "h");
+    f.sdb.replaceSymbols(fidMiddle, {
+        {ParseRecordKind::Package, "middle_pkg", 1, 0, "", "", 10, ""}
+    });
+    f.sdb.replaceImports(fidMiddle, {
+        {"base_pkg", "Foo", 0, "", false}, // import base_pkg::Foo;
+        {"base_pkg", "Foo", 0, "", true}   // export base_pkg::Foo;
+    });
+
+    auto fid = f.sdb.upsertFile("/a.sv", "h");
+    f.sdb.replaceImports(fid, {{"middle_pkg", "*"}});
+    f.sdb.replaceSymbols(fid, {
+        {ParseRecordKind::Module, "top", 1, 0, "", "", 20, ""}
+    });
+
+    auto visible = f.sdb.findSymbolsVisibleAt("/a.sv", 10);
+    auto hasFoo = std::any_of(visible.begin(), visible.end(),
+                              [](const SymbolRow& r){ return r.name == "Foo"; });
+    auto hasBar = std::any_of(visible.begin(), visible.end(),
+                              [](const SymbolRow& r){ return r.name == "Bar"; });
+    CHECK(hasFoo);
+    CHECK_FALSE(hasBar);
+}

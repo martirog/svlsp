@@ -28,7 +28,8 @@ struct DiagnosticRow {
 
 struct ImportRow {
     std::string pkgName;
-    std::string item;  // symbol name, or "*" for wildcard
+    std::string item;      // symbol name, or "*" for wildcard
+    bool        isExport{false};
 };
 
 // Typed access layer over the svlsp SQLite schema.
@@ -82,4 +83,17 @@ private:
 
     int64_t fileIdFor(const std::string& path) const;
     std::vector<ImportRow> importsForFileId(int64_t fileId) const;
+
+    // The file_id of the file that declares top-level package `pkgName`,
+    // or -1 if no such package is known.
+    int64_t fileIdForPackage(const std::string& pkgName) const;
+
+    // Recursively resolves `export pkg::*` / `export pkg::item` declarations
+    // reachable from `pkgName`, appending re-exported wildcard package names
+    // and specific {pkg, name} imports. `visited` guards against export cycles.
+    void collectExportedImports(
+        const std::string& pkgName,
+        std::vector<std::string>& outWildcardPkgs,
+        std::vector<std::pair<std::string, std::string>>& outSpecific,
+        std::vector<std::string>& visited) const;
 };

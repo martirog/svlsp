@@ -39,10 +39,12 @@ struct ParseError {
     std::string file{};  // original source file; empty = same as compiled file
 };
 
-// One package import statement: `import pkgName::item` or `import pkgName::*`.
+// One package import/export statement: `import pkgName::item`, `import pkgName::*`,
+// `export pkgName::item`, or `export pkgName::*`.
 struct ImportRecord {
-    std::string pkgName;   // package being imported
+    std::string pkgName;   // package being imported/exported
     std::string item;      // symbol name, or "*" for wildcard
     int         line{0};   // 1-based line in `file`
     std::string file{};    // empty = same as compiled file
+    bool        isExport{false}; // true for `export`, false for plain `import`
 };

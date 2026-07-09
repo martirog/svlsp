@@ -508,3 +508,43 @@ TEST_CASE("file with no imports produces empty imports vector",
     auto result = walkSource("module m; endmodule\n");
     CHECK(result.imports.empty());
 }
+
+// ---------------------------------------------------------------------------
+// Package exports
+// ---------------------------------------------------------------------------
+
+TEST_CASE("plain import item is not marked isExport",
+          "[compiler][listener][import][export]") {
+    auto result = walkSource("import util_pkg::*;\nmodule m; endmodule\n");
+    REQUIRE(result.imports.size() == 1);
+    CHECK_FALSE(result.imports[0].isExport);
+}
+
+TEST_CASE("wildcard export emits ImportRecord marked isExport",
+          "[compiler][listener][import][export]") {
+    auto result = walkSource("package my_pkg; export util_pkg::*; endpackage\n");
+    REQUIRE(result.imports.size() == 1);
+    CHECK(result.imports[0].pkgName == "util_pkg");
+    CHECK(result.imports[0].item   == "*");
+    CHECK(result.imports[0].isExport);
+}
+
+TEST_CASE("specific export emits ImportRecord marked isExport",
+          "[compiler][listener][import][export]") {
+    auto result = walkSource("package my_pkg; export util_pkg::Foo; endpackage\n");
+    REQUIRE(result.imports.size() == 1);
+    CHECK(result.imports[0].pkgName == "util_pkg");
+    CHECK(result.imports[0].item   == "Foo");
+    CHECK(result.imports[0].isExport);
+}
+
+TEST_CASE("import inside a package that also exports is recorded distinctly",
+          "[compiler][listener][import][export]") {
+    auto result = walkSource(
+        "package my_pkg; import base_pkg::*; export base_pkg::*; endpackage\n");
+    REQUIRE(result.imports.size() == 2);
+    CHECK(result.imports[0].pkgName == "base_pkg");
+    CHECK_FALSE(result.imports[0].isExport);
+    CHECK(result.imports[1].pkgName == "base_pkg");
+    CHECK(result.imports[1].isExport);
+}

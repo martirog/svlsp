@@ -4,7 +4,7 @@ namespace db {
 
 // Current schema version.  Increment and add a migration in Database::initSchema
 // whenever the schema changes.
-inline constexpr int SCHEMA_VERSION = 3;
+inline constexpr int SCHEMA_VERSION = 4;
 
 // DDL executed on a fresh (version-0) database — always reflects the latest schema.
 inline constexpr const char* SCHEMA_DDL = R"sql(
@@ -54,13 +54,20 @@ CREATE TABLE diagnostics (
 CREATE INDEX idx_diagnostics_file_id ON diagnostics(file_id);
 
 CREATE TABLE imports (
-    id       INTEGER PRIMARY KEY AUTOINCREMENT,
-    file_id  INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
-    pkg_name TEXT    NOT NULL,
-    item     TEXT    NOT NULL   -- symbol name, or "*" for wildcard import
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id   INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    pkg_name  TEXT    NOT NULL,
+    item      TEXT    NOT NULL,           -- symbol name, or "*" for wildcard import
+    is_export INTEGER NOT NULL DEFAULT 0  -- 1 for `export pkg::item`, 0 for plain import
 );
 
 CREATE INDEX idx_imports_file_id ON imports(file_id);
+)sql";
+
+// SQL applied when migrating an existing v3 database to v4.
+inline constexpr const char* MIGRATION_V3_TO_V4 = R"sql(
+ALTER TABLE imports ADD COLUMN is_export INTEGER NOT NULL DEFAULT 0;
+UPDATE schema_version SET version = 4;
 )sql";
 
 // SQL applied when migrating an existing v2 database to v3.

@@ -121,12 +121,13 @@ void SymbolDatabase::replaceImports(int64_t fileId,
     del.step();
 
     auto ins = m_db.prepare(
-        "INSERT INTO imports (file_id, pkg_name, item) VALUES (?,?,?)");
+        "INSERT INTO imports (file_id, pkg_name, item, is_export) VALUES (?,?,?,?)");
     for (const auto& imp : imports) {
         ins.reset();
         ins.bind(1, fileId)
            .bind(2, imp.pkgName)
-           .bind(3, imp.item);
+           .bind(3, imp.item)
+           .bind(4, imp.isExport ? 1 : 0);
         ins.step();
     }
     m_db.execute("COMMIT");
@@ -135,12 +136,45 @@ void SymbolDatabase::replaceImports(int64_t fileId,
 std::vector<ImportRow> SymbolDatabase::importsForFileId(int64_t fileId) const
 {
     auto stmt = m_db.prepare(
-        "SELECT pkg_name, item FROM imports WHERE file_id = ?");
+        "SELECT pkg_name, item, is_export FROM imports WHERE file_id = ?");
     stmt.bind(1, fileId);
     std::vector<ImportRow> rows;
     while (stmt.step())
-        rows.push_back({stmt.columnText(0), stmt.columnText(1)});
+        rows.push_back({stmt.columnText(0), stmt.columnText(1), stmt.columnInt(2) != 0});
     return rows;
+}
+
+int64_t SymbolDatabase::fileIdForPackage(const std::string& pkgName) const
+{
+    auto stmt = m_db.prepare(
+        "SELECT file_id FROM symbols WHERE kind = 'Package' AND name = ? LIMIT 1");
+    stmt.bind(1, pkgName);
+    if (stmt.step()) return stmt.columnInt(0);
+    return -1;
+}
+
+void SymbolDatabase::collectExportedImports(
+    const std::string& pkgName,
+    std::vector<std::string>& outWildcardPkgs,
+    std::vector<std::pair<std::string, std::string>>& outSpecific,
+    std::vector<std::string>& visited) const
+{
+    if (std::find(visited.begin(), visited.end(), pkgName) != visited.end())
+        return;
+    visited.push_back(pkgName);
+
+    int64_t fid = fileIdForPackage(pkgName);
+    if (fid < 0) return;
+
+    for (auto& imp : importsForFileId(fid)) {
+        if (!imp.isExport) continue;
+        if (imp.item == "*") {
+            outWildcardPkgs.push_back(imp.pkgName);
+            collectExportedImports(imp.pkgName, outWildcardPkgs, outSpecific, visited);
+        } else {
+            outSpecific.emplace_back(imp.pkgName, imp.item);
+        }
+    }
 }
 
 std::vector<SymbolRow> SymbolDatabase::symbolsForFile(
@@ -308,6 +342,20 @@ std::vector<SymbolRow> SymbolDatabase::findSymbolsVisibleAt(
             else
                 specificImports.emplace_back(imp.pkgName, imp.item);
         }
+    }
+
+    // Follow `export pkg::*` / `export pkg::item` declarations inside each
+    // wildcard-imported package, so re-exported symbols become visible too.
+    // Plain (non-exported) imports of an imported package are intentionally
+    // NOT followed — only the immediately imported scope is visible unless
+    // that scope explicitly re-exports it.
+    {
+        std::vector<std::string> visited;
+        // Copy: collectExportedImports may append to wildcardPkgs while we
+        // iterate the original set of directly wildcard-imported packages.
+        auto directWildcards = wildcardPkgs;
+        for (auto& pkg : directWildcards)
+            collectExportedImports(pkg, wildcardPkgs, specificImports, visited);
     }
 
     // Part 1 placeholders: one ? per local scope.

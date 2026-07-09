@@ -232,7 +232,17 @@ public:
         }
     }
 
-    // ---- Package imports ----
+    // ---- Package imports / exports ----
+
+    void enterPackage_export_declaration(
+        SvParser::Package_export_declarationContext* /*ctx*/) override {
+        m_inExport = true;
+    }
+
+    void exitPackage_export_declaration(
+        SvParser::Package_export_declarationContext* /*ctx*/) override {
+        m_inExport = false;
+    }
 
     void enterPackage_import_item(SvParser::Package_import_itemContext* ctx) override {
         auto* pkgCtx = ctx->package_identifier();
@@ -243,7 +253,7 @@ public:
         std::string item = ctx->IDENTIFIER() ? ctx->IDENTIFIER()->getText() : "*";
         auto* tok = pkgId->getSymbol();
         auto [file, line] = translateLine(static_cast<int>(tok->getLine()), m_sourceMap);
-        m_imports.push_back({pkg, item, line, file});
+        m_imports.push_back({pkg, item, line, file, m_inExport});
     }
 
     // ---- Parameters ----
@@ -262,6 +272,7 @@ private:
     std::vector<ParseRecord>  m_records;
     std::vector<ImportRecord> m_imports;
     std::vector<std::string>  m_scopeStack;
+    bool                      m_inExport{false};
 
     // Translate a stop token's line through the source map; returns 0 if token is null.
     int translatedEndLine(antlr4::Token* stop) const {

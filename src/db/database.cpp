@@ -58,6 +58,8 @@ void Database::initSchema()
         execute(db::MIGRATION_V1_TO_V2);
     if (v < 3)
         execute(db::MIGRATION_V2_TO_V3);
+    if (v < 4)
+        execute(db::MIGRATION_V3_TO_V4);
 }
 
 void Database::execute(const std::string& sql)
