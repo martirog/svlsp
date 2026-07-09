@@ -413,17 +413,33 @@ any gaps discovered.
 - One Emacs functional test per LSP feature in Phase 3, using example files from Phase 4.
 - Tests run headless via `make test-integration`.
 
-### 6.2 Multi-File Project Support
-- Support a `compile_commands.json` or a custom `.svlsp.json` project configuration file
-  listing all source files in the project.
+### 6.2 Multi-File Project Support — IN PROGRESS (Stage 1/6 complete, commit `fe0f817`)
+
+**Resolved (was Appendix C, open question 5):** support *both* a custom, extensible
+`.svlsp.json` manifest *and* a VCS/Questa/Xcelium-style `.f` filelist (for interop with
+existing EDA build flows), both producing one shared `ProjectConfig` struct. The
+filelist parser implements full `-y`/`-v`/`+libext+` library resolution (not a stub),
+and errors hard on any unsupported filelist switch. Unresolved instantiations emit a
+diagnostic via the existing `ParseError` pipeline.
+
+**Full staged implementation plan (exact signatures, schema SQL, the library-resolution
+fixpoint algorithm, file/test names, PR sequencing) lives at
+`/home/martin/.claude/plans/fluffy-hatching-popcorn.md` — read that file to resume.**
+Stage status is tracked in `handoff.md`'s "Phase 6.2" section; Stage 1 (Program
+declaration tracking + `InstantiationRecord` + schema v5) is complete. Stages 2-6
+(filelist parser, JSON manifest parser, config-threading + library resolver, server
+wiring/discovery, end-to-end integration test) are not started.
+
 - Compile switches supported per-project and per-file:
-  - `-D NAME[=VALUE]` — preprocessor defines (passed to the SV preprocessor from §4.2a)
-  - `-I DIR` — include search directories for `` `include `` resolution
-  - `--top MODULE` — root module for elaboration
-  - `--sv` / `--v` — force SystemVerilog or Verilog 2005 mode
+  - `-D NAME[=VALUE]` / `+define+NAME[=VALUE]` — preprocessor defines (passed to the SV preprocessor from §4.2a)
+  - `-I DIR` / `+incdir+DIR` — include search directories for `` `include `` resolution
+  - `--top MODULE` / `-top MODULE` — root module for elaboration
+  - `--sv` / `--v` / `-sv` / `-sverilog` — force SystemVerilog or Verilog 2005 mode
+  - `-y DIR` / `-v FILE` / `+libext+.ext` — library-based module resolution (new scope, see plan file)
 - Batch-compile all listed files at server startup; background re-compile on change.
-- The `CompilationDriver` (§4.2a / §5.4) reads these switches from the project file and
-  threads them through the preprocess → parse → extract pipeline.
+- `CompilationController` (§5.4 — this is the actual class; `CompilationDriver` below was
+  an earlier planning-doc name for the same thing) reads these switches from the project
+  file and threads them through the preprocess → parse → extract pipeline.
 
 ### 6.3 Package Import Resolution
 
@@ -529,4 +545,7 @@ Branch strategy:
 2. Is Catch2 preferred over GoogleTest for this project?
 3. Should the grammar be taken verbatim or patched for SystemVerilog 2017/2023 compliance?
 4. Should the server support TCP transport in addition to stdio (useful for remote development)?
-5. Should a `compile_commands.json`-style project file be used, or a custom project manifest?
+5. ~~Should a `compile_commands.json`-style project file be used, or a custom project manifest?~~
+   **Resolved (2026-07-09):** both — a custom `.svlsp.json` manifest and a VCS/Questa/
+   Xcelium-style `.f` filelist, both producing one shared `ProjectConfig`. See §6.2 above
+   and `/home/martin/.claude/plans/fluffy-hatching-popcorn.md`.

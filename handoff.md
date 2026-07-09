@@ -3,7 +3,11 @@
 **Date:** 2026-07-09  
 **Last completed phase:** Phase 6.3 complete (6.1 — DB-backed providers; 6.3 — package import
 *and export* resolution; preprocessor source map committed)  
-**Current work:** None in progress; next is Phase 6.2 (multi-file project support) or 6.4 (cross-file invalidation)
+**Current work:** Phase 6.2 (multi-file project support) IN PROGRESS — Stage 1 of 6 complete
+and committed (`fe0f817`). **Full approved plan, with all 6 stages spelled out in file-level
+detail (exact signatures, schema SQL, algorithms, test names), lives at
+`/home/martin/.claude/plans/fluffy-hatching-popcorn.md` — read that file first before resuming.**
+See "Phase 6.2" section below for a summary and current status of each stage.
 
 ---
 
@@ -31,7 +35,7 @@ src/compiler/      compiler_directive_stripper, sv_preprocessor, sv_tree_walker,
 src/db/            database, symbol_database, compilation_controller,
                    schema — SQLite persistence layer (Phase 5 complete, schema v3)
 src/main.cpp       entry point
-tests/unit/        Catch2 unit tests (253 cases, 639 assertions)
+tests/unit/        Catch2 unit tests (268 cases, 672 assertions)
 tests/integration/ Emacs functional test scripts (19 files, 84 test cases)
 tools/             emacs-test-daemon.sh, emacs-test-init.el, emacs-test-lib.sh
 examples/          20 .sv fixture files (all created in Phase 4.2)
@@ -311,10 +315,11 @@ Two-pass pipeline:
 
 `SvTreeWalker` in `src/compiler/sv_tree_walker.h/.cpp`.
 
-Scope stack tracks Module/Interface/Package/Class/Function/Task — names are pushed on
-enter hooks and popped on exit hooks. Each `ParseRecord` carries the `scope` chain
+Scope stack tracks Module/Interface/Package/Class/Function/Task/**Program** — names are
+pushed on enter hooks and popped on exit hooks. Each `ParseRecord` carries the `scope` chain
 (e.g. `"MyModule::MyClass"`) and `endLine` (last line of scope body, for range building).
 Exit hooks call `backpatchEndLine` to patch the record after the closing token is seen.
+(`Program` support added in Phase 6.2 Stage 1 — previously programs weren't tracked at all.)
 
 ### 4.4 Symbol Extraction — Complete
 
@@ -322,6 +327,14 @@ Exit hooks call `backpatchEndLine` to patch the record after the closing token i
 
 - `endLine` — 1-based last line of scope body; 0 for leaf symbols (ports, signals, parameters)
 - `scope` — full enclosing scope chain (e.g. `"MyModule::MyClass"`); `""` for top-level symbols
+
+**`InstantiationRecord`** (Phase 6.2 Stage 1, `src/compiler/parse_record.h`): one per
+module/interface/program instantiation (`Foo u0(...);`), fields `typeName, instName,
+line, file`. Emitted by `enterModule_instantiation`/`enterInterface_instantiation`/
+`enterProgram_instantiation` in `sv_tree_walker.cpp`; `WalkResult` carries it as
+`instantiations`. This is a *reference*, not a declaration — it's how the Phase 6.2
+library resolver (`-y`/`-v` filelist support, not yet implemented) will know which
+instantiated type names aren't declared anywhere yet.
 
 ### 4.5 Error Recovery — Complete
 
@@ -336,11 +349,11 @@ Exit hooks call `backpatchEndLine` to patch the record after the closing token i
 
 ## Phase 5 — SQLite Database Layer — Complete
 
-### Schema v4
+### Schema v5
 
-Defined in `src/db/schema.h`. `db::SCHEMA_VERSION = 4`.
+Defined in `src/db/schema.h`. `db::SCHEMA_VERSION = 5`.
 
-Four tables:
+Five tables:
 - `files (id, path UNIQUE, content_hash, parsed_at)`
 - `symbols (id, file_id→files, kind, name, line, col, parent, detail, end_line, scope)` —
   indexes on `name`, `file_id`, `scope`, `(scope,name)`, `(file_id,line,end_line)`
@@ -348,11 +361,16 @@ Four tables:
 - `imports (id, file_id→files, pkg_name, item, is_export)` — `item = "*"` for wildcard
   imports; `is_export = 1` for `export pkg::item`/`export pkg::*` declarations;
   index on `file_id`
+- `instantiations (id, file_id→files, type_name, inst_name, line)` — one row per
+  module/interface/program instantiation (`Foo u0(...)`); indexes on `file_id`
+  and `type_name`. Drives `unresolvedInstantiatedTypeNames()` (Phase 6.2's
+  library resolver — see that section above).
 
 Migrations run automatically in `database.cpp`:
 - `MIGRATION_V1_TO_V2`: adds `end_line` and `scope` columns plus three new indexes
 - `MIGRATION_V2_TO_V3`: adds the `imports` table and its index
 - `MIGRATION_V3_TO_V4`: adds the `is_export` column to `imports` (default 0)
+- `MIGRATION_V4_TO_V5`: adds the `instantiations` table and its two indexes
 
 ### 5.2 Database Abstraction Layer — Complete
 
@@ -379,6 +397,9 @@ Migrations run automatically in `database.cpp`:
 | `importsForFileId(file_id) → vector<ImportRow>` | Returns `{ pkgName, item, isExport }` for the given file |
 | `fileIdForPackage(pkgName) → int64_t` *(private)* | file_id of the file declaring top-level package `pkgName`, or -1 |
 | `collectExportedImports(pkgName, ...)` *(private)* | Recursively follows `export pkg::*`/`export pkg::item` reachable from `pkgName`; cycle-safe via a `visited` list |
+| `replaceInstantiations(file_id, insts)` | DELETE + INSERT instantiation records in a transaction |
+| `unresolvedInstantiatedTypeNames() → vector<string>` | Distinct `type_name`s instantiated somewhere with no matching Module/Interface/Program declaration anywhere in the DB — drives Phase 6.2's library resolver |
+| `appendDiagnostics(file_id, extra)` | INSERT-only (unlike `replaceDiagnostics`'s delete-then-insert) — lets the library resolver attach diagnostics without wiping a file's own ANTLR diagnostics |
 
 `SymbolRow { id, kind, name, line, col, parent, detail, filePath, endLine, scope }`.
 
@@ -512,6 +533,66 @@ Fixtures: `tests/integration/fixtures/{base_pkg,middle_pkg,export_user,plain_mid
 
 ---
 
+## Phase 6.2 — Multi-File Project Support — IN PROGRESS (Stage 1/6 complete)
+
+**Full plan file (read this first to resume):**
+`/home/martin/.claude/plans/fluffy-hatching-popcorn.md` — contains the complete
+approved design: exact struct/method signatures, schema SQL, the library-resolution
+fixpoint algorithm spelled out step-by-step, file/test naming, and PR sequencing.
+This section is a status summary only; the plan file is the source of truth.
+
+### Scope (confirmed with the user)
+
+- Support **two** independent project-config formats, both producing one shared
+  `ProjectConfig` struct: a custom, extensible `.svlsp.json` manifest, **and** a
+  VCS/Questa/Xcelium-style `.f` filelist (for interop with existing EDA build flows).
+- The filelist parser implements **full `-y`/`-v`/`+libext+` library resolution**
+  (auto-discover a module's defining file by name when referenced/instantiated
+  but not explicitly listed) — not a stub.
+- Any `.f` switch not explicitly supported is a **hard error**, not silently ignored.
+- Unresolved instantiations (not found in project files, `-v` files, or `-y` dirs)
+  **emit a diagnostic** on the referencing file, reusing the existing `ParseError`
+  pipeline (confirmed with the user — see plan file §Stage 4).
+
+### Stage status
+
+| Stage | What | Status |
+|---|---|---|
+| 1 | Program tracking (`ParseRecordKind::Program`) + `InstantiationRecord` + schema v5 (`instantiations` table) + `unresolvedInstantiatedTypeNames`/`appendDiagnostics` | **Complete** — commit `fe0f817`, 15 new unit tests, full suite 268 cases/672 assertions passing |
+| 2 | `.f` filelist parser (`src/compiler/filelist_parser.h/.cpp`, `ProjectConfig` in `src/compiler/project_config.h`) | Not started |
+| 3 | `.svlsp.json` manifest parser (`src/lsp/project_manifest_parser.h/.cpp`, via `lsp::json`) | Not started |
+| 4 | Thread `ProjectConfig` into `CompilationController::compile`; `LibraryResolver` (-v/-y fixpoint); `ProjectCompiler` batch loader | Not started |
+| 5 | Server wiring: capture `rootUri`/`initializationOptions` in `ServerState`; new `ProjectRegistry` (upward-search discovery, caching, lazy load) | Not started |
+| 6 | End-to-end Emacs test `test_19_multifile_project.sh` + `multifile_project/` fixtures | Not started |
+
+### Key facts discovered during planning (still true, don't re-derive)
+
+- `program` declarations were **not tracked at all** before Stage 1 — now fixed
+  (mirrors Module/Interface hooks exactly; grammar rules confirmed at
+  `grammar/Sv.g4:89-101,3673`).
+- **Hover/Definition already do global cross-file lookup** via `findSymbolsByName`
+  (no scope/file filtering) — so once a library-resolved file's symbols land in
+  the DB, hover/definition on an instantiation site work with **zero changes**
+  to `hover.cpp`/`definition.cpp`. The only new capability needed is the
+  *resolver* knowing which names to search for.
+- No JSON library is linked except lsp-framework's own `lsp::json` (confirmed
+  API: `isObject()`/`object()`/`find()`/`isString()`/`string()`) — already
+  transitively available via `svlsp_lib`, but **not** via `svlsp_compiler`
+  (confirmed: `svlsp_compiler` links only `svlsp_antlr4`/`svlsp_options`). This
+  is why the JSON manifest parser must live under `src/lsp/`, while the filelist
+  parser belongs in `src/compiler/`.
+- `InitializeParams` (generated `types.h:6080-6159`) has `rootUri`
+  (`NullOr<DocumentUri>`), `rootPath` (`Opt<NullOr<String>>`),
+  `initializationOptions` (`Opt<LSPAny>`, `LSPAny = json::Value`), and
+  `workspaceFolders` — all currently unread anywhere in the codebase.
+- Filelist format confirmed via web research (VCS/Questa/Xcelium): bare
+  filenames; `+define+NAME[=VALUE]` and `+incdir+DIR` chainable on `+`;
+  `-f FILE` (nested, CWD-relative) vs `-F FILE` (nested, relative to the
+  filelist's own dir); `-sv`/`-sverilog`; `-y DIR`; `-v FILE`; `+libext+.ext`
+  chainable; `-top MODULE`; `//` comments; double-quoted filenames.
+
+---
+
 ## Phase 6.1 — DB-Backed LSP Providers — Complete
 
 All five active providers rewritten to query `SymbolDatabase`:
@@ -533,7 +614,7 @@ Integration tests 05/06/08/09/10 updated from "expect null" to verify real resul
 | Sub-phase | Feature | Status |
 |---|---|---|
 | 6.1 | DB-backed LSP providers | **Complete** |
-| 6.2 | Multi-file project support (`compile_commands.json`) | Not started |
+| 6.2 | Multi-file project support (`.svlsp.json` + `.f` filelist, incl. `-y`/`-v` library resolution) | **In progress — Stage 1/6 complete**, see Phase 6.2 section above |
 | 6.3 | Package import/export resolution (`import pkg::*`, `export pkg::*`) | **Complete** |
 | 6.4 | Cross-file invalidation (dependency graph) | Not started — see `plan.md §6.4` |
 | 6.5 | Performance baseline | Not started |
