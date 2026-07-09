@@ -35,6 +35,7 @@ struct Ctx {
     const std::vector<std::string>& includePaths;
     std::string output{};
     std::vector<MacroRecord> macroRecords{};
+    std::vector<SourceLine> sourceMap{};
 
     bool isOutputting() const {
         for (const auto& e : condStack) if (!e.active) return false;
@@ -284,6 +285,20 @@ static void processSource(const std::string& source, const std::string& filepath
     std::string line;
     int lineNo = 0;
 
+    // Emit one output line (content + newline) and record its origin in the source map.
+    // depth == 0 means we are in the primary compiled file; use "" so callers can
+    // distinguish primary-file lines from included-file lines with a simple empty check.
+    const std::string mapFile = depth > 0 ? filepath : std::string{};
+    auto emitLine = [&](const std::string& content) {
+        ctx.output += content;
+        ctx.output += '\n';
+        ctx.sourceMap.push_back({mapFile, lineNo});
+    };
+    auto emitBlank = [&]() {
+        ctx.output += '\n';
+        ctx.sourceMap.push_back({mapFile, lineNo});
+    };
+
     while (std::getline(iss, line)) {
         ++lineNo;
         if (!line.empty() && line.back() == '\r') line.pop_back();
@@ -295,8 +310,9 @@ static void processSource(const std::string& source, const std::string& filepath
         if (!startsWithBacktick) {
             // Regular source line: expand macros if outputting
             if (ctx.isOutputting())
-                ctx.output += expandStr(line, ctx.macros, ctx.errors, 0);
-            ctx.output += '\n';
+                emitLine(expandStr(line, ctx.macros, ctx.errors, 0));
+            else
+                emitBlank();
             continue;
         }
 
@@ -312,7 +328,7 @@ static void processSource(const std::string& source, const std::string& filepath
             bool defined = ctx.macros.count(macName) > 0;
             bool active  = (dir == "ifdef") ? defined : !defined;
             ctx.condStack.push_back({active, active, false});
-            ctx.output += '\n';
+            emitBlank();
             continue;
         }
         if (dir == "elsif") {
@@ -330,7 +346,7 @@ static void processSource(const std::string& source, const std::string& filepath
                     if (cond) top.seenTrue = true;
                 }
             }
-            ctx.output += '\n';
+            emitBlank();
             continue;
         }
         if (dir == "else") {
@@ -341,30 +357,30 @@ static void processSource(const std::string& source, const std::string& filepath
                 if (top.inElse) { ctx.errors.push_back("duplicate `else"); }
                 else { top.inElse = true; top.active = !top.seenTrue; }
             }
-            ctx.output += '\n';
+            emitBlank();
             continue;
         }
         if (dir == "endif") {
             if (ctx.condStack.empty()) ctx.errors.push_back("`endif without `ifdef");
             else ctx.condStack.pop_back();
-            ctx.output += '\n';
+            emitBlank();
             continue;
         }
 
         // ---- Non-conditional directives (skip when not outputting) ----
 
-        if (!ctx.isOutputting()) { ctx.output += '\n'; continue; }
+        if (!ctx.isOutputting()) { emitBlank(); continue; }
 
         if (dir == "define") {
             if (auto opt = parseMacroDefinition(rest, ctx.macros, ctx.errors))
                 ctx.macroRecords.push_back({opt->name, opt->body, lineNo});
-            ctx.output += '\n';
+            emitBlank();
         } else if (dir == "undef") {
             ctx.macros.erase(std::string(trimSV(stripLineComment(rest))));
-            ctx.output += '\n';
+            emitBlank();
         } else if (dir == "undefineall") {
             ctx.macros.clear();
-            ctx.output += '\n';
+            emitBlank();
         } else if (dir == "include") {
             std::string_view r = trimSV(rest);
             std::string filename;
@@ -375,15 +391,15 @@ static void processSource(const std::string& source, const std::string& filepath
             }
             if (filename.empty()) {
                 ctx.errors.push_back("`include: missing or malformed filename");
-                ctx.output += '\n';
+                emitBlank();
             } else {
                 processInclude(filename, filepath, ctx, depth);
-                // No blank line: included content replaces the `include line
+                // No blank line: included content replaces the `include line.
+                // The recursive processSource call pushed source map entries for it.
             }
         } else {
             // Unknown directive starting the line — try macro expansion of the whole line
-            ctx.output += expandStr(line, ctx.macros, ctx.errors, 0);
-            ctx.output += '\n';
+            emitLine(expandStr(line, ctx.macros, ctx.errors, 0));
         }
     }
 }
@@ -412,5 +428,6 @@ PreprocessorResult SvPreprocessor::process(const std::string& source,
     if (!ctx.condStack.empty())
         ctx.errors.push_back("unterminated `ifdef/`ifndef block");
 
-    return {std::move(ctx.output), std::move(ctx.errors), std::move(ctx.macroRecords)};
+    return {std::move(ctx.output), std::move(ctx.errors), std::move(ctx.macroRecords),
+            std::move(ctx.sourceMap)};
 }
