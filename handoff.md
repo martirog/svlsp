@@ -1,7 +1,8 @@
 # svlsp — Handoff Document
 
-**Date:** 2026-07-08  
-**Last completed phase:** Phase 6.3 complete (6.1 — DB-backed providers; 6.3 — package import resolution)  
+**Date:** 2026-07-09  
+**Last completed phase:** Phase 6.3 complete (6.1 — DB-backed providers; 6.3 — package import
+*and export* resolution; preprocessor source map committed)  
 **Current work:** None in progress; next is Phase 6.2 (multi-file project support) or 6.4 (cross-file invalidation)
 
 ---
@@ -30,8 +31,8 @@ src/compiler/      compiler_directive_stripper, sv_preprocessor, sv_tree_walker,
 src/db/            database, symbol_database, compilation_controller,
                    schema — SQLite persistence layer (Phase 5 complete, schema v3)
 src/main.cpp       entry point
-tests/unit/        Catch2 unit tests (246 cases, 618 assertions)
-tests/integration/ Emacs functional test scripts (17 files, 73 test cases)
+tests/unit/        Catch2 unit tests (253 cases, 639 assertions)
+tests/integration/ Emacs functional test scripts (19 files, 84 test cases)
 tools/             emacs-test-daemon.sh, emacs-test-init.el, emacs-test-lib.sh
 examples/          20 .sv fixture files (all created in Phase 4.2)
 grammar/           Sv.g4 — 3828-line SystemVerilog grammar (Phase 4.1 complete)
@@ -335,21 +336,23 @@ Exit hooks call `backpatchEndLine` to patch the record after the closing token i
 
 ## Phase 5 — SQLite Database Layer — Complete
 
-### Schema v3
+### Schema v4
 
-Defined in `src/db/schema.h`. `db::SCHEMA_VERSION = 3`.
+Defined in `src/db/schema.h`. `db::SCHEMA_VERSION = 4`.
 
 Four tables:
 - `files (id, path UNIQUE, content_hash, parsed_at)`
 - `symbols (id, file_id→files, kind, name, line, col, parent, detail, end_line, scope)` —
   indexes on `name`, `file_id`, `scope`, `(scope,name)`, `(file_id,line,end_line)`
 - `diagnostics (id, file_id→files, line, col, message)`
-- `imports (id, file_id→files, pkg_name, item)` — `item = "*"` for wildcard imports;
+- `imports (id, file_id→files, pkg_name, item, is_export)` — `item = "*"` for wildcard
+  imports; `is_export = 1` for `export pkg::item`/`export pkg::*` declarations;
   index on `file_id`
 
 Migrations run automatically in `database.cpp`:
 - `MIGRATION_V1_TO_V2`: adds `end_line` and `scope` columns plus three new indexes
 - `MIGRATION_V2_TO_V3`: adds the `imports` table and its index
+- `MIGRATION_V3_TO_V4`: adds the `is_export` column to `imports` (default 0)
 
 ### 5.2 Database Abstraction Layer — Complete
 
@@ -371,9 +374,11 @@ Migrations run automatically in `database.cpp`:
 | `findSymbolsInScope(scope) → vector<SymbolRow>` | All symbols with exactly this scope value |
 | `findSymbolsByNamePrefix(prefix) → vector<SymbolRow>` | LIKE `prefix%`, cross-file |
 | `scopeAtPosition(path, line) → string` | Innermost scope-defining symbol containing `line` (1-based); returns `""` if top-level |
-| `findSymbolsVisibleAt(path, line) → vector<SymbolRow>` | UNION ALL: (1) file-local scope chain, (2) cross-file top-level + wildcard-imported package scopes, (3) one arm per specific import; C++ sorted by scope depth then name |
-| `replaceImports(file_id, imports)` | DELETE + INSERT import records in a transaction |
-| `importsForFileId(file_id) → vector<ImportRow>` | Returns `{ pkgName, item }` pairs for the given file |
+| `findSymbolsVisibleAt(path, line) → vector<SymbolRow>` | UNION ALL: (1) file-local scope chain, (2) cross-file top-level + wildcard-imported package scopes (plus their transitively re-exported packages), (3) one arm per specific import (plus re-exported specific items); C++ sorted by scope depth then name |
+| `replaceImports(file_id, imports)` | DELETE + INSERT import records (incl. `is_export`) in a transaction |
+| `importsForFileId(file_id) → vector<ImportRow>` | Returns `{ pkgName, item, isExport }` for the given file |
+| `fileIdForPackage(pkgName) → int64_t` *(private)* | file_id of the file declaring top-level package `pkgName`, or -1 |
+| `collectExportedImports(pkgName, ...)` *(private)* | Recursively follows `export pkg::*`/`export pkg::item` reachable from `pkgName`; cycle-safe via a `visited` list |
 
 `SymbolRow { id, kind, name, line, col, parent, detail, filePath, endLine, scope }`.
 
@@ -435,21 +440,27 @@ and used to extend `findSymbolsVisibleAt`.
 **`ImportRecord`** (`src/compiler/parse_record.h`):
 ```cpp
 struct ImportRecord {
-    std::string pkgName;   // package being imported
+    std::string pkgName;   // package being imported/exported
     std::string item;      // symbol name, or "*" for wildcard
     int         line{0};
     std::string file{};    // empty = primary compiled file
+    bool        isExport{false}; // true for `export`, false for plain `import`
 };
 ```
 
 **ANTLR4 hook** (`SvRecordListener::enterPackage_import_item`):
-Fires on every `import pkg::item` statement. Translates the token line via the
-source map and pushes an `ImportRecord` onto `m_imports`. `WalkResult` gains a
-third field: `imports`.
+Fires on every `import pkg::item` **and** `export pkg::item` statement (both
+alternatives reuse the same `package_import_item` grammar production).
+`enterPackage_export_declaration`/`exitPackage_export_declaration` toggle an
+`m_inExport` flag around the export form so the emitted `ImportRecord` can be
+stamped `isExport = true`. Translates the token line via the source map and
+pushes onto `m_imports`. `WalkResult` gains a third field: `imports`.
 
-**`imports` DB table** (schema v3):
-`(id, file_id, pkg_name, item)` — `item = "*"` for wildcards. `replaceImports`
-is called by `CompilationController::compile` alongside `replaceSymbols`.
+**`imports` DB table** (schema v4):
+`(id, file_id, pkg_name, item, is_export)` — `item = "*"` for wildcards,
+`is_export = 1` for `export` declarations. `replaceImports` is called by
+`CompilationController::compile` alongside `replaceSymbols`.
+`MIGRATION_V3_TO_V4` adds the `is_export` column (default 0) to existing DBs.
 
 **Extended `findSymbolsVisibleAt`** (`src/db/symbol_database.cpp`):
 Loads the file's import records, then builds a three-part UNION ALL query:
@@ -458,10 +469,24 @@ Loads the file's import records, then builds a three-part UNION ALL query:
    wildcard-imported package scope to the permitted set
 3. One additional UNION ALL arm per specific import: `scope = pkg AND name = item`
 
+**Export re-exports** (`SymbolDatabase::collectExportedImports`, cycle-safe via
+a `visited` list): for each directly wildcard-imported package, looks up that
+package's own declaring file (`fileIdForPackage`) and follows its `export
+pkg::*` / `export pkg::item` declarations, merging re-exported wildcard
+packages and specific items into the same `wildcardPkgs`/`specificImports`
+sets used above. **Plain (non-exported) imports are never followed** — only
+the immediately imported scope is visible unless that scope explicitly
+re-exports it. Only the `export pkg::item` / `export pkg::*` grammar
+alternative is handled; the LRM's `export *::*;` shorthand (re-export
+everything imported into the current scope, regardless of package) is not
+wired up — that literal doesn't route through `package_import_item` at all.
+
 ### Tests
 
-Unit: 8 new `[import]` test cases across `test_sv_listener.cpp`,
-`test_symbol_database.cpp`, and `test_compilation_controller.cpp`.
+Unit: `[import]`/`[export]` test cases across `test_sv_listener.cpp` (export
+vs. plain-import tagging) and `test_symbol_database.cpp` (transitive-export
+resolution, plus a regression test proving a plain import does *not* leak a
+second-level import).
 
 Integration (`test_17_import_resolution.sh`, 10 tests):
 - Prerequisite: open `util_pkg.sv` to seed DB
@@ -470,6 +495,20 @@ Integration (`test_17_import_resolution.sh`, 10 tests):
 - Specific: completion includes DataItem; excludes Logger and compute
 
 Fixtures: `tests/integration/fixtures/{util_pkg,import_wildcard,import_specific}.sv`
+
+Integration (`test_18_export_resolution.sh`, 10 tests):
+- Prerequisites: seed `base_pkg.sv`, `middle_pkg.sv` (imports + exports
+  `base_pkg::*`), and `plain_middle_pkg.sv` (imports `base_pkg::*`, no export)
+- Export: completion in `export_user.sv` (imports only `middle_pkg::*`)
+  includes both `Beta` (middle_pkg's own) and `Alpha` (re-exported from
+  `base_pkg`); hover/definition on `Alpha` confirm it resolves to
+  `base_pkg.sv` at its true declaration line — not merely that a same-named
+  symbol is visible
+- Regression: completion in `plain_import_user.sv` (imports only
+  `plain_middle_pkg::*`, which does *not* export) includes `Gamma` but
+  excludes `Alpha` — proving plain imports still don't leak transitively
+
+Fixtures: `tests/integration/fixtures/{base_pkg,middle_pkg,export_user,plain_middle_pkg,plain_import_user}.sv`
 
 ---
 
@@ -495,7 +534,7 @@ Integration tests 05/06/08/09/10 updated from "expect null" to verify real resul
 |---|---|---|
 | 6.1 | DB-backed LSP providers | **Complete** |
 | 6.2 | Multi-file project support (`compile_commands.json`) | Not started |
-| 6.3 | Package import resolution (`import pkg::*`) | **Complete** |
+| 6.3 | Package import/export resolution (`import pkg::*`, `export pkg::*`) | **Complete** |
 | 6.4 | Cross-file invalidation (dependency graph) | Not started — see `plan.md §6.4` |
 | 6.5 | Performance baseline | Not started |
 | 6.6 | Packaging / `make install` | Not started |
@@ -528,5 +567,9 @@ Integration tests 05/06/08/09/10 updated from "expect null" to verify real resul
 - `CompilationController` uses `":memory:"` SQLite — symbols are lost on server restart.
   Each file must be re-opened for its symbols to reappear. Cross-session persistence
   requires a file-backed DB path (straightforward swap, just change the path in `server.cpp`).
+- The `export *::*;` LRM shorthand (re-export everything imported into the current scope,
+  regardless of package) is not implemented. Only `export pkg::*` / `export pkg::item` are
+  handled — see Phase 6.3 section above. That literal alternative doesn't route through the
+  `package_import_item` grammar rule at all, so `SvRecordListener` silently ignores it.
 - References, rename, and signature help providers still return `nullptr`. These are next
   after Phase 6.3/6.4.
