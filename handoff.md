@@ -3,7 +3,7 @@
 **Date:** 2026-07-09  
 **Last completed phase:** Phase 6.3 complete (6.1 — DB-backed providers; 6.3 — package import
 *and export* resolution; preprocessor source map committed)  
-**Current work:** Phase 6.2 (multi-file project support) IN PROGRESS — Stage 4 of 6 complete
+**Current work:** Phase 6.2 (multi-file project support) IN PROGRESS — Stage 5 of 6 complete
 and committed. **Full approved plan, with all 6 stages spelled out in file-level
 detail (exact signatures, schema SQL, algorithms, test names), lives at
 `/home/martin/.claude/plans/fluffy-hatching-popcorn.md` — read that file first before resuming.**
@@ -533,7 +533,7 @@ Fixtures: `tests/integration/fixtures/{base_pkg,middle_pkg,export_user,plain_mid
 
 ---
 
-## Phase 6.2 — Multi-File Project Support — IN PROGRESS (Stage 4/6 complete)
+## Phase 6.2 — Multi-File Project Support — IN PROGRESS (Stage 5/6 complete)
 
 **Full plan file (read this first to resume):**
 `/home/martin/.claude/plans/fluffy-hatching-popcorn.md` — contains the complete
@@ -562,7 +562,7 @@ This section is a status summary only; the plan file is the source of truth.
 | 2 | `.f` filelist parser (`src/compiler/filelist_parser.h/.cpp`, `ProjectConfig` in `src/compiler/project_config.h`) | **Complete** — 13 new unit tests, full suite 281 cases/702 assertions passing |
 | 3 | `.svlsp.json` manifest parser (`src/lsp/project_manifest_parser.h/.cpp`, via `lsp::json`) | **Complete** — 10 new unit tests, full suite 291 cases/738 assertions passing |
 | 4 | Thread `ProjectConfig` into `CompilationController::compile`; `LibraryResolver` (-v/-y fixpoint); `ProjectCompiler` batch loader | **Complete** — 14 new unit tests, full suite 305 cases/769 assertions passing |
-| 5 | Server wiring: capture `rootUri`/`initializationOptions` in `ServerState`; new `ProjectRegistry` (upward-search discovery, caching, lazy load) | Not started |
+| 5 | Server wiring: capture `rootUri`/`initializationOptions` in `ServerState`; new `ProjectRegistry` (upward-search discovery, caching, lazy load) | **Complete** — 12 new unit tests, full suite 317 cases/790 assertions passing; full Emacs integration suite rerun (89 passed, 6 failed — all 6 pre-existing/documented, zero new regressions) |
 | 6 | End-to-end Emacs test `test_21_multifile_project.sh` + `multifile_project/` fixtures (renumbered from `test_19` after two unrelated macro-expansion regression tests were inserted — see "Known gaps") | Not started |
 
 ### Key facts discovered during planning (still true, don't re-derive)
@@ -696,6 +696,66 @@ confirmed unavailable there; see "Key facts" above).
   config defines/includeDirs affect preprocessing, `LibraryResolver` invoked
   end-to-end through `loadProject`).
 
+### Stage 5 — Server wiring — Complete
+
+- **`ServerState`** (`src/lsp/server_state.h/.cpp`) captures two things during
+  `handleInitialize`: `m_rootUri` (raw `lsp::NullOr<lsp::DocumentUri>`, exposed via
+  `rootUri()` — captured for completeness only, **not** consumed anywhere; see
+  `ProjectRegistry`'s header comment for why upward search was chosen over it) and
+  `m_explicitProjectConfigPath` (a `std::string`, "" if absent), extracted from
+  `initializationOptions.svlsp.projectConfig` by a private static
+  `extractProjectConfigPath` helper that returns "" (never throws) at every step
+  where the shape doesn't match: options absent, options not an object, no
+  `"svlsp"` key, `"svlsp"` not an object, no `"projectConfig"` key, or
+  `"projectConfig"` not a string.
+- **`src/lsp/project_registry.h/.cpp`** (new): `ProjectRegistry::configFor(filePath)`
+  is the single entry point. Discovery order: (1) `m_explicitConfigPath` if set via
+  `setExplicitConfigPath` — wins unconditionally, no filesystem walk at all; (2)
+  upward search from `filePath`'s own directory, checking `.svlsp.json`,
+  `svlsp.json`, `.svlsp.f`, `svlsp.f`, `files.f` in that precedence at each
+  directory level before moving to the parent, stopping at the filesystem root;
+  (3) `nullptr` if nothing found (today's single-file behavior, byte-for-byte
+  unchanged — this is why every pre-Stage-5 integration test still passes
+  unmodified). Parser dispatch is by suffix: paths ending in `.json` go through
+  `ProjectManifestParser`, everything else through `FilelistParser`.
+- **Caching is keyed by the discovered config file's own path**, not a separately
+  computed "root directory" — the config file's parent directory *is* the root
+  for every practical purpose here, so this sidesteps computing/normalizing a
+  second identity for the same thing. First `configFor` call for a given config
+  path parses it and runs `ProjectCompiler::loadProject` (which itself internally
+  invokes `LibraryResolver`); every subsequent call for any file under that root
+  returns the same cached `ProjectConfig*` with no re-parse and no re-`loadProject`
+  — verified in the unit tests by pointer-identity equality across two different
+  files under one discovered root. **A directory with no manifest anywhere in its
+  ancestry is not cached as a negative result** — each such `configFor` call redoes
+  the (cheap) upward filesystem walk; deliberately not optimized further since
+  redoing a `fs::exists` walk per edit is not the bottleneck anywhere in this
+  codebase yet.
+- **`server.h/.cpp`**: `LanguageServer` gained `m_projects` (constructed right
+  after `m_compiler`/`m_symbolDb`, matching the plan's ordering requirement since
+  `ProjectRegistry`'s constructor takes references to both). `parseDiagnostics`
+  now calls `m_compiler.compile(path, text, m_projects.configFor(path))` — for
+  any file with no discoverable project, `configFor` returns `nullptr`, which
+  `compile`'s defaulted 3rd parameter already treats as "no project" (Stage 4),
+  so this is a no-op change for every currently-passing integration test. The
+  `Initialize` handler calls `m_projects.setExplicitConfigPath(m_state.
+  explicitProjectConfigPath())` immediately after `m_state.handleInitialize` —
+  unconditionally (an empty string is a harmless no-op, since that's already
+  `ProjectRegistry`'s default).
+- Unit tests: 6 cases appended to `tests/unit/lsp/test_server_state.cpp` (tag
+  `[lsp][server-state][project]` — rootUri capture, and every
+  present/absent/malformed shape of `explicitProjectConfigPath` extraction).
+  `tests/unit/lsp/test_project_registry.cpp` (new, tag `[lsp][project-registry]`,
+  6 cases: no-manifest-found, upward search into a parent directory,
+  closest-directory-wins over an outer manifest, `.svlsp.json`-over-`svlsp.f`
+  precedence in the same directory, load-once caching via pointer identity,
+  explicit-path override regardless of the file's own directory tree).
+- **Verification beyond unit tests**: the full Emacs integration suite (all
+  `test_*.sh` files) was rerun after this stage — 89 passed, 6 failed, and all 6
+  failures are the pre-existing ones already documented in "Known gaps" below
+  (5 from the macro mid-line/multi-line column-drift gaps, 1 unrelated
+  `test_08_completion.sh` flake) — zero new regressions from the server wiring.
+
 ---
 
 ## Phase 6.1 — DB-Backed LSP Providers — Complete
@@ -719,7 +779,7 @@ Integration tests 05/06/08/09/10 updated from "expect null" to verify real resul
 | Sub-phase | Feature | Status |
 |---|---|---|
 | 6.1 | DB-backed LSP providers | **Complete** |
-| 6.2 | Multi-file project support (`.svlsp.json` + `.f` filelist, incl. `-y`/`-v` library resolution) | **In progress — Stage 4/6 complete**, see Phase 6.2 section above |
+| 6.2 | Multi-file project support (`.svlsp.json` + `.f` filelist, incl. `-y`/`-v` library resolution) | **In progress — Stage 5/6 complete**, see Phase 6.2 section above |
 | 6.3 | Package import/export resolution (`import pkg::*`, `export pkg::*`) | **Complete** |
 | 6.4 | Cross-file invalidation (dependency graph) | Not started — see `plan.md §6.4` |
 | 6.5 | Performance baseline | Not started |
