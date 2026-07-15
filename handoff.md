@@ -3,7 +3,7 @@
 **Date:** 2026-07-09  
 **Last completed phase:** Phase 6.3 complete (6.1 — DB-backed providers; 6.3 — package import
 *and export* resolution; preprocessor source map committed)  
-**Current work:** Phase 6.2 (multi-file project support) IN PROGRESS — Stage 2 of 6 complete
+**Current work:** Phase 6.2 (multi-file project support) IN PROGRESS — Stage 3 of 6 complete
 and committed. **Full approved plan, with all 6 stages spelled out in file-level
 detail (exact signatures, schema SQL, algorithms, test names), lives at
 `/home/martin/.claude/plans/fluffy-hatching-popcorn.md` — read that file first before resuming.**
@@ -533,7 +533,7 @@ Fixtures: `tests/integration/fixtures/{base_pkg,middle_pkg,export_user,plain_mid
 
 ---
 
-## Phase 6.2 — Multi-File Project Support — IN PROGRESS (Stage 2/6 complete)
+## Phase 6.2 — Multi-File Project Support — IN PROGRESS (Stage 3/6 complete)
 
 **Full plan file (read this first to resume):**
 `/home/martin/.claude/plans/fluffy-hatching-popcorn.md` — contains the complete
@@ -560,7 +560,7 @@ This section is a status summary only; the plan file is the source of truth.
 |---|---|---|
 | 1 | Program tracking (`ParseRecordKind::Program`) + `InstantiationRecord` + schema v5 (`instantiations` table) + `unresolvedInstantiatedTypeNames`/`appendDiagnostics` | **Complete** — commit `fe0f817`, 15 new unit tests, full suite 268 cases/672 assertions passing |
 | 2 | `.f` filelist parser (`src/compiler/filelist_parser.h/.cpp`, `ProjectConfig` in `src/compiler/project_config.h`) | **Complete** — 13 new unit tests, full suite 281 cases/702 assertions passing |
-| 3 | `.svlsp.json` manifest parser (`src/lsp/project_manifest_parser.h/.cpp`, via `lsp::json`) | Not started |
+| 3 | `.svlsp.json` manifest parser (`src/lsp/project_manifest_parser.h/.cpp`, via `lsp::json`) | **Complete** — 10 new unit tests, full suite 291 cases/738 assertions passing |
 | 4 | Thread `ProjectConfig` into `CompilationController::compile`; `LibraryResolver` (-v/-y fixpoint); `ProjectCompiler` batch loader | Not started |
 | 5 | Server wiring: capture `rootUri`/`initializationOptions` in `ServerState`; new `ProjectRegistry` (upward-search discovery, caching, lazy load) | Not started |
 | 6 | End-to-end Emacs test `test_21_multifile_project.sh` + `multifile_project/` fixtures (renumbered from `test_19` after two unrelated macro-expansion regression tests were inserted — see "Known gaps") | Not started |
@@ -617,6 +617,33 @@ both registered in `CMakeLists.txt` under `svlsp_compiler`.
   temp files under `/tmp/svlsp_test_filelist/` (nested `-f`/`-F` targets must exist on
   disk since the parser opens them to canonicalize for cycle detection).
 
+### Stage 3 — `.svlsp.json` manifest parser — Complete
+
+`src/lsp/project_manifest_parser.h/.cpp` (new, `ProjectManifestParser::parse(path)`),
+registered in `CMakeLists.txt` under `svlsp_lib` (not `svlsp_compiler` — needs `lsp::json`,
+confirmed unavailable there; see "Key facts" above).
+
+- `lsp::json::parse`'s `ParseError` and `Value::string()`/`object()`'s `TypeError`
+  both derive from `lsp::Exception → std::runtime_error`, so they already satisfy
+  "throws `std::runtime_error`" — caught once at the top of `parse()` and rewrapped
+  with the manifest path prepended for a clearer message; every other validation
+  (wrong-typed field, non-object root, invalid `"mode"` value) throws its own
+  `std::runtime_error` directly, naming the offending field.
+- **Unknown top-level keys are silently ignored** (JSON is self-describing — a
+  typo'd key can't corrupt parsing of an unrelated field), the deliberate opposite
+  of the filelist parser's hard-error policy — see the plan file's design note if
+  you want to revisit that asymmetry.
+- `"mode"` only accepts the literal strings `"sv"` / `"v95"`; anything else throws
+  (not in the original plan spec, added defensively since an unrecognized mode
+  string silently keeping the default would be a worse failure mode than an error).
+- Relative paths in `"files"`/`"includeDirs"`/`"libraryDirs"`/`"libraryFiles"`
+  resolve against the manifest's own parent directory (`libExtensions` values are
+  bare extension strings, not paths — no resolution).
+- Unit tests: `tests/unit/lsp/test_project_manifest_parser.cpp`, tag
+  `[lsp][project-manifest]` — 10 cases: full/partial fields, `"mode":"v95"`,
+  unknown key ignored, malformed JSON, non-object root, wrong-typed `"files"` and
+  `"defines"` values, invalid `"mode"` value, missing file on disk.
+
 ---
 
 ## Phase 6.1 — DB-Backed LSP Providers — Complete
@@ -640,7 +667,7 @@ Integration tests 05/06/08/09/10 updated from "expect null" to verify real resul
 | Sub-phase | Feature | Status |
 |---|---|---|
 | 6.1 | DB-backed LSP providers | **Complete** |
-| 6.2 | Multi-file project support (`.svlsp.json` + `.f` filelist, incl. `-y`/`-v` library resolution) | **In progress — Stage 2/6 complete**, see Phase 6.2 section above |
+| 6.2 | Multi-file project support (`.svlsp.json` + `.f` filelist, incl. `-y`/`-v` library resolution) | **In progress — Stage 3/6 complete**, see Phase 6.2 section above |
 | 6.3 | Package import/export resolution (`import pkg::*`, `export pkg::*`) | **Complete** |
 | 6.4 | Cross-file invalidation (dependency graph) | Not started — see `plan.md §6.4` |
 | 6.5 | Performance baseline | Not started |
