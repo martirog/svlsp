@@ -1,13 +1,15 @@
 # svlsp — Handoff Document
 
-**Date:** 2026-07-09  
-**Last completed phase:** Phase 6.3 complete (6.1 — DB-backed providers; 6.3 — package import
-*and export* resolution; preprocessor source map committed)  
-**Current work:** Phase 6.2 (multi-file project support) IN PROGRESS — Stage 5 of 6 complete
-and committed. **Full approved plan, with all 6 stages spelled out in file-level
-detail (exact signatures, schema SQL, algorithms, test names), lives at
-`/home/martin/.claude/plans/fluffy-hatching-popcorn.md` — read that file first before resuming.**
-See "Phase 6.2" section below for a summary and current status of each stage.
+**Date:** 2026-07-15  
+**Last completed phase:** Phase 6.2 complete — multi-file project support, all 6 stages
+(6.1 — DB-backed providers; 6.3 — package import *and export* resolution; preprocessor
+source map committed previously)  
+**Current work:** None in progress. Phase 6.4 (cross-file invalidation / dependency graph)
+is next per `plan.md §6.4` — not yet planned in file-level detail. **The full approved
+Phase 6.2 plan (exact signatures, schema SQL, algorithms, test names — now historical
+reference, all 6 stages complete) lives at
+`/home/martin/.claude/plans/fluffy-hatching-popcorn.md`.**
+See "Phase 6.2" section below for what was built in each stage.
 
 ---
 
@@ -533,7 +535,7 @@ Fixtures: `tests/integration/fixtures/{base_pkg,middle_pkg,export_user,plain_mid
 
 ---
 
-## Phase 6.2 — Multi-File Project Support — IN PROGRESS (Stage 5/6 complete)
+## Phase 6.2 — Multi-File Project Support — Complete (6/6 stages)
 
 **Full plan file (read this first to resume):**
 `/home/martin/.claude/plans/fluffy-hatching-popcorn.md` — contains the complete
@@ -563,7 +565,7 @@ This section is a status summary only; the plan file is the source of truth.
 | 3 | `.svlsp.json` manifest parser (`src/lsp/project_manifest_parser.h/.cpp`, via `lsp::json`) | **Complete** — 10 new unit tests, full suite 291 cases/738 assertions passing |
 | 4 | Thread `ProjectConfig` into `CompilationController::compile`; `LibraryResolver` (-v/-y fixpoint); `ProjectCompiler` batch loader | **Complete** — 14 new unit tests, full suite 305 cases/769 assertions passing |
 | 5 | Server wiring: capture `rootUri`/`initializationOptions` in `ServerState`; new `ProjectRegistry` (upward-search discovery, caching, lazy load) | **Complete** — 12 new unit tests, full suite 317 cases/790 assertions passing; full Emacs integration suite rerun (89 passed, 6 failed — all 6 pre-existing/documented, zero new regressions) |
-| 6 | End-to-end Emacs test `test_21_multifile_project.sh` + `multifile_project/` fixtures (renumbered from `test_19` after two unrelated macro-expansion regression tests were inserted — see "Known gaps") | Not started |
+| 6 | End-to-end Emacs test `test_21_multifile_project.sh` + `multifile_project/` fixtures (renumbered from `test_19` after two unrelated macro-expansion regression tests were inserted — see "Known gaps") | **Complete** — 4 new integration cases; also found and fixed a real bug (see below) |
 
 ### Key facts discovered during planning (still true, don't re-derive)
 
@@ -756,6 +758,68 @@ confirmed unavailable there; see "Key facts" above).
   (5 from the macro mid-line/multi-line column-drift gaps, 1 unrelated
   `test_08_completion.sh` flake) — zero new regressions from the server wiring.
 
+### Stage 6 — End-to-end Emacs integration test — Complete
+
+New fixture `tests/integration/fixtures/multifile_project/` (`.svlsp.f` = `top.sv`
++ `-y libs` + `+libext+.sv`; `top.sv` instantiates `leaf_mod` without declaring or
+listing it anywhere; `libs/leaf_mod.sv` declares it, reachable only via `-y`
+search). New `tests/integration/test_21_multifile_project.sh`, 4 cases: hover and
+definition on the `leaf_mod` instantiation site in `top.sv`, proving the
+library-resolved file's symbols are reachable with **zero changes** to
+`HoverProvider`/`DefinitionProvider`.
+
+**Real bug found and fixed while writing this test** (not a pre-existing/documented
+gap like the macro ones — this one is fixed, not deferred): the first attempt at
+this test failed all 4 cases. Manual JSON-RPC probing against the `svlsp` binary
+directly (bypassing Emacs to narrow the search space) showed zero diagnostics but
+a null hover — i.e. `leaf_mod` was never actually getting compiled at all.
+Root cause: `FilelistParser::parse(path)` resolves every bare relative path (`-y
+libs`, the bare `top.sv` entry) against `fs::current_path()` — correct for the
+plan's original CLI-tool framing ("the top-level call behaves as if it were
+itself `-f`'d in from the CWD"), but meaningless for `ProjectRegistry`'s
+auto-discovery use case, where the server process's CWD has no relation to
+wherever a discovered `.svlsp.f` happens to live. `ProjectRegistry::loadAndCache`
+was calling `FilelistParser::parse(configPath)` with no way to override that.
+**Fix**: `FilelistParser::parse` gained a second parameter, `baseDir = ""` (empty
+means "behave exactly as before, i.e. CWD" — every pre-existing call site and unit
+test is unaffected); `ProjectRegistry::loadAndCache` now passes
+`fs::path(configPath).parent_path().string()` explicitly. `ProjectManifestParser`
+needed no equivalent change — Stage 3 already resolves its own paths against the
+manifest's own directory internally, which is why this asymmetry between the two
+parsers wasn't visible until a filelist with actual relative paths was exercised
+through discovery.
+This also means the Stage 5 unit tests had a real coverage gap: every
+`test_project_registry.cpp` case up to this point used `.svlsp.json` fixtures
+with only a `"top"` string field — never a path-bearing field through
+`FilelistParser`, so the bug went undetected until this end-to-end test forced a
+real `-y`/bare-filename resolution through the discovery path. Two regression
+tests were added to close this gap: `test_filelist_parser.cpp` ("relative bare
+filenames resolve against an explicit baseDir, not CWD" / "... when baseDir is
+omitted") and `test_project_registry.cpp` ("a discovered .svlsp.f's relative
+paths resolve against its own directory, not the server's CWD").
+
+**Deviation from the plan, deliberate**: the plan additionally called for
+exercising `ProjectRegistry`'s explicit-path override end-to-end via a dynamic
+`svlsp-test/initialization-options` Elisp variable (wired into
+`tools/emacs-test-init.el`'s `:initialization-options`, reset to nil afterward).
+That variable **is** wired up as specified, but `test_21` does not use it:
+lsp-mode reuses one workspace/server process per detected project root, every
+fixture in this repo resolves to the same git-root workspace, and that
+workspace's one-time `initialize` handshake (and thus `ServerState::
+explicitProjectConfigPath`) already happened earlier in the suite (as early as
+`test_02`) — mutating the variable at `test_21` time has no effect without a
+`lsp-workspace-restart`, which risks destabilizing every test after it. The
+explicit-path-override behavior itself is already fully covered at the unit
+level (`test_project_registry.cpp`, "an explicit config path overrides upward
+search for every file"). `test_21` instead proves the upward-search discovery
+path — Stage 5's actual behavior for every real editor session, since nobody
+hand-configures `initializationOptions` in practice.
+
+Full verification after this stage: unit suite 320 cases/800 assertions (all
+green); full Emacs integration suite 93 passed / 6 failed — the same 6
+pre-existing/documented failures as before this stage, plus all 4 new `test_21`
+cases passing.
+
 ---
 
 ## Phase 6.1 — DB-Backed LSP Providers — Complete
@@ -779,7 +843,7 @@ Integration tests 05/06/08/09/10 updated from "expect null" to verify real resul
 | Sub-phase | Feature | Status |
 |---|---|---|
 | 6.1 | DB-backed LSP providers | **Complete** |
-| 6.2 | Multi-file project support (`.svlsp.json` + `.f` filelist, incl. `-y`/`-v` library resolution) | **In progress — Stage 5/6 complete**, see Phase 6.2 section above |
+| 6.2 | Multi-file project support (`.svlsp.json` + `.f` filelist, incl. `-y`/`-v` library resolution) | **Complete** (6/6 stages), see Phase 6.2 section above |
 | 6.3 | Package import/export resolution (`import pkg::*`, `export pkg::*`) | **Complete** |
 | 6.4 | Cross-file invalidation (dependency graph) | Not started — see `plan.md §6.4` |
 | 6.5 | Performance baseline | Not started |
