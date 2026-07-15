@@ -18,7 +18,8 @@ std::string CompilationController::hashContent(const std::string& text)
 }
 
 std::vector<ParseError> CompilationController::compile(const std::string& path,
-                                                        const std::string& text)
+                                                        const std::string& text,
+                                                        const ProjectConfig* config)
 {
     const std::string hash = hashContent(text);
 
@@ -33,8 +34,11 @@ std::vector<ParseError> CompilationController::compile(const std::string& path,
     }
 
     // Cache miss: run the full pipeline.
-    auto stripped     = CompilerDirectiveStripper::strip(text, path);
-    SvPreprocessor preprocessor;
+    auto stripped = CompilerDirectiveStripper::strip(text, path);
+    SvPreprocessor preprocessor = config ? SvPreprocessor(config->includeDirs) : SvPreprocessor();
+    if (config) {
+        for (const auto& [name, value] : config->defines) preprocessor.define(name, value);
+    }
     auto preprocessed = preprocessor.process(stripped.source, path);
     auto walked       = SvTreeWalker::walk(preprocessed.source, preprocessed.sourceMap);
 

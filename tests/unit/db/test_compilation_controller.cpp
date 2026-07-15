@@ -2,6 +2,7 @@
 #include "db/database.h"
 #include "db/symbol_database.h"
 #include "db/compilation_controller.h"
+#include "compiler/project_config.h"
 #include <algorithm>
 #include <fstream>
 
@@ -185,4 +186,40 @@ TEST_CASE("compile resolves an instantiation once its type is declared elsewhere
 
     auto unresolved = f.sdb.unresolvedInstantiatedTypeNames();
     CHECK(std::find(unresolved.begin(), unresolved.end(), "sub") == unresolved.end());
+}
+
+TEST_CASE("compile with a config define gates an ifdef", "[db][ctrl][project-config]") {
+    Fixture f;
+    ProjectConfig config;
+    config.defines["SIM"] = "";
+
+    f.ctrl.compile("/a.sv", "`ifdef SIM\nmodule sim_only; endmodule\n`endif\n", &config);
+
+    auto syms = f.sdb.symbolsForFile("/a.sv");
+    REQUIRE(syms.size() == 1);
+    CHECK(syms[0].name == "sim_only");
+}
+
+TEST_CASE("compile without a config define leaves the ifdef block inactive",
+          "[db][ctrl][project-config]") {
+    Fixture f;
+    f.ctrl.compile("/a.sv", "`ifdef SIM\nmodule sim_only; endmodule\n`endif\n");
+
+    auto syms = f.sdb.symbolsForFile("/a.sv");
+    CHECK(syms.empty());
+}
+
+TEST_CASE("compile with a config includeDir resolves a bare `include", "[db][ctrl][project-config]") {
+    Fixture f;
+    std::string incPath = "/tmp/svlsp_test_ctrl_cfg_inc.sv";
+    { std::ofstream ofs(incPath); ofs << "module via_config_incdir; endmodule\n"; }
+
+    ProjectConfig config;
+    config.includeDirs.push_back("/tmp");
+
+    f.ctrl.compile("/a.sv", "`include \"svlsp_test_ctrl_cfg_inc.sv\"\n", &config);
+
+    auto syms = f.sdb.symbolsForFile(incPath);
+    REQUIRE(syms.size() == 1);
+    CHECK(syms[0].name == "via_config_incdir");
 }

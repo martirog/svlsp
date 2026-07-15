@@ -1,6 +1,7 @@
 #pragma once
 #include "db/symbol_database.h"
 #include "compiler/parse_record.h"
+#include "compiler/project_config.h"
 #include <string>
 #include <vector>
 
@@ -21,9 +22,13 @@ public:
     explicit CompilationController(SymbolDatabase& sdb);
 
     // Returns the ParseErrors for `path` / `text`, using the DB cache when
-    // the content hash matches.
+    // the content hash matches. When `config` is non-null, its includeDirs
+    // and defines seed the preprocessor (project-aware compilation); when
+    // null (the default), preprocessing behaves exactly as before Phase 6.2
+    // — no defines, no extra include directories.
     std::vector<ParseError> compile(const std::string& path,
-                                    const std::string& text);
+                                    const std::string& text,
+                                    const ProjectConfig* config = nullptr);
 
 private:
     SymbolDatabase& m_sdb;

@@ -32,6 +32,12 @@ struct ImportRow {
     bool        isExport{false};
 };
 
+struct InstantiationRow {
+    int64_t     fileId;
+    std::string filePath;
+    int         line;
+};
+
 // Typed access layer over the svlsp SQLite schema.
 // All methods operate on the database reference supplied at construction.
 class SymbolDatabase {
@@ -61,6 +67,11 @@ public:
     // Distinct type names instantiated somewhere with no matching Module/
     // Interface/Program declaration anywhere in the DB. Drives library resolution.
     std::vector<std::string> unresolvedInstantiatedTypeNames() const;
+
+    // Every instantiation of `typeName`, with the referencing file's id/path
+    // and the instantiation's line — used to attach a diagnostic to each
+    // referencing file when `typeName` can't be resolved by LibraryResolver.
+    std::vector<InstantiationRow> instantiationsOfType(const std::string& typeName) const;
 
     // Insert-only: appends diagnostics without deleting existing rows for
     // `fileId` (unlike replaceDiagnostics, which is delete-then-insert).

@@ -179,6 +179,20 @@ std::vector<std::string> SymbolDatabase::unresolvedInstantiatedTypeNames() const
     return names;
 }
 
+std::vector<InstantiationRow> SymbolDatabase::instantiationsOfType(
+    const std::string& typeName) const
+{
+    auto stmt = m_db.prepare(
+        "SELECT i.file_id, f.path, i.line FROM instantiations i "
+        "JOIN files f ON f.id = i.file_id WHERE i.type_name = ?");
+    stmt.bind(1, typeName);
+    std::vector<InstantiationRow> rows;
+    while (stmt.step())
+        rows.push_back({stmt.columnInt(0), stmt.columnText(1),
+                        static_cast<int>(stmt.columnInt(2))});
+    return rows;
+}
+
 void SymbolDatabase::appendDiagnostics(int64_t fileId, const std::vector<ParseError>& extra)
 {
     m_db.execute("BEGIN");
