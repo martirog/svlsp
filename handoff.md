@@ -3,8 +3,8 @@
 **Date:** 2026-07-09  
 **Last completed phase:** Phase 6.3 complete (6.1 — DB-backed providers; 6.3 — package import
 *and export* resolution; preprocessor source map committed)  
-**Current work:** Phase 6.2 (multi-file project support) IN PROGRESS — Stage 1 of 6 complete
-and committed (`fe0f817`). **Full approved plan, with all 6 stages spelled out in file-level
+**Current work:** Phase 6.2 (multi-file project support) IN PROGRESS — Stage 2 of 6 complete
+and committed. **Full approved plan, with all 6 stages spelled out in file-level
 detail (exact signatures, schema SQL, algorithms, test names), lives at
 `/home/martin/.claude/plans/fluffy-hatching-popcorn.md` — read that file first before resuming.**
 See "Phase 6.2" section below for a summary and current status of each stage.
@@ -533,7 +533,7 @@ Fixtures: `tests/integration/fixtures/{base_pkg,middle_pkg,export_user,plain_mid
 
 ---
 
-## Phase 6.2 — Multi-File Project Support — IN PROGRESS (Stage 1/6 complete)
+## Phase 6.2 — Multi-File Project Support — IN PROGRESS (Stage 2/6 complete)
 
 **Full plan file (read this first to resume):**
 `/home/martin/.claude/plans/fluffy-hatching-popcorn.md` — contains the complete
@@ -559,11 +559,11 @@ This section is a status summary only; the plan file is the source of truth.
 | Stage | What | Status |
 |---|---|---|
 | 1 | Program tracking (`ParseRecordKind::Program`) + `InstantiationRecord` + schema v5 (`instantiations` table) + `unresolvedInstantiatedTypeNames`/`appendDiagnostics` | **Complete** — commit `fe0f817`, 15 new unit tests, full suite 268 cases/672 assertions passing |
-| 2 | `.f` filelist parser (`src/compiler/filelist_parser.h/.cpp`, `ProjectConfig` in `src/compiler/project_config.h`) | Not started |
+| 2 | `.f` filelist parser (`src/compiler/filelist_parser.h/.cpp`, `ProjectConfig` in `src/compiler/project_config.h`) | **Complete** — 13 new unit tests, full suite 281 cases/702 assertions passing |
 | 3 | `.svlsp.json` manifest parser (`src/lsp/project_manifest_parser.h/.cpp`, via `lsp::json`) | Not started |
 | 4 | Thread `ProjectConfig` into `CompilationController::compile`; `LibraryResolver` (-v/-y fixpoint); `ProjectCompiler` batch loader | Not started |
 | 5 | Server wiring: capture `rootUri`/`initializationOptions` in `ServerState`; new `ProjectRegistry` (upward-search discovery, caching, lazy load) | Not started |
-| 6 | End-to-end Emacs test `test_19_multifile_project.sh` + `multifile_project/` fixtures | Not started |
+| 6 | End-to-end Emacs test `test_21_multifile_project.sh` + `multifile_project/` fixtures (renumbered from `test_19` after two unrelated macro-expansion regression tests were inserted — see "Known gaps") | Not started |
 
 ### Key facts discovered during planning (still true, don't re-derive)
 
@@ -591,6 +591,32 @@ This section is a status summary only; the plan file is the source of truth.
   filelist's own dir); `-sv`/`-sverilog`; `-y DIR`; `-v FILE`; `+libext+.ext`
   chainable; `-top MODULE`; `//` comments; double-quoted filenames.
 
+### Stage 2 — `.f` filelist parser — Complete
+
+`src/compiler/project_config.h` (new, header-only `ProjectConfig`/`SvLanguageMode`)
+and `src/compiler/filelist_parser.h/.cpp` (new, `FilelistParser::parse(path)`),
+both registered in `CMakeLists.txt` under `svlsp_compiler`.
+
+- **CWD-relative vs. file-relative resolution is implemented via a per-recursion-frame
+  `baseDir` string**, not a global. `-f FILE`: recurses with the *same* `baseDir` as the
+  current frame (paths inside the nested file stay CWD-relative, matching vendor tool
+  behavior). `-F FILE`: recurses with `baseDir` = the nested file's own parent directory.
+  The top-level `parse(path)` call seeds `baseDir = fs::current_path()` — i.e. the entry
+  point behaves as if it were itself `-f`'d in from the CWD.
+- **Cycle detection uses an "active recursion stack" set** (`insert` on entry,
+  `erase` on return), not a permanent "ever visited" set — so a diamond include
+  (A includes B and C; both B and C include D) is legal and D is parsed twice
+  (harmless: `compile()` is content-hash-cached downstream), while true cycles
+  (A → B → A) throw. Don't switch this to a permanent-visited set without checking
+  this distinction is still wanted.
+- Any `-x`/`+x` token not in the explicitly supported list throws
+  `std::runtime_error` naming the offending token and `path:line` — no silent
+  ignoring, per the confirmed scope above.
+- Unit tests: `tests/unit/compiler/test_filelist_parser.cpp`, tag `[compiler][filelist]`
+  — 13 cases covering every bullet in the Context section's format list, using real
+  temp files under `/tmp/svlsp_test_filelist/` (nested `-f`/`-F` targets must exist on
+  disk since the parser opens them to canonicalize for cycle detection).
+
 ---
 
 ## Phase 6.1 — DB-Backed LSP Providers — Complete
@@ -614,7 +640,7 @@ Integration tests 05/06/08/09/10 updated from "expect null" to verify real resul
 | Sub-phase | Feature | Status |
 |---|---|---|
 | 6.1 | DB-backed LSP providers | **Complete** |
-| 6.2 | Multi-file project support (`.svlsp.json` + `.f` filelist, incl. `-y`/`-v` library resolution) | **In progress — Stage 1/6 complete**, see Phase 6.2 section above |
+| 6.2 | Multi-file project support (`.svlsp.json` + `.f` filelist, incl. `-y`/`-v` library resolution) | **In progress — Stage 2/6 complete**, see Phase 6.2 section above |
 | 6.3 | Package import/export resolution (`import pkg::*`, `export pkg::*`) | **Complete** |
 | 6.4 | Cross-file invalidation (dependency graph) | Not started — see `plan.md §6.4` |
 | 6.5 | Performance baseline | Not started |
