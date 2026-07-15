@@ -3,7 +3,7 @@
 **Date:** 2026-07-09  
 **Last completed phase:** Phase 6.3 complete (6.1 — DB-backed providers; 6.3 — package import
 *and export* resolution; preprocessor source map committed)  
-**Current work:** Phase 6.2 (multi-file project support) IN PROGRESS — Stage 3 of 6 complete
+**Current work:** Phase 6.2 (multi-file project support) IN PROGRESS — Stage 4 of 6 complete
 and committed. **Full approved plan, with all 6 stages spelled out in file-level
 detail (exact signatures, schema SQL, algorithms, test names), lives at
 `/home/martin/.claude/plans/fluffy-hatching-popcorn.md` — read that file first before resuming.**
@@ -533,7 +533,7 @@ Fixtures: `tests/integration/fixtures/{base_pkg,middle_pkg,export_user,plain_mid
 
 ---
 
-## Phase 6.2 — Multi-File Project Support — IN PROGRESS (Stage 3/6 complete)
+## Phase 6.2 — Multi-File Project Support — IN PROGRESS (Stage 4/6 complete)
 
 **Full plan file (read this first to resume):**
 `/home/martin/.claude/plans/fluffy-hatching-popcorn.md` — contains the complete
@@ -561,7 +561,7 @@ This section is a status summary only; the plan file is the source of truth.
 | 1 | Program tracking (`ParseRecordKind::Program`) + `InstantiationRecord` + schema v5 (`instantiations` table) + `unresolvedInstantiatedTypeNames`/`appendDiagnostics` | **Complete** — commit `fe0f817`, 15 new unit tests, full suite 268 cases/672 assertions passing |
 | 2 | `.f` filelist parser (`src/compiler/filelist_parser.h/.cpp`, `ProjectConfig` in `src/compiler/project_config.h`) | **Complete** — 13 new unit tests, full suite 281 cases/702 assertions passing |
 | 3 | `.svlsp.json` manifest parser (`src/lsp/project_manifest_parser.h/.cpp`, via `lsp::json`) | **Complete** — 10 new unit tests, full suite 291 cases/738 assertions passing |
-| 4 | Thread `ProjectConfig` into `CompilationController::compile`; `LibraryResolver` (-v/-y fixpoint); `ProjectCompiler` batch loader | Not started |
+| 4 | Thread `ProjectConfig` into `CompilationController::compile`; `LibraryResolver` (-v/-y fixpoint); `ProjectCompiler` batch loader | **Complete** — 14 new unit tests, full suite 305 cases/769 assertions passing |
 | 5 | Server wiring: capture `rootUri`/`initializationOptions` in `ServerState`; new `ProjectRegistry` (upward-search discovery, caching, lazy load) | Not started |
 | 6 | End-to-end Emacs test `test_21_multifile_project.sh` + `multifile_project/` fixtures (renumbered from `test_19` after two unrelated macro-expansion regression tests were inserted — see "Known gaps") | Not started |
 
@@ -644,6 +644,58 @@ confirmed unavailable there; see "Key facts" above).
   unknown key ignored, malformed JSON, non-object root, wrong-typed `"files"` and
   `"defines"` values, invalid `"mode"` value, missing file on disk.
 
+### Stage 4 — Config threading + library resolution — Complete
+
+- **`CompilationController::compile`** gained a 3rd parameter
+  `const ProjectConfig* config = nullptr`. Every existing call site (`server.cpp`,
+  all pre-Stage-4 unit tests) is untouched — the default preserves exactly the old
+  behavior (bare `SvPreprocessor`, no defines/include dirs). When non-null,
+  `config->includeDirs` seeds the `SvPreprocessor` constructor and each
+  `config->defines` entry is applied via `.define(name, value)` before `.process()`.
+- **`src/compiler/file_utils.h/.cpp`** (new, under `svlsp_compiler`): one function,
+  `readFile(path) -> std::optional<std::string>`, returning `nullopt` (not throwing)
+  on a missing file — both `LibraryResolver` and `ProjectCompiler` treat a missing
+  file as "skip", never a hard error, unlike the filelist/manifest parsers.
+- **`SymbolDatabase::instantiationsOfType(typeName) -> vector<InstantiationRow>`**
+  (new; `InstantiationRow{fileId, filePath, line}`) — added because Stage 4 needed
+  "every file referencing an unresolved name" and no existing query provided it;
+  not spelled out with an exact signature in the plan file, so this is a Stage-4
+  design decision, not something to hunt for in the plan doc.
+- **`src/db/library_resolver.h/.cpp`** (new): `LibraryResolver::resolve(config,
+  controller, sdb)`. Implementation detail worth knowing — it resolves **one name
+  at a time**, re-querying `unresolvedInstantiatedTypeNames()` from scratch after
+  every single compile, rather than resolving a whole batch before re-querying (the
+  plan sketches a batch-per-round shape). Chosen because re-checking after each
+  compile is trivially correct (a name that a same-round compile happens to resolve
+  is never redundantly re-attempted) at a cost of a few extra cheap `SELECT`s — not
+  a deviation in observable behavior, just a simpler loop. Termination still rests
+  on the same two facts the plan calls out: a name in `failedNames` is never
+  retried, and `compiledPaths` prevents recompiling the same resolved file twice.
+  `-v` files are pre-indexed by a raw parse (`CompilerDirectiveStripper` →
+  `SvPreprocessor` → `SvTreeWalker`, using `config.includeDirs`/`config.defines` so
+  they preprocess consistently with the rest of the project) that is **not**
+  persisted to the DB — only a file that's actually resolved against gets
+  `controller.compile()`'d. `-y` search order is strictly `libraryDirs` outer loop
+  × `libExtensions` inner loop, first `readFile()` hit wins (verified by a test
+  fixture where two candidates declare the same module name but differ in a
+  secondary nested instantiation, so whichever version "won" is observable).
+- **`src/db/project_compiler.h/.cpp`** (new): `ProjectCompiler::loadProject(config,
+  controller, sdb)` reads and compiles every `config.files` entry (missing ones
+  silently skipped, mirroring `readFile`'s no-throw contract), then calls
+  `LibraryResolver::resolve`. Returns total files compiled (explicit + library).
+- Unit tests: 3 new cases appended to `tests/unit/db/test_compilation_controller.cpp`
+  (tag `[db][ctrl][project-config]`, directly exercising the new 3-arg `compile()`
+  overload — not explicitly named in the plan's Stage 4 test list but added for
+  direct unit-level coverage of the config-threading change itself, separate from
+  the higher-level `ProjectCompiler`/`LibraryResolver` coverage the plan does call
+  for). `tests/unit/db/test_library_resolver.cpp` (new, tag `[db][library-resolver]`,
+  6 cases: `-v` resolution, `-y` dir-order and extension-order preference, A→B→C
+  fixpoint chain, dead-end name stays unresolved with zero files compiled, diagnostic
+  attached to the referencing file). `tests/unit/db/test_project_compiler.cpp` (new,
+  tag `[db][project-compiler]`, 5 cases: explicit files loaded, missing file skipped,
+  config defines/includeDirs affect preprocessing, `LibraryResolver` invoked
+  end-to-end through `loadProject`).
+
 ---
 
 ## Phase 6.1 — DB-Backed LSP Providers — Complete
@@ -667,7 +719,7 @@ Integration tests 05/06/08/09/10 updated from "expect null" to verify real resul
 | Sub-phase | Feature | Status |
 |---|---|---|
 | 6.1 | DB-backed LSP providers | **Complete** |
-| 6.2 | Multi-file project support (`.svlsp.json` + `.f` filelist, incl. `-y`/`-v` library resolution) | **In progress — Stage 3/6 complete**, see Phase 6.2 section above |
+| 6.2 | Multi-file project support (`.svlsp.json` + `.f` filelist, incl. `-y`/`-v` library resolution) | **In progress — Stage 4/6 complete**, see Phase 6.2 section above |
 | 6.3 | Package import/export resolution (`import pkg::*`, `export pkg::*`) | **Complete** |
 | 6.4 | Cross-file invalidation (dependency graph) | Not started — see `plan.md §6.4` |
 | 6.5 | Performance baseline | Not started |
