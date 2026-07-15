@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <string>
 #include <lsp/messages.h>
 #include <lsp/error.h>
 
@@ -36,10 +37,26 @@ public:
     // True while the server should keep processing messages.
     bool isRunning() const { return m_phase.load() != Phase::Inactive; }
 
+    // The client's rootUri from `initialize`, if any. Captured for
+    // completeness but NOT used to drive project discovery -- see
+    // ProjectRegistry's header comment for why (upward search from each
+    // opened file is used instead).
+    const lsp::NullOr<lsp::DocumentUri>& rootUri() const { return m_rootUri; }
+
+    // `initializationOptions.svlsp.projectConfig`, if present and a string;
+    // "" if initializationOptions is absent, isn't an object, or the nested
+    // path isn't there / isn't a string. An explicit path here always wins
+    // over ProjectRegistry's upward-search discovery.
+    const std::string& explicitProjectConfigPath() const { return m_explicitProjectConfigPath; }
+
 private:
     std::atomic<Phase> m_phase{Phase::Uninitialized};
     lsp::NullOr<int>   m_parentProcessId;  // for parent-process exit monitoring
+    lsp::NullOr<lsp::DocumentUri> m_rootUri;
+    std::string        m_explicitProjectConfigPath;
 
     // Throws lsp::RequestError if the server is not in Active state.
     void requireActive(const char* method) const;
+
+    static std::string extractProjectConfigPath(const lsp::InitializeParams& params);
 };

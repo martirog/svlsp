@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include "lsp/server_state.h"
+#include <lsp/json/json.h>
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -118,4 +119,78 @@ TEST_CASE("ServerState: exit without shutdown also transitions to Inactive", "[l
     s.handleExit();
     REQUIRE(s.phase() == ServerState::Phase::Inactive);
     REQUIRE_FALSE(s.isRunning());
+}
+
+// ---------------------------------------------------------------------------
+// rootUri / explicitProjectConfigPath (Phase 6.2 Stage 5)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("ServerState: rootUri is captured from initialize params",
+          "[lsp][server-state][project]")
+{
+    ServerState s;
+    auto params = makeParams();
+    params.rootUri = lsp::DocumentUri::fromPath("/some/workspace");
+    s.handleInitialize(params);
+
+    REQUIRE_FALSE(s.rootUri().isNull());
+    CHECK(s.rootUri().value().path() == "/some/workspace");
+}
+
+TEST_CASE("ServerState: explicitProjectConfigPath is empty with no initializationOptions",
+          "[lsp][server-state][project]")
+{
+    ServerState s;
+    s.handleInitialize(makeParams());
+    CHECK(s.explicitProjectConfigPath().empty());
+}
+
+TEST_CASE("ServerState: explicitProjectConfigPath is empty when initializationOptions "
+          "isn't an object", "[lsp][server-state][project]")
+{
+    ServerState s;
+    auto params = makeParams();
+    params.initializationOptions = lsp::json::Value(lsp::json::String("not an object"));
+    REQUIRE_NOTHROW(s.handleInitialize(params));
+    CHECK(s.explicitProjectConfigPath().empty());
+}
+
+TEST_CASE("ServerState: explicitProjectConfigPath is empty when \"svlsp\" key is missing",
+          "[lsp][server-state][project]")
+{
+    ServerState s;
+    auto params = makeParams();
+    lsp::json::Object root;
+    root["somethingElse"] = lsp::json::Value(lsp::json::String("x"));
+    params.initializationOptions = lsp::json::Value(std::move(root));
+    REQUIRE_NOTHROW(s.handleInitialize(params));
+    CHECK(s.explicitProjectConfigPath().empty());
+}
+
+TEST_CASE("ServerState: explicitProjectConfigPath is empty when projectConfig isn't a string",
+          "[lsp][server-state][project]")
+{
+    ServerState s;
+    auto params = makeParams();
+    lsp::json::Object svlsp;
+    svlsp["projectConfig"] = lsp::json::Value(lsp::json::Integer(5));
+    lsp::json::Object root;
+    root["svlsp"] = lsp::json::Value(std::move(svlsp));
+    params.initializationOptions = lsp::json::Value(std::move(root));
+    REQUIRE_NOTHROW(s.handleInitialize(params));
+    CHECK(s.explicitProjectConfigPath().empty());
+}
+
+TEST_CASE("ServerState: explicitProjectConfigPath extracts a nested string path",
+          "[lsp][server-state][project]")
+{
+    ServerState s;
+    auto params = makeParams();
+    lsp::json::Object svlsp;
+    svlsp["projectConfig"] = lsp::json::Value(lsp::json::String("/proj/.svlsp.json"));
+    lsp::json::Object root;
+    root["svlsp"] = lsp::json::Value(std::move(svlsp));
+    params.initializationOptions = lsp::json::Value(std::move(root));
+    s.handleInitialize(params);
+    CHECK(s.explicitProjectConfigPath() == "/proj/.svlsp.json");
 }

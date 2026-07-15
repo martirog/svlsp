@@ -1,4 +1,5 @@
 #include "server_state.h"
+#include <lsp/json/json.h>
 
 auto ServerState::handleInitialize(lsp::InitializeParams params)
     -> lsp::requests::Initialize::Result
@@ -8,6 +9,8 @@ auto ServerState::handleInitialize(lsp::InitializeParams params)
                                 "Server is already initialized");
 
     m_parentProcessId = params.processId;
+    m_rootUri = params.rootUri;
+    m_explicitProjectConfigPath = extractProjectConfigPath(params);
     m_phase.store(Phase::Active);
 
     return {
@@ -53,6 +56,21 @@ void ServerState::handleExit()
     // Exit without prior shutdown is an error exit (code 1), but we treat
     // both the same here — the binary's exit code is set by LanguageServer.
     m_phase.store(Phase::Inactive);
+}
+
+std::string ServerState::extractProjectConfigPath(const lsp::InitializeParams& params)
+{
+    if (!params.initializationOptions) return "";
+    const lsp::json::Value& opts = *params.initializationOptions;
+    if (!opts.isObject()) return "";
+
+    const lsp::json::Value* svlsp = opts.object().find("svlsp");
+    if (!svlsp || !svlsp->isObject()) return "";
+
+    const lsp::json::Value* projectConfig = svlsp->object().find("projectConfig");
+    if (!projectConfig || !projectConfig->isString()) return "";
+
+    return projectConfig->string();
 }
 
 void ServerState::requireActive(const char* method) const

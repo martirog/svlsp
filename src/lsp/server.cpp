@@ -7,6 +7,7 @@ LanguageServer::LanguageServer(lsp::io::Stream& io)
     : m_db{":memory:"}
     , m_symbolDb{m_db}
     , m_compiler{m_symbolDb}
+    , m_projects{m_compiler, m_symbolDb}
     , m_connection{io}
     , m_messageHandler{m_connection}
     , m_diagnostics{m_messageHandler}
@@ -31,7 +32,7 @@ lsp::Array<lsp::Diagnostic> LanguageServer::parseDiagnostics(
     const lsp::DocumentUri& uri, const std::string& text)
 {
     const std::string path{uri.path()};
-    auto parseErrors = m_compiler.compile(path, text);
+    auto parseErrors = m_compiler.compile(path, text, m_projects.configFor(path));
 
     lsp::Array<lsp::Diagnostic> diags;
     for (const auto& err : parseErrors)
@@ -44,7 +45,9 @@ void LanguageServer::registerHandlers()
     m_messageHandler
         .add<lsp::requests::Initialize>(
             [this](lsp::InitializeParams&& params) {
-                return m_state.handleInitialize(std::move(params));
+                auto result = m_state.handleInitialize(std::move(params));
+                m_projects.setExplicitConfigPath(m_state.explicitProjectConfigPath());
+                return result;
             })
         .add<lsp::notifications::Initialized>(
             [this](lsp::notifications::Initialized::Params&&) {

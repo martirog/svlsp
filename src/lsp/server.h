@@ -14,6 +14,7 @@
 #include "server_state.h"
 #include "signature_help.h"
 #include "workspace_symbols.h"
+#include "project_registry.h"
 #include "db/database.h"
 #include "db/symbol_database.h"
 #include "db/compilation_controller.h"
@@ -34,6 +35,7 @@ private:
     Database              m_db;          // in-memory for now; file path in Phase 6
     SymbolDatabase        m_symbolDb;
     CompilationController m_compiler;
+    ProjectRegistry        m_projects;    // must follow m_compiler/m_symbolDb
     lsp::Connection       m_connection;
     lsp::MessageHandler   m_messageHandler;
     DiagnosticsPublisher  m_diagnostics; // must follow m_messageHandler
