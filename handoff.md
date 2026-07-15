@@ -820,6 +820,48 @@ green); full Emacs integration suite 93 passed / 6 failed — the same 6
 pre-existing/documented failures as before this stage, plus all 4 new `test_21`
 cases passing.
 
+### Post-Stage-6 — Extensive combined-features integration test — Complete
+
+`tests/integration/test_22_full_project.sh` + `fixtures/full_project/` — a single
+project fixture deliberately combining every Phase 6.2/6.3 mechanism at once
+(`` `include ``, an explicit project file, `-y` library resolution, a wildcard
+import, a specific import, and transitive export), checked against every LSP
+feature: diagnostics, hover, definition, completion, documentSymbol, and
+workspace/symbol. 26 test cases, all passing.
+
+- **`.svlsp.f` must list the package files explicitly** (`fp_util_pkg.sv`,
+  `fp_reexport_pkg.sv`), alongside `fp_top.sv`/`fp_extra_mod.sv` and `-y libs`.
+  First attempt omitted them (reasoning "packages aren't instantiated like
+  modules, so they don't need `-y`/`-v` resolution") — wrong: import/export
+  resolution is a **DB lookup by package name** (`fileIdForPackage`), with *no*
+  library-resolution-style mechanism to go find a package's declaring file on
+  demand the way `LibraryResolver` does for module instantiations. All 10
+  import/export/completion/workspaceSymbol cases failed until the two package
+  files were added to the explicit file list — a real project's filelist/manifest
+  must list every source file, packages included, not just modules that get
+  instantiated.
+- **All symbol names are `fp_`-prefixed** (`fp_top`, `fp_sub_block`, `fp_extra_mod`,
+  `fp_leaf_mod`, `FpWidget`, `FpExtra`, `fp_compute`) and were checked against
+  every existing name across `tests/integration/fixtures/**` and `examples/**`
+  before writing the fixture. This matters because **the entire Emacs daemon
+  session shares one svlsp server process and one growing in-memory DB across
+  every `test_*.sh` file** — e.g. this fixture's library-resolved module could
+  not be named `leaf_mod` (test_21's `multifile_project` fixture already uses
+  that exact name), since `findSymbolsByName`/hover/definition would then have
+  to arbitrarily pick between two same-named symbols in two unrelated files.
+  Any future fixture must do the same name-collision check against the whole
+  tree, not just its own subdirectory.
+- Deliberately does **not** assert on the macro-affected wire (`fp_top_bus`,
+  driven by `` `FP_BUS_WIDTH `` mid-declaration): its column would hit the
+  known, documented mid-line-macro column-drift gap (test_19/test_20). Zero
+  diagnostics is used as the (sufficient) proof that the macro expanded
+  correctly — a broken expansion produces a parse error, per that same gap's
+  root cause.
+- Full verification: unit suite unchanged at 320 cases/800 assertions
+  (integration-only change); full Emacs integration suite 119 passed / 6
+  failed — the same 6 pre-existing/documented failures, plus all 26 new cases
+  passing, confirmed via a second full run to rule out flakiness.
+
 ---
 
 ## Phase 6.1 — DB-Backed LSP Providers — Complete
