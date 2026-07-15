@@ -65,6 +65,24 @@ TEST_CASE("closest directory's manifest wins over an outer one",
     CHECK(config->topModule == "inner_top");
 }
 
+TEST_CASE("a discovered .svlsp.f's relative paths resolve against its own "
+          "directory, not the server's CWD", "[lsp][project-registry]") {
+    std::string dir = kRoot + "/relative_filelist";
+    writeFile(dir + "/main.sv", "module main_mod; endmodule\n");
+    writeFile(dir + "/.svlsp.f", "main.sv\n");
+
+    Fixture f;
+    const ProjectConfig* config = f.registry.configFor(dir + "/main.sv");
+
+    REQUIRE(config != nullptr);
+    REQUIRE(config->files.size() == 1);
+    CHECK(config->files[0] == dir + "/main.sv");
+    // The bare regression check: loadProject must have actually found and
+    // compiled main.sv (proving the relative path resolved correctly, not
+    // just that the string happens to match).
+    CHECK(!f.sdb.symbolsForFile(dir + "/main.sv").empty());
+}
+
 TEST_CASE("precedence: .svlsp.json is preferred over svlsp.f in the same directory",
           "[lsp][project-registry]") {
     std::string dir = kRoot + "/precedence";

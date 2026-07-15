@@ -22,11 +22,16 @@
 //   // ...                 line comment (rest of line ignored)
 //   "quoted path"           a single token, spaces allowed inside
 //
-// The top-level call's own base directory is the process's current working
-// directory (matching `-f` semantics for the entry point itself).
+// The top-level call's own base directory is `baseDir` if given, else the
+// process's current working directory (matching `-f` semantics for the
+// entry point itself -- the CLI-invocation default). Callers that discover
+// a filelist rather than being handed one on a command line (ProjectRegistry's
+// auto-discovery) should pass the filelist's own directory explicitly, since
+// the server process's CWD has no relation to where a discovered project
+// file happens to live.
 class FilelistParser {
 public:
     // Throws std::runtime_error("<path>:<line>: <reason>") on any
     // unsupported switch or on a -f/-F include cycle.
-    static ProjectConfig parse(const std::string& path);
+    static ProjectConfig parse(const std::string& path, const std::string& baseDir = "");
 };

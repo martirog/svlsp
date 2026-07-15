@@ -39,6 +39,28 @@ TEST_CASE("bare filenames become absolute file entries", "[compiler][filelist]")
     CHECK(config.files[1] == kRoot + "/b.sv");
 }
 
+TEST_CASE("relative bare filenames resolve against an explicit baseDir, not CWD",
+          "[compiler][filelist]") {
+    std::string path = writeFilelist("relbase.f", "rel.sv\n-y rellibs\n");
+
+    auto config = FilelistParser::parse(path, kRoot);
+
+    REQUIRE(config.files.size() == 1);
+    CHECK(config.files[0] == kRoot + "/rel.sv");
+    REQUIRE(config.libraryDirs.size() == 1);
+    CHECK(config.libraryDirs[0] == kRoot + "/rellibs");
+}
+
+TEST_CASE("relative bare filenames resolve against CWD when baseDir is omitted",
+          "[compiler][filelist]") {
+    std::string path = writeFilelist("defaultbase.f", "rel.sv\n");
+
+    auto config = FilelistParser::parse(path);
+
+    REQUIRE(config.files.size() == 1);
+    CHECK(config.files[0] == (fs::current_path() / "rel.sv").lexically_normal().string());
+}
+
 // ---------------------------------------------------------------------------
 // Chained +define+/+incdir+/+libext+
 // ---------------------------------------------------------------------------

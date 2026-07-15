@@ -48,12 +48,24 @@
                         (or (getenv "SVLSP_ROOT") default-directory)))
   "Path to the svlsp binary under test.")
 
+(defvar svlsp-test/initialization-options nil
+  "Dynamic `initializationOptions' sent on the next svlsp `initialize' request.
+nil by default (additive -- doesn't affect any test that doesn't set it).
+Since lsp-mode reuses one workspace/server process per detected project
+root, and every fixture under this repo resolves to the same git-root
+workspace, mutating this variable only takes effect for a *new* svlsp
+workspace (e.g. after `lsp-workspace-restart'), not for one already
+running -- most tests should prefer letting ProjectRegistry's upward
+directory search discover a `.svlsp.json'/`.svlsp.f' instead, which works
+regardless of when the server was started.")
+
 (lsp-register-client
  (make-lsp-client
   :new-connection (lsp-stdio-connection (lambda () (list svlsp-test-server-bin)))
   :major-modes    '(verilog-mode)
   :server-id      'svlsp
-  :priority        1))
+  :priority        1
+  :initialization-options (lambda () svlsp-test/initialization-options)))
 
 ;;; Test helper functions -----------------------------------------------
 

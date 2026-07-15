@@ -45,9 +45,14 @@ std::string ProjectRegistry::discoverConfigPath(const std::string& fileDir) {
 const ProjectConfig* ProjectRegistry::loadAndCache(const std::string& configPath) {
     if (auto it = m_loaded.find(configPath); it != m_loaded.end()) return it->second.get();
 
+    // FilelistParser defaults bare relative paths to the process's CWD
+    // (matching CLI-tool semantics), which has no relation to a discovered
+    // project file's location -- pass its own directory explicitly.
+    // ProjectManifestParser already resolves against the manifest's own
+    // directory internally, so it needs no such override.
     ProjectConfig config = endsWith(configPath, ".json")
         ? ProjectManifestParser::parse(configPath)
-        : FilelistParser::parse(configPath);
+        : FilelistParser::parse(configPath, fs::path(configPath).parent_path().string());
 
     ProjectCompiler::loadProject(config, m_controller, m_sdb);
 

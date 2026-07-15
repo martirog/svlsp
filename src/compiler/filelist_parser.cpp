@@ -144,9 +144,10 @@ void parseFile(const std::string& path, const std::string& baseDir,
 
 } // namespace
 
-ProjectConfig FilelistParser::parse(const std::string& path) {
+ProjectConfig FilelistParser::parse(const std::string& path, const std::string& baseDir) {
     ProjectConfig config;
     std::unordered_set<std::string> activeStack;
-    parseFile(path, fs::current_path().string(), activeStack, config);
+    std::string base = baseDir.empty() ? fs::current_path().string() : baseDir;
+    parseFile(path, base, activeStack, config);
     return config;
 }
