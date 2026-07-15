@@ -132,6 +132,7 @@ add_library(svlsp_compiler STATIC
     src/compiler/parse_cache.cpp
     src/compiler/sv_preprocessor.cpp
     src/compiler/sv_tree_walker.cpp
+    src/compiler/filelist_parser.cpp
 )
 target_include_directories(svlsp_compiler PUBLIC src)
 target_link_libraries(svlsp_compiler PUBLIC svlsp_antlr4 svlsp_options)
@@ -197,6 +198,7 @@ add_executable(unit_tests
     tests/unit/compiler/test_sv_listener.cpp
     tests/unit/compiler/test_sv_error_recovery.cpp
     tests/unit/compiler/test_parse_cache.cpp
+    tests/unit/compiler/test_filelist_parser.cpp
     tests/unit/db/test_database.cpp
     tests/unit/db/test_symbol_database.cpp
     tests/unit/db/test_compilation_controller.cpp
