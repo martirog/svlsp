@@ -654,3 +654,34 @@ Integration tests 05/06/08/09/10 updated from "expect null" to verify real resul
   `package_import_item` grammar rule at all, so `SvRecordListener` silently ignores it.
 - References, rename, and signature help providers still return `nullptr`. These are next
   after Phase 6.3/6.4.
+- **Mid-line macro expansion corrupts columns (not lines) of symbols declared later on the
+  same source line.** `SvPreprocessor`'s source map (`sourceMap`) only translates line
+  numbers across macro expansion — it never adjusts columns for the text-length delta a
+  macro invocation introduces mid-line. `sv_tree_walker.cpp`'s `pushId()` takes
+  `tok->getCharPositionInLine()` directly from the *expanded* text with no correction.
+  Example: `` wire [`WIDTH-1:0] data_bus; `` where `` `WIDTH `` (6 chars) expands to `8`
+  (1 char) shifts `data_bus` 5 columns left of its true position in the original buffer.
+  Symbols on macro-free lines are unaffected (confirmed via probe). Regression test added
+  at `tests/integration/test_19_macro_midline_expansion.sh` /
+  `fixtures/preproc_midline.sv` — asserts the *correct* (original-source) column and
+  currently **fails** (2 of 5 cases) documenting this gap; line-number resolution,
+  hover-by-name, and macro-free-line columns all pass. Fix would need per-output-line
+  column-delta tracking in the source map, not just file/line — not yet designed.
+- **Multi-line (backslash-continuation) `` `define `` bodies are not supported at all.**
+  `SvPreprocessor::processSource` reads and expands strictly one physical line at a time
+  (`std::getline` loop) with no check for a trailing `\` on a `` `define `` line — the
+  continuation line is emitted as ordinary source code instead of being merged into the
+  macro body, and the literal trailing backslash is left in the body text. Invoking such a
+  macro produces a stray `\` in the expanded output, which the ANTLR parser then reports as
+  a genuine syntax error (confirmed via probe: two spurious `parseErrors` for a
+  two-line `` `define ``). This is on top of, and more severe than, the mid-line column-drift
+  gap above. Regression test at `tests/integration/test_20_macro_multiline_midline.sh` /
+  `fixtures/preproc_multiline_midline.sv` — asserts zero diagnostics and the correct
+  original-source column for the symbol following the macro; currently **fails 3 of 6**
+  cases (diagnostics non-empty; declaration and go-to-definition column wrong). Hover
+  (name-based) and the macro-free control symbol still pass — ANTLR's error recovery is
+  forgiving enough to keep producing *some* records despite the corrupted text. Fix needs
+  the `processSource` line loop to detect a trailing `\` and concatenate continuation
+  lines (stripping the backslash) before handing the merged line to `parseMacroDefinition`,
+  plus emitting one blank output line per consumed continuation line to keep the source map
+  1:1 — not yet designed.
