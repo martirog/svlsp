@@ -391,9 +391,27 @@ static void processSource(const std::string& source, const std::string& filepath
         if (!ctx.isOutputting()) { emitBlank(); continue; }
 
         if (dir == "define") {
-            if (auto opt = parseMacroDefinition(rest, ctx.macros, ctx.errors))
-                ctx.macroRecords.push_back({opt->name, opt->body, lineNo});
+            // A `define body may span multiple physical lines via backslash-
+            // continuation (same rule as the C preprocessor): a trailing '\'
+            // deletes the following newline, splicing the next physical line
+            // directly onto the end of this one (no separator inserted). Each
+            // consumed physical line still needs its own source-map entry, so
+            // the define line's blank is emitted first, then one more per
+            // continuation line consumed, before parsing the merged body.
+            int defineLine = lineNo;
+            std::string mergedRest(rest);
             emitBlank();
+            while (!mergedRest.empty() && mergedRest.back() == '\\') {
+                mergedRest.pop_back();
+                std::string contLine;
+                if (!std::getline(iss, contLine)) break;
+                ++lineNo;
+                if (!contLine.empty() && contLine.back() == '\r') contLine.pop_back();
+                mergedRest += contLine;
+                emitBlank();
+            }
+            if (auto opt = parseMacroDefinition(mergedRest, ctx.macros, ctx.errors))
+                ctx.macroRecords.push_back({opt->name, opt->body, defineLine});
         } else if (dir == "undef") {
             ctx.macros.erase(std::string(trimSV(stripLineComment(rest))));
             emitBlank();

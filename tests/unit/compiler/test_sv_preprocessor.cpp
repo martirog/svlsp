@@ -314,6 +314,74 @@ TEST_CASE("function-like macro record captured", "[compiler][preprocessor][phase
 }
 
 // ---------------------------------------------------------------------------
+// Multi-line (backslash-continuation) `define bodies
+// ---------------------------------------------------------------------------
+
+TEST_CASE("backslash-continuation define merges body across two lines",
+          "[compiler][preprocessor][multiline]") {
+    SvPreprocessor pp;
+    auto result = pp.process(
+        "`define WIDE_WIDTH \\\n"
+        "    16\n"
+        "wire [`WIDE_WIDTH-1:0] bus;\n", "f.sv");
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.macros.size() == 1);
+    CHECK(result.macros[0].name == "WIDE_WIDTH");
+    CHECK(result.macros[0].body == "16");
+    CHECK(result.macros[0].line == 1);
+    CHECK(result.source.find("wire [16-1:0] bus;") != std::string::npos);
+}
+
+TEST_CASE("backslash-continuation define merges body across three lines",
+          "[compiler][preprocessor][multiline]") {
+    SvPreprocessor pp;
+    auto result = pp.process(
+        "`define LONG_MACRO a \\\n"
+        "b \\\n"
+        "c\n"
+        "wire w = `LONG_MACRO;\n", "f.sv");
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.macros.size() == 1);
+    CHECK(result.macros[0].body == "a b c");
+    CHECK(result.source.find("wire w = a b c;") != std::string::npos);
+}
+
+TEST_CASE("backslash-continuation define preserves output line count",
+          "[compiler][preprocessor][multiline]") {
+    SvPreprocessor pp;
+    auto result = pp.process(
+        "`define WIDE_WIDTH \\\n"  // line 1 -> blank
+        "    16\n"                // line 2 -> blank
+        "\n"                      // line 3 -> blank
+        "wire [`WIDE_WIDTH-1:0] bus;\n" // line 4 -> content
+        "wire done;\n",           // line 5 -> content
+        "f.sv");
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.sourceMap.size() == 5);
+    CHECK(result.sourceMap[0].line == 1);
+    CHECK(result.sourceMap[1].line == 2);
+    CHECK(result.sourceMap[2].line == 3);
+    CHECK(result.sourceMap[3].line == 4);
+    CHECK(result.sourceMap[4].line == 5);
+    int newlines = static_cast<int>(std::count(result.source.begin(), result.source.end(), '\n'));
+    CHECK(newlines == 5);
+}
+
+TEST_CASE("backslash-continuation define followed by mid-line invocation records correct column shift",
+          "[compiler][preprocessor][multiline]") {
+    SvPreprocessor pp;
+    auto result = pp.process(
+        "`define WIDE_WIDTH \\\n"
+        "    16\n"
+        "wire [`WIDE_WIDTH-1:0] wide_bus;\n", "f.sv");
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.sourceMap.size() == 3);
+    // "`WIDE_WIDTH" (11 chars) expands to "16" (2 chars) -> delta of +9.
+    REQUIRE(result.sourceMap[2].colShifts.size() == 1);
+    CHECK(result.sourceMap[2].colShifts[0].delta == 9);
+}
+
+// ---------------------------------------------------------------------------
 // Source map
 // ---------------------------------------------------------------------------
 
