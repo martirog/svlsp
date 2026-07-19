@@ -4,10 +4,11 @@
 **Last completed phase:** Phase 6.2 complete — multi-file project support, all 6 stages
 (6.1 — DB-backed providers; 6.3 — package import *and export* resolution; preprocessor
 source map committed previously)  
-**Current work:** Mid-line macro column-drift bug fixed 2026-07-19 (see "Known gaps"
-below for details — search "Fixed (2026-07-19)"). Next up: the remaining multi-line
-`` `define `` gap (same section), or Phase 6.4 (cross-file invalidation / dependency
-graph) per `plan.md §6.4` — not yet planned in file-level detail. **The full approved
+**Current work:** Both documented macro-expansion column bugs fixed 2026-07-19 — the
+mid-line column-drift gap and the multi-line (backslash-continuation) `` `define ``
+body gap (see "Known gaps" below, search "Fixed (2026-07-19)"). `test_19` and `test_20`
+integration tests now fully pass. Next up: Phase 6.4 (cross-file invalidation /
+dependency graph) per `plan.md §6.4` — not yet planned in file-level detail. **The full approved
 Phase 6.2 plan (exact signatures, schema SQL, algorithms, test names — now historical
 reference, all 6 stages complete) lives at
 `/home/martin/.claude/plans/fluffy-hatching-popcorn.md`.**
@@ -944,33 +945,38 @@ Integration tests 05/06/08/09/10 updated from "expect null" to verify real resul
   `SvErrorListener::syntaxError` (all `ParseError`s) now translate columns, not
   just lines. `tests/integration/test_19_macro_midline_expansion.sh` — all 5 cases
   now pass (previously 2 failing). As a side effect this also fixed 2 of the 3
-  previously-failing column cases in `test_20_macro_multiline_midline.sh` (see
-  below) — only that test's diagnostics case still fails, since the underlying
-  multi-line-`` `define ``-body bug is separate and still unfixed.
+  previously-failing column cases in `test_20_macro_multiline_midline.sh`
+  (see below, also since fixed) — only that test's diagnostics case needed the
+  separate multi-line-`` `define ``-body fix below.
   Unit coverage: `tests/unit/compiler/test_sv_preprocessor.cpp` (4 new `[sourcemap]`
   cases — shrinking macro, growing macro, no-macro line, two-macros-on-one-line
   delta accumulation) and `tests/unit/compiler/test_sv_listener.cpp` (2 new
   `[sourcemap]` cases exercising `translateColumn` through a full `walk()`).
-  Full verification: unit suite 326 cases/826 assertions (all green); full Emacs
-  integration suite 123 passed / 2 failed — the 2 remaining failures are the
-  test_20 diagnostics case below plus the pre-existing `test_08_completion.sh`
-  flake, zero new regressions.
-- **Multi-line (backslash-continuation) `` `define `` bodies are not supported at all.**
-  `SvPreprocessor::processSource` reads and expands strictly one physical line at a time
-  (`std::getline` loop) with no check for a trailing `\` on a `` `define `` line — the
-  continuation line is emitted as ordinary source code instead of being merged into the
-  macro body, and the literal trailing backslash is left in the body text. Invoking such a
-  macro produces a stray `\` in the expanded output, which the ANTLR parser then reports as
-  a genuine syntax error (confirmed via probe: two spurious `parseErrors` for a
-  two-line `` `define ``). Regression test at
-  `tests/integration/test_20_macro_multiline_midline.sh` /
-  `fixtures/preproc_multiline_midline.sv` — asserts zero diagnostics and the correct
-  original-source column for the symbol following the macro; **now fails only 1 of 6**
-  cases (diagnostics non-empty) since the mid-line column-drift fix above independently
-  fixed the declaration/go-to-definition column cases that used to fail alongside it.
-  Hover (name-based) and the macro-free control symbol still pass — ANTLR's error
-  recovery is forgiving enough to keep producing *some* records despite the corrupted
-  text. Fix needs the `processSource` line loop to detect a trailing `\` and concatenate
-  continuation lines (stripping the backslash) before handing the merged line to
-  `parseMacroDefinition`, plus emitting one blank output line per consumed continuation
-  line to keep the source map 1:1 — not yet designed.
+- **Multi-line (backslash-continuation) `` `define `` bodies — Fixed (2026-07-19).**
+  `SvPreprocessor::processSource` used to read and expand strictly one physical line at
+  a time (`std::getline` loop) with no check for a trailing `\` on a `` `define `` line
+  — the continuation line was emitted as ordinary source code instead of being merged
+  into the macro body, and the literal trailing backslash was left in the body text,
+  producing a stray `\` in the expanded output and a spurious ANTLR parse error.
+  Fix: inside the `dir == "define"` branch of `processSource`, after copying `rest`
+  into a local `std::string mergedRest`, a loop strips a trailing `\` and appends
+  (via nested `std::getline` calls, bypassing the outer per-line loop) each further
+  physical line directly — no separator inserted, matching the C-preprocessor
+  splicing rule — until a line without a trailing `\` is read; `parseMacroDefinition`
+  then runs once on the fully merged body. Each consumed physical line (the `` `define ``
+  line itself, plus every continuation line) still gets its own `emitBlank()` call so
+  the source map stays 1:1 with input line count; the macro's recorded `line` is the
+  *starting* `` `define `` line, captured before the merge loop mutates `lineNo`.
+  Scoped to `` `define `` only (per the LRM, other directives could theoretically use
+  continuation too, but no other directive here reads a multi-token body, so this
+  wasn't extended speculatively). `tests/integration/test_20_macro_multiline_midline.sh`
+  — all 6 cases now pass (previously 3 failing: diagnostics, declaration column,
+  go-to-definition column — the latter two already fixed by the mid-line column-drift
+  fix above, this change closes the remaining diagnostics case).
+  Unit coverage: `tests/unit/compiler/test_sv_preprocessor.cpp` (4 new `[multiline]`
+  cases — two-line merge, three-line chained merge, output-line-count preservation,
+  and column-shift correctness when a multi-line-defined macro is invoked mid-line).
+  Full verification (both fixes together): unit suite 330 cases/848 assertions (all
+  green); full Emacs integration suite 124 passed / 1 failed — the sole remaining
+  failure is the pre-existing, unrelated `test_08_completion.sh` flake (confirmed by
+  running it in isolation), zero new regressions from either fix.
