@@ -127,7 +127,8 @@ static std::string substituteParams(const std::string& body,
 }
 
 static std::string expandStr(const std::string& src, const MacroMap& macros,
-                              std::vector<std::string>& errors, int depth);
+                              std::vector<std::string>& errors, int depth,
+                              std::vector<ColShift>* colShifts = nullptr);
 
 static std::string expandMacroCall(const std::string& name,
                                     const std::string& src, size_t& i,
@@ -168,15 +169,30 @@ static std::string expandMacroCall(const std::string& name,
 }
 
 static std::string expandStr(const std::string& src, const MacroMap& macros,
-                              std::vector<std::string>& errors, int depth) {
+                              std::vector<std::string>& errors, int depth,
+                              std::vector<ColShift>* colShifts) {
     std::string result;
     size_t i = 0;
+    int delta = 0; // cumulative output->original column delta, top-level calls only
     while (i < src.size()) {
         if (src[i] != '`') { result += src[i++]; continue; }
+        size_t invocationStart = i;
         ++i; // skip backtick
         if (i >= src.size() || !isIdentChar(src[i])) { result += '`'; continue; }
         std::string name = readIdent(src, i);
-        result += expandMacroCall(name, src, i, macros, errors, depth);
+        std::string expansion = expandMacroCall(name, src, i, macros, errors, depth);
+        result += expansion;
+        // Record a column-drift breakpoint at the point right after the
+        // replacement text so later columns on this line (in the caller's
+        // original line, not a recursively-expanded macro body) can be
+        // mapped back. Only meaningful for the top-level per-line call —
+        // recursive calls into a macro's own body pass colShifts == nullptr.
+        if (colShifts) {
+            int invocationLen = static_cast<int>(i - invocationStart);
+            int replacementLen = static_cast<int>(expansion.size());
+            delta += invocationLen - replacementLen;
+            colShifts->push_back({static_cast<int>(result.size()), delta});
+        }
     }
     return result;
 }
@@ -289,10 +305,10 @@ static void processSource(const std::string& source, const std::string& filepath
     // depth == 0 means we are in the primary compiled file; use "" so callers can
     // distinguish primary-file lines from included-file lines with a simple empty check.
     const std::string mapFile = depth > 0 ? filepath : std::string{};
-    auto emitLine = [&](const std::string& content) {
+    auto emitLine = [&](const std::string& content, std::vector<ColShift> shifts = {}) {
         ctx.output += content;
         ctx.output += '\n';
-        ctx.sourceMap.push_back({mapFile, lineNo});
+        ctx.sourceMap.push_back({mapFile, lineNo, std::move(shifts)});
     };
     auto emitBlank = [&]() {
         ctx.output += '\n';
@@ -309,10 +325,13 @@ static void processSource(const std::string& source, const std::string& filepath
 
         if (!startsWithBacktick) {
             // Regular source line: expand macros if outputting
-            if (ctx.isOutputting())
-                emitLine(expandStr(line, ctx.macros, ctx.errors, 0));
-            else
+            if (ctx.isOutputting()) {
+                std::vector<ColShift> shifts;
+                std::string expanded = expandStr(line, ctx.macros, ctx.errors, 0, &shifts);
+                emitLine(expanded, std::move(shifts));
+            } else {
                 emitBlank();
+            }
             continue;
         }
 
@@ -399,7 +418,9 @@ static void processSource(const std::string& source, const std::string& filepath
             }
         } else {
             // Unknown directive starting the line — try macro expansion of the whole line
-            emitLine(expandStr(line, ctx.macros, ctx.errors, 0));
+            std::vector<ColShift> shifts;
+            std::string expanded = expandStr(line, ctx.macros, ctx.errors, 0, &shifts);
+            emitLine(expanded, std::move(shifts));
         }
     }
 }

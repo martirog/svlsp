@@ -458,6 +458,43 @@ TEST_CASE("walk with source map translates endLine on scope-defining records",
     CHECK(r->file    == "src.sv");
 }
 
+TEST_CASE("walk with source map translates column via colShifts",
+          "[compiler][listener][sourcemap]") {
+    // "sig" sits at compiled column 8 in "  logic sig;". A colShift says any
+    // compiled column >= 8 on this line should have 5 added back, simulating
+    // a mid-line macro invocation that shrank text earlier on the line.
+    std::string src = "module m;\n  logic sig;\nendmodule\n";
+
+    std::vector<SourceLine> smap = {
+        {"", 1},
+        {"", 2, {{8, 5}}},
+        {"", 3},
+    };
+
+    auto result = SvTreeWalker::walk(src, smap);
+    REQUIRE(result.parseErrors.empty());
+    auto* r = findRecord(result.records, ParseRecordKind::Signal, "sig");
+    REQUIRE(r != nullptr);
+    CHECK(r->column == 13);
+}
+
+TEST_CASE("walk with source map leaves column unchanged when no colShifts present",
+          "[compiler][listener][sourcemap]") {
+    std::string src = "module m;\n  logic sig;\nendmodule\n";
+
+    std::vector<SourceLine> smap = {
+        {"", 1},
+        {"", 2},
+        {"", 3},
+    };
+
+    auto result = SvTreeWalker::walk(src, smap);
+    REQUIRE(result.parseErrors.empty());
+    auto* r = findRecord(result.records, ParseRecordKind::Signal, "sig");
+    REQUIRE(r != nullptr);
+    CHECK(r->column == 8);
+}
+
 // ---------------------------------------------------------------------------
 // Package imports
 // ---------------------------------------------------------------------------

@@ -20,6 +20,23 @@ static std::pair<std::string, int> translateLine(int compiledLine,
     return {"", compiledLine};
 }
 
+// Translates a 0-based column on `compiledLine` (1-based) through that line's
+// colShifts, undoing any column drift introduced by mid-line macro expansion
+// earlier on the same line. Columns before the first breakpoint, or lines
+// with no breakpoints at all, pass through unchanged.
+static int translateColumn(int compiledLine, int compiledCol,
+                            const std::vector<SourceLine>& map)
+{
+    int idx = compiledLine - 1;
+    if (idx < 0 || idx >= static_cast<int>(map.size())) return compiledCol;
+    int delta = 0;
+    for (const auto& shift : map[idx].colShifts) {
+        if (compiledCol >= shift.outputCol) delta = shift.delta;
+        else break;
+    }
+    return compiledCol + delta;
+}
+
 // ---------------------------------------------------------------------------
 // SvErrorListener — collects ANTLR4 syntax errors into ParseError[]
 // ---------------------------------------------------------------------------
@@ -35,7 +52,9 @@ public:
                      const std::string& msg,
                      std::exception_ptr /*e*/) override {
         auto [file, origLine] = translateLine(static_cast<int>(line), m_sourceMap);
-        m_errors.push_back({origLine, static_cast<int>(charPositionInLine), msg, file});
+        int origCol = translateColumn(static_cast<int>(line),
+                                       static_cast<int>(charPositionInLine), m_sourceMap);
+        m_errors.push_back({origLine, origCol, msg, file});
     }
 
     const std::vector<ParseError>& errors() const { return m_errors; }
@@ -320,9 +339,11 @@ private:
                 const std::string& parent = "", const std::string& detail = "") {
         if (!id) return;
         auto* tok = id->getSymbol();
-        auto [file, line] = translateLine(static_cast<int>(tok->getLine()), m_sourceMap);
-        m_records.push_back({kind, id->getText(), line,
-                              static_cast<int>(tok->getCharPositionInLine()),
+        int compiledLine = static_cast<int>(tok->getLine());
+        int compiledCol  = static_cast<int>(tok->getCharPositionInLine());
+        auto [file, line] = translateLine(compiledLine, m_sourceMap);
+        int col = translateColumn(compiledLine, compiledCol, m_sourceMap);
+        m_records.push_back({kind, id->getText(), line, col,
                               parent, detail, 0, currentScopeChain(), file});
         // Push this record's name onto the scope stack so nested declarations
         // have it as their parent. Only top-level named scopes push here.

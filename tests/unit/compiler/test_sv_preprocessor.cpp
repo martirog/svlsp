@@ -375,6 +375,60 @@ TEST_CASE("source map include lines point to included file",
     CHECK(result.sourceMap[2].line == 3);
 }
 
+TEST_CASE("line without macro invocation has no column shifts",
+          "[compiler][preprocessor][sourcemap]") {
+    SvPreprocessor pp;
+    auto result = pp.process("wire a;\n", "f.sv");
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.sourceMap.size() == 1);
+    CHECK(result.sourceMap[0].colShifts.empty());
+}
+
+TEST_CASE("mid-line shrinking macro invocation records a column shift breakpoint",
+          "[compiler][preprocessor][sourcemap]") {
+    // "`WIDTH" (6 chars) expands to "8" (1 char) -> delta of +5 for columns
+    // at/after the point right after the replacement.
+    SvPreprocessor pp;
+    auto result = pp.process(
+        "`define WIDTH 8\n"
+        "wire [`WIDTH-1:0] data_bus;\n", "f.sv");
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.sourceMap.size() == 2);
+    REQUIRE(result.sourceMap[1].colShifts.size() == 1);
+    CHECK(result.sourceMap[1].colShifts[0].outputCol == 7);
+    CHECK(result.sourceMap[1].colShifts[0].delta == 5);
+}
+
+TEST_CASE("mid-line growing macro invocation records a negative column shift",
+          "[compiler][preprocessor][sourcemap]") {
+    // "`FOO" (4 chars) expands to "abcdefgh" (8 chars) -> delta of -4.
+    SvPreprocessor pp;
+    auto result = pp.process(
+        "`define FOO abcdefgh\n"
+        "wire `FOO x;\n", "f.sv");
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.sourceMap.size() == 2);
+    REQUIRE(result.sourceMap[1].colShifts.size() == 1);
+    CHECK(result.sourceMap[1].colShifts[0].outputCol == 13);
+    CHECK(result.sourceMap[1].colShifts[0].delta == -4);
+}
+
+TEST_CASE("multiple macros on one line accumulate column shift delta",
+          "[compiler][preprocessor][sourcemap]") {
+    SvPreprocessor pp;
+    auto result = pp.process(
+        "`define A 1\n"
+        "`define B 22\n"
+        "wire `A `B x;\n", "f.sv");
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.sourceMap.size() == 3);
+    REQUIRE(result.sourceMap[2].colShifts.size() == 2);
+    CHECK(result.sourceMap[2].colShifts[0].outputCol == 6);
+    CHECK(result.sourceMap[2].colShifts[0].delta == 1);
+    CHECK(result.sourceMap[2].colShifts[1].outputCol == 9);
+    CHECK(result.sourceMap[2].colShifts[1].delta == 1);
+}
+
 TEST_CASE("source map entry count equals output line count",
           "[compiler][preprocessor][sourcemap]") {
     SvPreprocessor pp;

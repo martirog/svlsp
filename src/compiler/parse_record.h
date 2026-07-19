@@ -1,10 +1,20 @@
 #pragma once
 #include <string>
+#include <vector>
+
+// One column-drift breakpoint introduced by a mid-line macro expansion.
+// For output columns >= outputCol on the owning line, add `delta` to get the
+// corresponding column in the original (unexpanded) source line.
+struct ColShift {
+    int outputCol;  // 0-based column in the expanded output line
+    int delta;      // original column = outputCol + delta, for outputCol >= this
+};
 
 // Maps one preprocessor output line to its original source location.
 struct SourceLine {
     std::string file;  // original file path; empty = same as compiled file
     int         line;  // 1-based line in `file`
+    std::vector<ColShift> colShifts{};  // column breakpoints from mid-line macro expansion
 };
 
 enum class ParseRecordKind {
