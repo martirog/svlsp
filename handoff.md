@@ -4,8 +4,10 @@
 **Last completed phase:** Phase 6.2 complete — multi-file project support, all 6 stages
 (6.1 — DB-backed providers; 6.3 — package import *and export* resolution; preprocessor
 source map committed previously)  
-**Current work:** None in progress. Phase 6.4 (cross-file invalidation / dependency graph)
-is next per `plan.md §6.4` — not yet planned in file-level detail. **The full approved
+**Current work:** Mid-line macro column-drift bug fixed 2026-07-19 (see "Known gaps"
+below for details — search "Fixed (2026-07-19)"). Next up: the remaining multi-line
+`` `define `` gap (same section), or Phase 6.4 (cross-file invalidation / dependency
+graph) per `plan.md §6.4` — not yet planned in file-level detail. **The full approved
 Phase 6.2 plan (exact signatures, schema SQL, algorithms, test names — now historical
 reference, all 6 stages complete) lives at
 `/home/martin/.claude/plans/fluffy-hatching-popcorn.md`.**
@@ -925,19 +927,34 @@ Integration tests 05/06/08/09/10 updated from "expect null" to verify real resul
   `package_import_item` grammar rule at all, so `SvRecordListener` silently ignores it.
 - References, rename, and signature help providers still return `nullptr`. These are next
   after Phase 6.3/6.4.
-- **Mid-line macro expansion corrupts columns (not lines) of symbols declared later on the
-  same source line.** `SvPreprocessor`'s source map (`sourceMap`) only translates line
-  numbers across macro expansion — it never adjusts columns for the text-length delta a
-  macro invocation introduces mid-line. `sv_tree_walker.cpp`'s `pushId()` takes
-  `tok->getCharPositionInLine()` directly from the *expanded* text with no correction.
-  Example: `` wire [`WIDTH-1:0] data_bus; `` where `` `WIDTH `` (6 chars) expands to `8`
-  (1 char) shifts `data_bus` 5 columns left of its true position in the original buffer.
-  Symbols on macro-free lines are unaffected (confirmed via probe). Regression test added
-  at `tests/integration/test_19_macro_midline_expansion.sh` /
-  `fixtures/preproc_midline.sv` — asserts the *correct* (original-source) column and
-  currently **fails** (2 of 5 cases) documenting this gap; line-number resolution,
-  hover-by-name, and macro-free-line columns all pass. Fix would need per-output-line
-  column-delta tracking in the source map, not just file/line — not yet designed.
+- **Mid-line macro expansion column drift — Fixed (2026-07-19).** `SvPreprocessor`'s
+  source map (`sourceMap`) previously only translated line numbers across macro
+  expansion; it never adjusted columns for the text-length delta a macro invocation
+  introduces mid-line. Fix: `SourceLine` (`src/compiler/parse_record.h`) gained a
+  `colShifts: vector<ColShift>` field — `ColShift{outputCol, delta}` breakpoints,
+  one per macro invocation on that output line, where `delta = invocationLen -
+  replacementLen`. `expandStr` (`sv_preprocessor.cpp`) now accepts an optional
+  `vector<ColShift>*` (only passed at the top-level per-line call, `depth == 0` —
+  recursive calls into a macro's own body pass `nullptr`, since a nested invocation's
+  own span already collapses into the outer invocation's net `replacementLen`) and
+  appends a breakpoint after each expansion; multiple macros on one line accumulate
+  a running delta. `sv_tree_walker.cpp` gained `translateColumn(compiledLine,
+  compiledCol, map)` (linear scan over that line's `colShifts`, applied alongside
+  the existing `translateLine`) and both `pushId()` (all `ParseRecord`s) and
+  `SvErrorListener::syntaxError` (all `ParseError`s) now translate columns, not
+  just lines. `tests/integration/test_19_macro_midline_expansion.sh` — all 5 cases
+  now pass (previously 2 failing). As a side effect this also fixed 2 of the 3
+  previously-failing column cases in `test_20_macro_multiline_midline.sh` (see
+  below) — only that test's diagnostics case still fails, since the underlying
+  multi-line-`` `define ``-body bug is separate and still unfixed.
+  Unit coverage: `tests/unit/compiler/test_sv_preprocessor.cpp` (4 new `[sourcemap]`
+  cases — shrinking macro, growing macro, no-macro line, two-macros-on-one-line
+  delta accumulation) and `tests/unit/compiler/test_sv_listener.cpp` (2 new
+  `[sourcemap]` cases exercising `translateColumn` through a full `walk()`).
+  Full verification: unit suite 326 cases/826 assertions (all green); full Emacs
+  integration suite 123 passed / 2 failed — the 2 remaining failures are the
+  test_20 diagnostics case below plus the pre-existing `test_08_completion.sh`
+  flake, zero new regressions.
 - **Multi-line (backslash-continuation) `` `define `` bodies are not supported at all.**
   `SvPreprocessor::processSource` reads and expands strictly one physical line at a time
   (`std::getline` loop) with no check for a trailing `\` on a `` `define `` line — the
@@ -945,14 +962,15 @@ Integration tests 05/06/08/09/10 updated from "expect null" to verify real resul
   macro body, and the literal trailing backslash is left in the body text. Invoking such a
   macro produces a stray `\` in the expanded output, which the ANTLR parser then reports as
   a genuine syntax error (confirmed via probe: two spurious `parseErrors` for a
-  two-line `` `define ``). This is on top of, and more severe than, the mid-line column-drift
-  gap above. Regression test at `tests/integration/test_20_macro_multiline_midline.sh` /
+  two-line `` `define ``). Regression test at
+  `tests/integration/test_20_macro_multiline_midline.sh` /
   `fixtures/preproc_multiline_midline.sv` — asserts zero diagnostics and the correct
-  original-source column for the symbol following the macro; currently **fails 3 of 6**
-  cases (diagnostics non-empty; declaration and go-to-definition column wrong). Hover
-  (name-based) and the macro-free control symbol still pass — ANTLR's error recovery is
-  forgiving enough to keep producing *some* records despite the corrupted text. Fix needs
-  the `processSource` line loop to detect a trailing `\` and concatenate continuation
-  lines (stripping the backslash) before handing the merged line to `parseMacroDefinition`,
-  plus emitting one blank output line per consumed continuation line to keep the source map
-  1:1 — not yet designed.
+  original-source column for the symbol following the macro; **now fails only 1 of 6**
+  cases (diagnostics non-empty) since the mid-line column-drift fix above independently
+  fixed the declaration/go-to-definition column cases that used to fail alongside it.
+  Hover (name-based) and the macro-free control symbol still pass — ANTLR's error
+  recovery is forgiving enough to keep producing *some* records despite the corrupted
+  text. Fix needs the `processSource` line loop to detect a trailing `\` and concatenate
+  continuation lines (stripping the backslash) before handing the merged line to
+  `parseMacroDefinition`, plus emitting one blank output line per consumed continuation
+  line to keep the source map 1:1 — not yet designed.
