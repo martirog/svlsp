@@ -6,20 +6,16 @@
 source map committed previously)  
 **Current work (2026-07-20, mid-session, see "UVM real-world smoke test" section
 below for full detail):** Ran the preprocessor against a real-world codebase (UVM
-core) for the first time and found + fixed three genuine preprocessor bugs so far:
-infinite loop on default macro-argument values and `//` comments scanned for macro
-invocations (Bugs 1 & 2, **committed**, commit `c207c28`); and Gap B —
-`` `__FILE__ ``/`` `__LINE__ `` unresolved inside `` `include ``d files (**fixed,
-verified, NOT YET COMMITTED** — uncommitted diff is `src/compiler/sv_preprocessor.cpp`
-+ `tests/unit/compiler/test_sv_preprocessor.cpp`; see "Gap B" section below for what
-changed). One more real gap remains, found but NOT fixed: Gap A, brace/bracket
-nesting in macro-argument parsing — see that section for exact repro and fix sketch.
-**Immediate next task (explicitly requested by the user, not yet started — a Write
-call was interrupted before any fixture file existed):** add a new integration test
-covering multiple levels of `` `include `` where preprocessor directives (not just
-symbols) appear in *multiple* of the nested files — design is written up in full
-below, ready to implement.
-Next up after that: Phase 6.4 (cross-file invalidation /
+core) for the first time and found + fixed three genuine preprocessor bugs, all
+**committed**: infinite loop on default macro-argument values and `//` comments
+scanned for macro invocations (Bugs 1 & 2, commit `c207c28`); and Gap B —
+`` `__FILE__ ``/`` `__LINE__ `` unresolved inside `` `include ``d files (fix commit
+`58b470b`, end-to-end regression test commit `99febc5`, docs commit `e516bd5`).
+One more real gap remains, found but NOT fixed: Gap A, brace/bracket nesting in
+macro-argument parsing — see that section for exact repro and fix sketch.
+Also completed: the user-requested multi-level `` `include `` integration test
+(`test_24_multilevel_include.sh`, 10 cases, all passing) — see that section below.
+Next up: Gap A, then Phase 6.4 (cross-file invalidation /
 dependency graph) per `plan.md §6.4` — not yet planned in file-level detail. **The full approved
 Phase 6.2 plan (exact signatures, schema SQL, algorithms, test names — now historical
 reference, all 6 stages complete) lives at
@@ -256,7 +252,7 @@ byproduct of this investigation — flagging here only so a future full "does UV
 compile" attempt doesn't mistake it for a new discovery. Revisit only if/when a
 slang-backed preprocessor replacement is undertaken.
 
-### Next immediate task — multi-level `` `include `` integration test (requested, not yet built)
+### Multi-level `` `include `` integration test — Complete (2026-07-20)
 
 The existing `test_15_preprocessor_lsp.sh` only covers **one level** of `` `include ``
 (`preproc_main.sv` includes `preproc_defs.sv`, which defines one macro and one
@@ -322,10 +318,29 @@ precedent, just extended from 1 include level to 3, and from "no conditionals" t
   single-level assertion `test_15` already makes for 1 level).
 - `workspace/symbol` query for `ml_should_not_exist` → no match anywhere (negative
   `` `ifdef `` case, global check).
-Exact original line numbers for each assertion still need to be computed once the
-fixture files are actually written (read them back with the `Read` tool's line
-numbers rather than hand-counting — that's what caused avoidable back-and-forth in
-earlier fixtures this session).
+Exact original line numbers for each assertion were computed by reading the fixture
+files back with the `Read` tool after writing them, per the note above.
+
+**Implemented as designed, no changes to the design needed.** Fixtures
+`tests/integration/fixtures/{ml_top,ml_level2,ml_level3}.sv` and
+`tests/integration/test_24_multilevel_include.sh` (10 test cases, all from the
+planned-assertions list above, none dropped or added). Verified line numbers and
+zero preprocessor/parse errors first with a standalone probe (same
+`libsvlsp_compiler.a` + `svlsp_antlr4` + `antlr4-runtime` static-link technique
+noted above, extended to also call `SvTreeWalker::walk` and inspect `walked.records`
+directly) before writing the Emacs test, to catch any grammar/fixture mistakes
+without paying the Emacs-daemon round-trip cost — all 10 assertions then passed on
+the first Emacs run with no fixture rework needed. Full integration suite rerun
+clean: 140 passed / 1 failed (the same pre-existing `test_08_completion.sh` flake
+noted throughout this doc), zero new regressions. Confirms (all with zero
+production-code changes, exactly as predicted in the original design): `` `ifdef ``
+in a middle include file correctly sees a macro defined by a deeper include;
+macros defined in the deepest file remain visible after the whole chain unwinds
+back to the top file; hover/definition/`workspace symbol` all resolve correctly at
+2 levels of include distance, not just the 1 level `test_15` already covered; a
+negative `` `ifdef `` guarding a never-defined macro correctly excludes its module
+everywhere (diagnostics, `documentSymbol`, and `workspace/symbol`, not just one of
+the three).
 
 ---
 
