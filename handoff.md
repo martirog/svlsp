@@ -4,15 +4,328 @@
 **Last completed phase:** Phase 6.2 complete — multi-file project support, all 6 stages
 (6.1 — DB-backed providers; 6.3 — package import *and export* resolution; preprocessor
 source map committed previously)  
-**Current work:** Both documented macro-expansion column bugs fixed 2026-07-19 — the
-mid-line column-drift gap and the multi-line (backslash-continuation) `` `define ``
-body gap (see "Known gaps" below, search "Fixed (2026-07-19)"). `test_19` and `test_20`
-integration tests now fully pass. Next up: Phase 6.4 (cross-file invalidation /
+**Current work (2026-07-20, mid-session, see "UVM real-world smoke test" section
+below for full detail):** Ran the preprocessor against a real-world codebase (UVM
+core) for the first time and found + fixed three genuine preprocessor bugs so far:
+infinite loop on default macro-argument values and `//` comments scanned for macro
+invocations (Bugs 1 & 2, **committed**, commit `c207c28`); and Gap B —
+`` `__FILE__ ``/`` `__LINE__ `` unresolved inside `` `include ``d files (**fixed,
+verified, NOT YET COMMITTED** — uncommitted diff is `src/compiler/sv_preprocessor.cpp`
++ `tests/unit/compiler/test_sv_preprocessor.cpp`; see "Gap B" section below for what
+changed). One more real gap remains, found but NOT fixed: Gap A, brace/bracket
+nesting in macro-argument parsing — see that section for exact repro and fix sketch.
+**Immediate next task (explicitly requested by the user, not yet started — a Write
+call was interrupted before any fixture file existed):** add a new integration test
+covering multiple levels of `` `include `` where preprocessor directives (not just
+symbols) appear in *multiple* of the nested files — design is written up in full
+below, ready to implement.
+Next up after that: Phase 6.4 (cross-file invalidation /
 dependency graph) per `plan.md §6.4` — not yet planned in file-level detail. **The full approved
 Phase 6.2 plan (exact signatures, schema SQL, algorithms, test names — now historical
 reference, all 6 stages complete) lives at
 `/home/martin/.claude/plans/fluffy-hatching-popcorn.md`.**
 See "Phase 6.2" section below for what was built in each stage.
+
+---
+
+## UVM real-world smoke test (2026-07-20, in progress)
+
+**Goal:** the user asked to set up a project compiling the real UVM core library
+(`../verilator_test/uvm-core/src/uvm.sv`, a sibling checkout **outside** this repo at
+`/home/martin/src/verilator_test/`, not tracked by svlsp's git) with
+`includeDirs: ["."]` and `defines: { UVM_NO_DPI: "" }`, and see whether it compiles —
+a first real-world stress test of the preprocessor/parser beyond hand-written fixtures.
+
+**Project manifest created** (outside this repo, not committed anywhere — recreate if
+missing) at `/home/martin/src/verilator_test/uvm-core/src/.svlsp.json`:
+```json
+{
+    "files": ["uvm.sv"],
+    "includeDirs": ["."],
+    "defines": { "UVM_NO_DPI": "" }
+}
+```
+Placed *alongside* `uvm.sv` so `ProjectRegistry`'s upward search finds it immediately
+when that file is opened. `uvm.sv` itself is a 35-line wrapper that `` `include ``s
+`uvm_pkg.sv`, which transitively `` `include ``s ~170 files under `uvm-core/src/`.
+
+### Debugging technique notes (reusable for future investigations)
+
+- **`ptrace` is blocked in this sandbox** — `gdb -p <pid>` fails with "Operation not
+  permitted" even for your own process. Don't waste time on attach-based debugging
+  here; instead copy the suspect `.cpp` to scratch, add `std::cerr` progress prints
+  (e.g. one per `` `include `` enter/exit, one every N lines of a loop), and compile
+  it standalone.
+- **Isolating the preprocessor from the full LSP/ANTLR stack is fast and cheap.**
+  `SvPreprocessor` has no ANTLR dependency (only `SvTreeWalker` does), so a standalone
+  probe that only calls `CompilerDirectiveStripper::strip` + `SvPreprocessor::process`
+  compiles and links in seconds against the already-built static lib:
+  `g++-13 -std=c++20 -O2 -I src probe.cpp build/release/libsvlsp_compiler.a -o probe`
+  (no antlr4 headers/objects get pulled in since `sv_tree_walker.o` is never
+  referenced). This is what actually found both bugs below — going through the full
+  JSON-RPC/LSP layer first only wastes time confirming "it's slow/hung" without
+  saying where.
+- **Use the `release` CMake preset for anything performance-sensitive.** The default
+  `debug` preset has ASan+UBSan instrumentation; both hung indefinitely on real UVM
+  before the fixes below, and `release` was needed to get fast (~0.1s) iteration once
+  actually measuring rather than debugging a hang.
+- A throwaway Python JSON-RPC driver script (spawn `build/release/svlsp`, send
+  `initialize`/`initialized`/`didOpen`, read the `publishDiagnostics` notification with
+  a `Content-Length`-framed reader) was used for the one true end-to-end check: it
+  lived in the session scratchpad only, not committed — recreate if needed, it's
+  ~70 lines, straightforward stdio JSON-RPC framing matching the smoke-test example
+  already in this doc's "Build and test" section.
+
+### Bug 1 — infinite loop on function-like macro default argument values — FIXED, uncommitted
+
+SV/Verilog macro parameter lists may give a parameter a default value
+(`` `define M(A, B=expr) ``), used when the invocation omits that trailing argument.
+UVM's `uvm_report_begin` macro (`uvm-core/src/macros/uvm_message_defines.svh`) uses
+exactly this: `` `define uvm_report_begin(SEVERITY, ID, VERBOSITY,
+RO=uvm_get_report_object()) \ ... ``. `parseMacroDefinition`'s function-like
+parameter-list loop (`src/compiler/sv_preprocessor.cpp`) read the parameter name via
+`readIdent`, then only checked for a following `,` before looping back — on hitting
+`=` it recognized neither `,` nor `)`, so the `while` condition stayed true forever
+without `i` ever advancing: **a true infinite loop**, not just slow. This is what was
+actually hanging both the debug *and* release builds indefinitely on `uvm.sv` (a 35
+line top file — the hang has nothing to do with file size or ASan overhead, contrary
+to the initial assumption while debugging).
+
+**Minimal repro** (still useful as a regression check if the unit tests below are
+ever deleted): `` `define FOO(A, B=default_expr()) A B `` then invoke `` `FOO(1) ``.
+
+**Fix:**
+- `MacroDef` (`src/compiler/sv_preprocessor.cpp`) gained
+  `std::vector<std::optional<std::string>> defaults;`, parallel to `params`.
+- The parameter-list loop now: (a) if `readIdent` returns empty at a position where a
+  param name was expected, pushes an error and `break`s instead of looping forever —
+  a general safety net against any future malformed-list hang, not just this one
+  pattern; (b) after reading a param name, checks for `=` and if found scans the
+  default-value expression up to the next **top-level** `,` or `)`, tracking paren
+  depth so a default value that is itself a call (`uvm_get_report_object()`) doesn't
+  end the scan early at its own closing paren.
+- `expandMacroCall`: arity check changed from `args.size() != params.size()` to
+  `args.size() > params.size()` (too many is still an error), then for every
+  param index beyond the supplied args, uses `def.defaults[k]` if present, else
+  errors `"missing required argument"`.
+- The other `MacroDef` construction site (predefined macros via `SvPreprocessor::
+  define()`) used positional aggregate init `MacroDef{false, {}, value}` assuming
+  3 fields — updated to designated-init `MacroDef{.isFunctionLike = false, .body =
+  value}` now that there are 4 fields.
+- Unit tests added (`tests/unit/compiler/test_sv_preprocessor.cpp`, tag
+  `[defaultargs]`, 5 cases): default used when omitted, default overridden when
+  supplied, default value containing nested parens doesn't hang (direct regression
+  test for the UVM pattern), missing required non-default arg still errors, too many
+  args still errors.
+
+### Bug 2 — `//` comments scanned for macro invocations — FIXED, uncommitted
+
+UVM's source is heavily doc-commented with examples like
+`` // |`uvm_info(ID, MSG, VERBOSITY) `` (literal backtick-macro syntax shown inside a
+`//` comment, `uvm-core/src/macros/uvm_message_defines.svh` and many other files).
+`expandStr` (`src/compiler/sv_preprocessor.cpp`) scanned the **entire raw line** for
+`` ` `` characters with no awareness of `//` comments at all, so it tried to expand
+`` `uvm_info ``, `` `ifdef ``, `` `define ``, `` `endif `` etc. found inside comment
+text as if they were real invocations — producing ~1780 spurious "undefined macro"
+errors on the UVM corpus alone (confirmed via `grep -rn '//.*`ifdef\|//.*`define
+\|//.*`uvm_info' uvm-core/src/` before fixing, which found many matches).
+
+**Fix:** new helper `splitLineComment(line)` (naive `find("//")`, mirrors the
+existing `stripLineComment` used for directive-argument lines) splits a regular
+source line into a macro-expandable code portion and a literal trailing comment
+portion. `processSource`'s regular-line branch now only calls `expandStr` on the code
+portion and appends the comment portion verbatim afterward — column-shift tracking
+(the mid-line-macro fix from earlier this session) is unaffected since it's computed
+from the code-portion expansion only, and the comment text after it never contains
+real symbols anyway.
+Unit tests added (tag `[comments]`, 2 cases): backtick-like text inside a
+comment-only line is not expanded and passes through unchanged; a real macro
+invocation earlier on a line still expands correctly even when a comment
+*containing another backtick-like token* follows on the same line.
+
+### Verification (both fixes together)
+
+- Unit suite: 337 cases / 861 assertions, all green.
+- Full Emacs integration suite: 124 passed / 1 failed — the 1 failure is the
+  pre-existing, already-documented `test_08_completion.sh` flake (confirmed
+  unrelated by running it in isolation earlier this session); zero regressions.
+- Real UVM (`uvm.sv` + full include chain, `UVM_NO_DPI` defined): preprocessing now
+  completes in **~0.07-0.09s** (previously hung indefinitely, confirmed >5 minutes
+  with no progress on both debug and release builds before the fix) — 85,787 output
+  lines / ~2.8MB from ~170 recursively included files. **1,241 diagnostics remain**,
+  breakdown: the large majority are the arity-mismatch pattern from Gap A below
+  (confirmed by manually inspecting several `` `uvm_warning ``/`` `uvm_error ``
+  call sites in `uvm_object_defines.svh` that pass a `{...}` concatenation
+  expression as an argument); the remainder (17: 9× `` `__FILE__ ``, 8× `` `__LINE__ ``)
+  are Gap B below.
+
+### Remaining gaps found but NOT fixed (real, reproducible, not yet started)
+
+**Gap A — macro-argument parsing doesn't track `{}`/`[]` nesting.**
+`parseInvokeArgs` (`src/compiler/sv_preprocessor.cpp`) only tracks `(`/`)` depth when
+deciding whether a `,` is a top-level argument separator or part of a nested
+sub-expression. SystemVerilog concatenation expressions `{a, b}` and array/queue
+literals are common macro-argument contents and use `{`/`}`, not `(`/`)`. Real
+example (`uvm-core/src/macros/uvm_object_defines.svh:805` and similar):
+`` `uvm_warning("UVM/FIELDS/NO_FLAG",{"Field macro for ARG uses FLAG without or'ing
+any explicit UVM_xxx actions. ",behavior}) `` — the comma inside `{...}` is
+incorrectly treated as ending the 2nd argument early, splitting it into 2 extra
+arguments and producing `` macro `uvm_warning`: expected at most 2 args, got 4 ``.
+**Fix sketch:** extend `parseInvokeArgs`'s existing `depth` counter (currently only
+incremented/decremented on `(`/`)`) to also count `{`/`}` (and probably `[`/`]` for
+consistency, though no real example of that surfaced yet) toward the same depth
+value — a comma is only a real separator at depth == 1 measuring "inside the
+invocation's outer parens, at no nested bracket of any kind". Add a unit test using
+literally this pattern (2-param macro invoked with a 2nd argument that's a brace
+expression containing a comma) as the regression case.
+
+**Gap B — `` `__FILE__ ``/`` `__LINE__ `` unresolved inside `` `include ``d files —
+FIXED, uncommitted (2026-07-20).**
+The two-pass pipeline is: pass 1 (`CompilerDirectiveStripper::strip`) substitutes
+`` `__FILE__ ``/`` `__LINE__ `` with literals, then pass 2 (`SvPreprocessor::process`)
+handles `` `include `` (among other things) by reading the included file's raw text
+and recursing into `processSource` directly — it never ran pass 1 on included
+files, only on the single top-level source handed to `SvPreprocessor::process` by
+its caller (`CompilationController`, which itself calls `CompilerDirectiveStripper::
+strip` once before calling `SvPreprocessor::process`). So any `` `__FILE__ ``/
+`` `__LINE__ `` inside an included file reached `expandStr` as a literal, still-unresolved
+macro invocation → "undefined macro" error. Confirmed via the UVM run (9×
+`` `__FILE__ ``, 8× `` `__LINE__ ``, all presumably inside included `.svh` files, not
+`uvm.sv` itself which has neither literal).
+
+**Fix applied:** option (a) from the original sketch — `processInclude`
+(`src/compiler/sv_preprocessor.cpp`) now runs `CompilerDirectiveStripper::
+strip(includedText, foundPath)` on each included file's raw text before recursing
+into `processSource`, passing `stripped.source` instead of the raw text. Line count
+is preserved (stripped directives become blank lines, same as pass 1's existing
+guarantee for the top-level file), so the preprocessor source map is unaffected.
+`stripped.directives` is discarded — nothing currently consumes that field even at
+the top level (`CompilationController::compile` only uses `.source`). No design
+issue turned up in practice: pass 1 becoming "recursive" (once per file, called from
+inside pass 2's include handling rather than only once up front by the external
+caller) required no restructuring beyond the one call site — `CompilerDirectiveStripper::
+strip` was already a pure function of `(source, filepath)` with no shared state.
+
+**Verification:** new unit tests (`tests/unit/compiler/test_sv_preprocessor.cpp`,
+3 cases): `` `__LINE__ `` inside an included file resolves to that file's own line
+number; `` `__FILE__ `` inside an included file resolves to the included file's path
+(not the top-level file's); a `` `timescale `` (pass-1 metadata directive) inside an
+included file is stripped silently instead of falling through to pass 2. Full unit
+suite: 340 cases / 868 assertions, all green (up from 337/861 before this fix — the
+3 new cases). Manually re-confirmed against a standalone nested-include repro
+(`__FILE__`/`__LINE__` used inside a macro body defined in an included file, invoked
+from that same file) via the g++-13-against-`libsvlsp_compiler.a` probe technique
+documented above: `` `__FILE__ `` now correctly resolves to the *included* file's
+path, not the top-level file's. (Note: `` `__LINE__ `` used *inside a macro
+definition* resolves to the line where the `` `define `` itself sits, not the
+invocation site — this is pass 1 substituting literally wherever the token appears
+in the raw source, before macro expansion even begins; that's pre-existing behavior
+for top-level files too, not something this fix changed or introduced.)
+Re-run against the real UVM corpus (`uvm.sv`, `includeDirs: ["."]`,
+`UVM_NO_DPI` defined) via the standalone `libsvlsp_compiler.a` probe technique,
+release build: preprocessing completes in ~0.16s, errors dropped from 1,241 to
+**335** with **zero** `` `__FILE__ ``/`` `__LINE__ `` errors remaining (previously
+9 + 8 = 17) — confirms the fix on the real corpus, not just the unit tests. The
+remaining 335 are all Gap A (brace-nesting arity mismatches), still unfixed.
+
+**Gap B end-to-end regression test (`test_23_include_file_line.sh`, 6 cases,
+committed):** the unit tests above exercise `SvPreprocessor::process` directly;
+this test proves the fix through the real JSON-RPC/LSP layer, matching this
+codebase's "every LSP feature needs both a unit test and a functional Emacs test"
+working rule. Fixtures `tests/integration/fixtures/gapb_top.sv` (`` `include ``s
+`gapb_inc.sv`, defines `gapb_top_mod`) and `gapb_inc.sv` (`gapb_before_mod`,
+then `gapb_marker_mod` whose parameter defaults use `` `__FILE__ ``/`` `__LINE__ ``,
+then `gapb_after_mod` — the before/after modules straddle the marker so a
+broken line count from pass-1 stripping would misplace `gapb_after_mod`).
+Assertions: zero diagnostics after opening `gapb_top.sv` (the primary
+regression check — before the fix this was a non-zero "undefined macro"
+diagnostic); `documentSymbol` on `gapb_top.sv` has `gapb_top_mod` only, not
+the included file's modules; `documentSymbol` on `gapb_inc.sv` (by path) has
+all three modules at their correct original lines; `workspace/symbol` for
+`gapb_marker_mod` points to `gapb_inc.sv`. All 6 pass; full integration suite
+rerun clean (130 passed / 1 failed — the same pre-existing
+`test_08_completion.sh` flake noted above, zero new regressions).
+
+**Gap C — stringification (`` `" ``) and token-pasting (` ``` `) — NOT a bug, deliberately unsupported.**
+UVM uses `` `"ARG`" `` (stringify) in several macros (e.g.
+`uvm_object_defines.svh:1151` and elsewhere). `SvPreprocessor`'s own class doc
+comment already states this scope boundary explicitly: "Stringification (`") and
+token-pasting (``) are not supported in this implementation; use a slang-backed
+implementation for UVM-heavy codebases." Not something to silently fix as a
+byproduct of this investigation — flagging here only so a future full "does UVM
+compile" attempt doesn't mistake it for a new discovery. Revisit only if/when a
+slang-backed preprocessor replacement is undertaken.
+
+### Next immediate task — multi-level `` `include `` integration test (requested, not yet built)
+
+The existing `test_15_preprocessor_lsp.sh` only covers **one level** of `` `include ``
+(`preproc_main.sv` includes `preproc_defs.sv`, which defines one macro and one
+module, no conditionals). The user asked for a new test covering **multiple levels**
+of `` `include `` where preprocessor *statements* (not just plain symbols) appear in
+*multiple* of the nested files — i.e. macro definitions and `` `ifdef `` conditionals
+interacting across more than one include boundary, which nothing today exercises.
+A `Write` call for the first fixture file was interrupted before any file existed —
+below is the full design, ready to implement from scratch next session.
+
+**Fixture layout** (3 levels, new files under `tests/integration/fixtures/`):
+- `ml_top.sv` (level 1, opened directly by the test) — `` `define ML_TOP_WIDTH 8 ``
+  *before* `` `include "ml_level2.sv" ``; after the include, a module using
+  `` `ML_TOP_WIDTH `` (defined right there) **and** `` `ML_LEVEL3_DEPTH `` (defined
+  two include-levels down, in `ml_level3.sv` — proves a macro survives back up to
+  the top once the whole include chain unwinds); instantiates both
+  `ml_level2_mod` (1 level down) and `ml_level3_mod` (2 levels down) so hover/
+  definition can be tested at both distances from a single opened buffer.
+- `ml_level2.sv` (level 2) — `` `define ML_LEVEL2_SCALE 2 ``, then
+  `` `include "ml_level3.sv" ``, then `` `ifdef ML_LEVEL3_FLAG `` gating
+  `module ml_level2_mod` — the flag is defined **inside** `ml_level3.sv`, so this
+  proves an `` `ifdef `` in the *middle* file correctly sees a macro defined by the
+  *deepest* file, textually inserted just above it by the nested include. Also add a
+  **negative** `` `ifdef ML_NEVER_DEFINED `` guarding a `module ml_should_not_exist`
+  that must never appear anywhere (in output, diagnostics, or any DB query) —
+  without a negative case, a test could pass even if `` `ifdef `` were accidentally
+  short-circuited to "always true".
+- `ml_level3.sv` (level 3, deepest) — `` `define ML_LEVEL3_FLAG `` and
+  `` `define ML_LEVEL3_DEPTH 4 ``, then `module ml_level3_mod` whose body uses
+  `` `ML_TOP_WIDTH `` (defined in the *top* file, two include-levels *above* —
+  proves downward visibility through more than one nested include, the mirror image
+  of the upward case tested in `ml_top.sv`).
+
+**New test file:** `tests/integration/test_24_multilevel_include.sh` (renumbered from
+`test_23` — that slot was taken by the Gap-B regression test below), following the
+exact `run_test`/`section`/guard-block conventions already used by
+`test_15_preprocessor_lsp.sh` (read that file first — it's the closest existing
+precedent, just extended from 1 include level to 3, and from "no conditionals" to
+"`` `ifdef `` spanning include boundaries in both directions"). Planned assertions:
+- Diagnostics: zero, after opening `ml_top.sv` (proves the whole 3-level chain with
+  both cross-boundary macro directions and the ifdef compiles clean).
+- Hover on the `ml_level2_mod` instantiation site in `ml_top.sv` → non-null.
+- Hover on the `ml_level3_mod` instantiation site in `ml_top.sv` → non-null (proves
+  cross-file resolution works at 2 levels of include distance, not just 1 — nothing
+  existing tests this; `findSymbolsByName` is already global/unscoped per the Phase
+  6.2 "key facts" note above so this is expected to already work with zero code
+  changes, but it's untested).
+- Definition on `ml_level2_mod` instantiation → resolves to `ml_level2.sv` at its
+  correct original (pre-`` `include ``-expansion) line.
+- Definition on `ml_level3_mod` instantiation → resolves to `ml_level3.sv` at its
+  correct original line (2-level case).
+- `documentSymbol` on `ml_top.sv` → contains `ml_top_mod`, does **not** contain
+  `ml_level2_mod`/`ml_level3_mod`/`ml_should_not_exist`.
+- `documentSymbol` on `ml_level2.sv` (queried by path, not opened as a buffer — same
+  pattern as `test_15`'s `DEFS_FIXTURE` check) → contains `ml_level2_mod` at its
+  correct original line, does **not** contain `ml_should_not_exist` (the negative
+  `` `ifdef `` case).
+- `documentSymbol` on `ml_level3.sv` (by path) → contains `ml_level3_mod` at its
+  correct original line.
+- `workspace/symbol` query for `ml_level3_mod` → location URI points to
+  `ml_level3.sv`, not `ml_top.sv` or `ml_level2.sv` (proves correct file attribution
+  survives 2 levels of include nesting through the source map, matching the
+  single-level assertion `test_15` already makes for 1 level).
+- `workspace/symbol` query for `ml_should_not_exist` → no match anywhere (negative
+  `` `ifdef `` case, global check).
+Exact original line numbers for each assertion still need to be computed once the
+fixture files are actually written (read them back with the `Read` tool's line
+numbers rather than hand-counting — that's what caused avoidable back-and-forth in
+earlier fixtures this session).
 
 ---
 
