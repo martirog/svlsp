@@ -1,4 +1,5 @@
 #include "compiler/sv_preprocessor.h"
+#include "compiler/compiler_directive_stripper.h"
 #include <cassert>
 #include <cctype>
 #include <filesystem>
@@ -336,8 +337,17 @@ static void processInclude(const std::string& filename, const std::string& curre
     std::ostringstream ss;
     ss << f.rdbuf();
 
+    // Pass 1 (`__FILE__`/`__LINE__` substitution + metadata-directive strip)
+    // only ever runs once, on the top-level file, before pass 2 begins.
+    // Included files reach here as raw, unstripped text, so run pass 1 on
+    // each one now -- otherwise `__FILE__`/`__LINE__` inside an included
+    // file are never resolved and fall through to pass 2 as literal,
+    // undefined macro invocations. Line count is preserved (stripped
+    // directives become blank lines), so the source map stays valid.
+    auto stripped = CompilerDirectiveStripper::strip(ss.str(), found);
+
     ctx.includeStack.push_back(found);
-    processSource(ss.str(), found, ctx, depth + 1);
+    processSource(stripped.source, found, ctx, depth + 1);
     ctx.includeStack.pop_back();
 }
 

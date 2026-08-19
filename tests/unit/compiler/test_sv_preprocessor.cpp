@@ -306,6 +306,49 @@ TEST_CASE("include missing file records error", "[compiler][preprocessor]") {
     REQUIRE(!errs.empty());
 }
 
+TEST_CASE("include: __LINE__ inside included file resolves to its own line number",
+          "[compiler][preprocessor]") {
+    // Pass 1 (CompilerDirectiveStripper) only ever runs on the top-level
+    // source before SvPreprocessor::process is called; included files are
+    // read as raw text by processInclude. __LINE__ must still resolve
+    // against the included file's own line numbers, not be left as a
+    // literal, undefined macro invocation.
+    std::string tmpPath = "/tmp/svlsp_test_inc_line.sv";
+    { std::ofstream f(tmpPath); f << "wire a;\n"
+                                     "wire b = `__LINE__;\n"; }
+
+    SvPreprocessor pp;
+    auto [out, errs, macros_, map_] = pp.process("`include \"" + tmpPath + "\"\n", "test.sv");
+    REQUIRE(errs.empty());
+    REQUIRE(out.find("wire b = 2;") != std::string::npos);
+}
+
+TEST_CASE("include: __FILE__ inside included file resolves to the included path",
+          "[compiler][preprocessor]") {
+    std::string tmpPath = "/tmp/svlsp_test_inc_file.sv";
+    { std::ofstream f(tmpPath); f << "string s = `__FILE__;\n"; }
+
+    SvPreprocessor pp;
+    auto [out, errs, macros_, map_] = pp.process("`include \"" + tmpPath + "\"\n", "test.sv");
+    REQUIRE(errs.empty());
+    REQUIRE(out.find("string s = \"" + tmpPath + "\";") != std::string::npos);
+}
+
+TEST_CASE("include: metadata directive inside included file is stripped without error",
+          "[compiler][preprocessor]") {
+    // `timescale etc. are pass-1 directives; an included file containing one
+    // must not fall through to pass 2 and be treated as an unknown directive.
+    std::string tmpPath = "/tmp/svlsp_test_inc_timescale.sv";
+    { std::ofstream f(tmpPath); f << "`timescale 1ns/1ps\n"
+                                     "wire c;\n"; }
+
+    SvPreprocessor pp;
+    auto [out, errs, macros_, map_] = pp.process("`include \"" + tmpPath + "\"\n", "test.sv");
+    REQUIRE(errs.empty());
+    REQUIRE(out.find("wire c;") != std::string::npos);
+    REQUIRE(out.find("timescale") == std::string::npos);
+}
+
 // ---------------------------------------------------------------------------
 // Line preservation
 // ---------------------------------------------------------------------------
