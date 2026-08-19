@@ -16,6 +16,9 @@ namespace fs = std::filesystem;
 struct MacroDef {
     bool isFunctionLike{false};
     std::vector<std::string> params;
+    // Parallel to `params`; nullopt means that parameter has no default and
+    // must be supplied at every invocation (e.g. `define M(A, B=default_expr)).
+    std::vector<std::optional<std::string>> defaults;
     std::string body;
 };
 
@@ -61,6 +64,17 @@ static std::string_view trimSV(std::string_view sv) {
 static std::string_view stripLineComment(std::string_view sv) {
     size_t pos = sv.find("//");
     return pos == std::string_view::npos ? sv : trimSV(sv.substr(0, pos));
+}
+
+// Splits `line` into a macro-expandable code portion and a literal trailing
+// `// comment` portion (comment includes the "//" itself and everything
+// after — kept verbatim, never macro-expanded). Naive, like
+// stripLineComment: doesn't account for "//" appearing inside a string
+// literal.
+static std::pair<std::string_view, std::string_view> splitLineComment(std::string_view line) {
+    size_t pos = line.find("//");
+    if (pos == std::string_view::npos) return {line, {}};
+    return {line.substr(0, pos), line.substr(pos)};
 }
 
 static std::string readIdent(const std::string& src, size_t& i) {
@@ -156,11 +170,21 @@ static std::string expandMacroCall(const std::string& name,
         return "";
     }
     std::vector<std::string> args = parseInvokeArgs(src, i);
-    if (args.size() != def.params.size()) {
-        errors.push_back("macro `" + name + "`: expected " +
+    if (args.size() > def.params.size()) {
+        errors.push_back("macro `" + name + "`: expected at most " +
                          std::to_string(def.params.size()) + " args, got " +
                          std::to_string(args.size()));
         return "";
+    }
+    // Any params beyond the supplied args must have a default value.
+    for (size_t k = args.size(); k < def.params.size(); ++k) {
+        if (k < def.defaults.size() && def.defaults[k].has_value()) {
+            args.push_back(*def.defaults[k]);
+        } else {
+            errors.push_back("macro `" + name + "`: missing required argument `" +
+                             def.params[k] + "`");
+            return "";
+        }
     }
     // Step 1: replace bare param identifiers in the body with arg text
     std::string substituted = substituteParams(def.body, def.params, args);
@@ -220,7 +244,33 @@ static std::optional<ParsedMacro> parseMacroDefinition(std::string_view rest, Ma
         while (i < line.size() && line[i] != ')') {
             skipSpaces(line, i);
             std::string param = readIdent(line, i);
-            if (!param.empty()) def.params.push_back(param);
+            if (param.empty()) {
+                // Unrecognized character where a parameter name was expected
+                // (e.g. a stray token) -- bail out rather than looping forever
+                // without making progress through `line`.
+                errors.push_back("`define: malformed parameter list for `" + name + "`");
+                break;
+            }
+            def.params.push_back(param);
+            skipSpaces(line, i);
+            // Optional default value: NAME=expr, up to the next top-level
+            // ',' or ')' (nested parens in the default, e.g. a function call
+            // like `RO=uvm_get_report_object()`, don't end it early).
+            std::optional<std::string> defaultVal;
+            if (i < line.size() && line[i] == '=') {
+                ++i; // skip '='
+                skipSpaces(line, i);
+                size_t start = i;
+                int parenDepth = 0;
+                while (i < line.size() &&
+                       !(parenDepth == 0 && (line[i] == ',' || line[i] == ')'))) {
+                    if (line[i] == '(') ++parenDepth;
+                    else if (line[i] == ')') --parenDepth;
+                    ++i;
+                }
+                defaultVal = std::string(trimSV(std::string_view(line).substr(start, i - start)));
+            }
+            def.defaults.push_back(std::move(defaultVal));
             skipSpaces(line, i);
             if (i < line.size() && line[i] == ',') ++i;
         }
@@ -324,11 +374,17 @@ static void processSource(const std::string& source, const std::string& filepath
         bool startsWithBacktick = (ws != std::string::npos && line[ws] == '`');
 
         if (!startsWithBacktick) {
-            // Regular source line: expand macros if outputting
+            // Regular source line: expand macros if outputting. Only the code
+            // portion before a trailing `//` comment is scanned for macro
+            // invocations -- backtick-looking text inside a comment (common
+            // in doc comments showing example macro usage) must not be
+            // treated as a real invocation.
             if (ctx.isOutputting()) {
+                auto [code, comment] = splitLineComment(line);
                 std::vector<ColShift> shifts;
-                std::string expanded = expandStr(line, ctx.macros, ctx.errors, 0, &shifts);
-                emitLine(expanded, std::move(shifts));
+                std::string expanded =
+                    expandStr(std::string(code), ctx.macros, ctx.errors, 0, &shifts);
+                emitLine(expanded + std::string(comment), std::move(shifts));
             } else {
                 emitBlank();
             }
@@ -460,7 +516,7 @@ PreprocessorResult SvPreprocessor::process(const std::string& source,
 
     // Seed macro table from predefined macros
     for (const auto& [name, value] : m_predefined)
-        ctx.macros[name] = MacroDef{false, {}, value};
+        ctx.macros[name] = MacroDef{.isFunctionLike = false, .body = value};
 
     processSource(source, filepath, ctx, 0);
 

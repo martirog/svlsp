@@ -103,6 +103,85 @@ TEST_CASE("function-like macro zero arguments", "[compiler][preprocessor]") {
     REQUIRE(out.find("begin end") != std::string::npos);
 }
 
+TEST_CASE("function-like macro parameter with default value used when omitted",
+          "[compiler][preprocessor][defaultargs]") {
+    SvPreprocessor pp;
+    auto [out, errs, macros_, map_] = pp.process(
+        "`define GREET(NAME, GREETING=hello) GREETING NAME\n"
+        "`GREET(world)\n", "f.sv");
+    REQUIRE(errs.empty());
+    REQUIRE(out.find("hello world") != std::string::npos);
+}
+
+TEST_CASE("function-like macro parameter with default value overridden when supplied",
+          "[compiler][preprocessor][defaultargs]") {
+    SvPreprocessor pp;
+    auto [out, errs, macros_, map_] = pp.process(
+        "`define GREET(NAME, GREETING=hello) GREETING NAME\n"
+        "`GREET(world, hi)\n", "f.sv");
+    REQUIRE(errs.empty());
+    REQUIRE(out.find("hi world") != std::string::npos);
+}
+
+TEST_CASE("function-like macro default value containing nested parens does not hang",
+          "[compiler][preprocessor][defaultargs]") {
+    // Mirrors real UVM: `define uvm_report_begin(SEVERITY, ID, VERBOSITY,
+    // RO=uvm_get_report_object()) -- a default value that is itself a
+    // function call, i.e. contains its own '(' and ')'.
+    SvPreprocessor pp;
+    auto [out, errs, macros_, map_] = pp.process(
+        "`define M(A, B=default_call()) A B\n"
+        "`M(x)\n", "f.sv");
+    REQUIRE(errs.empty());
+    REQUIRE(out.find("x default_call()") != std::string::npos);
+}
+
+TEST_CASE("function-like macro missing required argument without default records error",
+          "[compiler][preprocessor][defaultargs]") {
+    SvPreprocessor pp;
+    auto [out, errs, macros_, map_] = pp.process(
+        "`define M(A, B) A B\n"
+        "`M(x)\n", "f.sv");
+    REQUIRE(!errs.empty());
+}
+
+TEST_CASE("function-like macro too many arguments still records error",
+          "[compiler][preprocessor][defaultargs]") {
+    SvPreprocessor pp;
+    auto [out, errs, macros_, map_] = pp.process(
+        "`define M(A, B=default_val) A B\n"
+        "`M(x, y, z)\n", "f.sv");
+    REQUIRE(!errs.empty());
+}
+
+// ---------------------------------------------------------------------------
+// Comments must not be scanned for macro invocations
+// ---------------------------------------------------------------------------
+
+TEST_CASE("backtick-like text inside a line comment is not macro-expanded",
+          "[compiler][preprocessor][comments]") {
+    // Common in doc comments that show example macro usage, e.g. UVM's
+    // "// |`uvm_info(ID, MSG, VERBOSITY)" -- must not be treated as an
+    // actual invocation of an undefined (or wrong-arity) macro.
+    SvPreprocessor pp;
+    auto [out, errs, macros_, map_] = pp.process(
+        "// example: `uvm_info(ID, MSG, VERBOSITY)\n"
+        "wire a;\n", "f.sv");
+    REQUIRE(errs.empty());
+    REQUIRE(out.find("// example: `uvm_info(ID, MSG, VERBOSITY)") != std::string::npos);
+}
+
+TEST_CASE("macro invocation before a trailing comment still expands",
+          "[compiler][preprocessor][comments]") {
+    SvPreprocessor pp;
+    auto [out, errs, macros_, map_] = pp.process(
+        "`define WIDTH 8\n"
+        "wire [`WIDTH-1:0] bus; // uses `UNDEFINED_MACRO in the comment\n", "f.sv");
+    REQUIRE(errs.empty());
+    REQUIRE(out.find("wire [8-1:0] bus;") != std::string::npos);
+    REQUIRE(out.find("// uses `UNDEFINED_MACRO in the comment") != std::string::npos);
+}
+
 // ---------------------------------------------------------------------------
 // Conditional compilation
 // ---------------------------------------------------------------------------
