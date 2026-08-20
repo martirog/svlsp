@@ -94,12 +94,20 @@ static std::vector<std::string> parseInvokeArgs(const std::string& src, size_t& 
     assert(i < src.size() && src[i] == '(');
     ++i; // skip '('
     int depth = 1;
+    bool inString = false;
     std::string cur;
     std::vector<std::string> args;
     while (i < src.size() && depth > 0) {
         char c = src[i++];
-        if      (c == '(') { ++depth; cur += c; }
-        else if (c == ')') { if (--depth > 0) cur += c; }
+        if (inString) {
+            cur += c;
+            if (c == '\\' && i < src.size()) { cur += src[i++]; continue; }
+            if (c == '"') inString = false;
+            continue;
+        }
+        if      (c == '"') { inString = true; cur += c; }
+        else if (c == '(' || c == '{' || c == '[') { ++depth; cur += c; }
+        else if (c == ')' || c == '}' || c == ']') { if (--depth > 0) cur += c; }
         else if (c == ',' && depth == 1) { args.push_back(std::string(trimSV(cur))); cur.clear(); }
         else    cur += c;
     }

@@ -155,6 +155,55 @@ TEST_CASE("function-like macro too many arguments still records error",
 }
 
 // ---------------------------------------------------------------------------
+// Macro-argument parsing must track {}/[] nesting, and string-literal
+// contents, not just ()
+// ---------------------------------------------------------------------------
+
+TEST_CASE("macro argument containing a brace expression with a comma is not split",
+          "[compiler][preprocessor][bracenesting]") {
+    // Mirrors real UVM: `uvm_warning(ID, {"part one ", part_two}) -- the
+    // comma inside {...} must not be treated as the argument separator.
+    SvPreprocessor pp;
+    auto [out, errs, macros_, map_] = pp.process(
+        "`define M(A, B) A B\n"
+        "`M(\"id\", {\"part one \", part_two})\n", "f.sv");
+    REQUIRE(errs.empty());
+    REQUIRE(out.find("\"id\" {\"part one \", part_two}") != std::string::npos);
+}
+
+TEST_CASE("macro argument containing a bracket expression with a comma is not split",
+          "[compiler][preprocessor][bracenesting]") {
+    SvPreprocessor pp;
+    auto [out, errs, macros_, map_] = pp.process(
+        "`define M(A, B) A B\n"
+        "`M(\"id\", arr[i, j])\n", "f.sv");
+    REQUIRE(errs.empty());
+    REQUIRE(out.find("\"id\" arr[i, j]") != std::string::npos);
+}
+
+TEST_CASE("macro argument string literal containing a comma is not split",
+          "[compiler][preprocessor][bracenesting]") {
+    SvPreprocessor pp;
+    auto [out, errs, macros_, map_] = pp.process(
+        "`define M(A, B) A B\n"
+        "`M(\"hello, world\", second)\n", "f.sv");
+    REQUIRE(errs.empty());
+    REQUIRE(out.find("\"hello, world\" second") != std::string::npos);
+}
+
+TEST_CASE("macro argument string literal containing an unmatched paren is not split",
+          "[compiler][preprocessor][bracenesting]") {
+    // A quoted message string like "already exists (see above)" must not
+    // perturb paren-depth tracking of the invocation itself.
+    SvPreprocessor pp;
+    auto [out, errs, macros_, map_] = pp.process(
+        "`define M(A, B) A B\n"
+        "`M(\"already exists (see above)\", second)\n", "f.sv");
+    REQUIRE(errs.empty());
+    REQUIRE(out.find("\"already exists (see above)\" second") != std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
 // Comments must not be scanned for macro invocations
 // ---------------------------------------------------------------------------
 
