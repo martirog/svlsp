@@ -293,6 +293,50 @@ static std::optional<ParsedMacro> parseMacroDefinition(std::string_view rest, Ma
 }
 
 // ---------------------------------------------------------------------------
+// Multi-line macro invocations (no backslash continuation)
+// ---------------------------------------------------------------------------
+
+// Real SV sources (UVM in particular) commonly split a function-like macro
+// invocation's argument list across several physical lines purely via open
+// parens/braces, with no trailing '\' -- unlike `define bodies, which the
+// LRM requires to use backslash-continuation. Scans `line` for invocations
+// of macros already known to be function-like in `macros`, and reports
+// whether the *last* such invocation's argument-list depth (paren/brace/
+// bracket, string-literal aware, mirroring parseInvokeArgs) is still open
+// at end of line -- i.e. more physical lines must be appended before the
+// line can be handed to expandStr.
+static bool hasUnterminatedInvocation(const std::string& line, const MacroMap& macros) {
+    size_t i = 0;
+    while (i < line.size()) {
+        if (line[i] != '`') { ++i; continue; }
+        ++i;
+        if (i >= line.size() || !isIdentChar(line[i])) continue;
+        std::string name = readIdent(line, i);
+        auto it = macros.find(name);
+        if (it == macros.end() || !it->second.isFunctionLike) continue;
+        size_t j = i;
+        skipSpaces(line, j);
+        if (j >= line.size() || line[j] != '(') continue;
+        int depth = 0;
+        bool inString = false;
+        for (; j < line.size(); ++j) {
+            char c = line[j];
+            if (inString) {
+                if (c == '\\' && j + 1 < line.size()) { ++j; continue; }
+                if (c == '"') inString = false;
+                continue;
+            }
+            if      (c == '"') inString = true;
+            else if (c == '(' || c == '{' || c == '[') ++depth;
+            else if (c == ')' || c == '}' || c == ']') { --depth; if (depth == 0) break; }
+        }
+        if (depth > 0) return true; // ran off the end of the line still open
+        i = j + 1; // continue scanning for further invocations on this line
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------------------
 // Include resolution
 // ---------------------------------------------------------------------------
 
@@ -373,14 +417,48 @@ static void processSource(const std::string& source, const std::string& filepath
     // depth == 0 means we are in the primary compiled file; use "" so callers can
     // distinguish primary-file lines from included-file lines with a simple empty check.
     const std::string mapFile = depth > 0 ? filepath : std::string{};
-    auto emitLine = [&](const std::string& content, std::vector<ColShift> shifts = {}) {
+    // `atLine < 0` means "use the current lineNo" (the common case); an
+    // explicit value lets a multi-line-merged invocation's real content be
+    // attributed to the line it *started* on, even though `lineNo` has since
+    // advanced past the continuation lines consumed to complete it.
+    auto emitLine = [&](const std::string& content, std::vector<ColShift> shifts = {},
+                         int atLine = -1) {
         ctx.output += content;
         ctx.output += '\n';
-        ctx.sourceMap.push_back({mapFile, lineNo, std::move(shifts)});
+        ctx.sourceMap.push_back({mapFile, atLine < 0 ? lineNo : atLine, std::move(shifts)});
     };
-    auto emitBlank = [&]() {
+    auto emitBlank = [&](int atLine = -1) {
         ctx.output += '\n';
-        ctx.sourceMap.push_back({mapFile, lineNo});
+        ctx.sourceMap.push_back({mapFile, atLine < 0 ? lineNo : atLine});
+    };
+
+    // Appends further physical lines onto `curLine` for as long as it ends
+    // mid an open function-like macro invocation, advancing `lineNo` as it
+    // consumes each one. Returns the merged text plus the original line
+    // number of every continuation line consumed (in order) -- the caller
+    // emits the real (merged) content first, attributed to the *first*
+    // line, then a blank for each continuation line, preserving the
+    // one-output-line-per-physical-input-line invariant the rest of the
+    // pipeline (translateLine, ANTLR line numbers) depends on. Note this
+    // means any token that lands specifically on a continuation line still
+    // gets attributed to the first line for diagnostics/hover purposes --
+    // an accepted imprecision, matching how multi-line `define bodies
+    // already attribute their whole body to the starting line.
+    auto mergeInvocationContinuation =
+        [&](std::string curLine) -> std::pair<std::string, std::vector<int>> {
+        std::vector<int> continuationLines;
+        while (true) {
+            auto [code, comment] = splitLineComment(curLine);
+            (void)comment;
+            if (!hasUnterminatedInvocation(std::string(code), ctx.macros)) break;
+            std::string contLine;
+            if (!std::getline(iss, contLine)) break;
+            ++lineNo;
+            if (!contLine.empty() && contLine.back() == '\r') contLine.pop_back();
+            curLine += contLine;
+            continuationLines.push_back(lineNo);
+        }
+        return {curLine, continuationLines};
     };
 
     while (std::getline(iss, line)) {
@@ -398,11 +476,14 @@ static void processSource(const std::string& source, const std::string& filepath
             // in doc comments showing example macro usage) must not be
             // treated as a real invocation.
             if (ctx.isOutputting()) {
-                auto [code, comment] = splitLineComment(line);
+                int firstLineNo = lineNo;
+                auto [merged, contLines] = mergeInvocationContinuation(line);
+                auto [code, comment] = splitLineComment(merged);
                 std::vector<ColShift> shifts;
                 std::string expanded =
                     expandStr(std::string(code), ctx.macros, ctx.errors, 0, &shifts);
-                emitLine(expanded + std::string(comment), std::move(shifts));
+                emitLine(expanded + std::string(comment), std::move(shifts), firstLineNo);
+                for (int ln : contLines) emitBlank(ln);
             } else {
                 emitBlank();
             }
@@ -510,9 +591,12 @@ static void processSource(const std::string& source, const std::string& filepath
             }
         } else {
             // Unknown directive starting the line — try macro expansion of the whole line
+            int firstLineNo = lineNo;
+            auto [merged, contLines] = mergeInvocationContinuation(line);
             std::vector<ColShift> shifts;
-            std::string expanded = expandStr(line, ctx.macros, ctx.errors, 0, &shifts);
-            emitLine(expanded, std::move(shifts));
+            std::string expanded = expandStr(merged, ctx.macros, ctx.errors, 0, &shifts);
+            emitLine(expanded, std::move(shifts), firstLineNo);
+            for (int ln : contLines) emitBlank(ln);
         }
     }
 }

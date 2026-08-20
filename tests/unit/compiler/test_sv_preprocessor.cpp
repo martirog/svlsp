@@ -553,6 +553,79 @@ TEST_CASE("backslash-continuation define followed by mid-line invocation records
 }
 
 // ---------------------------------------------------------------------------
+// Multi-line macro invocations (no backslash — real UVM pattern, e.g.
+// `UVM_PH_TRACE(ID, MSG, PH, VERB) with the argument list split across
+// physical lines purely via an open '(')
+// ---------------------------------------------------------------------------
+
+TEST_CASE("function-like macro invocation with args spanning two lines expands",
+          "[compiler][preprocessor][multiinvoke]") {
+    SvPreprocessor pp;
+    auto result = pp.process(
+        "`define M(A, B, C) A B C\n"
+        "`M(\"x\",\n"
+        "y, z)\n", "f.sv");
+    REQUIRE(result.errors.empty());
+    CHECK(result.source.find("\"x\" y z") != std::string::npos);
+}
+
+TEST_CASE("function-like macro invocation with args spanning three lines expands",
+          "[compiler][preprocessor][multiinvoke]") {
+    SvPreprocessor pp;
+    auto result = pp.process(
+        "`define M(A, B, C) A B C\n"
+        "`M(\"x\",\n"
+        "y,\n"
+        "z)\n", "f.sv");
+    REQUIRE(result.errors.empty());
+    CHECK(result.source.find("\"x\" y z") != std::string::npos);
+}
+
+TEST_CASE("function-like macro invocation split across lines mid-statement expands",
+          "[compiler][preprocessor][multiinvoke]") {
+    // Mirrors real UVM: the invocation doesn't start the line.
+    SvPreprocessor pp;
+    auto result = pp.process(
+        "`define M(A, B) A B\n"
+        "if (x) `M(\"id\",\n"
+        "second);\n", "f.sv");
+    REQUIRE(result.errors.empty());
+    CHECK(result.source.find("if (x) \"id\" second;") != std::string::npos);
+}
+
+TEST_CASE("function-like macro invocation spanning lines preserves output line count",
+          "[compiler][preprocessor][multiinvoke]") {
+    SvPreprocessor pp;
+    auto result = pp.process(
+        "`define M(A, B, C) A B C\n"   // line 1 -> blank
+        "`M(\"x\",\n"                  // line 2 -> real content
+        "y,\n"                         // line 3 -> blank
+        "z)\n"                         // line 4 -> blank
+        "wire done;\n",                // line 5 -> content
+        "f.sv");
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.sourceMap.size() == 5);
+    CHECK(result.sourceMap[0].line == 1);
+    CHECK(result.sourceMap[1].line == 2);
+    CHECK(result.sourceMap[2].line == 3);
+    CHECK(result.sourceMap[3].line == 4);
+    CHECK(result.sourceMap[4].line == 5);
+    int newlines = static_cast<int>(std::count(result.source.begin(), result.source.end(), '\n'));
+    CHECK(newlines == 5);
+}
+
+TEST_CASE("unknown macro name does not trigger multi-line merging",
+          "[compiler][preprocessor][multiinvoke]") {
+    // An undefined (or object-like) name followed by an unrelated, unbalanced
+    // '(' elsewhere in ordinary code must not cause line-swallowing.
+    SvPreprocessor pp;
+    auto result = pp.process(
+        "wire w = foo(a,\n"
+        "b);\n", "f.sv");
+    REQUIRE(result.sourceMap.size() == 2);
+}
+
+// ---------------------------------------------------------------------------
 // Source map
 // ---------------------------------------------------------------------------
 
