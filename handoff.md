@@ -4,23 +4,290 @@
 **Last completed phase:** Phase 6.2 complete — multi-file project support, all 6 stages
 (6.1 — DB-backed providers; 6.3 — package import *and export* resolution; preprocessor
 source map committed previously)  
-**Current work (2026-07-20, mid-session, see "UVM real-world smoke test" section
-below for full detail):** Ran the preprocessor against a real-world codebase (UVM
-core) for the first time and found + fixed three genuine preprocessor bugs, all
-**committed**: infinite loop on default macro-argument values and `//` comments
-scanned for macro invocations (Bugs 1 & 2, commit `c207c28`); and Gap B —
-`` `__FILE__ ``/`` `__LINE__ `` unresolved inside `` `include ``d files (fix commit
-`58b470b`, end-to-end regression test commit `99febc5`, docs commit `e516bd5`).
-One more real gap remains, found but NOT fixed: Gap A, brace/bracket nesting in
-macro-argument parsing — see that section for exact repro and fix sketch.
-Also completed: the user-requested multi-level `` `include `` integration test
-(`test_24_multilevel_include.sh`, 10 cases, all passing) — see that section below.
-Next up: Gap A, then Phase 6.4 (cross-file invalidation /
-dependency graph) per `plan.md §6.4` — not yet planned in file-level detail. **The full approved
+**Current work (2026-08-20, mid-session, see "UVM real-world smoke test — session 2"
+section below for full detail, near the top):** Continuing the UVM real-world smoke
+test from 2026-07-20. Fixed Gap A (commit `9b8abed`) and a newly-found Gap D —
+multi-line macro invocations without backslash continuation (commit `5ba19f9`), both
+with unit tests, both verified against the full unit suite (349 cases/891 assertions,
+zero regressions). Then, while trying to get the *entire* real UVM corpus through the
+actual LSP server and into the DB (per explicit user request), discovered a major,
+previously-undocumented **performance gap**: ANTLR parsing of the Sv.g4 grammar is
+slow at real-world scale (~10-20ms/line baseline on legitimate UVM class bodies) and
+becomes dramatically worse (multi-second cost *per site*) wherever a preprocessor
+error leaves malformed text for the parser to error-recover from — which happens at
+every remaining Gap C (token-pasting) / Gap E (new — `` `ifdef `` embedded inside a
+`` `define `` body, not evaluated at expansion time) site. This is why the full
+uvm.sv corpus (~85K preprocessed lines) takes on the order of many minutes to fully
+parse, not seconds. **Not fixed this session** — this is a Phase 6.5 (\"Performance
+baseline\", not started) finding, not a quick patch; see that section for full
+measurements and a documented, tested-safe mitigation candidate (SLL-only ANTLR
+prediction mode, ~20% improvement, not yet applied to product code).
+**Session paused here** (checkpointed at user's request) before finishing the
+"get UVM fully in the DB via the real LSP + write exploratory deep-symbol tests"
+part of the task — see that section's "Not yet done" subsection for exactly where to
+resume and the candidate symbol/file list already gathered.
+Next up: resume the UVM DB/exploratory-test work, then Gap C/E (if worth fixing given
+the performance payoff), then Phase 6.4 (cross-file invalidation / dependency graph)
+per `plan.md §6.4` — not yet planned in file-level detail. **The full approved
 Phase 6.2 plan (exact signatures, schema SQL, algorithms, test names — now historical
 reference, all 6 stages complete) lives at
 `/home/martin/.claude/plans/fluffy-hatching-popcorn.md`.**
 See "Phase 6.2" section below for what was built in each stage.
+
+---
+
+## UVM real-world smoke test — session 2 (2026-08-20, paused mid-session)
+
+Continuation of the "UVM real-world smoke test" section further down this doc
+(2026-07-20). That session left off with Gap A found-but-not-fixed and Gap B fixed.
+This session's goal (explicit user request): "retry running uvm code. when it is all
+in the database, create tests that tries to find random functionality from deep down
+in uvm in order to see if there are more gaps."
+
+### Gap A — FIXED (commit `9b8abed`)
+
+`parseInvokeArgs` (`src/compiler/sv_preprocessor.cpp`) now tracks `{}`/`[]` nesting
+depth alongside `()`, and is string-literal aware (a `"..."` argument containing a
+comma or an unmatched paren — very common in real UVM message strings like
+`` `uvm_warning(ID, {"...", behavior}) `` or `` `uvm_error("...(see above)...", x) `` —
+no longer perturbs argument splitting or paren-depth tracking). 4 new unit tests,
+tag `[bracenesting]`.
+
+### Gap D (new) — multi-line macro invocations without backslash — FIXED (commit `5ba19f9`)
+
+Real UVM (`base/uvm_phase.svh:1619-1624`, `` `UVM_PH_TRACE(...) `` split across two
+lines with no trailing `\`) showed this doesn't parse: SV macro invocations, unlike
+`` `define `` bodies, may split their argument list across physical lines using only
+an open paren/brace/bracket — no LRM-mandated backslash continuation needed. The
+line-by-line preprocessor only ever fed one physical line to `expandStr`, so such
+invocations produced "missing required argument" errors and the trailing lines fell
+through as unexpanded raw text (a downstream parse error).
+
+**Fix:** `hasUnterminatedInvocation(line, macros)` (new,
+`src/compiler/sv_preprocessor.cpp`) scans a line for invocations of *already-known*
+function-like macros and reports whether the invocation's arg-list depth (same
+paren/brace/bracket/string-aware counter as `parseInvokeArgs`) is still open at end
+of line. `mergeInvocationContinuation` (new, a lambda inside `processSource`) pulls
+in further physical lines via the same `std::getline` stream until it balances,
+advancing `lineNo` as it goes. **Ordering subtlety that cost real debugging time:**
+the merged invocation's *real* (expanded) content must be emitted to `ctx.output`
+**before** the blank lines for the continuation lines it consumed — not after — both
+because `ctx.output` is parsed by ANTLR sequentially (wrong order = tokens land on
+the wrong output line entirely) and because the sourceMap entry for the real content
+must say the *first* line, not whatever `lineNo` had advanced to by the time it's
+emitted. `emitLine`/`emitBlank` both gained an optional explicit `atLine` parameter
+for this reason (default `-1` = "use current `lineNo`", unchanged for every existing
+call site). 5 new unit tests, tag `[multiinvoke]`. Known accepted imprecision: any
+token that lands specifically on a continuation line (not the first) is still
+attributed to the first line for diagnostics/hover — matches the existing precedent
+for multi-line `` `define `` bodies.
+
+**Verification:** full unit suite 349 cases/891 assertions (debug/ASan), zero
+regressions from 340/868 baseline at session start.
+
+### Standalone UVM corpus re-run after both fixes
+
+Using the same standalone-probe technique from session 1 (recreate `probe.cpp` per
+that section's notes if missing — this session's copies all lived in the session
+scratchpad, not committed, paths won't survive to a new session):
+preprocessor-only errors on the real UVM corpus (`uvm.sv`, `includeDirs: ["."]`,
+`UVM_NO_DPI` defined, release build) dropped **335 → 173 → 86**: Gap A's fix alone
+resolved 162 (the brace-nesting arity-mismatch cluster); Gap D's fix resolved the
+remaining 87 "missing required argument" cases (arity=0 after both fixes). The
+remaining 86 are **all** "undefined macro" errors, in two known clusters — no third
+cluster:
+
+- **Gap C (already known, deliberately unsupported)** — token-pasting (` `` `).
+  `` `uvm_copier_get_function(FUNCTION) `` (`macros/uvm_copier_defines.svh`) expands
+  `` get_``FUNCTION``_copy `` and `` uvm_packer::get_packed_``T``s ``
+  (`base/uvm_packer.svh`) — both leave literal `` `` `` in the output that then gets
+  mis-scanned as more macro invocations (`` `first ``, `` `_copy ``, `` `byte ``,
+  `` `s ``, etc. — matches the FUNCTION/T argument names actually used at each call
+  site). Confirmed low real-world impact *on uvm-core itself* (not necessarily on
+  end-user testbenches, which use field-automation macros far more): only 17 direct
+  `` `uvm_field_* `` invocations and 43 files referencing any `` `uvm_*_utils ``
+  macro across the whole ~170-file corpus.
+
+- **Gap E (new) — `` `ifdef ``/`` `else ``/`` `endif `` embedded inside a `` `define ``
+  body are not evaluated at macro-expansion time.** Real UVM
+  (`macros/uvm_object_defines.svh:826-831`):
+  ```
+  `define m_uvm_field_op_begin(OP, FLAG) \
+  UVM_``OP: \
+    if ( \
+       `ifndef UVM_LEGACY_FIELD_MACRO_SEMANTICS (((FLAG)&UVM_``OP)) && `endif \
+       (!((FLAG)&UVM_NO``OP)) \
+    ) begin
+  ```
+  and `macros/uvm_object_defines.svh:797-808` (`` `m_warn_if_no_positive_ops ``,
+  `` `ifdef UVM_LEGACY_FIELD_MACRO_SEMANTICS ... `else ... `endif `` inside the body).
+  When such a macro is invoked, `expandStr` recursively expands the body text but has
+  no concept of conditional directives inside it — `` `ifdef ``/`` `else ``/`` `endif ``
+  are scanned like any other `` ` `` + identifier and hit `expandMacroCall`'s
+  "undefined macro" path (they're not in the macro table), which just emits `""` for
+  each and moves on — meaning **both** branches' literal text end up concatenated
+  into the output, un-conditioned. **Fix sketch (not attempted — substantial,
+  needs design):** when parsing/expanding a macro body, recognize
+  `` `ifdef ``/`` `ifndef ``/`` `elsif ``/`` `else ``/`` `endif `` tokens and
+  re-run the same conditional-compilation logic used at the top level, evaluated
+  against the *current* (invocation-time) `ctx.macros` state — not definition-time,
+  since e.g. `UVM_LEGACY_FIELD_MACRO_SEMANTICS` could be defined by the invoking
+  file but not by whatever file originally `` `define ``d the macro. This is a
+  distinctly separate design problem from Gap C (token-pasting) even though both
+  currently manifest as "undefined macro `ifdef`/`else`/`endif`/`COPY`/`COMPARE`/
+  `PACK`/`UNPACK`" in the error list — the `COPY`/`COMPARE`/`PACK`/`UNPACK` names
+  are `` `m_uvm_field_op_begin ``'s `OP` argument at each of its real call sites,
+  confirming it's this macro, not a different one. Same low-real-impact caveat as
+  Gap C applies (only reachable via the same 17 field-automation-macro call sites
+  inside uvm-core itself).
+
+### Major finding (new): ANTLR parse performance at real-world scale — NOT FIXED, Phase 6.5 territory
+
+**This is the most significant discovery of this session** and the reason the
+"get UVM fully into the DB" part of the user's request is not yet complete.
+
+**Symptom:** opening the real `uvm.sv` (full `` `include `` chain, ~170 files,
+~85K preprocessed lines) through the actual `svlsp` binary via a JSON-RPC driver
+(`didOpen` → wait for `publishDiagnostics`) did not return within several minutes
+(observed: still running, 100% CPU, RSS climbing steadily — 727MB+ — past 6 minutes
+of wall time before being killed to investigate). This is **not an infinite loop**:
+RSS grows roughly linearly, not explosively, and standalone measurements below
+confirm it eventually terminates, just very slowly.
+
+**Isolation technique (extends the session-1 standalone-probe method):** rather than
+going through the full LSP/DB layer, link a tiny driver directly against
+`build/release/libsvlsp_compiler.a` + `libsvlsp_antlr4.a` +
+`_deps/antlr4_runtime-build/runtime/libantlr4-runtime.a` (include paths:
+`-I src -I build/release/generated/antlr4
+-I build/release/_deps/antlr4_runtime-src/runtime/Cpp/runtime/src`, and
+**`-pthread` is required** — omitting it causes an immediate
+`std::system_error: Unknown error -1` crash inside the ANTLR runtime's static
+initialization, which looks alarming but is just a missing link flag, not a real
+bug) and call `SvTreeWalker::walk` directly, timing it separately from
+`SvPreprocessor::process`. None of these probes were committed — recreate from this
+description if needed for a future session.
+
+**Measurements (release build, no ASan):**
+- Full corpus preprocessing alone: ~0.08-0.2s (fast, as in session 1 — the
+  preprocessor itself was never the bottleneck).
+- `base/uvm_barrier.svh` alone (236 lines, standalone/no macro context so
+  `` `uvm_object_utils `` is "undefined" → 3 real parse errors from the resulting
+  malformed class-body text): **2.45-2.79s** to parse. Forcing ANTLR's SLL-only
+  prediction mode (`parser.getInterpreter<antlr4::atn::ParserATNSimulator>()->
+  setPredictionMode(antlr4::atn::PredictionMode::SLL)`, tested standalone, **not**
+  applied to product code) brought this to 2.13s (~20% faster) — a real but
+  partial improvement; the dominant cost is ANTLR's error-recovery/resynchronization
+  machinery itself, not full-context (SLL→LL fallback) prediction.
+- `base/uvm_base.svh` (150-line aggregator, `` `include ``s ~50 files under `base/`,
+  tested standalone so its 144 "undefined macro" errors are mostly the same
+  missing-macro-context artifact as above, not real Gap C/E errors): **334.578s
+  (~5.6 minutes)** to parse.
+- A **bounded, properly macro-primed** 5-real-file subset was built to separate
+  "slow because of preprocessor-error-driven parse errors" from "slow because large
+  real SV class bodies are just inherently expensive to parse": a synthetic top file
+  `` `include ``ing `uvm_macros.svh` first (so `` `uvm_info ``/`` `uvm_object_utils ``/
+  etc. are genuinely defined, unlike the standalone-file tests above) then
+  `base/uvm_object.svh`, `base/uvm_component.svh`, `seq/uvm_sequence_item.svh`,
+  `reg/uvm_reg.svh`, `tlm1/uvm_analysis_port.svh` directly (these 5 files have zero
+  or one `` `include `` of their own — chosen specifically to avoid the aggregator
+  fan-out). **Even with proper macro context, this timed out past 60s** — i.e. the
+  slowness is **not solely** a Gap C/E artifact; large real UVM class bodies
+  (`uvm_component.svh` is 3780 lines) are independently, inherently slow to parse
+  under this grammar. Per-file standalone timings (missing-macro-context artifact
+  errors present, so treat as upper bounds, not clean numbers): `uvm_object.svh`
+  (1325 lines, 3 pp errors) 8.3s; `uvm_sequence_item.svh` (568 lines, 1 pp error)
+  9.85s; `tlm1/uvm_analysis_port.svh` (175 lines, 4 pp errors) 1.7s;
+  `uvm_component.svh` (3780 lines, 36 pp errors) and `reg/uvm_reg.svh` (3060 lines,
+  41 pp errors) both exceeded 30s without finishing.
+- **Conclusion:** two compounding effects, not one — (1) a genuine, inherent
+  per-line ANTLR parsing cost on real (correctly-preprocessed) SV that's roughly
+  linear but with a high constant factor (order 10-20ms/line extrapolated from the
+  clean small-file numbers above), and (2) a much larger, super-linear penalty
+  (multiple seconds *per site*) wherever a Gap C/E preprocessor error leaves
+  malformed text, driven by ANTLR's error-recovery/resynchronization cost on this
+  3828-line grammar. Both are real; (2) is avoidable by fixing Gap C/E, (1) is not
+  without deeper ANTLR/grammar performance work (Phase 6.5 territory: profiling,
+  possibly grammar restructuring to reduce ambiguity, possibly a different parsing
+  strategy for hot paths). **Not attempted this session.**
+
+### Not yet done — exactly where to resume
+
+The user's request has two parts; only the fix/investigation part above is done.
+Still outstanding:
+
+1. **Get the full real UVM corpus into the DB via the actual `svlsp` LSP server**
+   (not just the standalone preprocessor/parser probes above) — i.e. actually run
+   `build/release/svlsp`, `didOpen` on `uvm.sv` (project manifest already exists at
+   `/home/martin/src/verilator_test/uvm-core/src/.svlsp.json`, recreate if missing:
+   `{"files": ["uvm.sv"], "includeDirs": ["."], "defines": {"UVM_NO_DPI": ""}}`), and
+   let it run to completion. Given the performance finding above, budget **at least
+   10-20 minutes** of wall time for this, run it as a true background process (not
+   inside a single tool-call timeout), and expect it to eventually succeed (not
+   hang forever) based on the standalone measurements. A JSON-RPC driver script for
+   this was written this session at (session scratchpad, not committed, recreate
+   from scratch — straightforward stdio Content-Length framing, see session 1's
+   "Debugging technique notes" for the pattern) `lsp_driver.py`: spawns
+   `build/release/svlsp`, does `initialize`/`initialized` with `rootUri` pointing at
+   the UVM src dir, `didOpen`s `uvm.sv` with its own text (the server resolves
+   `` `include ``s from disk itself, no need to preload them client-side), and waits
+   for `publishDiagnostics`.
+2. **As a faster near-term alternative** (while the full corpus run is pending, or
+   instead of it if 10-20 minutes is judged not worth it for exploratory testing):
+   use the bounded 5-real-file subset described above (`uvm_macros.svh` +
+   `uvm_object.svh` + `uvm_component.svh` + `uvm_sequence_item.svh` + `uvm_reg.svh`
+   + `uvm_analysis_port.svh`) as the corpus opened through the real LSP instead —
+   still genuine, unmodified, deep UVM source spanning `base/`, `seq/`, `reg/`,
+   `tlm1/`, just without the full ~170-file fan-out. Note this subset alone was
+   *also* slow in the standalone ANTLR-only probe (>60s, see above) — confirm it
+   actually finishes before relying on it, budget a few minutes.
+3. **Write exploratory hover/definition/documentSymbol/workspace-symbol queries**
+   against real, deep UVM symbols once whichever corpus above is loaded, to look for
+   *further* LSP-layer gaps (not preprocessor-layer — those are covered above)
+   beyond what's already known. Candidate symbols already located this session
+   (grep `^\s*(virtual\s+)?class\s+NAME\b` across the corpus for exact
+   file:line — re-run if the corpus changes):
+   - `uvm_component` → `base/uvm_component.svh:59`
+   - `uvm_object` → `base/uvm_object.svh:61`
+   - `uvm_root` → `base/uvm_root.svh:98`
+   - `uvm_phase` → `base/uvm_phase.svh:147`
+   - `uvm_objection` → `base/uvm_objection.svh:79`
+   - `uvm_report_server` → `base/uvm_report_server.svh:65`
+   - `uvm_resource_db` → `base/uvm_resource_db.svh:66`
+   - `uvm_config_db` → `base/uvm_config_db.svh:58`
+   - `uvm_event` → `base/uvm_event.svh:282`
+   - `uvm_barrier` → `base/uvm_barrier.svh:45`
+   - `uvm_heartbeat` → `base/uvm_heartbeat.svh:67`
+   - `uvm_coreservice_t` → `base/uvm_coreservice.svh:71`
+   - `uvm_domain` → `base/uvm_domain.svh:78`
+   - `uvm_agent` → `comps/uvm_agent.svh:51`
+   - `uvm_driver` → `comps/uvm_driver.svh:58`
+   - `uvm_monitor` → `comps/uvm_monitor.svh:45`
+   - `uvm_scoreboard` → `comps/uvm_scoreboard.svh:47`
+   - `uvm_algorithmic_comparator` → `comps/uvm_algorithmic_comparator.svh:81`
+   - `uvm_sequence` → `seq/uvm_sequence.svh:47`
+   - `uvm_sequence_item` → `seq/uvm_sequence_item.svh:52`
+   - `uvm_sequencer` → `seq/uvm_sequencer.svh:44`
+   - `uvm_sequence_base` → `seq/uvm_sequence_base.svh:153`
+   - `uvm_reg` → `reg/uvm_reg.svh:102`
+   - `uvm_reg_field` → `reg/uvm_reg_field.svh:50`
+   - `uvm_mem` → `reg/uvm_mem.svh:57`
+   - `uvm_reg_block` → `reg/uvm_reg_block.svh:40`
+   - `uvm_analysis_port` → `tlm1/uvm_analysis_port.svh:68`
+   - `uvm_tlm_generic_payload` → `tlm2/uvm_tlm2_generic_payload.svh:114`
+
+   Plan: `workspace/symbol` for each name (verify resolved URI matches expected
+   file); `documentSymbol` by path on a handful of the files above (works without
+   opening them — per Phase 6.1, `documentSymbol`/`workspace/symbol` query the DB
+   directly, no `m_store.contains` check, unlike hover/definition); for
+   hover/definition specifically (which *do* require the doc open via
+   `m_store.contains`), `didOpen` 2-3 of the files above directly and test hover/
+   definition on a cross-file base-class or type reference inside them.
+4. Given the corpus is real, external, and not tracked by svlsp's own git (per
+   session 1's note), any test built from this **should stay a scratchpad/manual
+   exploration tool**, not a committed `tests/integration/*.sh` — consistent with
+   how session 1 handled this same tension.
+5. Update this section (or add a new dated one) with whatever the exploratory
+   queries find, once run.
 
 ---
 
