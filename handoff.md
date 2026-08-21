@@ -34,21 +34,25 @@ ordering) — a silent-wrong-answer bug, not a crash. Also confirmed (separately
 this session, still true): `didOpen` only ever publishes diagnostics for the
 **primary** opened file, never transitively-`` `include ``d files — a real LSP
 diagnostics-visibility gap.
-**Update, later same session:** the `STRING_LITERAL` escape gap **is now fixed and
-committed** (`b5cda7c` — `grammar/Sv.g4:3795`, `'"' ( '\\' . | ~["\\] )* '"'`; 4 new
-unit tests, tag `[stringescape]`). Real-world verified: full UVM corpus diagnostics
-dropped **2956 → 1796 (−39%)**. **Gap C stringification is also now fixed**
-(uncommitted — `src/compiler/sv_preprocessor.cpp`'s new `tryStringify`, tag
-`[stringify]`; full suite 902/357). Real-world verified further: **1796 → 1401
-(−22% further, −53% cumulative)**. Token-pasting (` `` `) remains unimplemented by
-design — root-caused as the dominant remaining cause (three distinct real macro
-families found: `` `uvm_register_cb ``, `` `M__TABLE_Q ``/`` `M__TABLE_GET ``, plus
-the original session-1 sites) — a materially bigger feature than stringification
-was, flagged for an explicit future decision rather than attempted without one.
-Gap E and the symbol-pollution bug are still **not** fixed. See "Gap C
-stringification — FIXED" in the session 3 section below for full detail.
+**Update, later same session — three fixes, all committed:** the `STRING_LITERAL`
+escape gap (`b5cda7c` — `grammar/Sv.g4:3795`, `'"' ( '\\' . | ~["\\] )* '"'`; tag
+`[stringescape]`; **2956 → 1796, −39%**), Gap C stringification (`5a41322`/
+`aca4eb1` — `src/compiler/sv_preprocessor.cpp`'s new `tryStringify`; tag
+`[stringify]`; **1796 → 1401, −22% further**), and the already-documented
+`void'(...)` cast gap (`88f1610`/`9cfd7a8` — `grammar/Sv.g4`'s
+`subroutine_call_statement`, `SINGLE_QUOTE` now optional; tag `[voidcast]`;
+**1401 → 1254, −10.5% further**). **Cumulative: 2956 → 1254 diagnostics, −57.6%,
+files-with-diagnostics 73 → 51**, full unit suite 904/359, zero regressions
+throughout. Token-pasting (` `` `) remains unimplemented by design — root-caused
+as the dominant remaining cause (three distinct real macro families found:
+`` `uvm_register_cb ``, `` `M__TABLE_Q ``/`` `M__TABLE_GET ``, plus the original
+session-1 sites) — a materially bigger feature than any of the three fixes above,
+flagged for an explicit future decision rather than attempted without one. Gap E
+and the symbol-pollution bug are still **not** fixed. See "Gap C stringification
+— FIXED" and "`void'(...)` cast gap — FIXED" in the session 3 section below for
+full detail.
 **Not yet done:** decide on full token-pasting support (see session 3's "Not yet
-done" list, item 3), then Phase 6.4 (cross-file
+done" list, item 4), then Phase 6.4 (cross-file
 invalidation / dependency graph) per `plan.md §6.4` — not yet planned in file-level
 detail. **The full approved Phase 6.2 plan (exact signatures, schema SQL, algorithms,
 test names — now historical reference, all 6 stages complete) lives at
@@ -448,7 +452,8 @@ use it:
 
 Also still present, unrelated to Gap C entirely: the already-documented
 `void'(...)` cast gap (e.g. `reg/uvm_vreg.svh:457/548/557`, unchanged by either
-fix this session).
+fix this session) — see "`void'(...)` cast gap — FIXED" below, fixed shortly
+after this section was originally written.
 
 **Not implementing full token-pasting this session** — it's a materially bigger
 feature than stringification was: stringification is a spans-in/string-out
@@ -462,13 +467,65 @@ case). Flagging as a real, now better-quantified candidate for a future session
 if the user decides it's worth the larger effort, rather than attempting it
 without an explicit decision to do so.
 
+### `void'(...)` cast gap — FIXED (2026-08-21, later same session)
+
+Per explicit user request ("fix the void'(...) cast gap next"), following up on
+the already-documented (pre-session-3) grammar quirk confirmed still pervasive in
+real UVM by this session's measurements (e.g. `base/uvm_root.svh:916/941/945`,
+`reg/uvm_vreg.svh:457/548/557`).
+
+**`grammar/Sv.g4`**: `subroutine_call_statement`'s void-cast alternative
+```
+- | 'void' '(' subroutine_call ')' ';'
++ | 'void' SINGLE_QUOTE? '(' subroutine_call ')' ';'
+```
+The LRM (1800-2017 A.6.9) specifies `void ' ( function_subroutine_call ) ;` — this
+grammar had dropped the apostrophe entirely, so only the non-standard `void(f())`
+workaround form (used by `examples/dpi.sv`, with a comment explaining why)
+parsed. Made the `SINGLE_QUOTE` *optional* rather than replacing it outright, so
+both the LRM-correct `void'(f())` form used throughout real UVM and the existing
+workaround form (still used by `examples/dpi.sv`) parse — no fixture needed to
+change.
+
+**Unit tests** (`tests/unit/compiler/test_sv_parser.cpp`, tag `[voidcast]`, 2 new
+cases): the LRM-correct `void'(f())` form, and a regression guard confirming the
+`void(f())` workaround form still parses (guards against the `SINGLE_QUOTE?` fix
+accidentally becoming `SINGLE_QUOTE` required). Full unit suite: **904 assertions
+/ 359 test cases**, all green (up from 902/357 — exactly the 2 new cases, zero
+regressions).
+
+**Real-world verification**: rebuilt `release`, relinked the standalone probe,
+reran the full UVM corpus. **Total diagnostics dropped from 1401 → 1254
+(−147, −10.5% further; −1702, −57.6% cumulative from the session's original
+2956)**, files-with-diagnostics 62 → 51. Confirmed at the
+per-file level: `reg/uvm_vreg.svh` 14 → 5 (the 3 `void'(...)` diagnostics at
+lines 457/548/557 are gone; the remaining 5 are entirely the unrelated,
+still-unfixed `` `uvm_register_cb `` token-pasting cascade at line 74), `base/
+uvm_root.svh` 27 → 19, `base/uvm_callback.svh` 75 → 61.
+
+**Committed**: `88f1610` (grammar + unit tests), `9cfd7a8` (this file's
+grammar-quirks-table entry, committed before this fuller write-up and its
+measured numbers were added).
+
+### Session 3 cumulative result
+
+Three fixes this session (`STRING_LITERAL` escapes, Gap C stringification,
+`void'(...)` casts), each real-world-verified against the same 140-file UVM
+corpus: **2956 → 1796 → 1401 → 1254 total diagnostics (−57.6% cumulative)**,
+files-with-diagnostics **73 → 51**. All three are pure grammar/lexer/preprocessor
+correctness fixes with no design ambiguity — the remaining diagnostics are now
+concentrated almost entirely in token-pasting cascades (` `` `, deliberately
+unsupported, see "Not implementing full token-pasting this session" above) plus
+whatever Gap E (`` `ifdef `` inside `` `define `` bodies, not yet investigated this
+session) turns out to be responsible for.
+
 ### Not yet done — suggested next steps
 
 1. ~~Fix the `STRING_LITERAL` escape-sequence lexer gap~~ — **done**, committed
    (`b5cda7c`).
-2. ~~Fix Gap C stringification~~ — **done, see above** (not yet committed — ask
-   the user before committing, per this session's established pattern).
-3. **Decide on full token-pasting support** — now confirmed to be the dominant
+2. ~~Fix Gap C stringification~~ — **done**, committed (`5a41322`/`aca4eb1`).
+3. ~~Fix the `void'(...)` cast gap~~ — **done**, committed (`88f1610`/`9cfd7a8`).
+4. **Decide on full token-pasting support** — now confirmed to be the dominant
    remaining real-world diagnostic source (three distinct macro families found
    this session: `` `uvm_register_cb ``, `` `M__TABLE_Q ``/`` `M__TABLE_GET ``, plus
    the original `` `uvm_copier_get_function ``/`` `uvm_packer::get_packed_``T``s ``
@@ -476,14 +533,9 @@ without an explicit decision to do so.
    — see "Not implementing full token-pasting this session" above for why. This is
    the natural next step if UVM-corpus diagnostic count keeps being a priority,
    but is a real design decision, not a quick follow-on fix.
-4. Consider the `void'(...)` cast gap (already documented, not Gap C at all,
-   confirmed still pervasive in what's left) as a cheaper, independent grammar fix
-   — same category of fix as the `STRING_LITERAL` one (isolated `Sv.g4` change,
-   no preprocessor design work), worth doing regardless of the token-pasting
-   decision.
 5. Gap E (`` `ifdef `` inside `` `define `` bodies) still not investigated further
    this session — re-run the full-corpus probe after any of the above to see how
-   much of the remaining ~1401 it's actually responsible for before deciding if
+   much of the remaining ~1254 it's actually responsible for before deciding if
    it's worth pursuing on its own.
 6. Consider the `findSymbolsByName`/hover disambiguation improvement noted in the
    symbol-pollution bug section — lower priority than a token-pasting fix, since
