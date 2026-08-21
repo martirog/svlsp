@@ -34,15 +34,21 @@ ordering) — a silent-wrong-answer bug, not a crash. Also confirmed (separately
 this session, still true): `didOpen` only ever publishes diagnostics for the
 **primary** opened file, never transitively-`` `include ``d files — a real LSP
 diagnostics-visibility gap.
-**Update, later same session:** the `STRING_LITERAL` escape gap **is now fixed**
-(uncommitted — `grammar/Sv.g4:3795`, `'"' ( '\\' . | ~["\\] )* '"'`; 4 new unit
-tests, tag `[stringescape]`; full suite 895/353, zero regressions). Real-world
-verified: full UVM corpus diagnostics dropped **2956 → 1796 (−39%)**. See
-"`STRING_LITERAL` escape-sequence gap — FIXED" in the session 3 section below for
-full detail. Gap C/E and the symbol-pollution bug are still **not** fixed (Gap C
-stringification is now the confirmed largest remaining contributor to the 1796).
-**Not yet done:** decide whether to fix Gap C stringification (see session 3's
-"Not yet done" list, item 2), then Phase 6.4 (cross-file
+**Update, later same session:** the `STRING_LITERAL` escape gap **is now fixed and
+committed** (`b5cda7c` — `grammar/Sv.g4:3795`, `'"' ( '\\' . | ~["\\] )* '"'`; 4 new
+unit tests, tag `[stringescape]`). Real-world verified: full UVM corpus diagnostics
+dropped **2956 → 1796 (−39%)**. **Gap C stringification is also now fixed**
+(uncommitted — `src/compiler/sv_preprocessor.cpp`'s new `tryStringify`, tag
+`[stringify]`; full suite 902/357). Real-world verified further: **1796 → 1401
+(−22% further, −53% cumulative)**. Token-pasting (` `` `) remains unimplemented by
+design — root-caused as the dominant remaining cause (three distinct real macro
+families found: `` `uvm_register_cb ``, `` `M__TABLE_Q ``/`` `M__TABLE_GET ``, plus
+the original session-1 sites) — a materially bigger feature than stringification
+was, flagged for an explicit future decision rather than attempted without one.
+Gap E and the symbol-pollution bug are still **not** fixed. See "Gap C
+stringification — FIXED" in the session 3 section below for full detail.
+**Not yet done:** decide on full token-pasting support (see session 3's "Not yet
+done" list, item 3), then Phase 6.4 (cross-file
 invalidation / dependency graph) per `plan.md §6.4` — not yet planned in file-level
 detail. **The full approved Phase 6.2 plan (exact signatures, schema SQL, algorithms,
 test names — now historical reference, all 6 stages complete) lives at
@@ -366,31 +372,126 @@ the two other root causes identified above, untouched as expected — e.g.
 `uvm_vreg.svh:74`/`:354` still show the Gap C stringification pattern
 (`` `uvm_abstract_object_registry#(uvm_vreg_cbs,` `` `` ` `` ``), and `uvm_vreg.svh:457/
 548/557` still show the `void'(...)` cast gap (`extraneous input ''' expecting '('`).
-**Not committed** — grammar + test changes are uncommitted working-tree edits,
-per instruction to leave commits for the user to review/request explicitly.
+**Committed** at the user's explicit request: `b5cda7c` (fix + unit tests) and
+`4e4fe5d` (this handoff section, at the time — since amended by later edits in
+this same file for the Gap C work below, still uncommitted as of this writing).
+
+### Gap C stringification — FIXED (2026-08-21, later same session, uncommitted)
+
+Per explicit user request ("continue on gap c"), following up on root cause 1
+above. Implemented the "stringification only, not token-pasting" scope suggested
+by the original next-steps list.
+
+**`src/compiler/sv_preprocessor.cpp`**: new static helper `tryStringify(src, i,
+macros, errors, depth)`, called from `expandStr`'s backtick-dispatch loop whenever
+`` ` `` is immediately followed by `"`. Scans forward for the next `` `" `` marker
+pair (not nested — SV stringification spans don't nest), recursively
+`expandStr`s the text between the two markers (so a stringified macro parameter —
+already substituted to plain text by `substituteParams` before `expandStr` ever
+runs — or a genuine nested macro invocation inside the span both resolve
+correctly before quoting), backslash-escapes any `"`/`\` in the result so it forms
+a syntactically valid string literal, and wraps it in real double quotes. An
+unterminated `` `" `` (no matching close) records an error and stops, rather than
+scanning to EOF. Existing column-shift bookkeeping (`colShifts`, used for
+mid-line macro column-drift translation) is extended to also cover stringification
+spans, using the same "record a breakpoint after the replacement text" pattern as
+the macro-invocation branch right below it. Token-pasting (` `` `) is still not
+recognized or supported anywhere — `src/compiler/sv_preprocessor.h`'s class doc
+comment updated to reflect the new, narrower scope boundary.
+
+**Unit tests** (`tests/unit/compiler/test_sv_preprocessor.cpp`, tag `[stringify]`,
+4 new cases): a basic parameterized stringification; the *exact* real UVM
+`` `uvm_type_name_decl ``/`` `m_uvm_object_registry_internal `` pattern from root
+cause 1 (`` `define uvm_type_name_decl(TNAME_STRING) ... return `"TNAME_STRING`";
+... `` invoked with a real class name, asserting the expected `return
+"uvm_reg_err_service";` text appears in the output); a case proving the
+stringification span's *contents* are macro-expanded before quoting (not just
+copied literally); and an unterminated-marker negative control. Full unit suite:
+**902 assertions / 357 test cases**, all green (up from 895/353 — exactly the 4
+new cases, zero regressions).
+
+**Real-world verification**: rebuilt `release`, relinked the standalone probe,
+reran the full UVM corpus. **Total diagnostics dropped from 1796 → 1401
+(−395, −22% further; −1555, −53% cumulative from the session's original 2956)**,
+files-with-diagnostics 72 → 62. `` `uvm_object_utils ``/`` `uvm_component_utils ``
+sites (root cause 1's primary target) are now confirmed fixed at the source —
+e.g. `reg/uvm_reg.svh:52`'s `` `uvm_object_utils(uvm_reg_err_service) `` no longer
+appears anywhere in that file's remaining diagnostics.
+
+**What's left, root-caused**: re-inspected the largest remaining offenders
+(`base/uvm_resource_pool.svh`, still 181 — completely unchanged by this fix; `reg/
+uvm_vreg.svh`, 14 remaining, down from 330). Both point to **token-pasting**
+(` `` `, still unsupported by design), and — importantly — this reveals
+token-pasting's *own* real-world impact was also underestimated by session 1's
+original "low impact" assessment (which only cited `` `uvm_copier_get_function ``/
+`` `uvm_packer::get_packed_``T``s ``). Two more, distinct, common macro families
+use it:
+- `` `uvm_register_cb(T,CB) `` (`macros/uvm_callback_defines.svh:71-72`):
+  `` static local bit m_register_cb_``CB = uvm_callbacks#(T,CB)::m_register_pair(
+  `"T`",`"CB`"); `` — note this macro uses **both** token-pasting (`` m_register_cb_
+  ``CB ``) **and** stringification (`` `"T`",`"CB`" ``) in the same expansion; the
+  stringification half is now fixed (confirmed: `reg/uvm_vreg.svh:74`'s diagnostic
+  changed from `` mismatched input '`' expecting IDENTIFIER `` to `` mismatched
+  input '"uvm_vreg_cbs"' expecting IDENTIFIER `` post-fix — the quoted string is
+  now syntactically correct, but the surrounding parse is still wrecked by the
+  *earlier*, still-broken token-pasted prefix). This is also the exact macro
+  behind the symbol-table-pollution bug found earlier this session
+  (`uvm_report_catcher.svh:71`'s `` `uvm_register_cb(uvm_report_object,
+  uvm_report_catcher) `` call) — so fixing token-pasting would likely also fix
+  that bug at the source, as speculated there.
+- `` `M__TABLE_Q(QUEUE_NAME) ``/`` `M__TABLE_GET(QUEUE_NAME, ITER) ``
+  (`base/uvm_resource_pool.svh:136-143`, a locally-`` `define ``d, file-private
+  macro pair, not a shared UVM macro): `` QUEUE_NAME``.value ``/`` QUEUE_NAME``
+  .get(ITER) `` — confirms this file's unchanged 181 diagnostics (the single
+  largest remaining offender) are *entirely* a token-pasting artifact, unrelated
+  to stringification.
+
+Also still present, unrelated to Gap C entirely: the already-documented
+`void'(...)` cast gap (e.g. `reg/uvm_vreg.svh:457/548/557`, unchanged by either
+fix this session).
+
+**Not implementing full token-pasting this session** — it's a materially bigger
+feature than stringification was: stringification is a spans-in/string-out
+substitution that fits the existing `expandStr` architecture directly, but
+token-pasting needs identifier-*fragment*-level concatenation (`` A``B `` glues
+two adjacent token fragments into one new identifier, potentially spanning
+multiple macro-expansion boundaries) — a different, harder problem, and exactly
+the boundary `SvPreprocessor`'s original design doc already called out
+("use a slang-backed implementation for UVM-heavy codebases" for this specific
+case). Flagging as a real, now better-quantified candidate for a future session
+if the user decides it's worth the larger effort, rather than attempting it
+without an explicit decision to do so.
 
 ### Not yet done — suggested next steps
 
-1. ~~Fix the `STRING_LITERAL` escape-sequence lexer gap~~ — **done, see above.**
-2. **Decide on Gap C (stringification only, not full token-pasting)** given the
-   corrected high-impact assessment in root cause 1 — at minimum implementing
-   `` `"...`" ``/`` `"ident`" `` → quoted-string-literal substitution in
-   `SvPreprocessor` (leaving true token-pasting, ` `` `, unsupported) would fix
-   every `` `uvm_object_utils ``/`` `uvm_component_utils `` site, which is now
-   confirmed (post-STRING_LITERAL-fix) to be the single largest remaining
-   diagnostic contributor — 1796 diagnostics still remain, and the per-file
-   breakdown above shows the stringification pattern dominating what's left.
-3. Re-run the full-corpus probe after a Gap C stringification fix to get an
-   updated diagnostic count, before deciding whether Gap C's remaining
-   token-pasting sites (the original, lower-impact `` `uvm_copier_get_function ``/
-   `` `uvm_packer::get_packed_``T``s ``-style sites) and Gap E (`` `ifdef `` inside
-   `` `define `` bodies) are still worth pursuing.
-4. Consider the `findSymbolsByName`/hover disambiguation improvement noted in the
-   symbol-pollution bug section — lower priority than a Gap C fix, since a correct
-   Gap C fix removes the garbage symbol at the source and would likely resolve this
-   specific instance on its own, but the general "no kind preference, alphabetical
-   tiebreak" pattern could still bite in unrelated future name collisions.
-5. Consider whether the LSP diagnostics-visibility gap (primary-file-only
+1. ~~Fix the `STRING_LITERAL` escape-sequence lexer gap~~ — **done**, committed
+   (`b5cda7c`).
+2. ~~Fix Gap C stringification~~ — **done, see above** (not yet committed — ask
+   the user before committing, per this session's established pattern).
+3. **Decide on full token-pasting support** — now confirmed to be the dominant
+   remaining real-world diagnostic source (three distinct macro families found
+   this session: `` `uvm_register_cb ``, `` `M__TABLE_Q ``/`` `M__TABLE_GET ``, plus
+   the original `` `uvm_copier_get_function ``/`` `uvm_packer::get_packed_``T``s ``
+   sites) but a materially larger implementation effort than stringification was
+   — see "Not implementing full token-pasting this session" above for why. This is
+   the natural next step if UVM-corpus diagnostic count keeps being a priority,
+   but is a real design decision, not a quick follow-on fix.
+4. Consider the `void'(...)` cast gap (already documented, not Gap C at all,
+   confirmed still pervasive in what's left) as a cheaper, independent grammar fix
+   — same category of fix as the `STRING_LITERAL` one (isolated `Sv.g4` change,
+   no preprocessor design work), worth doing regardless of the token-pasting
+   decision.
+5. Gap E (`` `ifdef `` inside `` `define `` bodies) still not investigated further
+   this session — re-run the full-corpus probe after any of the above to see how
+   much of the remaining ~1401 it's actually responsible for before deciding if
+   it's worth pursuing on its own.
+6. Consider the `findSymbolsByName`/hover disambiguation improvement noted in the
+   symbol-pollution bug section — lower priority than a token-pasting fix, since
+   fixing token-pasting would remove the garbage symbol at its source (see above)
+   and would likely resolve that specific instance on its own, but the general "no
+   kind preference, alphabetical tiebreak" pattern could still bite in unrelated
+   future name collisions.
+7. Consider whether the LSP diagnostics-visibility gap (primary-file-only
    `publishDiagnostics`) is worth addressing as its own small feature — e.g.
    proactively publishing diagnostics for every file touched by a `compile()` call,
    not just the primary one — independent of Phase 6.4's larger cross-file
