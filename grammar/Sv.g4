@@ -3792,7 +3792,7 @@ variable_identifier :
  SEQUENTIAL_ENTRY : (LEVEL_INPUT_LIST | EDGE_INPUT_LIST) ':' WS LEVEL_SYMBOL ':' WS (OUTPUT_SYMBOL | '-' WS) ';' ;
  SCALAR_CONSTANT : '1'? (['] [bB])? [01] ;
  SINGLE_QUOTE : ['] ;
- STRING_LITERAL : '"' .*? '"' ;
+ STRING_LITERAL : '"' ( '\\' . | ~["\\] )* '"' ;
  IDENTIFIER : SIMPLE_IDENTIFIER | ESCAPED_IDENTIFIER ;
  C_IDENTIFIER : [a-zA-Z_] [a-zA-Z0-9_]* ;
  SYSTEM_TF_IDENTIFIER : '$' [a-zA-Z0-9_$] [a-zA-Z0-9_$]* ;

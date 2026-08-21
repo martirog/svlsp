@@ -122,3 +122,43 @@ TEST_CASE("SvParser parses checker.sv with no errors", "[compiler][parser]") {
 TEST_CASE("SvParser parses dpi.sv with no errors", "[compiler][parser]") {
     REQUIRE(parseErrors(readFile(SV_EXAMPLES_DIR "/dpi.sv")) == 0);
 }
+
+TEST_CASE("SvParser parses a string literal containing an escaped quote", "[compiler][parser][stringescape]") {
+    // Regression test for the STRING_LITERAL lexer rule not handling `\"`
+    // (found via the real UVM corpus: `reg/uvm_vreg.svh:435`,
+    // `` `uvm_error("RegModel", $sformatf("Virtual register \"%s\" cannot
+    // have 0 bits", name)) `` -- pattern reproduced here without the macro
+    // layer, since STRING_LITERAL is a pure lexer rule).
+    std::string src =
+        "module top;\n"
+        "  initial $display(\"Virtual register \\\"%s\\\" cannot have 0 bits\", \"x\");\n"
+        "endmodule\n";
+    REQUIRE(parseErrors(src) == 0);
+}
+
+TEST_CASE("SvParser parses a string literal containing an escaped backslash", "[compiler][parser][stringescape]") {
+    std::string src =
+        "module top;\n"
+        "  initial $display(\"a\\\\b\");\n"
+        "endmodule\n";
+    REQUIRE(parseErrors(src) == 0);
+}
+
+TEST_CASE("SvParser does not let an escaped quote swallow the rest of the line", "[compiler][parser][stringescape]") {
+    // Mirrors the real cascade pattern from `base/uvm_root.svh:600`: a
+    // concatenation expression with plain (non-escaped) string arguments
+    // following one that itself contains an escaped quote -- if the lexer
+    // mis-terminates the first string early, everything after it
+    // mis-tokenizes and the whole statement fails to parse.
+    std::string src =
+        "module top;\n"
+        "  string test_name;\n"
+        "  initial $display({\"before \\\"quoted\\\" after \", test_name, \"...\"});\n"
+        "endmodule\n";
+    REQUIRE(parseErrors(src) == 0);
+}
+
+TEST_CASE("SvParser still reports an error for a truly unterminated string", "[compiler][parser][stringescape]") {
+    // Guards against a too-permissive fix (e.g. accidentally consuming to EOF).
+    REQUIRE(parseErrors("module top; initial $display(\"unterminated); endmodule\n") > 0);
+}
