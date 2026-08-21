@@ -29,8 +29,10 @@ struct PreprocessorResult {
 // for all directives except `include, which replaces the line with the
 // included file's content.
 //
-// Stringification (`") and token-pasting (``) are not supported in this
-// implementation; use a slang-backed implementation for UVM-heavy codebases.
+// Stringification (`"..`") is supported: the text between the two markers is
+// macro-expanded, then wrapped in a quoted string literal. Token-pasting
+// (``) is not supported; use a slang-backed implementation for UVM-heavy
+// codebases if it's needed.
 class SvPreprocessor {
 public:
     explicit SvPreprocessor(std::vector<std::string> includePaths = {});

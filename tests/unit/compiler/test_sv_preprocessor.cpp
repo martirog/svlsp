@@ -755,3 +755,50 @@ TEST_CASE("source map entry count equals output line count",
     int newlines = static_cast<int>(std::count(result.source.begin(), result.source.end(), '\n'));
     CHECK(static_cast<int>(result.sourceMap.size()) == newlines);
 }
+
+// ---------------------------------------------------------------------------
+// Stringification (`"..`") -- Gap C (partial: stringification only, not
+// token-pasting)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("stringification wraps a substituted macro parameter in quotes",
+          "[compiler][preprocessor][stringify]") {
+    SvPreprocessor pp;
+    auto result = pp.process(
+        "`define STR(T) `\"T`\"\n"
+        "string s = `STR(foo);\n", "f.sv");
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.source == "\nstring s = \"foo\";\n");
+}
+
+TEST_CASE("stringification reproduces the real UVM `uvm_type_name_decl pattern",
+          "[compiler][preprocessor][stringify]") {
+    // macros/uvm_object_defines.svh:540 (`uvm_type_name_decl) and :555
+    // (`m_uvm_object_registry_internal, which invokes it as
+    // `uvm_type_name_decl(`"S`") -- session 3's root-caused Gap C site.
+    SvPreprocessor pp;
+    auto result = pp.process(
+        "`define uvm_type_name_decl(TNAME_STRING) \\\n"
+        "  const static function string type_name(); return `\"TNAME_STRING`\"; endfunction\n"
+        "`uvm_type_name_decl(uvm_reg_err_service)\n", "f.sv");
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.source.find("return \"uvm_reg_err_service\";") != std::string::npos);
+}
+
+TEST_CASE("stringification macro-expands its contents before quoting",
+          "[compiler][preprocessor][stringify]") {
+    SvPreprocessor pp;
+    auto result = pp.process(
+        "`define A hello\n"
+        "`define STR() `\"`A`\"\n"
+        "string s = `STR();\n", "f.sv");
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.source == "\n\nstring s = \"hello\";\n");
+}
+
+TEST_CASE("unterminated stringification records an error instead of hanging",
+          "[compiler][preprocessor][stringify]") {
+    SvPreprocessor pp;
+    auto result = pp.process("string s = `\"unterminated;\n", "f.sv");
+    REQUIRE_FALSE(result.errors.empty());
+}

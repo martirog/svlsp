@@ -201,6 +201,36 @@ static std::string expandMacroCall(const std::string& name,
     return expandStr(substituted, macros, errors, depth + 1);
 }
 
+// Stringification (`"). `src[i]` must be the backtick of a `` `" `` marker
+// on entry. Scans for the matching closing `` `" ``, macro-expands the text
+// between the two markers (so a stringified macro parameter, already
+// substituted by substituteParams before expandStr runs, or a nested macro
+// invocation, resolves before quoting), backslash-escapes any `"`/`\` in the
+// result so it forms a valid string literal, and wraps it in real double
+// quotes. Token-pasting (` `` `) inside a stringification span is not
+// supported (see the class doc comment) -- only plain text and further
+// macro invocations are handled.
+static std::optional<std::string> tryStringify(const std::string& src, size_t& i,
+                                                 const MacroMap& macros,
+                                                 std::vector<std::string>& errors, int depth) {
+    size_t closeAt = std::string::npos;
+    for (size_t j = i + 2; j + 1 < src.size(); ++j) {
+        if (src[j] == '`' && src[j + 1] == '"') { closeAt = j; break; }
+    }
+    if (closeAt == std::string::npos) return std::nullopt;
+
+    std::string inner = src.substr(i + 2, closeAt - (i + 2));
+    std::string expandedInner = expandStr(inner, macros, errors, depth + 1);
+    std::string escaped;
+    escaped.reserve(expandedInner.size());
+    for (char c : expandedInner) {
+        if (c == '\\' || c == '"') escaped += '\\';
+        escaped += c;
+    }
+    i = closeAt + 2; // skip the closing `"
+    return '"' + escaped + '"';
+}
+
 static std::string expandStr(const std::string& src, const MacroMap& macros,
                               std::vector<std::string>& errors, int depth,
                               std::vector<ColShift>* colShifts) {
@@ -210,6 +240,23 @@ static std::string expandStr(const std::string& src, const MacroMap& macros,
     while (i < src.size()) {
         if (src[i] != '`') { result += src[i++]; continue; }
         size_t invocationStart = i;
+        if (i + 1 < src.size() && src[i + 1] == '"') {
+            auto stringified = tryStringify(src, i, macros, errors, depth);
+            if (!stringified) {
+                errors.push_back("unterminated stringification `\"");
+                result += src.substr(i);
+                i = src.size();
+                break;
+            }
+            result += *stringified;
+            if (colShifts) {
+                int invocationLen = static_cast<int>(i - invocationStart);
+                int replacementLen = static_cast<int>(stringified->size());
+                delta += invocationLen - replacementLen;
+                colShifts->push_back({static_cast<int>(result.size()), delta});
+            }
+            continue;
+        }
         ++i; // skip backtick
         if (i >= src.size() || !isIdentChar(src[i])) { result += '`'; continue; }
         std::string name = readIdent(src, i);
