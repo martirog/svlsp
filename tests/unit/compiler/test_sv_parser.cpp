@@ -162,3 +162,26 @@ TEST_CASE("SvParser still reports an error for a truly unterminated string", "[c
     // Guards against a too-permissive fix (e.g. accidentally consuming to EOF).
     REQUIRE(parseErrors("module top; initial $display(\"unterminated); endmodule\n") > 0);
 }
+
+TEST_CASE("SvParser parses the LRM-correct void'(...) cast form", "[compiler][parser][voidcast]") {
+    // Regression test for subroutine_call_statement previously requiring
+    // 'void' '(' ... ')' ';' with no SINGLE_QUOTE -- real UVM uses the
+    // LRM-correct `void'(...)` form pervasively (e.g. base/uvm_root.svh:916,
+    // `void'($sscanf(timeout,"%d,%s",timeout_int,override_spec));`).
+    std::string src =
+        "module top;\n"
+        "  function int f(); return 0; endfunction\n"
+        "  initial void'(f());\n"
+        "endmodule\n";
+    REQUIRE(parseErrors(src) == 0);
+}
+
+TEST_CASE("SvParser still parses the void(...) workaround form", "[compiler][parser][voidcast]") {
+    // Guards against the SINGLE_QUOTE? fix accidentally making it required.
+    std::string src =
+        "module top;\n"
+        "  function int f(); return 0; endfunction\n"
+        "  initial void(f());\n"
+        "endmodule\n";
+    REQUIRE(parseErrors(src) == 0);
+}

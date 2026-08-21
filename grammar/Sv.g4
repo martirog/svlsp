@@ -2418,7 +2418,7 @@ loop_variables :
 
 subroutine_call_statement :
       subroutine_call ';'
-    | 'void' '(' subroutine_call ')' ';'
+    | 'void' SINGLE_QUOTE? '(' subroutine_call ')' ';'
 ;
 
 
