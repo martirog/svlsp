@@ -4,35 +4,397 @@
 **Last completed phase:** Phase 6.2 complete — multi-file project support, all 6 stages
 (6.1 — DB-backed providers; 6.3 — package import *and export* resolution; preprocessor
 source map committed previously)  
-**Current work (2026-08-20, mid-session, see "UVM real-world smoke test — session 2"
-section below for full detail, near the top):** Continuing the UVM real-world smoke
-test from 2026-07-20. Fixed Gap A (commit `9b8abed`) and a newly-found Gap D —
-multi-line macro invocations without backslash continuation (commit `5ba19f9`), both
-with unit tests, both verified against the full unit suite (349 cases/891 assertions,
-zero regressions). Then, while trying to get the *entire* real UVM corpus through the
-actual LSP server and into the DB (per explicit user request), discovered a major,
-previously-undocumented **performance gap**: ANTLR parsing of the Sv.g4 grammar is
-slow at real-world scale (~10-20ms/line baseline on legitimate UVM class bodies) and
-becomes dramatically worse (multi-second cost *per site*) wherever a preprocessor
-error leaves malformed text for the parser to error-recover from — which happens at
-every remaining Gap C (token-pasting) / Gap E (new — `` `ifdef `` embedded inside a
-`` `define `` body, not evaluated at expansion time) site. This is why the full
-uvm.sv corpus (~85K preprocessed lines) takes on the order of many minutes to fully
-parse, not seconds. **Not fixed this session** — this is a Phase 6.5 (\"Performance
-baseline\", not started) finding, not a quick patch; see that section for full
-measurements and a documented, tested-safe mitigation candidate (SLL-only ANTLR
-prediction mode, ~20% improvement, not yet applied to product code).
-**Session paused here** (checkpointed at user's request) before finishing the
-"get UVM fully in the DB via the real LSP + write exploratory deep-symbol tests"
-part of the task — see that section's "Not yet done" subsection for exactly where to
-resume and the candidate symbol/file list already gathered.
-Next up: resume the UVM DB/exploratory-test work, then Gap C/E (if worth fixing given
-the performance payoff), then Phase 6.4 (cross-file invalidation / dependency graph)
-per `plan.md §6.4` — not yet planned in file-level detail. **The full approved
-Phase 6.2 plan (exact signatures, schema SQL, algorithms, test names — now historical
-reference, all 6 stages complete) lives at
+**Current work (2026-08-21, see "UVM real-world smoke test — session 3" section below,
+near the top, for full detail):** Continuing the UVM real-world smoke test. This
+session finally got the **entire real UVM corpus (140 files, ~85K preprocessed lines)
+compiled end-to-end through the actual production pipeline** (`CompilationController`
+— the same code path the real `svlsp` LSP server uses) for the first time ever —
+previous sessions only ever measured preprocessor-only errors on the full corpus, or
+ANTLR parse timing on isolated single files. It completes in **~420-480s (~7-8 min)**,
+not "many minutes" indefinitely as feared — confirms the Phase 6.5 performance
+finding from session 2 was real but not fatal. Result: **2956 diagnostics across 73 of
+140 files**. Root-caused the dominant patterns to two causes: (1) **Gap C
+(stringification) has far higher real-world impact than session 1 estimated** — it's
+triggered by `` `uvm_object_utils ``/`` `uvm_component_utils ``, the single most
+common factory-registration macro pair in all of UVM (not just the rarer
+`` `uvm_field_* ``/token-pasting sites session 1 measured), via
+`` `m_uvm_object_registry_internal ``'s `` `uvm_type_name_decl(`"T`") ``. (2) **New
+finding, not preprocessor-related at all**: `grammar/Sv.g4`'s `STRING_LITERAL` lexer
+rule (`'"' .*? '"'`) has **no escape-sequence handling** — any string literal
+containing an embedded `\"` (extremely common in `` `uvm_error ``/`` `uvm_report_info ``
+message strings that quote a name/value) terminates prematurely, corrupting
+tokenization for the rest of the line. Also confirmed real-world impact of the
+already-documented `void'(...)` cast gap (pervasive in `uvm_root.svh` etc.). On the
+LSP layer: all 28 candidate deep UVM symbols and all 5 `documentSymbol` queries
+resolve correctly; but found a **real symbol-table-pollution bug** — Gap C garbage at
+`uvm_report_catcher.svh:71` creates a bogus `Signal` symbol literally named
+`uvm_report_object`, which silently shadows the real `Class` at
+`uvm_report_object.svh:98` in hover/definition (no kind preference, alphabetical file
+ordering) — a silent-wrong-answer bug, not a crash. Also confirmed (separately from
+this session, still true): `didOpen` only ever publishes diagnostics for the
+**primary** opened file, never transitively-`` `include ``d files — a real LSP
+diagnostics-visibility gap.
+**Update, later same session:** the `STRING_LITERAL` escape gap **is now fixed**
+(uncommitted — `grammar/Sv.g4:3795`, `'"' ( '\\' . | ~["\\] )* '"'`; 4 new unit
+tests, tag `[stringescape]`; full suite 895/353, zero regressions). Real-world
+verified: full UVM corpus diagnostics dropped **2956 → 1796 (−39%)**. See
+"`STRING_LITERAL` escape-sequence gap — FIXED" in the session 3 section below for
+full detail. Gap C/E and the symbol-pollution bug are still **not** fixed (Gap C
+stringification is now the confirmed largest remaining contributor to the 1796).
+**Not yet done:** decide whether to fix Gap C stringification (see session 3's
+"Not yet done" list, item 2), then Phase 6.4 (cross-file
+invalidation / dependency graph) per `plan.md §6.4` — not yet planned in file-level
+detail. **The full approved Phase 6.2 plan (exact signatures, schema SQL, algorithms,
+test names — now historical reference, all 6 stages complete) lives at
 `/home/martin/.claude/plans/fluffy-hatching-popcorn.md`.**
 See "Phase 6.2" section below for what was built in each stage.
+
+---
+
+## UVM real-world smoke test — session 3 (2026-08-21, full-corpus parse + exploratory LSP queries)
+
+Direct continuation of session 2 below (paused 2026-08-20), resuming exactly where
+its "Not yet done" list left off. Explicit user instruction: "resume UVM realworld
+test", then later "keep going, update the handoff when done" — i.e. investigate as
+far as productive and record findings, not necessarily fix anything yet.
+
+### Setup
+
+Rebuilt the `release` preset (picked up Gap A/D fixes from commits `9b8abed`/
+`5ba19f9`, already current — no recompilation needed, confirming those commits were
+already built). Recreated the JSON-RPC driver (`lsp_driver.py`, session scratchpad,
+not committed — session 2 predicted this would need recreating and it did) with two
+additions beyond session 2's design: an interactive stdin phase that can send
+further typed LSP requests (tagged with `_tag` for correlation) after the initial
+`didOpen` completes, against the *same still-running server process* — letting a
+single ~8-minute corpus load be reused for many follow-up queries instead of paying
+the load cost per query — and a `_notify` flag for fire-and-forget notifications
+(`didOpen` on secondary files) alongside request/response pairs.
+
+### Part 1 — Full UVM corpus through the real LSP server (item 1 of session 2's "not yet done" list)
+
+Ran `build/release/svlsp` via the driver: `initialize` → `initialized` → `didOpen` on
+the real `uvm.sv` (project manifest unchanged from session 1/2, at
+`/home/martin/src/verilator_test/uvm-core/src/.svlsp.json`) → wait for
+`publishDiagnostics`. **Completed in 421-477s (~7-8 min) across three separate runs**
+(not a hang, not "many minutes" indefinitely — the session-2 Phase 6.5 performance
+concern was real but bounded, at real full-corpus scale, to single-digit minutes).
+`publishDiagnostics` for `uvm.sv` itself reported **0 diagnostics** — this is
+expected and uninteresting, not a fix confirmation: see "LSP diagnostics-visibility
+gap" below for why the primary file alone was never going to show anything.
+
+### Part 2 — What the corpus actually contains: standalone `CompilationController` probe
+
+Session 2's probes only ever exercised the preprocessor or the ANTLR parser
+*in isolation*; nobody had run the **full production pipeline** —
+`CompilerDirectiveStripper` → `SvPreprocessor` → `SvTreeWalker` →
+`SymbolDatabase` persistence, i.e. exactly what `CompilationController::compile`
+(and therefore the real server) does — over the *entire* corpus in one pass, because
+session 2 judged even a 5-file bounded subset too slow to be worth the wait (>60s
+without finishing, standalone ANTLR-only, no DB persistence). This session did it
+anyway, since the LSP-driver run above proved the whole thing finishes in single-digit
+minutes end-to-end.
+
+**Probe** (`probe_diag.cpp`, session scratchpad, not committed — standard
+`libsvlsp_db.a` + `libsvlsp_compiler.a` + `libsvlsp_antlr4.a` + antlr4-runtime +
+`libsvlsp_sqlite3.a` static-link technique from session 1/2, extended to also link
+`svlsp_db` and use `Database`/`SymbolDatabase`/`CompilationController` directly):
+constructs an in-memory `Database`, calls
+`CompilationController::compile("uvm.sv", text, &cfg)` with the same
+`includeDirs: ["."]`/`UVM_NO_DPI` config as the real manifest, then queries the
+resulting DB directly — total files, per-file diagnostic counts, distinct message
+patterns, and `findSymbolsByName` lookups for all 28 candidate symbols.
+
+**Results** (three separate runs, consistent: 430-478s compile time):
+- **140 files** land in the DB (1 primary + 139 transitively `` `include ``d).
+- **2956 diagnostics total, spread across 73 of the 140 files** (67 files fully
+  clean). Worst offenders: `reg/uvm_vreg.svh` (330), `reg/sequences/
+  uvm_reg_mem_shared_access_seq.svh` (201), `base/uvm_resource_pool.svh` (181),
+  `reg/uvm_reg.svh` (151) — the `reg/` (register-abstraction-layer) subtree is
+  disproportionately hit, consistent with it being both class-registration-macro-heavy
+  (see root cause 1) and message-string-heavy (root cause 2).
+- **All 28/28 candidate symbols found** via `findSymbolsByName`, each resolving to
+  its correct declaring file:line exactly as catalogued in session 2's candidate
+  list — confirms the corpus's *symbol* extraction is intact overall even though a
+  majority of files have parse errors somewhere (ANTLR's error recovery keeps
+  producing a mostly-usable partial tree around the errors, not abandoning the whole
+  file).
+
+### Root cause 1 — Gap C (stringification) impact was significantly underestimated in session 1
+
+Session 1's original Gap C writeup judged real-world impact "low" based on counting
+only direct `` `uvm_field_* `` invocations (17) and files referencing any
+`` `uvm_*_utils `` macro (43) — but never traced what `` `uvm_object_utils ``/
+`` `uvm_component_utils `` *themselves* expand to. They do not use token-pasting, but
+they do chain into stringification: `` `uvm_object_utils(T) `` →
+`` `m_uvm_object_registry_internal(T,T) `` → (`macros/uvm_object_defines.svh:555`)
+```
+typedef uvm_object_registry#(T,`"S`") type_id;
+```
+`` `"S`" `` is exactly the stringification form `SvPreprocessor`'s own doc comment
+already declares unsupported (see Gap C in session 1's section below) — so the
+literal `` ` `` characters survive into the parser's input, producing immediately
+this pattern (verified against `reg/uvm_reg.svh:52`, `base/uvm_phase.svh:614`,
+`base/uvm_packer.svh:62`, `reg/uvm_vreg.svh:354`, `reg/sequences/
+uvm_reg_mem_shared_access_seq.svh:78` — every one is a `` `uvm_object_utils(T) ``/
+`` `uvm_object_param_utils(T) ``-family invocation, confirmed by reading the actual
+source at each cited line):
+```
+no viable alternative at input 'uvm_object_registry#(<T>,`'
+mismatched input '#' expecting {';', '['}
+mismatched input '`' expecting IDENTIFIER
+extraneous input '`' expecting {...}     (×2 per site — one per `` ` `` in `` `"S`" ``)
+```
+**Corrected assessment: this is not a rare edge case.** `` `uvm_object_utils ``/
+`` `uvm_component_utils `` (or their `_begin`/`_param` variants) are the standard
+factory-registration idiom used in **every** UVM class that participates in the
+factory — which is most of them. This single macro chain plausibly accounts for a
+large fraction of the 73 affected files and a meaningful share of the 2956
+diagnostics (each site produces ~5 immediate diagnostics before resynchronizing, not
+counting further cascade). Still not fixed — fixing it means implementing
+stringification (`` `" ``) in `SvPreprocessor`, which is a real (if bounded) feature
+addition, not a quick patch; see Gap C's original note in session 1's section for the
+"needs a slang-backed implementation" caveat, though a minimal stringification-only
+implementation (converting `` `"...`" ``/`` `"ident`" `` spans to a quoted string
+literal, without full token-pasting) may be tractable on its own.
+
+### Root cause 2 — NEW: `STRING_LITERAL` lexer rule has no escape-sequence handling
+
+`grammar/Sv.g4:3795`:
+```
+STRING_LITERAL : '"' .*? '"' ;
+```
+A non-greedy "shortest string between two `"` characters" rule — it has **no
+awareness of backslash-escapes at all**. Any string literal containing an embedded
+`\"` (e.g. `` `uvm_error("ID", $sformatf("Virtual register \"%s\" cannot have 0
+bits", name)) ``, `reg/uvm_vreg.svh:435`) causes the `STRING_LITERAL` token to
+terminate at that first embedded `"` (the preceding `\` is just an ordinary
+character to this rule), leaving the remainder of the intended string
+(`` %s\" cannot have 0 bits" ``) to be re-tokenized as ordinary code — producing
+long, confusing cascades of `mismatched input ',' expecting '.'` /
+`extraneous input ')' expecting ';'` / `no viable alternative` diagnostics for
+the rest of that physical line (macro-expanded lines are long, so the fallout can
+span many "diagnostics" per single root cause). Directly confirmed at two
+independent, unrelated sites: `reg/uvm_vreg.svh:435` (inside a `` `uvm_error ``
+call) and `base/uvm_root.svh:600` (inside `uvm_report_info(...)`, note: *not* inside
+any macro invocation at all here — this is a plain function call, so this is a pure
+grammar/lexer gap, unrelated to any preprocessor macro-argument-parsing gap like
+Gap A). This is almost certainly the **second largest contributor** to the 2956
+diagnostics, likely larger than root cause 1 in raw diagnostic count given how
+common quoted sub-strings are inside UVM's own message-formatting calls (which use
+this pattern constantly for good, readable error/log messages) — not yet counted
+precisely, but the `mismatched input ',' expecting '.'` pattern alone (600
+occurrences, the single largest message-pattern bucket) is consistent with this
+being the dominant cause: after a corrupted string literal, the parser sees a
+sequence of comma-separated "expression-like" tokens where it expects member-access
+`.` chains, which is exactly the shape produced by re-tokenizing text like
+`","test_name,"` as separate tokens instead of one string literal.
+**Not fixed this session.** This is a real, independent grammar/lexer bug (not a
+preprocessor limitation, not previously documented anywhere in this file) — fixing
+`STRING_LITERAL` to support at minimum `\"` (and ideally the other standard SV
+string escapes: `\\`, `\n`, `\t`, `\%03o`, etc., per LRM §5.9) is likely the
+**single highest-value next fix** found this session: cheap (one lexer-rule change,
+`'"' ('\\' . | ~["\\])*? '"'` or similar), and unlike Gap C it requires no design
+discussion — it's an unambiguous lexer correctness bug with clear, pervasive
+real-world impact.
+
+### Confirmed (not new) — `void'(...)` cast gap has heavy real-world impact
+
+The `extraneous input ''' expecting '('` pattern (135 occurrences, 3rd-largest
+bucket) is the **already-documented** grammar quirk from the "Sv.g4 grammar quirks"
+table further down this file (`void'(f())` not supported, workaround `void(f())`).
+Confirmed at `base/uvm_callback.svh:219`, `base/uvm_root.svh:916/941/945`, and
+others — all genuine `void'(...)` casts in real UVM code (e.g.
+`void'(clp.get_arg_matches(...))`). Not a new finding, but confirms this
+fixture-only-tested gap has real, pervasive real-world impact and is a plausible
+low-effort fix candidate alongside root cause 2 above (both are pure Sv.g4 grammar
+changes, no preprocessor design work needed).
+
+### Part 3 — Exploratory LSP-layer queries (item 3 of session 2's "not yet done" list)
+
+Reused the same driver's interactive stdin phase (`gen_uvm_queries.py`, session
+scratchpad, not committed) against the live server process from the same `didOpen`
+run that produced Part 1's result (i.e. these queries ran against the identical
+140-file, 2956-diagnostic DB state characterized in Part 2 — same corpus, same
+in-process run, not a separate reload).
+
+- **`workspace/symbol` for all 27 remaining candidate names** (28th, `uvm_component`,
+  covered separately below): all returned results, all in the expected files —
+  e.g. `uvm_reg` → 71 results (itself plus every `uvm_reg_*` prefix match across the
+  whole `reg/` subtree — `workspace/symbol` is prefix-ish/substring by design per
+  existing behavior, not a bug), `uvm_analysis_port` → 1 exact result in the correct
+  file, `uvm_tlm_generic_payload` → 2 results both in `uvm_tlm2_generic_payload.svh`
+  (real file, name doesn't match its own class name exactly — `tlm2` vs `tlm` in the
+  path — worth knowing if a future test hardcodes path-from-name assumptions).
+- **`documentSymbol` for all 5 candidate files, queried by path without opening
+  them** (per Phase 6.1's DB-direct design — confirmed still true at this scale):
+  `base/uvm_component.svh` → 387 symbols, `base/uvm_object.svh` → 87,
+  `seq/uvm_sequence_item.svh` → 74, `reg/uvm_reg.svh` → 414, `tlm1/
+  uvm_analysis_port.svh` → 14. All non-empty, all plausible (uvm_reg.svh and
+  uvm_component.svh are the two largest/most complex classes in the whole library,
+  matching their symbol counts being the two largest here).
+- **Hover/definition, requiring an open buffer (`m_store.contains` check) — two
+  cross-file base-class resolution tests:**
+  1. `base/uvm_component.svh:59`, `` uvm_component extends uvm_report_object `` —
+     hovering `uvm_report_object` **returned the wrong symbol**: a `Signal` at
+     `base/uvm_report_catcher.svh:71`, not the real `Class` at `base/
+     uvm_report_object.svh:98`. See "New bug: symbol-table pollution" below — this
+     is a real, reproducible-in-real-code bug, not a fixture artifact.
+  2. `seq/uvm_sequence_item.svh:52`, `` uvm_sequence_item extends uvm_transaction ``
+     — hovering `uvm_transaction` **correctly** resolved to `**Class**
+     \`uvm_transaction\` → \`uvm_object\`` at its real declaration,
+     `base/uvm_transaction.svh:138`. Positive control: proves cross-file,
+     no-collision base-class hover/definition still works correctly at real-world
+     scale — the bug in (1) is specifically a name-collision problem, not a general
+     regression.
+
+### New bug — Gap C garbage pollutes the symbol table, causing silent wrong hover/definition answers
+
+Root cause, confirmed by reading the actual source: `base/uvm_report_catcher.svh:72`
+contains
+```
+`uvm_register_cb(uvm_report_object,uvm_report_catcher)
+```
+— a **token-pasting** macro (a genuine Gap C site, distinct from the
+stringification sub-case in root cause 1 above; this one really does use
+`` T``CB `` internally). Since token-pasting isn't implemented, the broken expansion
+leaves stray text that `SvTreeWalker` parses into a bogus symbol: a `Signal`-kind
+record literally named `uvm_report_object` at that file/line — coincidentally the
+exact same name as the real `class uvm_report_object` declared at `base/
+uvm_report_object.svh:98`.
+
+`HoverProvider::getHover` / `DefinitionProvider::getDefinition` (`src/lsp/hover.cpp`,
+`src/lsp/definition.cpp`) call `SymbolDatabase::findSymbolsByName(word)`, which
+orders results `ORDER BY f.path, s.line` (`src/db/symbol_database.cpp`) — pure
+alphabetical-by-path, **no kind preference** (e.g. Class over Signal) and no
+"is this actually a declaration vs. macro-expansion garbage" signal. `hover.cpp`
+then does "prefer same-file match; otherwise use the first match" — and since
+`uvm_component.svh` (where the hover was requested) declares neither symbol, no
+same-file preference applies, so it silently takes `rows.front()`. Because
+`"base/uvm_report_catcher.svh"` sorts alphabetically before
+`"base/uvm_report_object.svh"` (`'c' < 'o'`), **the garbage symbol wins**, and the
+user gets a plausible-looking but completely wrong hover result with **no
+diagnostic anywhere indicating anything is off** — the file with the garbage symbol
+(`uvm_report_catcher.svh`) does have 5 real diagnostics elsewhere (from this same
+Gap C site's parse fallout), but the diagnostic and the wrong-hover-answer are not
+obviously connected from a user's perspective.
+
+**Why this matters beyond "Gap C causes parse errors" (already known):** this shows
+Gap C's damage isn't confined to the file it occurs in — it can silently corrupt
+*lookups for an unrelated, correctly-declared symbol in a completely different
+file*, with no error surfaced to the user. This is a strictly new category of
+finding this session (symbol-table integrity, not parse coverage), independent of
+whatever the eventual Gap C fix looks like. **Not fixed this session** — flagging
+as a real bug for the next session to consider, either as part of a Gap C fix (which
+would eliminate the garbage symbol at the source) or as a defense-in-depth
+improvement to `findSymbolsByName`/hover's disambiguation (e.g. prefer `Class`-kind
+results, or exclude symbols from files with diagnostics at that exact line).
+
+### LSP diagnostics-visibility gap (confirmed, not new behavior, but not previously written down)
+
+Traced through `src/lsp/server.cpp`'s `didOpen`/`didChange` handlers and
+`src/db/compilation_controller.cpp`'s `compile()`: the notification sent to the
+client is built from `parseDiagnostics()`, which returns only
+`m_compiler.compile(...)`'s return value — and `compile()` (`compilation_controller.cpp`
+line ~85) returns `errsByFile[""]`, i.e. **only diagnostics attributed to the
+primary opened file**. Diagnostics for every transitively-`` `include ``d file are
+computed, partitioned by file, and persisted via `replaceDiagnostics(incFid, ...)`
+in the same function — but nothing ever calls `m_diagnostics.publish()` for those
+included files' URIs. A user opening `uvm.sv` (a 35-line wrapper) sees "0 problems"
+in their editor even though the DB holds 2956 diagnostics across 73 included files.
+This is why session 2's "1,241 diagnostics" and "335 → 173 → 86" progress tracking
+always used direct preprocessor/DB probes, never the LSP protocol surface — the LSP
+surface was never going to show them. Not a bug in the sense of "wrong behavior for
+what's implemented" (documentSymbol/hover/definition all correctly reach into
+included files' data via direct DB queries, as designed), but a real **gap**: there
+is currently no way for an LSP client to discover that an included file has
+diagnostics without separately opening that exact file itself. Worth a design note
+for whoever picks up Phase 6.4 (cross-file invalidation) — that work will need to
+reason about included-file diagnostics anyway.
+
+### Verification / cleanup
+
+- Release build confirmed current (Gap A/D commits `9b8abed`/`5ba19f9` already
+  built; `cmake --build --preset release` was a no-op rebuild).
+- Deleted `/home/martin/src/verilator_test/uvm-core/src/svlsp_subset_probe.sv` (the
+  bounded 5-file fallback fixture prepared in case the full-corpus run didn't finish
+  in time — it did, so the fallback was never used).
+- All scratchpad tooling (`lsp_driver.py`, `probe_diag.cpp`, `gen_uvm_queries.py`,
+  `uvm_queries.jsonl`) lived only in the session scratchpad, not committed — per
+  session 1/2 precedent, recreate from the descriptions above if needed for a future
+  session; exact paths won't survive to a new session.
+- No production code changed this session — investigation/measurement only, per
+  explicit user instruction ("keep going, update the handoff when done" — understood
+  as "keep investigating," not "keep fixing").
+
+### `STRING_LITERAL` escape-sequence gap — FIXED (2026-08-21, later same session, uncommitted)
+
+Per explicit user request ("fix the STRING_LITERAL escape gap"). `grammar/Sv.g4:3795`:
+```
+- STRING_LITERAL : '"' .*? '"' ;
++ STRING_LITERAL : '"' ( '\\' . | ~["\\] )* '"' ;
+```
+The new rule: an escaped-anything alternative (`'\\' .` — consumes a backslash plus
+whatever follows it, including a `"`, without treating it as the terminator) or any
+ordinary non-quote/non-backslash character, repeated, still bounded by a real
+(unescaped) closing `"`. No longer non-greedy — doesn't need to be, since the
+negated char class already excludes the closing quote, so it can't over-consume.
+
+**Unit tests** (`tests/unit/compiler/test_sv_parser.cpp`, tag `[stringescape]`,
+4 new cases, following this file's existing `parseErrors(src)`-helper convention):
+an escaped quote (reproducing the real `reg/uvm_vreg.svh:435` pattern without the
+macro layer, since `STRING_LITERAL` is a pure lexer rule and macros aren't needed to
+exercise it), an escaped backslash, a cascade-prevention case (escaped quote
+followed by more comma-separated concatenation members on the same statement,
+mirroring `base/uvm_root.svh:600`), and a negative control confirming a *truly*
+unterminated string still errors (guards against an over-permissive fix that
+accidentally consumes to EOF). Full unit suite: **895 assertions / 353 test cases**,
+all green (up from 891/349 baseline — exactly the 4 new cases, zero regressions).
+
+**Real-world verification**: rebuilt `release`, relinked the `probe_diag.cpp`-style
+standalone probe (recreated per this section's description — the scratchpad copy
+didn't survive between turns, as expected), reran the full UVM corpus. **Total
+diagnostics dropped from 2956 → 1796 (−1160, −39%)**, files-with-diagnostics 73 → 72
+(most affected files still have *some* remaining diagnostics from the other, still-
+unfixed root causes, so this count barely moved even though per-file severity did).
+Per-file drops confirm the fix is doing exactly what was predicted: `reg/
+uvm_vreg.svh` 330 → 14, `reg/uvm_reg.svh` 151 → 77, `reg/sequences/
+uvm_reg_mem_shared_access_seq.svh` 201 → 90, `base/uvm_root.svh` 67 → 27,
+`base/uvm_component.svh` 26 → 2, `reg/uvm_vreg_field.svh` 115 → 15, `reg/
+uvm_reg_field.svh` 92 → 55. Remaining diagnostics in these same files are exactly
+the two other root causes identified above, untouched as expected — e.g.
+`uvm_vreg.svh:74`/`:354` still show the Gap C stringification pattern
+(`` `uvm_abstract_object_registry#(uvm_vreg_cbs,` `` `` ` `` ``), and `uvm_vreg.svh:457/
+548/557` still show the `void'(...)` cast gap (`extraneous input ''' expecting '('`).
+**Not committed** — grammar + test changes are uncommitted working-tree edits,
+per instruction to leave commits for the user to review/request explicitly.
+
+### Not yet done — suggested next steps
+
+1. ~~Fix the `STRING_LITERAL` escape-sequence lexer gap~~ — **done, see above.**
+2. **Decide on Gap C (stringification only, not full token-pasting)** given the
+   corrected high-impact assessment in root cause 1 — at minimum implementing
+   `` `"...`" ``/`` `"ident`" `` → quoted-string-literal substitution in
+   `SvPreprocessor` (leaving true token-pasting, ` `` `, unsupported) would fix
+   every `` `uvm_object_utils ``/`` `uvm_component_utils `` site, which is now
+   confirmed (post-STRING_LITERAL-fix) to be the single largest remaining
+   diagnostic contributor — 1796 diagnostics still remain, and the per-file
+   breakdown above shows the stringification pattern dominating what's left.
+3. Re-run the full-corpus probe after a Gap C stringification fix to get an
+   updated diagnostic count, before deciding whether Gap C's remaining
+   token-pasting sites (the original, lower-impact `` `uvm_copier_get_function ``/
+   `` `uvm_packer::get_packed_``T``s ``-style sites) and Gap E (`` `ifdef `` inside
+   `` `define `` bodies) are still worth pursuing.
+4. Consider the `findSymbolsByName`/hover disambiguation improvement noted in the
+   symbol-pollution bug section — lower priority than a Gap C fix, since a correct
+   Gap C fix removes the garbage symbol at the source and would likely resolve this
+   specific instance on its own, but the general "no kind preference, alphabetical
+   tiebreak" pattern could still bite in unrelated future name collisions.
+5. Consider whether the LSP diagnostics-visibility gap (primary-file-only
+   `publishDiagnostics`) is worth addressing as its own small feature — e.g.
+   proactively publishing diagnostics for every file touched by a `compile()` call,
+   not just the primary one — independent of Phase 6.4's larger cross-file
+   invalidation work, since it's a real, immediately-actionable editor-UX gap.
 
 ---
 
@@ -1501,6 +1863,12 @@ Integration tests 05/06/08/09/10 updated from "expect null" to verify real resul
 | Void cast | `void'(f())` | `void SINGLE_QUOTE '('` not in grammar | Use `void(f())` form (grammar line 2421) |
 | Cross body `ignore_bins` | `cross A, B { ignore_bins x = ...; }` | `cross_body_item` already consumes `';'`, then `cross_body` adds another — double semicolon | Use `cross A, B;` (empty cross body) |
 | `timeunit`/`timeprecision` vs `` `timescale `` | `` `timescale 1ns/1ps `` | No backtick directive support | Use `timeunit 1ns; timeprecision 1ps;` inside module |
+
+**Fixed, no longer a quirk:** string literal escapes (`"a \"quoted\" word"`) —
+`STRING_LITERAL` previously had no escape-sequence awareness (`'"' .*? '"' ;`,
+terminated at the first embedded `"` regardless of a preceding `\`). Found and fixed
+2026-08-21 (uncommitted; see "UVM real-world smoke test — session 3" §"`STRING_LITERAL`
+escape-sequence gap — FIXED" above) — now `` '"' ( '\\' . | ~["\\] )* '"' ``.
 
 ---
 
