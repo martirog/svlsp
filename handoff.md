@@ -1961,15 +1961,23 @@ Integration tests 05/06/08/09/10 updated from "expect null" to verify real resul
 | Backtick directives | `` `define ``, `` `ifdef ``, `` `timescale `` | Not in grammar at all — no lexer rules | Must be preprocessed before parsing (Phase 4.2a) |
 | `bind` double semicolon | `bind M C u (.p(p));` | `bind_directive` adds `';'` on top of `module_instantiation`'s own `';'` | Write `bind M C u (.p(p));;` |
 | `bind` parameter override | `bind M C #(.W(W)) u (.p(p));;` | LL(\*) prediction fails after `#(...)` | Omit parameter override; use default params |
-| Void cast | `void'(f())` | `void SINGLE_QUOTE '('` not in grammar | Use `void(f())` form (grammar line 2421) |
 | Cross body `ignore_bins` | `cross A, B { ignore_bins x = ...; }` | `cross_body_item` already consumes `';'`, then `cross_body` adds another — double semicolon | Use `cross A, B;` (empty cross body) |
 | `timeunit`/`timeprecision` vs `` `timescale `` | `` `timescale 1ns/1ps `` | No backtick directive support | Use `timeunit 1ns; timeprecision 1ps;` inside module |
 
 **Fixed, no longer a quirk:** string literal escapes (`"a \"quoted\" word"`) —
 `STRING_LITERAL` previously had no escape-sequence awareness (`'"' .*? '"' ;`,
 terminated at the first embedded `"` regardless of a preceding `\`). Found and fixed
-2026-08-21 (uncommitted; see "UVM real-world smoke test — session 3" §"`STRING_LITERAL`
-escape-sequence gap — FIXED" above) — now `` '"' ( '\\' . | ~["\\] )* '"' ``.
+2026-08-21 (committed `b5cda7c`; see "UVM real-world smoke test — session 3" §
+"`STRING_LITERAL` escape-sequence gap — FIXED" above) — now
+`` '"' ( '\\' . | ~["\\] )* '"' ``.
+
+**Fixed, no longer a quirk:** void cast (`void'(f())`) — `subroutine_call_statement`
+previously required `'void' '(' subroutine_call ')' ';'` with no `SINGLE_QUOTE`, so
+the LRM-correct `void'(...)` form (used pervasively in real UVM) failed to parse;
+only the workaround `void(f())` form (no longer needed, but still accepted) worked.
+Found and fixed 2026-08-21 (uncommitted; see "UVM real-world smoke test — session 3"
+§"`void'(...)` cast gap — FIXED" below) — now
+`` 'void' SINGLE_QUOTE? '(' subroutine_call ')' ';' ``.
 
 ---
 
