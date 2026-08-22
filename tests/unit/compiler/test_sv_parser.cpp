@@ -185,3 +185,79 @@ TEST_CASE("SvParser still parses the void(...) workaround form", "[compiler][par
         "endmodule\n";
     REQUIRE(parseErrors(src) == 0);
 }
+
+TEST_CASE("SvParser parses a class-scoped chained method call as an assignment RHS",
+          "[compiler][parser][classscopedcall]") {
+    // Regression test for ps_or_hierarchical_tf_identifier previously having no
+    // class_scope alternative -- real UVM uses this pervasively for the factory
+    // idiom, e.g. reg/uvm_mem.svh:1151, `rw = uvm_reg_item::type_id::create("s")`.
+    std::string src =
+        "class C; function void f(); "
+        "uvm_reg_item rw; "
+        "rw = uvm_reg_item::type_id::create(\"s\"); "
+        "endfunction endclass\n";
+    REQUIRE(parseErrors(src) == 0);
+}
+
+TEST_CASE("SvParser parses a parameterized class-scoped call",
+          "[compiler][parser][classscopedcall]") {
+    // Mirrors reg/sequences/uvm_reg_mem_shared_access_seq.svh:99,
+    // `uvm_resource_db#(bit)::get_by_name(...)`.
+    std::string src =
+        "class C; function void f(); "
+        "bit x; "
+        "x = uvm_resource_db#(bit)::get_by_name(\"s\", \"n\", 0); "
+        "endfunction endclass\n";
+    REQUIRE(parseErrors(src) == 0);
+}
+
+TEST_CASE("SvParser parses a class-scoped call with an elided middle argument",
+          "[compiler][parser][classscopedcall]") {
+    // Mirrors the exact real shape at reg/uvm_mem.svh:1151:
+    // `rw = uvm_reg_item::type_id::create("s",,get_full_name());` -- confirms
+    // the elided-argument compounding seen in the real diagnostics was the same
+    // root cause as the plain case above, not a second bug.
+    std::string src =
+        "class C; function void f(); "
+        "uvm_reg_item rw; "
+        "rw = uvm_reg_item::type_id::create(\"s\",,get_full_name()); "
+        "endfunction endclass\n";
+    REQUIRE(parseErrors(src) == 0);
+}
+
+TEST_CASE("SvParser parses a class-scoped call used as a bare statement",
+          "[compiler][parser][classscopedcall]") {
+    // Proves the fix covers subroutine_call_statement (via subroutine_call ->
+    // tf_call), not just expression position.
+    std::string src =
+        "class C; function void f(); "
+        "uvm_reg_item::type_id::create(\"s\"); "
+        "endfunction endclass\n";
+    REQUIRE(parseErrors(src) == 0);
+}
+
+TEST_CASE("SvParser still parses non-call class-scoped field access",
+          "[compiler][parser][classscopedcall]") {
+    // Guards against the new class_scope alternative in
+    // ps_or_hierarchical_tf_identifier stealing a case that
+    // `class_qualifier hierarchical_identifier select` (primary) already
+    // handled correctly for non-call scoped field/property access.
+    std::string src =
+        "class C; function void f(); "
+        "int x; "
+        "x = A::B::my_static_field; "
+        "endfunction endclass\n";
+    REQUIRE(parseErrors(src) == 0);
+}
+
+TEST_CASE("SvParser still parses a plain non-scoped function call",
+          "[compiler][parser][classscopedcall]") {
+    // Guards against ps_or_hierarchical_tf_identifier's existing alternatives
+    // (package_scope? tf_identifier | hierarchical_tf_identifier) regressing.
+    std::string src =
+        "class C; function void f(); "
+        "int x; "
+        "x = foo(\"s\"); "
+        "endfunction endclass\n";
+    REQUIRE(parseErrors(src) == 0);
+}
