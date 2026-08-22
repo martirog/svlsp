@@ -18,13 +18,18 @@ macro-invocation name that's then itself invoked, and pasting nested inside a
 stringification span. 6 new unit tests (tag `[tokenpaste]`); full suite 916/365,
 zero regressions. **Full-corpus real-world result: 1254 → 884 diagnostics
 (−370, −29.5% further; −2072, −70.1% cumulative from session 3's original 2956)**,
-files-with-diagnostics 51 → 48. Committed. See "Token-pasting support — session 4"
-below for full detail, including the interaction with still-unfixed Gap E.
+files-with-diagnostics 51 → 48; `base/uvm_resource_pool.svh` (the single largest
+remaining offender, 181, untouched by all three session-3 fixes) dropped to 1.
+Also **confirmed the session-3 symbol-table-pollution bug is fixed at the source**
+(`findSymbolsByName("uvm_report_object")` now returns only the real class — the
+bogus `Signal` at `uvm_report_catcher.svh:71` is gone). Committed. See
+"Token-pasting support — session 4" below for full detail, including the
+interaction with still-unfixed Gap E.
 **Not yet done:** Gap E (`` `ifdef ``/`` `else ``/`` `endif `` inside `` `define ``
 bodies) is now very plausibly the dominant remaining cause (see session 4's "Not yet
-done" list) — investigate next. Then the symbol-table-pollution/hover-disambiguation
-bug, the LSP diagnostics-visibility gap, and Phase 6.4 (cross-file invalidation /
-dependency graph) per `plan.md §6.4` — not yet planned in file-level detail. **The
+done" list) — investigate next. Then the LSP diagnostics-visibility gap and Phase
+6.4 (cross-file invalidation / dependency graph) per `plan.md §6.4` — not yet
+planned in file-level detail. **The
 full approved Phase 6.2 plan (exact signatures, schema SQL, algorithms, test names —
 now historical reference, all 6 stages complete) lives at
 `/home/martin/.claude/plans/fluffy-hatching-popcorn.md`.**
@@ -117,8 +122,21 @@ full 140-file UVM corpus.
 **Total diagnostics dropped from 1254 → 884 (−370, −29.5% further; −2072, −70.1%
 cumulative from session 3's original 2956)**, files-with-diagnostics 51 → 48.
 `base/uvm_resource_pool.svh` (181 before this fix, completely unchanged by all three
-session-3 fixes) dropped out of the top-30-offenders list entirely, confirming the
-fix resolves it at the source as predicted.
+session-3 fixes) **dropped to 1 diagnostic** — confirming the fix resolves it at the
+source as predicted, and the single biggest per-file win of this whole line of work.
+`reg/uvm_vreg.svh` (5 before) dropped to 2, `base/uvm_report_catcher.svh` (5 before)
+dropped to 2.
+
+**The session-3 symbol-table-pollution bug is confirmed fixed at the source**: a
+follow-up run added `findSymbolsByName("uvm_report_object")` to the probe. It now
+returns exactly one row — `Class uvm_report_object @ base/uvm_report_object.svh:98`
+— the bogus `Signal` that `` `uvm_register_cb ``'s broken expansion used to create at
+`uvm_report_catcher.svh:71` (shadowing the real class alphabetically in hover/
+definition) is gone entirely, exactly as session 3 speculated would happen once
+token-pasting was fixed. No separate `findSymbolsByName`/hover disambiguation
+defense-in-depth work is needed for *this* instance, though the general "no kind
+preference, alphabetical tiebreak" pattern in `hover.cpp`/`definition.cpp` could
+still bite in an unrelated future name collision.
 
 The full-corpus compile itself took noticeably longer than session 3's ~420-480s
 (~7-8 min) baseline — around 12 min in this run. Consistent with, not contradicting,
@@ -156,13 +174,12 @@ first step for whoever picks this up next.
    `uvm_mem.svh`, `uvm_reg_mem_shared_access_seq.svh` to confirm or refute that it's
    the dominant remaining cause before committing to a fix, following the same
    grounded-in-real-corpus methodology used for every fix so far.
-2. Consider the `findSymbolsByName`/hover disambiguation improvement (symbol-table-
-   pollution bug, session 3) — the exact `` `uvm_register_cb `` site behind it is
-   now correctly parsed by this fix, so worth re-checking with a live LSP-driver
-   run (not yet done this session — this session's verification used the
-   standalone DB probe only) whether the bogus `uvm_report_object` `Signal` at
-   `uvm_report_catcher.svh:71` is actually gone before deciding this is still
-   needed as independent defense-in-depth.
+2. ~~Confirm the symbol-table-pollution bug (session 3) is fixed~~ — **confirmed
+   fixed**, see "Real-world verification" above (`findSymbolsByName` now returns
+   only the real `uvm_report_object` class). The general disambiguation gap in
+   `hover.cpp`/`definition.cpp` (no kind preference, alphabetical tiebreak) is
+   still present in the code and could resurface on an unrelated name collision,
+   but is no longer blocking on this specific bug.
 3. Consider the LSP diagnostics-visibility gap (primary-file-only
    `publishDiagnostics`, session 3) as its own small feature.
 4. Phase 6.4 (cross-file invalidation / dependency graph) per `plan.md §6.4`.
