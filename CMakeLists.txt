@@ -219,6 +219,30 @@ target_link_libraries(unit_tests PRIVATE svlsp_lib svlsp_antlr4 svlsp_db Catch2:
 catch_discover_tests(unit_tests)
 
 # ---------------------------------------------------------------------------
+# UVM-corpus test binary
+#
+# Exercises the DB-backed LSP feature providers (hover, definition,
+# documentSymbol, workspace/symbol, completion) against the real, external,
+# ~140-file UVM-core corpus compiled through the actual production pipeline.
+# Deliberately NOT added to CTest below: the corpus isn't part of this repo
+# and the one-time compile takes 12-17 minutes (see handoff.md's "UVM
+# real-world smoke test" sessions), so it must stay opt-in, run directly:
+#   ./build/release/uvm_corpus_tests
+# Point SVLSP_UVM_CORPUS_DIR at a UVM-core src/ checkout if not using the
+# default path (see tests/uvm_corpus/uvm_corpus_fixture.cpp).
+# ---------------------------------------------------------------------------
+add_executable(uvm_corpus_tests
+    tests/uvm_corpus/uvm_corpus_fixture.cpp
+    tests/uvm_corpus/test_hover_uvm.cpp
+    tests/uvm_corpus/test_definition_uvm.cpp
+    tests/uvm_corpus/test_document_symbols_uvm.cpp
+    tests/uvm_corpus/test_workspace_symbols_uvm.cpp
+    tests/uvm_corpus/test_completion_uvm.cpp
+)
+target_include_directories(uvm_corpus_tests PRIVATE tests/uvm_corpus)
+target_link_libraries(uvm_corpus_tests PRIVATE svlsp_lib svlsp_antlr4 svlsp_db Catch2::Catch2WithMain)
+
+# ---------------------------------------------------------------------------
 # CTest
 # ---------------------------------------------------------------------------
 enable_testing()
