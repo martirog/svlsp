@@ -4,36 +4,172 @@
 **Last completed phase:** Phase 6.2 complete — multi-file project support, all 6 stages
 (6.1 — DB-backed providers; 6.3 — package import *and export* resolution; preprocessor
 source map committed previously)  
-**Current work (2026-08-22, see "Token-pasting support — session 4" section below,
-near the top, for full detail):** Implemented SV token-pasting (` `` `) in
-`SvPreprocessor` — the item session 3 flagged as the dominant remaining real-world
-diagnostic source but deferred pending an explicit decision. Grepping the real UVM
-corpus for the implementation plan showed the true scope was considerably larger
-than session 3 estimated: **80+ occurrences across 8 macro-definition files**, not
-just the 3 macro families session 3 found. Implemented as a single textual splice
-pass (`resolveTokenPaste`, `src/compiler/sv_preprocessor.cpp`) run over a macro's
-body text (post parameter-substitution) before `expandStr` scans it — sufficient
-for every real pattern in the corpus, including pasting that forms a *new*
-macro-invocation name that's then itself invoked, and pasting nested inside a
-stringification span. 6 new unit tests (tag `[tokenpaste]`); full suite 916/365,
-zero regressions. **Full-corpus real-world result: 1254 → 884 diagnostics
-(−370, −29.5% further; −2072, −70.1% cumulative from session 3's original 2956)**,
-files-with-diagnostics 51 → 48; `base/uvm_resource_pool.svh` (the single largest
-remaining offender, 181, untouched by all three session-3 fixes) dropped to 1.
-Also **confirmed the session-3 symbol-table-pollution bug is fixed at the source**
-(`findSymbolsByName("uvm_report_object")` now returns only the real class — the
-bogus `Signal` at `uvm_report_catcher.svh:71` is gone). Committed. See
-"Token-pasting support — session 4" below for full detail, including the
-interaction with still-unfixed Gap E.
-**Not yet done:** Gap E (`` `ifdef ``/`` `else ``/`` `endif `` inside `` `define ``
-bodies) is now very plausibly the dominant remaining cause (see session 4's "Not yet
-done" list) — investigate next. Then the LSP diagnostics-visibility gap and Phase
-6.4 (cross-file invalidation / dependency graph) per `plan.md §6.4` — not yet
-planned in file-level detail. **The
+**Current work (2026-08-22, see "Class-scoped call gap — session 5" section below,
+near the top, for full detail):** Fixed a previously-undiscovered grammar gap:
+`` X::Y::method(args) `` (a class-scoped chained method call — e.g.
+`` T::type_id::create(...) ``, **the standard UVM factory-instantiation idiom**,
+used constantly in real UVM code) could not be parsed at all, in any position
+(assignment RHS or bare statement). Found while investigating Gap E as a candidate
+next fix — Gap E turned out not to be the cause of the post-token-pasting
+top-offender list at all; this was. Root cause: `grammar/Sv.g4`'s
+`ps_or_hierarchical_tf_identifier` (feeds `tf_call`, reached from both expression
+and statement position) had no `class_scope`-prefixed alternative, even though
+`class_scope`/`class_type` already correctly implement the full `` X#(T)::Y#(U)::``
+chain and are used successfully elsewhere (e.g. `` class_scope? 'new' (...) ``).
+One-line fix: added `class_scope tf_identifier` as a new alternative. Zero
+downstream impact on `SvTreeWalker` (confirmed: it has no listener for any
+call-expression context). 6 new unit tests (tag `[classscopedcall]`); full suite
+922/371, zero regressions. **Full-corpus real-world result: 884 → 68 diagnostics
+(−816, −92.3% further; −2888, −97.7% cumulative from session 3's original 2956)**,
+files-with-diagnostics 48 → 12 — by far the largest single-fix drop in this whole
+line of work. `base/uvm_resource_db.svh`, `base/uvm_config_db.svh`, and both
+`reg/sequences/uvm_reg_mem_*_seq.svh` files dropped to 0. Committed.
+**Not yet done:** the remaining 68 diagnostics are concentrated in
+`reg/uvm_reg.svh` (27), `seq/uvm_sequence_base.svh` (15), `reg/uvm_mem.svh` (7),
+`reg/uvm_reg_block.svh` (7) — not yet root-caused, natural next investigation.
+Then Gap E (still not confirmed either way), the LSP diagnostics-visibility gap,
+and Phase 6.4 (cross-file invalidation / dependency graph) per `plan.md §6.4` —
+not yet planned in file-level detail. **The
 full approved Phase 6.2 plan (exact signatures, schema SQL, algorithms, test names —
 now historical reference, all 6 stages complete) lives at
 `/home/martin/.claude/plans/fluffy-hatching-popcorn.md`.**
 See "Phase 6.2" section below for what was built in each stage.
+
+---
+
+## Class-scoped call gap — session 5 (2026-08-22)
+
+Direct continuation of session 4. Explicit user request: "investigate Gap E next"
+(session 4's top suspect for the dominant cause of the remaining 884 diagnostics).
+
+### Gap E investigation — inconclusive, but pointed at something else entirely
+
+Before spending a 12-minute corpus-probe cycle, checked whether the new
+post-token-pasting top-offender files (`base/uvm_resource_db.svh` 79,
+`reg/uvm_mem.svh` 73, `reg/sequences/uvm_reg_mem_shared_access_seq.svh` 73,
+`base/uvm_callback.svh` 61, `base/uvm_config_db.svh` 38) use any field-automation
+macro (`` `uvm_field_int ``, etc. — the only known Gap E trigger, via
+`` `m_uvm_field_op_begin ``). **None of them do** (`grep -c` returned 0 across all
+five). So Gap E could not be the cause of *this* top-offender list, though it
+remains neither confirmed nor refuted as a smaller contributor elsewhere.
+
+Ran the full-corpus probe anyway (`probe_gape`, session scratchpad — extended
+`probe_diag.cpp` with a normalized message-pattern histogram and full per-file
+diagnostic dumps for the top 5 offenders) to read the *actual* diagnostic text
+rather than continue guessing.
+
+### Root cause found: `X::Y::method(args)` (class-scoped chained call) is entirely unparseable
+
+The real diagnostics at every one of the top-5 offender files traced to one
+pattern, e.g. (`reg/uvm_mem.svh:1186`, `base/uvm_resource_db.svh:82`,
+`reg/sequences/uvm_reg_mem_shared_access_seq.svh:99`):
+```systemverilog
+rw  = uvm_reg_item::type_id::create("mem_write", , get_full_name());
+imp = uvm_resource_db_implementation_t #(T)::get_imp();
+x   = uvm_resource_db#(bit)::get_by_name("scope", "name", 0);
+```
+`` T::type_id::create(...) `` is **the standard UVM factory-instantiation idiom** —
+used everywhere in real UVM code. Confirmed via isolated parser snippets (a
+lightweight, no-corpus-needed technique: link a tiny driver directly against
+`SvLexer`/`SvParser` + `libsvlsp_compiler.a`/`libsvlsp_antlr4.a`/antlr4-runtime and
+call `parser.source_text()` on hand-written snippets, reusing the exact
+`parseErrors` helper pattern from `tests/unit/compiler/test_sv_parser.cpp` —
+much faster than a 12-minute full-corpus rebuild for grammar hypothesis-testing)
+that even the simplest possible case, `` uvm_reg_item::type_id::create("s") `` with
+no parameterization and no elided argument, fails in complete isolation (3 syntax
+errors) — both as an assignment RHS and as a bare statement. A plain elided
+argument with *no* class scope (`` foo("s",,bar()) ``) parses fine on its own,
+proving the elided-argument compounding seen in some sites isn't a separate bug.
+
+**Traced in `grammar/Sv.g4`:**
+- `tf_call : ps_or_hierarchical_tf_identifier attribute_instance* ('(' list_of_arguments ')')? ;`
+  is reached from both `primary` (expression position) and `subroutine_call`
+  (via `subroutine_call_statement`, bare-statement position) — one fix covers
+  both call shapes.
+- `ps_or_hierarchical_tf_identifier : package_scope? tf_identifier | hierarchical_tf_identifier ;`
+  — **neither alternative accepts a `class_scope` prefix.** `hierarchical_tf_identifier`
+  is dotted paths (`.`) only; `package_scope` is a single non-parameterized
+  `package_identifier '::'` segment.
+- `class_scope : class_type '::' ;`, `class_type : ps_class_identifier parameter_value_assignment? ('::' class_identifier parameter_value_assignment?)* ;`
+  — **already correctly implements** the full `` X#(T)::Y#(U)::... `` chain,
+  already used successfully elsewhere (`` class_scope? 'new' (...) `` at
+  `grammar/Sv.g4:1029`, and non-call class-scoped field access via `primary`'s
+  `` class_qualifier hierarchical_identifier select ``). It was simply never wired
+  into the call-identifier path.
+
+**Real-world scope** (uvm-core corpus alone, a real undercount since this idiom is
+constant in actual testbenches, not just the library): **58** `` ::type_id::create( ``
+sites, **69** general two-level `` X::Y::method( `` call sites.
+
+**Downstream impact check:** grepped `src/compiler/sv_tree_walker.cpp` (the only
+consumer of the parse tree for symbol/diagnostic extraction) for any listener on
+`Tf_callContext`/`Ps_or_hierarchical_tf_identifierContext` — none exists; it only
+overrides declaration-level contexts (module/class/function/task/package/data/net/
+import/instantiation/parameter). Confirmed this is a pure parser-acceptance fix
+with no `SvTreeWalker` changes needed — same low blast radius as the void-cast
+grammar fix, not the higher-touch token-pasting preprocessor change.
+
+### Fix
+
+**`grammar/Sv.g4:3716`**:
+```antlr
+ps_or_hierarchical_tf_identifier :
+      class_scope tf_identifier
+    | package_scope? tf_identifier
+    | hierarchical_tf_identifier
+;
+```
+Reuses the already-correct `class_scope`/`class_type` productions; no other rule
+changes needed. `cmake --build --preset debug` regenerated the ANTLR sources
+cleanly with no ambiguity warnings.
+
+**Unit tests** (`tests/unit/compiler/test_sv_parser.cpp`, tag `[classscopedcall]`,
+6 new cases, following the `[voidcast]` tests immediately above as the style
+template): a plain class-scoped call as an assignment RHS; a parameterized
+single-segment scoped call (`` uvm_resource_db#(bit)::get_by_name(...) `` shape);
+the elided-middle-argument compound case (`reg/uvm_mem.svh:1151`'s exact shape,
+confirming it's the same root cause, not two bugs); a bare-statement class-scoped
+call (proves `subroutine_call_statement` is covered too); and two regression
+guards — non-call class-scoped field access (`` x = A::B::my_static_field; ``, to
+guard against the new alternative stealing a case `primary`'s existing
+`class_qualifier` path already handled) and a plain non-scoped call. All 9
+variants (the 6 above plus 3 more exploratory cases) were first verified against
+the isolated-snippet probe before being written into the permanent suite. Full
+unit suite: **922 assertions / 371 test cases**, all green (up from 916/365 —
+exactly the 6 new cases, zero regressions).
+
+### Real-world verification
+
+Rebuilt `release`, recreated the standalone `probe_diag.cpp` corpus probe per the
+now-standard technique, reran against the full 140-file UVM corpus.
+
+**Total diagnostics dropped from 884 → 68 (−816, −92.3% further; −2888, −97.7%
+cumulative from session 3's original 2956)**, files-with-diagnostics 48 → 12 — by
+far the largest single-fix drop across all five fixes in this line of work.
+`base/uvm_resource_db.svh` (79 before), `base/uvm_config_db.svh` (38 before), and
+both `reg/sequences/uvm_reg_mem_shared_access_seq.svh` (73 before) and
+`reg/sequences/uvm_reg_mem_built_in_seq.svh` (70 before) all **dropped to 0**.
+
+**What's left** (new top offenders, not yet root-caused): `reg/uvm_reg.svh` (27),
+`seq/uvm_sequence_base.svh` (15), `reg/uvm_mem.svh` (7, down from 73 — mostly
+fixed but not entirely), `reg/uvm_reg_block.svh` (7), `base/uvm_lru_cache.svh` (4),
+plus single-digit counts in `uvm_event.svh`/`uvm_barrier.svh`/`uvm_root.svh`/
+`uvm_phase.svh`/`uvm_phase_hopper.svh`/`uvm_transaction.svh`/`uvm_reg_sequence.svh`.
+Not investigated this session — natural next step, following the same
+read-the-actual-diagnostics-first methodology used here rather than guessing from
+file names (which was wrong for Gap E this session).
+
+### Not yet done — suggested next steps
+
+1. Root-cause the remaining 68 diagnostics, concentrated in `reg/uvm_reg.svh` (27)
+   and `seq/uvm_sequence_base.svh` (15) — read actual diagnostic text first.
+2. Gap E (`` `ifdef ``/`` `else ``/`` `endif `` inside `` `define `` bodies) is
+   still neither confirmed nor refuted as a real contributor anywhere in the
+   current corpus — this session only disproved it for the *specific* files it
+   was checked against.
+3. Consider the LSP diagnostics-visibility gap (primary-file-only
+   `publishDiagnostics`, session 3) as its own small feature.
+4. Phase 6.4 (cross-file invalidation / dependency graph) per `plan.md §6.4`.
 
 ---
 
