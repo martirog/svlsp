@@ -4,60 +4,168 @@
 **Last completed phase:** Phase 6.2 complete — multi-file project support, all 6 stages
 (6.1 — DB-backed providers; 6.3 — package import *and export* resolution; preprocessor
 source map committed previously)  
-**Current work (2026-08-21, see "UVM real-world smoke test — session 3" section below,
-near the top, for full detail):** Continuing the UVM real-world smoke test. This
-session finally got the **entire real UVM corpus (140 files, ~85K preprocessed lines)
-compiled end-to-end through the actual production pipeline** (`CompilationController`
-— the same code path the real `svlsp` LSP server uses) for the first time ever —
-previous sessions only ever measured preprocessor-only errors on the full corpus, or
-ANTLR parse timing on isolated single files. It completes in **~420-480s (~7-8 min)**,
-not "many minutes" indefinitely as feared — confirms the Phase 6.5 performance
-finding from session 2 was real but not fatal. Result: **2956 diagnostics across 73 of
-140 files**. Root-caused the dominant patterns to two causes: (1) **Gap C
-(stringification) has far higher real-world impact than session 1 estimated** — it's
-triggered by `` `uvm_object_utils ``/`` `uvm_component_utils ``, the single most
-common factory-registration macro pair in all of UVM (not just the rarer
-`` `uvm_field_* ``/token-pasting sites session 1 measured), via
-`` `m_uvm_object_registry_internal ``'s `` `uvm_type_name_decl(`"T`") ``. (2) **New
-finding, not preprocessor-related at all**: `grammar/Sv.g4`'s `STRING_LITERAL` lexer
-rule (`'"' .*? '"'`) has **no escape-sequence handling** — any string literal
-containing an embedded `\"` (extremely common in `` `uvm_error ``/`` `uvm_report_info ``
-message strings that quote a name/value) terminates prematurely, corrupting
-tokenization for the rest of the line. Also confirmed real-world impact of the
-already-documented `void'(...)` cast gap (pervasive in `uvm_root.svh` etc.). On the
-LSP layer: all 28 candidate deep UVM symbols and all 5 `documentSymbol` queries
-resolve correctly; but found a **real symbol-table-pollution bug** — Gap C garbage at
-`uvm_report_catcher.svh:71` creates a bogus `Signal` symbol literally named
-`uvm_report_object`, which silently shadows the real `Class` at
-`uvm_report_object.svh:98` in hover/definition (no kind preference, alphabetical file
-ordering) — a silent-wrong-answer bug, not a crash. Also confirmed (separately from
-this session, still true): `didOpen` only ever publishes diagnostics for the
-**primary** opened file, never transitively-`` `include ``d files — a real LSP
-diagnostics-visibility gap.
-**Update, later same session — three fixes, all committed:** the `STRING_LITERAL`
-escape gap (`b5cda7c` — `grammar/Sv.g4:3795`, `'"' ( '\\' . | ~["\\] )* '"'`; tag
-`[stringescape]`; **2956 → 1796, −39%**), Gap C stringification (`5a41322`/
-`aca4eb1` — `src/compiler/sv_preprocessor.cpp`'s new `tryStringify`; tag
-`[stringify]`; **1796 → 1401, −22% further**), and the already-documented
-`void'(...)` cast gap (`88f1610`/`9cfd7a8` — `grammar/Sv.g4`'s
-`subroutine_call_statement`, `SINGLE_QUOTE` now optional; tag `[voidcast]`;
-**1401 → 1254, −10.5% further**). **Cumulative: 2956 → 1254 diagnostics, −57.6%,
-files-with-diagnostics 73 → 51**, full unit suite 904/359, zero regressions
-throughout. Token-pasting (` `` `) remains unimplemented by design — root-caused
-as the dominant remaining cause (three distinct real macro families found:
-`` `uvm_register_cb ``, `` `M__TABLE_Q ``/`` `M__TABLE_GET ``, plus the original
-session-1 sites) — a materially bigger feature than any of the three fixes above,
-flagged for an explicit future decision rather than attempted without one. Gap E
-and the symbol-pollution bug are still **not** fixed. See "Gap C stringification
-— FIXED" and "`void'(...)` cast gap — FIXED" in the session 3 section below for
-full detail.
-**Not yet done:** decide on full token-pasting support (see session 3's "Not yet
-done" list, item 4), then Phase 6.4 (cross-file
-invalidation / dependency graph) per `plan.md §6.4` — not yet planned in file-level
-detail. **The full approved Phase 6.2 plan (exact signatures, schema SQL, algorithms,
-test names — now historical reference, all 6 stages complete) lives at
+**Current work (2026-08-22, see "Token-pasting support — session 4" section below,
+near the top, for full detail):** Implemented SV token-pasting (` `` `) in
+`SvPreprocessor` — the item session 3 flagged as the dominant remaining real-world
+diagnostic source but deferred pending an explicit decision. Grepping the real UVM
+corpus for the implementation plan showed the true scope was considerably larger
+than session 3 estimated: **80+ occurrences across 8 macro-definition files**, not
+just the 3 macro families session 3 found. Implemented as a single textual splice
+pass (`resolveTokenPaste`, `src/compiler/sv_preprocessor.cpp`) run over a macro's
+body text (post parameter-substitution) before `expandStr` scans it — sufficient
+for every real pattern in the corpus, including pasting that forms a *new*
+macro-invocation name that's then itself invoked, and pasting nested inside a
+stringification span. 6 new unit tests (tag `[tokenpaste]`); full suite 916/365,
+zero regressions. **Full-corpus real-world result: 1254 → 884 diagnostics
+(−370, −29.5% further; −2072, −70.1% cumulative from session 3's original 2956)**,
+files-with-diagnostics 51 → 48. Committed. See "Token-pasting support — session 4"
+below for full detail, including the interaction with still-unfixed Gap E.
+**Not yet done:** Gap E (`` `ifdef ``/`` `else ``/`` `endif `` inside `` `define ``
+bodies) is now very plausibly the dominant remaining cause (see session 4's "Not yet
+done" list) — investigate next. Then the symbol-table-pollution/hover-disambiguation
+bug, the LSP diagnostics-visibility gap, and Phase 6.4 (cross-file invalidation /
+dependency graph) per `plan.md §6.4` — not yet planned in file-level detail. **The
+full approved Phase 6.2 plan (exact signatures, schema SQL, algorithms, test names —
+now historical reference, all 6 stages complete) lives at
 `/home/martin/.claude/plans/fluffy-hatching-popcorn.md`.**
 See "Phase 6.2" section below for what was built in each stage.
+
+---
+
+## Token-pasting support — session 4 (2026-08-22)
+
+Direct continuation of session 3's item 4 ("decide on full token-pasting support").
+Explicit user request: after asking which remaining fix would most improve the
+UVM-corpus pass rate, the user asked for an implementation plan for token-pasting,
+approved it, then asked to implement it.
+
+### Scope discovery: bigger than session 3 estimated
+
+Session 3 found 3 real macro families using `` `` `` (`` `uvm_register_cb ``,
+`` `M__TABLE_Q ``/`` `M__TABLE_GET ``, `` `uvm_copier_get_function ``/
+`` `uvm_packer::get_packed_``T``s ``). Grepping the whole real UVM corpus for
+`` `` `` while writing the implementation plan found **80+ occurrences across 8
+files**: `macros/uvm_callback_defines.svh`, `uvm_copier_defines.svh`,
+`uvm_tlm_defines.svh` (dozens of TLM `imp`-port class generators — the single
+biggest source, ~50 occurrences), `uvm_phase_defines.svh`, `uvm_packer_defines.svh`,
+`uvm_sequence_defines.svh`, `uvm_object_defines.svh` (~25 occurrences, the
+field-automation macro file), `uvm_printer_defines.svh`, plus `base/uvm_packer.svh`
+and `base/uvm_resource_pool.svh` (the single largest remaining diagnostic offender
+in the corpus at the time, 181, entirely attributable to this gap and completely
+unchanged by all three session-3 fixes). All 80+ occurrences share one shape: `` `` ``
+always appears **inside a `` `define `` macro body** (never in raw top-level
+source), always as a pure textual splice.
+
+### Implementation
+
+**`src/compiler/sv_preprocessor.cpp`**: new static helper `resolveTokenPaste(src)` —
+deletes each `` `` `` occurrence and any immediately adjacent horizontal whitespace,
+splicing the surrounding text together directly (no identifier-fragment awareness
+needed; the right operand can be arbitrary text, e.g. `` QUEUE_NAME``.value `` →
+`rq.value`). Called from both branches of `expandMacroCall`, on the macro body text
+right before the existing `expandStr` call — `def.body` for object-like macros,
+`substituted` (i.e. *after* raw parameter substitution) for function-like ones. Both
+call sites already pass `colShifts == nullptr` into `expandStr`, so this has zero
+interaction with the column-drift bookkeeping used for top-level per-line diagnostic
+mapping — no changes needed anywhere else in `expandStr`, `tryStringify`, or the
+`ColShift` logic.
+
+Running the splice *before* `expandStr` scans the text (rather than as part of its
+scan loop) turns out to handle every real pattern in the corpus for free, with no
+special-casing:
+- Plain/multi-fragment identifier pasting (`` m_register_cb_``CB ``,
+  `` get_packed_``T``s ``).
+- **Pasting that constructs a new macro-invocation name, then invokes it**
+  (`` `uvm_pack_``TYPE``(ARG, __local_packer__) ``, `macros/uvm_object_defines.svh`)
+  — by the time `expandStr`'s scan reaches the leading `` ` ``, `readIdent` reads the
+  *already-spliced* full name (`` `uvm_pack_int ``), so it resolves and invokes
+  normally.
+- **Pasting nested inside a stringification span**
+  (`` `uvm_type_name_decl(`"PREFIX``PHASE``_phase`") ``, `macros/uvm_phase_defines.svh`)
+  — the whole substituted body is spliced in one pass before `expandStr`/`tryStringify`
+  ever look at it, so `` `" `` never sees an unresolved `` `` `` inside its span (`` and
+  `" are lexically distinct, so the splice pass can't misfire on stringify markers).
+
+**Known, deliberate non-goal**, not found anywhere in the real corpus: pasting where
+an operand is itself an *unexpanded* nested macro invocation whose expanded result
+(not its literal name) is needed on one side of the splice. Matches C's `##`, which
+doesn't expand such operands either.
+
+**`src/compiler/sv_preprocessor.h`**: class doc comment updated from a blanket "not
+supported" to describe the new textual-splice scope and the one documented
+limitation above.
+
+**Unit tests** (`tests/unit/compiler/test_sv_preprocessor.cpp`, tag `[tokenpaste]`,
+6 new cases): basic two-fragment paste; paste onto a non-identifier right operand
+(mirrors `` M__TABLE_Q ``); three-fragment paste (mirrors `` get_packed_``T``s ``);
+paste-then-invoke of a constructed macro name (mirrors `` uvm_pack_``TYPE ``); paste
+nested inside a stringification span; and a full real-world reproduction of the
+exact `` `uvm_register_cb(T,CB) `` body text (combines pasting and stringification
+in one macro, and is the exact site behind session 3's symbol-table-pollution bug),
+asserting both the spliced identifier and the stringified args come out correct in
+one pass. Full unit suite: **916 assertions / 365 test cases**, all green (up from
+904/359 — exactly the 6 new cases, zero regressions).
+
+### Real-world verification
+
+Rebuilt `release`, recreated the standalone `probe_diag.cpp` corpus probe per
+session 3's documented technique (`libsvlsp_db.a` + `libsvlsp_compiler.a` +
+`libsvlsp_antlr4.a` + antlr4-runtime + `libsvlsp_sqlite3.a`, `g++-13` since the
+system default `g++` is 7.5.0 and doesn't support `-std=c++20`), reran against the
+full 140-file UVM corpus.
+
+**Total diagnostics dropped from 1254 → 884 (−370, −29.5% further; −2072, −70.1%
+cumulative from session 3's original 2956)**, files-with-diagnostics 51 → 48.
+`base/uvm_resource_pool.svh` (181 before this fix, completely unchanged by all three
+session-3 fixes) dropped out of the top-30-offenders list entirely, confirming the
+fix resolves it at the source as predicted.
+
+The full-corpus compile itself took noticeably longer than session 3's ~420-480s
+(~7-8 min) baseline — around 12 min in this run. Consistent with, not contradicting,
+session 2's Phase 6.5 performance finding: token-pasting now lets substantially more
+of the corpus (all of `uvm_tlm_defines.svh`'s ~25 generated TLM port-implementation
+classes, previously aborting early on "undefined macro" errors from unresolved
+`` `` ``) reach ANTLR's genuinely expensive full-class-body parse path instead of
+failing fast — more successfully-preprocessed text, not a new performance bug. Not
+investigated further this session; worth remembering if a future session is
+surprised by corpus-probe timing.
+
+### What's left, root-caused
+
+The new top-offender list (`base/uvm_resource_db.svh` 79, `reg/uvm_mem.svh` 73,
+`reg/sequences/uvm_reg_mem_shared_access_seq.svh` 73, `reg/sequences/
+uvm_reg_mem_built_in_seq.svh` 70, `base/uvm_callback.svh` 61, `reg/uvm_reg.svh` 59,
+several more `reg/sequences/*.svh` files, `base/uvm_config_db.svh` 38) is a
+different shape than session 3's — none of these were called out as token-pasting
+sites, and `uvm_object_defines.svh` (826-831, `` `m_uvm_field_op_begin ``) is the
+one site this session already knew would remain only partially fixed: it combines
+token-pasting (now fixed) with `` `ifdef ``/`` `else ``/`` `endif `` *inside the
+macro body* (Gap E, still unimplemented, first found in session 2). **Not
+re-investigated in detail this session** — the shift in which files dominate the
+remaining diagnostics is consistent with Gap E now being the largest remaining
+single cause, but this is inference from the file list, not confirmed by reading
+the actual remaining diagnostic messages at each site the way every previous
+root-cause in this line of work was confirmed. That confirmation is the natural
+first step for whoever picks this up next.
+
+### Not yet done — suggested next steps
+
+1. **Investigate Gap E** (`` `ifdef ``/`` `else ``/`` `endif `` inside `` `define ``
+   bodies, described in session 2's section below) against the new top-offender
+   list above — read the actual diagnostics at a few of `uvm_resource_db.svh`,
+   `uvm_mem.svh`, `uvm_reg_mem_shared_access_seq.svh` to confirm or refute that it's
+   the dominant remaining cause before committing to a fix, following the same
+   grounded-in-real-corpus methodology used for every fix so far.
+2. Consider the `findSymbolsByName`/hover disambiguation improvement (symbol-table-
+   pollution bug, session 3) — the exact `` `uvm_register_cb `` site behind it is
+   now correctly parsed by this fix, so worth re-checking with a live LSP-driver
+   run (not yet done this session — this session's verification used the
+   standalone DB probe only) whether the bogus `uvm_report_object` `Signal` at
+   `uvm_report_catcher.svh:71` is actually gone before deciding this is still
+   needed as independent defense-in-depth.
+3. Consider the LSP diagnostics-visibility gap (primary-file-only
+   `publishDiagnostics`, session 3) as its own small feature.
+4. Phase 6.4 (cross-file invalidation / dependency graph) per `plan.md §6.4`.
 
 ---
 
