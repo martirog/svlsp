@@ -471,7 +471,7 @@ class_item :
 
 class_property :
       property_qualifier* data_declaration
-    | 'const' class_item_qualifier* data_type const_identifier ('=' constant_expression)? ';'
+    | 'const' class_item_qualifier* data_type const_identifier ('=' expression)? ';'
 ;
 
 class_method :
@@ -1475,7 +1475,7 @@ coverage_spec :
 
 coverage_event :
       clocking_event
-    | 'with' 'function' 'sample' '(' tf_port_list ')'
+    | 'with' 'function' IDENTIFIER '(' tf_port_list ')'
     | '@@' '(' block_event_expression ')'
 ;
 
@@ -2334,7 +2334,8 @@ pattern :
 ;
 
 assignment_pattern :
-      SINGLE_QUOTE '{' expression (',' expression)* '}'
+      SINGLE_QUOTE '{' '}'
+    | SINGLE_QUOTE '{' expression (',' expression)* '}'
     | SINGLE_QUOTE '{' structure_pattern_key ':' expression (',' structure_pattern_key ':' expression)* '}'
     | SINGLE_QUOTE '{' array_pattern_key ':' expression (',' array_pattern_key ':' expression)* '}'
     | SINGLE_QUOTE '{' constant_expression '{' expression (',' expression)* '}' '}'
@@ -2469,17 +2470,17 @@ deferred_immediate_assertion_statement :
 ;
 
 deferred_immediate_assert_statement :
-      'assert' '#0' '(' expression ')' action_block
+      'assert' '#' DECIMAL_NUMBER '(' expression ')' action_block
     | 'assert' 'final' '(' expression ')' action_block
 ;
 
 deferred_immediate_assume_statement :
-      'assume' '#0' '(' expression ')' action_block
+      'assume' '#' DECIMAL_NUMBER '(' expression ')' action_block
     | 'assume' 'final' '(' expression ')' action_block
 ;
 
 deferred_immediate_cover_statement :
-      'cover' '#0' '(' expression ')' statement_or_null
+      'cover' '#' DECIMAL_NUMBER '(' expression ')' statement_or_null
     | 'cover' 'final' '(' expression ')' statement_or_null
 ;
 

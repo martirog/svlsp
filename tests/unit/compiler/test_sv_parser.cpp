@@ -261,3 +261,98 @@ TEST_CASE("SvParser still parses a plain non-scoped function call",
         "endfunction endclass\n";
     REQUIRE(parseErrors(src) == 0);
 }
+
+TEST_CASE("SvParser parses a bare #0; zero-delay control statement",
+          "[compiler][parser][delayzero]") {
+    // Regression test: deferred_immediate_{assert,assume,cover}_statement used
+    // to spell their special delay as the raw literal '#0', which ANTLR turns
+    // into its own implicit lexer token -- so the two characters #0 could
+    // *never* lex as '#' + DECIMAL_NUMBER, breaking the extremely common
+    // zero-delay "absorb a delta cycle" idiom (e.g. base/uvm_barrier.svh:209,
+    // `#0; //this process was last to wait; allow other procs to resume first`).
+    std::string src = "module top; initial begin #0; end endmodule\n";
+    REQUIRE(parseErrors(src) == 0);
+}
+
+TEST_CASE("SvParser still parses deferred immediate assert #0 (...)",
+          "[compiler][parser][delayzero]") {
+    // Guards against the '#0' -> '#' DECIMAL_NUMBER fix breaking the
+    // construct that literal existed for in the first place.
+    std::string src =
+        "module top; initial begin assert #0 (1) else $error(\"x\"); end endmodule\n";
+    REQUIRE(parseErrors(src) == 0);
+}
+
+TEST_CASE("SvParser still parses a non-zero delay control statement",
+          "[compiler][parser][delayzero]") {
+    // Guards against the fix accidentally requiring the delay to be zero.
+    std::string src = "module top; initial begin #5; end endmodule\n";
+    REQUIRE(parseErrors(src) == 0);
+}
+
+TEST_CASE("SvParser parses a method literally named 'sample'",
+          "[compiler][parser][coveragesample]") {
+    // Regression test: coverage_event's `with function sample(...)` alternative
+    // used the raw literal 'sample', making it an implicit reserved keyword
+    // everywhere -- blocking the standard UVM reg/mem functional-coverage
+    // callback name (e.g. reg/uvm_mem.svh:505,
+    // `protected virtual function void sample(...); endfunction`).
+    std::string src = "class C; function void sample(int x); endfunction endclass\n";
+    REQUIRE(parseErrors(src) == 0);
+}
+
+TEST_CASE("SvParser still parses the 'with function sample(...)' coverage-event form",
+          "[compiler][parser][coveragesample]") {
+    // Guards against the 'sample' -> IDENTIFIER fix breaking the construct
+    // that literal existed for in the first place.
+    std::string src =
+        "class C; int x; covergroup cg with function sample(int y); "
+        "coverpoint x; endgroup endclass\n";
+    REQUIRE(parseErrors(src) == 0);
+}
+
+TEST_CASE("SvParser parses an empty assignment pattern '{}",
+          "[compiler][parser][emptypattern]") {
+    // Regression test: assignment_pattern required at least one element inside
+    // '{ ... }; SV allows an empty one for empty queues/dynamic arrays (e.g.
+    // base/uvm_lru_cache.svh:206, `return '{};` for an empty int q[$]).
+    std::string src =
+        "class C; function void f(); int q[$]; q = '{}; endfunction endclass\n";
+    REQUIRE(parseErrors(src) == 0);
+}
+
+TEST_CASE("SvParser still parses a non-empty assignment pattern",
+          "[compiler][parser][emptypattern]") {
+    // Guards against the new empty alternative breaking the general case.
+    std::string src =
+        "class C; function void f(); int q[3]; q = '{1, 2, 3}; endfunction endclass\n";
+    REQUIRE(parseErrors(src) == 0);
+}
+
+TEST_CASE("SvParser parses a const class property initialized with a general expression",
+          "[compiler][parser][constinitexpr]") {
+    // Regression test: class_property's `const` alternative restricted the
+    // initializer to constant_expression, excluding new(...) and other general
+    // runtime expressions -- only parameter/localparam require a true
+    // compile-time constant. Mirrors base/uvm_transaction.svh:443's shape
+    // (`const local uvm_event_pool events = new("events");`), though that
+    // exact case still hits a separate, pre-existing data_type/
+    // variable_decl_assignment grammar ambiguity (confirmed present on
+    // unmodified grammar, unrelated to this fix) whenever a 'local' or
+    // 'protected' qualifier precedes the type -- flagged for future
+    // investigation, not fixed here. This case (no qualifier) is unaffected
+    // by that ambiguity and confirms the constant_expression restriction
+    // itself is lifted.
+    std::string src =
+        "class E; function new(string s=\"\"); endfunction endclass\n"
+        "class C; const E h = new(\"x\"); endclass\n";
+    REQUIRE(parseErrors(src) == 0);
+}
+
+TEST_CASE("SvParser still parses a const class property with a constant_expression initializer",
+          "[compiler][parser][constinitexpr]") {
+    // Guards against the constant_expression -> expression widening regressing
+    // the already-working case.
+    std::string src = "class C; const local int x = 0; endclass\n";
+    REQUIRE(parseErrors(src) == 0);
+}
