@@ -25,10 +25,18 @@ this corpus run took ~16m47s and peaked at ~6.7GB RSS, materially more than
 session 5's ~14min/~1.3GB — likely fix (4)'s `expression` widening triggering
 expensive full-context ANTLR prediction at every `const` property declaration
 corpus-wide; not fatal but a real, unquantified-further performance cost worth
-knowing about. Committed.
-**Not yet done:** investigate the `data_type`/`variable_decl_assignment` ambiguity
-(ambiguous alternatives {9,10,12} and {1,3} respectively — a real, separate,
-deeper grammar-engineering problem, not a quick fix); consider narrowing fix (4)
+knowing about. Committed. **Later same session:** investigated the
+`data_type`/`variable_decl_assignment` ambiguity (per explicit user request) —
+root-caused precisely (SV's classic "identifier classification needs a symbol
+table" problem, confirmed pre-existing on the unmodified grammar), tried two
+cheap structural experiments (reordering alternatives; removing a provably-
+redundant one), neither changed the outcome, both reverted. **Not fixed** — a
+real fix needs semantic predicates or risky restructuring of extremely
+heavily-used rules, not justified for the 1 remaining corpus diagnostic it
+currently causes. Fully documented, not committed as a code change (investigation
+only). See "`data_type`/`variable_decl_assignment` ambiguity — investigated, NOT
+fixed" in session 6's section below.
+**Not yet done:** consider narrowing fix (4)
 if the performance cost proves problematic at Phase 6.5 scale; Gap E (still not
 confirmed either way); the LSP diagnostics-visibility gap; and Phase 6.4
 (cross-file invalidation / dependency graph) per `plan.md §6.4` — not yet planned
@@ -204,12 +212,91 @@ session 2 used for Phase 6.5). Worth remembering if a future session is
 surprised by corpus-probe timing, and worth reconsidering narrowing Fix 4's
 scope if this cost turns out to matter at real-world (Phase 6.5) usage scale.
 
+### `data_type`/`variable_decl_assignment` ambiguity — investigated, NOT fixed (2026-08-22, later same session)
+
+Per explicit user request ("investigate the data_type ambiguity next"). Confirmed
+the precise root cause and tried two cheap, low-risk structural experiments before
+concluding a real fix is out of scope for now.
+
+**Root cause, confirmed exactly:** `grammar/Sv.g4:740-753`, `data_type`'s
+alternatives 9, 10, and 12 —
+```antlr
+    | (class_scope | package_scope)? type_identifier packed_dimension*   // alt 9
+    | class_type                                                         // alt 10
+    | ps_covergroup_identifier                                           // alt 12
+```
+— all reduce to **exactly one bare `IDENTIFIER` token** when none of their
+optional prefixes/suffixes are present (`type_identifier: IDENTIFIER`,
+`class_type`'s bare form is just `ps_class_identifier` with zero repetitions/
+parameterization, `ps_covergroup_identifier: package_scope? covergroup_identifier`
+with `covergroup_identifier` also `IDENTIFIER`). For an input like `uvm_object h`,
+all three alternatives match "uvm_object" identically — a genuine, unconditional
+syntactic ambiguity, not a bug in any one alternative. This is SystemVerilog's
+well-known "identifier classification" problem (the LRM's own grammar (Annex A)
+acknowledges that distinguishing a type name from a class name from a plain
+identifier requires a symbol table — information a context-free grammar doesn't
+have). The exact same shape recurs at `variable_decl_assignment`'s alternatives 1
+and 3 (`variable_identifier` vs `class_variable_identifier`, and
+`class_variable_identifier: variable_identifier` — literally the same rule under
+a different name).
+
+**Confirmed pre-existing**, unrelated to any fix from today or before: reproduced
+on the completely unmodified grammar (via `git stash` back to before any of
+today's changes) with a case that doesn't even involve `const`/`new`:
+`` class C; local uvm_object h; endclass `` already reports both ambiguities via
+ANTLR's `DiagnosticErrorListener` + `PredictionMode::LL_EXACT_AMBIG_DETECTION`.
+Under *default* prediction (what the real server actually uses), this ambiguity
+is normally silently resolved with a successful parse — it only becomes a hard
+failure for the one narrow combination Fix 4 exposed (`` const local/protected
+... = new(...) ``).
+
+**Failure pattern is narrower and stranger than "which alternative wins the
+tie":** isolated testing found the trigger isn't "any qualifier" — it's
+specifically: zero qualifiers, or exactly one `static`, both succeed; exactly one
+`local`, exactly one `protected`, or **two or more of any qualifier at all**
+(including `static static`) all fail identically. This asymmetry (single
+`static` uniquely safe) doesn't follow from the `data_type` ambiguity alone being
+"resolved differently" — a genuinely ambiguous grammar should resolve the same
+way regardless of unrelated preceding tokens, if the ambiguity were the *whole*
+story.
+
+**Two structural experiments tried, both reverted (no effect):**
+1. Reordering `data_type`'s alternatives to put `class_type` first (testing
+   whether ANTLR's "pick the lowest-numbered alternative on genuine ambiguity"
+   resolution would then favor the working path) — no change.
+2. Removing the `ps_covergroup_identifier` alternative entirely (provably
+   redundant with `type_identifier`'s package-scoped form — same shape, `IDENTIFIER`
+   either way — so removing it is a pure simplification, no loss of parsing
+   power; reduces the ambiguity from 3-way to 2-way) — no change.
+
+Both were applied, rebuilt, and empirically tested via the isolated-parser-snippet
+technique, then `git checkout -- grammar/Sv.g4` reverted them; the committed
+grammar is unaffected by this investigation.
+
+**Conclusion — not pursued further, flagging for whoever picks this up next:**
+since neither cheap experiment changed the outcome, the real mechanism is deeper
+than the surface-level `data_type` ambiguity — most likely an ANTLR ATN/DFA
+full-context-prediction interaction tied to how much more pervasively `local`/
+`protected` are referenced elsewhere across this ~3800-line grammar compared to
+`static`'s much narrower usage (more reachable ATN configurations at those
+tokens increases the chance of a genuine ambiguity-resolution edge case).
+Confirming this would need ATN-level tracing (dumping configuration sets, not
+just `reportAmbiguity`'s alt-number summary) — real effort, and a proper *fix*
+would need either semantic predicates (a real symbol-table integration — a much
+bigger architectural change than anything done in this line of work) or careful
+restructuring of `data_type`/`class_type`/`type_identifier`, some of the most
+heavily-used rules in the entire grammar (real regression risk). Given real-world
+impact is now exactly **1 diagnostic in the entire 140-file UVM corpus**, this
+is being left as a documented, known limitation rather than pursued further —
+revisit only if it starts showing up more broadly (e.g. once Phase 6.4/6.5 work
+exercises a wider variety of real-world code, or if a user-reported false
+diagnostic traces back to this).
+
 ### Not yet done — suggested next steps
 
-1. Investigate the `data_type`/`variable_decl_assignment` ambiguity
-   (`ambigAlts={9,10,12}` / `{1,3}`) found while verifying Fix 4 — a real,
-   separate, deeper grammar-engineering problem, confirmed pre-existing
-   (present on the unmodified grammar), not a quick follow-on fix.
+1. ~~Investigate the `data_type`/`variable_decl_assignment` ambiguity~~ — **done**,
+   root cause confirmed and documented above; not fixed (see conclusion above
+   for why, and what a real fix would require).
 2. Consider whether Fix 4's performance cost is acceptable, or whether it's
    worth narrowing (e.g. adding just a `class_new`-inclusive alternative
    instead of the fully general `expression`) once real-world usage data exists.
