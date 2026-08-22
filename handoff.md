@@ -4,36 +4,221 @@
 **Last completed phase:** Phase 6.2 complete — multi-file project support, all 6 stages
 (6.1 — DB-backed providers; 6.3 — package import *and export* resolution; preprocessor
 source map committed previously)  
-**Current work (2026-08-22, see "Class-scoped call gap — session 5" section below,
-near the top, for full detail):** Fixed a previously-undiscovered grammar gap:
-`` X::Y::method(args) `` (a class-scoped chained method call — e.g.
-`` T::type_id::create(...) ``, **the standard UVM factory-instantiation idiom**,
-used constantly in real UVM code) could not be parsed at all, in any position
-(assignment RHS or bare statement). Found while investigating Gap E as a candidate
-next fix — Gap E turned out not to be the cause of the post-token-pasting
-top-offender list at all; this was. Root cause: `grammar/Sv.g4`'s
-`ps_or_hierarchical_tf_identifier` (feeds `tf_call`, reached from both expression
-and statement position) had no `class_scope`-prefixed alternative, even though
-`class_scope`/`class_type` already correctly implement the full `` X#(T)::Y#(U)::``
-chain and are used successfully elsewhere (e.g. `` class_scope? 'new' (...) ``).
-One-line fix: added `class_scope tf_identifier` as a new alternative. Zero
-downstream impact on `SvTreeWalker` (confirmed: it has no listener for any
-call-expression context). 6 new unit tests (tag `[classscopedcall]`); full suite
-922/371, zero regressions. **Full-corpus real-world result: 884 → 68 diagnostics
-(−816, −92.3% further; −2888, −97.7% cumulative from session 3's original 2956)**,
-files-with-diagnostics 48 → 12 — by far the largest single-fix drop in this whole
-line of work. `base/uvm_resource_db.svh`, `base/uvm_config_db.svh`, and both
-`reg/sequences/uvm_reg_mem_*_seq.svh` files dropped to 0. Committed.
-**Not yet done:** the remaining 68 diagnostics are concentrated in
-`reg/uvm_reg.svh` (27), `seq/uvm_sequence_base.svh` (15), `reg/uvm_mem.svh` (7),
-`reg/uvm_reg_block.svh` (7) — not yet root-caused, natural next investigation.
-Then Gap E (still not confirmed either way), the LSP diagnostics-visibility gap,
-and Phase 6.4 (cross-file invalidation / dependency graph) per `plan.md §6.4` —
-not yet planned in file-level detail. **The
+**Current work (2026-08-22, see "Four more grammar gaps — session 6" section below,
+near the top, for full detail):** Root-caused and fixed the four grammar gaps
+behind the last 68 UVM-corpus diagnostics: (1) an implicit `'#0'` lexer token
+(meant only for `assert #0(...)`) stole every bare zero-delay `#0;` statement —
+20 sites in uvm-core alone; (2) an implicit `'sample'` keyword (from the coverage
+`with function sample(...)` construct) blocked any method literally named
+`sample()` — the standard UVM reg/mem coverage callback; (3) `assignment_pattern`
+had no empty-pattern (`` '{} ``) alternative; (4) `class_property`'s `const`
+initializer was wrongly restricted to `constant_expression`, excluding `new(...)`.
+9 new unit tests across 4 tags; full suite 931/380, zero regressions.
+**Full-corpus real-world result: 68 → 1 diagnostic (−67, −98.5% further; −2955,
+−99.97% cumulative from session 3's original 2956)** — only
+`base/uvm_transaction.svh` has 1 remaining diagnostic, a **newly-discovered,
+separate, pre-existing grammar ambiguity** in `data_type`/`variable_decl_assignment`
+(confirmed present on the *unmodified* grammar too, unrelated to any of today's
+fixes) that only manifests when a `local`/`protected` qualifier precedes a
+`const ... = new(...)` property — flagged, not fixed, see below. **Also note:**
+this corpus run took ~16m47s and peaked at ~6.7GB RSS, materially more than
+session 5's ~14min/~1.3GB — likely fix (4)'s `expression` widening triggering
+expensive full-context ANTLR prediction at every `const` property declaration
+corpus-wide; not fatal but a real, unquantified-further performance cost worth
+knowing about. Committed.
+**Not yet done:** investigate the `data_type`/`variable_decl_assignment` ambiguity
+(ambiguous alternatives {9,10,12} and {1,3} respectively — a real, separate,
+deeper grammar-engineering problem, not a quick fix); consider narrowing fix (4)
+if the performance cost proves problematic at Phase 6.5 scale; Gap E (still not
+confirmed either way); the LSP diagnostics-visibility gap; and Phase 6.4
+(cross-file invalidation / dependency graph) per `plan.md §6.4` — not yet planned
+in file-level detail. **The
 full approved Phase 6.2 plan (exact signatures, schema SQL, algorithms, test names —
 now historical reference, all 6 stages complete) lives at
 `/home/martin/.claude/plans/fluffy-hatching-popcorn.md`.**
 See "Phase 6.2" section below for what was built in each stage.
+
+---
+
+## Four more grammar gaps — session 6 (2026-08-22)
+
+Direct continuation of session 5. Explicit user request: "continuing root causing
+the remaining" (the 68 diagnostics left after the class-scoped-call fix), then,
+once four root causes were found, "only plan all 4 don't implement yet", then
+"implement all 4 now" as a separate go-ahead.
+
+### Root-causing the remaining 68
+
+Dumped full diagnostic text (not just counts) for the current top-offender files
+(`reg/uvm_reg.svh` 27, `seq/uvm_sequence_base.svh` 15, `reg/uvm_mem.svh` 7,
+`reg/uvm_reg_block.svh` 7, `base/uvm_lru_cache.svh` 4, plus single digits in
+`uvm_event.svh`/`uvm_barrier.svh`/`uvm_root.svh`/`uvm_phase.svh`/
+`uvm_phase_hopper.svh`/`uvm_transaction.svh`/`uvm_reg_sequence.svh`) via an
+extended `probe_diag.cpp`, then read the real source at each site. Found four
+independent, well-defined causes — each confirmed individually via isolated
+parser snippets (the same fast technique used for session 5's class-scoped-call
+gap: link a tiny driver directly against `SvLexer`/`SvParser` +
+`libsvlsp_compiler.a`/`libsvlsp_antlr4.a`/antlr4-runtime, call
+`parser.source_text()`, no corpus rebuild needed to test a hypothesis) before
+committing to any grammar change. A fifth suspected site (`process::self()` at
+`seq/uvm_sequence_base.svh:366`) tested clean in isolation, confirming it was a
+cascade artifact, not a real bug.
+
+### Fix 1 — `#0` lexer-token collision (biggest cluster: 20 sites in uvm-core alone)
+
+`grammar/Sv.g4:2472,2477,2482` (`deferred_immediate_assert_statement`,
+`_assume_`, `_cover_`) each used the raw string literal `` '#0' `` (e.g.
+`` 'assert' '#0' '(' expression ')' action_block ``). ANTLR turns any quoted
+literal into its own implicit lexer token with priority over general
+fragment-based lexing — so the two characters `#0` were *always* lexed as one
+`` '#0' `` token everywhere in the source, never as `` '#' `` followed by
+`DECIMAL_NUMBER "0"`. This broke the extremely common bare zero-delay control
+statement `#0;` (`procedural_timing_control_statement` → `delay_control` =
+`` '#' delay_value ``), a standard "absorb a delta cycle" idiom (e.g.
+`base/uvm_barrier.svh:209`). Confirmed: `#0;` failed (1 error), `#5;` parsed
+fine, before the fix.
+
+**Fix:** replaced `` '#0' `` with `` '#' DECIMAL_NUMBER `` in all three
+`deferred_immediate_*_statement` rules — both already-existing tokens elsewhere
+(`` '#' `` via `delay_control`, `DECIMAL_NUMBER` via `delay_value`), removing the
+implicit `` '#0' `` token entirely (nothing else referenced that literal).
+Trade-off, consistent with this project's established leniency-over-strict-
+validation stance: also now accepts `` assert #5 (...) `` where the LRM requires
+exactly `#0` — acceptable for a parser/LSP not validating assertion semantics.
+
+### Fix 2 — `sample` keyword collision (3 sites: `uvm_reg.svh`, `uvm_mem.svh`, `uvm_reg_block.svh`)
+
+`grammar/Sv.g4:1478`, `coverage_event`'s
+`` 'with' 'function' 'sample' '(' tf_port_list ')' `` alternative used the raw
+literal `` 'sample' ``, making "sample" an implicit reserved keyword *everywhere*
+(same bug category as Fix 1) — even though `sample` is not a real SV reserved
+word, just fixed literal text required by this one LRM production. This blocked
+declaring any method actually named `sample()` — precisely the standard UVM
+register/mem functional-coverage callback name (`reg/uvm_mem.svh:505`,
+`` protected virtual function void sample(...); ``).
+
+**Fix:** replaced the `` 'sample' `` literal with `IDENTIFIER` in that one
+alternative — loosens validation (doesn't enforce the identifier must literally
+be "sample") to remove the collision. `'sample'` wasn't referenced anywhere else
+in the grammar, so this was fully self-contained.
+
+### Fix 3 — empty assignment pattern `` '{} `` (2 sites: `base/uvm_lru_cache.svh:206,273`)
+
+`grammar/Sv.g4:2336`, `assignment_pattern`'s four alternatives all required *at
+least one* expression/pattern-key inside `` '{ ... } `` — none accepted the empty
+form. Real SV uses `` '{} `` as the empty-queue/dynamic-array literal (e.g.
+`` return '{}; `` for an empty `int q[$]`).
+
+**Fix:** added a new alternative, `` SINGLE_QUOTE '{' '}' ``.
+
+### Fix 4 — `const` class-property initializer restricted to `constant_expression`
+
+`grammar/Sv.g4:472-475`, `class_property`'s second alternative
+(`` 'const' class_item_qualifier* data_type const_identifier ('=' constant_expression)? ';' ``
+— confirmed the only alternative a bare `const ...` declaration can match, since
+`const` isn't among `class_item_qualifier`'s `{static,protected,local}`, so no
+ambiguity with the first alternative) restricted the initializer to
+`constant_expression`, excluding `` new(...) `` and any other general runtime
+expression. Real SV allows a `const` class property's initializer to be a
+general expression (only `parameter`/`localparam` require a true compile-time
+constant) — real UVM relies on this for const object handles, e.g.
+`base/uvm_transaction.svh:443`,
+`` const local uvm_event_pool events = new("events"); ``.
+
+**Fix:** changed `` ('=' constant_expression)? `` to `` ('=' expression)? ``.
+
+**Discovered while verifying this fix — a separate, pre-existing grammar
+ambiguity, not fixed here:** the exact real-world target (`const local ... =
+new(...)`, i.e. `const` **plus a `local`/`protected` qualifier** plus a `new(...)`
+initializer) still failed after the fix. Isolated testing narrowed it down
+precisely: `const <no qualifier> T h = new(...)` and `const static T h = new(...)`
+(single `static`) parse fine; `const local T h = new(...)`, `const protected T h
+= new(...)`, and even `const static static T h = new(...)` (two qualifiers) all
+fail. Used ANTLR's `DiagnosticErrorListener` with
+`PredictionMode::LL_EXACT_AMBIG_DETECTION` to get a real diagnosis instead of
+guessing further: it reports a genuine ambiguity at the `data_type` rule
+(`` reportAmbiguity d=295 (data_type): ambigAlts={9, 10, 12} ``) and at
+`variable_decl_assignment` (`` ambigAlts={1, 3} ``) for input like `uvm_object h`
+— **confirmed present on the completely unmodified grammar too** (tested via
+`git stash` back to before any of today's changes, same ambiguity reported for
+plain `` local uvm_object h; `` with no `const`/`new` involved at all). This is a
+real, separate, deeper `data_type`/`variable_decl_assignment` grammar-engineering
+problem that happens to be otherwise-benign under default SLL prediction almost
+everywhere else, and Fix 4's widening is simply what exposes it as an actual
+parse failure for this one specific combination. Flagging for a future session
+rather than attempting to resolve within today's scope.
+
+### Downstream impact check (all four)
+
+Same check as session 5's fix: `src/compiler/sv_tree_walker.cpp` has no listener
+overrides for any of the affected contexts. All four are pure parser-acceptance
+fixes with no `SvTreeWalker` changes needed.
+
+### Unit tests
+
+`tests/unit/compiler/test_sv_parser.cpp`, 9 new cases across four tags
+(`[delayzero]`, `[coveragesample]`, `[emptypattern]`, `[constinitexpr]`),
+following the `[voidcast]`/`[classscopedcall]` style: each fix gets a case
+proving the real-world pattern now parses plus at least one regression guard
+proving the construct the old, narrower rule existed for still parses (bare
+`#0;` + `assert #0(...)` still works + non-zero `#5;` still works; a method named
+`sample` + the `with function sample(...)` coverage-event form still works; empty
+`` '{} `` + non-empty `` '{1,2,3} `` still works; `const` with a general
+`new(...)` expression + `const` with a plain `constant_expression` still works).
+The `constinitexpr` "works" case deliberately uses no qualifier (since the
+`local`/`protected` combination is the newly-discovered separate ambiguity above,
+not something this fix resolves) — documented in the test's own comment so a
+future reader doesn't mistake the gap for a test-coverage hole. All snippets were
+first verified against the isolated-parser probe before being written into the
+permanent suite. Full unit suite: **931 assertions / 380 test cases**, all green
+(up from 922/371 — exactly the 9 new cases, zero regressions).
+
+### Real-world verification
+
+Rebuilt `release`, recreated the standalone `probe_diag.cpp` corpus probe, reran
+against the full 140-file UVM corpus.
+
+**Total diagnostics dropped from 68 → 1 (−67, −98.5% further; −2955, −99.97%
+cumulative from session 3's original 2956)**, files-with-diagnostics 12 → 1.
+`base/uvm_resource_db.svh`, `reg/uvm_mem.svh`, `reg/sequences/
+uvm_reg_mem_shared_access_seq.svh`, `reg/sequences/uvm_reg_mem_built_in_seq.svh`,
+`base/uvm_config_db.svh`, `reg/uvm_reg.svh`, `reg/uvm_reg_block.svh` — every
+previously-nonzero file — dropped to 0. Only `base/uvm_transaction.svh` still
+shows 1 diagnostic, exactly the `local` + `new(...)` `data_type`-ambiguity case
+documented above (not re-dumped verbatim this session, but matches the isolated
+diagnosis precisely: same file, same construct, only one qualifier-plus-`new`
+site in the whole file).
+
+**Performance note:** this run took **16m47s** and peaked at **~6.7GB RSS** —
+materially more than session 5's ~14min/~1.3GB run on the same corpus with the
+same technique. Memory was flat (not still climbing) once it plateaued, so this
+is "slow," not "leaking" — but it's a real, unquantified-further cost. Working
+theory, not confirmed by profiling: Fix 4's `` constant_expression `` →
+`` expression `` widening applies to *every* `const` class property in the
+corpus, and `expression` is a vastly larger, more recursive rule than
+`constant_expression` — combined with the pre-existing `data_type` ambiguity
+described above, this plausibly triggers ANTLR's expensive full-context
+prediction fallback far more often corpus-wide than before. Not investigated
+further this session (would need profiling, e.g. the SLL-only-mode technique
+session 2 used for Phase 6.5). Worth remembering if a future session is
+surprised by corpus-probe timing, and worth reconsidering narrowing Fix 4's
+scope if this cost turns out to matter at real-world (Phase 6.5) usage scale.
+
+### Not yet done — suggested next steps
+
+1. Investigate the `data_type`/`variable_decl_assignment` ambiguity
+   (`ambigAlts={9,10,12}` / `{1,3}`) found while verifying Fix 4 — a real,
+   separate, deeper grammar-engineering problem, confirmed pre-existing
+   (present on the unmodified grammar), not a quick follow-on fix.
+2. Consider whether Fix 4's performance cost is acceptable, or whether it's
+   worth narrowing (e.g. adding just a `class_new`-inclusive alternative
+   instead of the fully general `expression`) once real-world usage data exists.
+3. Gap E (`` `ifdef ``/`` `else ``/`` `endif `` inside `` `define `` bodies) is
+   still neither confirmed nor refuted as a real contributor anywhere in the
+   current (now near-zero-diagnostic) corpus.
+4. Consider the LSP diagnostics-visibility gap (primary-file-only
+   `publishDiagnostics`, session 3) as its own small feature.
+5. Phase 6.4 (cross-file invalidation / dependency graph) per `plan.md §6.4`.
 
 ---
 
