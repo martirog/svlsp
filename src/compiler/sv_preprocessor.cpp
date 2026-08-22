@@ -122,6 +122,33 @@ static std::vector<std::string> parseInvokeArgs(const std::string& src, size_t& 
 // Macro expansion
 // ---------------------------------------------------------------------------
 
+// Resolves the token-paste operator (``): deletes each `` `` `` occurrence and any
+// immediately adjacent horizontal whitespace, splicing the surrounding text together.
+// Must run over a macro body (post parameter-substitution for function-like macros)
+// before expandStr's backtick-scan sees that text, so that (a) a pasted fragment that
+// forms a new macro-invocation name (e.g. `` `uvm_pack_``TYPE``(...) ``) is seen as one
+// already-spliced identifier, and (b) any `` `" `` stringification markers appearing
+// later in the same text are unaffected -- `` and `" are lexically distinct (two
+// backticks vs. backtick+quote), so this pass can't misfire on them. Does not attempt
+// to expand an adjacent nested macro invocation before pasting (matches C's `##`,
+// which pastes the literal token text) -- no real SV source pastes across an
+// unexpanded nested invocation, so this is not handled.
+static std::string resolveTokenPaste(const std::string& src) {
+    std::string result;
+    result.reserve(src.size());
+    size_t i = 0;
+    while (i < src.size()) {
+        if (src[i] == '`' && i + 1 < src.size() && src[i + 1] == '`') {
+            i += 2;
+            while (!result.empty() && (result.back() == ' ' || result.back() == '\t')) result.pop_back();
+            while (i < src.size() && (src[i] == ' ' || src[i] == '\t')) ++i;
+            continue;
+        }
+        result += src[i++];
+    }
+    return result;
+}
+
 // Replace bare parameter identifiers in `body` with the corresponding arg
 // values. In SV (as in C), macro params appear as plain identifiers in the
 // body — not as backtick tokens — so this step is separate from expandStr.
@@ -169,7 +196,7 @@ static std::string expandMacroCall(const std::string& name,
     const MacroDef& def = it->second;
 
     if (!def.isFunctionLike) {
-        return expandStr(def.body, macros, errors, depth + 1);
+        return expandStr(resolveTokenPaste(def.body), macros, errors, depth + 1);
     }
 
     // Function-like: expect '(' next (after optional spaces)
@@ -197,8 +224,9 @@ static std::string expandMacroCall(const std::string& name,
     }
     // Step 1: replace bare param identifiers in the body with arg text
     std::string substituted = substituteParams(def.body, def.params, args);
-    // Step 2: expand any backtick macro invocations in the substituted body
-    return expandStr(substituted, macros, errors, depth + 1);
+    // Step 2: resolve token-pasting, then expand any backtick macro invocations
+    // in the substituted body
+    return expandStr(resolveTokenPaste(substituted), macros, errors, depth + 1);
 }
 
 // Stringification (`"). `src[i]` must be the backtick of a `` `" `` marker

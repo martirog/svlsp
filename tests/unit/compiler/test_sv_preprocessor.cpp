@@ -802,3 +802,86 @@ TEST_CASE("unterminated stringification records an error instead of hanging",
     auto result = pp.process("string s = `\"unterminated;\n", "f.sv");
     REQUIRE_FALSE(result.errors.empty());
 }
+
+// ---------------------------------------------------------------------------
+// Token-pasting (``)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("token-pasting splices two identifier fragments",
+          "[compiler][preprocessor][tokenpaste]") {
+    SvPreprocessor pp;
+    auto result = pp.process(
+        "`define CONCAT(A,B) A``B\n"
+        "wire w = `CONCAT(foo,bar);\n", "f.sv");
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.source == "\nwire w = foobar;\n");
+}
+
+TEST_CASE("token-pasting splices onto a non-identifier right operand",
+          "[compiler][preprocessor][tokenpaste]") {
+    // Mirrors real UVM's `M__TABLE_Q(QUEUE_NAME) QUEUE_NAME``.value
+    // (base/uvm_resource_pool.svh:136) -- the paste is a pure textual
+    // splice, not identifier-fragment-only.
+    SvPreprocessor pp;
+    auto result = pp.process(
+        "`define FIELD(NAME) NAME``.value\n"
+        "x = `FIELD(rq);\n", "f.sv");
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.source == "\nx = rq.value;\n");
+}
+
+TEST_CASE("token-pasting splices three fragments around a parameter",
+          "[compiler][preprocessor][tokenpaste]") {
+    // Mirrors real UVM's base/uvm_packer.svh:449
+    // `` function void uvm_packer::get_packed_``T``s (...) ``
+    SvPreprocessor pp;
+    auto result = pp.process(
+        "`define GETTER(T) get_packed_``T``s\n"
+        "function void `GETTER(bit) (int x); endfunction\n", "f.sv");
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.source.find("function void get_packed_bits (int x); endfunction") !=
+            std::string::npos);
+}
+
+TEST_CASE("token-pasting a macro name then invoking it",
+          "[compiler][preprocessor][tokenpaste]") {
+    // Mirrors real UVM's macros/uvm_object_defines.svh:1456
+    // `` `uvm_pack_``TYPE``(ARG, __local_packer__) `` -- proves the splice
+    // happens before expandStr scans for the invocation's macro name.
+    SvPreprocessor pp;
+    auto result = pp.process(
+        "`define uvm_pack_int(X) pack_int_impl(X)\n"
+        "`define DISPATCH(TYPE, ARG) `uvm_pack_``TYPE``(ARG)\n"
+        "`DISPATCH(int, myvar);\n", "f.sv");
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.source.find("pack_int_impl(myvar);") != std::string::npos);
+}
+
+TEST_CASE("token-pasting resolves before a later stringification span sees it",
+          "[compiler][preprocessor][tokenpaste]") {
+    // Mirrors real UVM's macros/uvm_phase_defines.svh:58
+    // `` `uvm_type_name_decl(`"PREFIX``PHASE``_phase`") ``
+    SvPreprocessor pp;
+    auto result = pp.process(
+        "`define STR2(PREFIX, PHASE) `\"PREFIX``PHASE``_phase`\"\n"
+        "string s = `STR2(my, build);\n", "f.sv");
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.source == "\nstring s = \"mybuild_phase\";\n");
+}
+
+TEST_CASE("token-pasting reproduces the real UVM `uvm_register_cb pattern",
+          "[compiler][preprocessor][tokenpaste]") {
+    // macros/uvm_callback_defines.svh:71-72 -- combines token-pasting and
+    // stringification in the same macro body; also the exact site behind
+    // session 3's symbol-table-pollution bug (uvm_report_catcher.svh:71).
+    SvPreprocessor pp;
+    auto result = pp.process(
+        "`define uvm_register_cb(T,CB) \\\n"
+        "  static local bit m_register_cb_``CB = uvm_callbacks#(T,CB)::m_register_pair(`\"T`\",`\"CB`\");\n"
+        "`uvm_register_cb(uvm_report_object,uvm_report_catcher)\n", "f.sv");
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.source.find(
+        "static local bit m_register_cb_uvm_report_catcher = "
+        "uvm_callbacks#(uvm_report_object,uvm_report_catcher)::m_register_pair("
+        "\"uvm_report_object\",\"uvm_report_catcher\");") != std::string::npos);
+}

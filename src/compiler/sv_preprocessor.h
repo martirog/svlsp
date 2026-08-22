@@ -31,8 +31,14 @@ struct PreprocessorResult {
 //
 // Stringification (`"..`") is supported: the text between the two markers is
 // macro-expanded, then wrapped in a quoted string literal. Token-pasting
-// (``) is not supported; use a slang-backed implementation for UVM-heavy
-// codebases if it's needed.
+// (``) is supported as a textual splice: each `` `` `` is deleted and the
+// surrounding text glued together directly (matching every real-world usage
+// found in the UVM library: identifier-fragment concatenation, pasting a
+// macro-body prefix/suffix onto a parameter, and pasting a new macro name
+// that is then itself invoked). Not supported: pasting where an operand is
+// an *unexpanded* nested macro invocation whose expanded result (not its
+// literal name) is needed on one side of the splice -- C's `##` doesn't
+// expand such operands either, and no real SV source relies on it.
 class SvPreprocessor {
 public:
     explicit SvPreprocessor(std::vector<std::string> includePaths = {});
