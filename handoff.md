@@ -36,6 +36,23 @@ heavily-used rules, not justified for the 1 remaining corpus diagnostic it
 currently causes. Fully documented, not committed as a code change (investigation
 only). See "`data_type`/`variable_decl_assignment` ambiguity — investigated, NOT
 fixed" in session 6's section below.
+**Later, session 7 (2026-08-22):** turned six sessions of manual/scratchpad UVM
+real-world validation into a real, committed, repeatable test suite —
+`tests/uvm_corpus/`, new `uvm_corpus_tests` CMake target, covering the 5 LSP
+features that are actually DB-backed (hover, definition, documentSymbol,
+workspace/symbol, completion — `references`/`rename`/`signatureHelp` are still
+Phase-3 stubs that unconditionally return null, confirmed via their own existing
+unit tests, so there's no real behavior to test there yet). Deliberately **not**
+registered with `ctest`/`make test` (opt-in only, run directly) since it depends
+on the external, ~140-file, ~15-minute-to-compile UVM corpus — resolves the
+tension with session 1's original "don't commit a corpus-dependent test" guidance
+by making the *code* committed while the *data* stays external and unvendored.
+9 test cases / 90 assertions, all passing after two rounds of fixing real bugs the
+suite itself caught (a `DocumentUri` path-representation mismatch between input
+lookups and output `Location`s; a synthetic-docText line-mismatch in the
+completion test; one stale document-symbol count baseline from session 3, now
+corrected with an explanation). See "New test suite: LSP features against the
+real, full UVM corpus DB — session 7" below for full detail.
 **Not yet done:** consider narrowing fix (4)
 if the performance cost proves problematic at Phase 6.5 scale; Gap E (still not
 confirmed either way); the LSP diagnostics-visibility gap; and Phase 6.4
@@ -45,6 +62,185 @@ full approved Phase 6.2 plan (exact signatures, schema SQL, algorithms, test nam
 now historical reference, all 6 stages complete) lives at
 `/home/martin/.claude/plans/fluffy-hatching-popcorn.md`.**
 See "Phase 6.2" section below for what was built in each stage.
+
+---
+
+## New test suite: LSP features against the real, full UVM corpus DB — session 7 (2026-08-22)
+
+Direct continuation of session 6. Explicit user request, after the `data_type`
+ambiguity investigation was fully documented: "start creating implementation
+tests all the lsp features usin the full uvm db".
+
+### The tension with session 1's original guidance
+
+Six sessions of work (documented across this file) drove the real 140-file UVM
+corpus from 2956 diagnostics to 1, using a series of scratchpad, **uncommitted**
+C++ probes (`probe_diag.cpp` and its variants) that link directly against
+`libsvlsp_db.a`/`libsvlsp_compiler.a`/`libsvlsp_antlr4.a` and call
+`CompilationController::compile(...)`. Those probes also validated real LSP-layer
+behavior manually (session 3's `documentSymbol`/`workspace/symbol`/hover/
+definition queries against 28 cataloged real UVM symbols, including catching and
+later confirming the fix for the symbol-table-pollution bug), but none of it was
+ever committed as a repeatable test — session 1 explicitly judged that a test
+depending on an external, ~140-file, multi-minute-to-compile corpus (not tracked
+by svlsp's own git) didn't belong in the normal `tests/integration/*.sh`
+(Emacs+lsp-mode-driven) suite.
+
+Asked the user how to resolve this before planning further (see the two
+`AskUserQuestion` decisions this session): (1) commit a **separate, opt-in**
+test binary rather than keep everything scratchpad-only, and (2) cover only the
+LSP features that are actually DB-backed — checking
+`tests/unit/lsp/test_references.cpp`/`test_rename.cpp`/`test_signature_help.cpp`
+confirmed `ReferencesProvider`/`RenameProvider`/`SignatureHelpProvider` are still
+unconditional-null Phase-3 stubs, never upgraded to be DB-backed like `hover`/
+`definition`/`documentSymbol`/`workspaceSymbol`/`completion` were in Phase 6 — so
+there's no real behavior to test against real data for those three yet.
+
+### Architecture
+
+**New directory `tests/uvm_corpus/`**, new CMake executable target
+`uvm_corpus_tests` (`CMakeLists.txt`, alongside `unit_tests`, same link set —
+`svlsp_lib svlsp_antlr4 svlsp_db Catch2::Catch2WithMain`). Deliberately **not**
+passed to `add_test()`, so `ctest`/`make test` never touches it (verified: `ctest
+-N` lists exactly the same 445 tests as before, `grep -i uvm_corpus` finds
+nothing) — built by default (compiling it is cheap) but only ever run directly:
+`./build/release/uvm_corpus_tests`.
+
+**Shared fixture** (`tests/uvm_corpus/uvm_corpus_fixture.h`/`.cpp`):
+`uvmCorpusDb()` compiles the corpus into an in-memory DB exactly once
+(function-local static — Catch2 runs test cases sequentially by default, so this
+needs no extra synchronization) using the identical technique every prior
+session's probe used (`ProjectConfig{includeDirs={"."}, defines={"UVM_NO_DPI":
+""}}`, `CompilationController::compile("uvm.sv", text, &cfg)`, chdir'd into the
+corpus root for the duration of the call so `` `include `` resolution works,
+then restored). Corpus root resolves from the `SVLSP_UVM_CORPUS_DIR` environment
+variable, falling back to the path used throughout this whole line of work.
+Throws a clear `std::runtime_error` with setup instructions if the corpus/its
+`uvm.sv` can't be found — appropriate for an opt-in binary only ever run by
+someone who deliberately has the corpus checked out, so no graceful-skip
+machinery needed. `readCorpusFile(relPath)` reads a real file's text from disk
+for providers that need the open document's text.
+
+### A real bug the suite caught while being written: `DocumentUri` path mismatch
+
+While wiring up the first test (`documentSymbol`), calls failed to find files
+that were definitely in the DB. Traced it to a genuine representation mismatch,
+not a test typo: `CompilationController` stores `` `include ``d files under bare
+corpus-root-relative paths (e.g. `"base/uvm_component.svh"`, confirmed via every
+prior probe's output and by reading `db/compilation_controller.cpp` — the stored
+key comes straight from the preprocessor's include resolution, independent of
+whatever path format the primary file was given). But
+`lsp::DocumentUri::fromPath()` (used by every existing hand-written unit test,
+and by this project's own `pathToUri()` in `src/lsp/symbol_utils.cpp` for
+building *output* `Location`s) unconditionally calls
+`std::filesystem::absolute()` internally (`third_party/lsp-framework/lsp/
+fileuri.cpp`) — it cannot represent a bare relative path verbatim; it always
+produces some absolute path relative to the calling process's current working
+directory at the moment it's called.
+
+Verified the fix empirically before writing it into 90 assertions (standalone
+probe, `Uri::parse("file:" + relPath).path() == relPath` exactly, no leading
+slash, since parsing a literal string with no `//` authority marker never
+forces absolute-path syntax — confirmed by reading `Uri::parse`'s own tokenizer
+in `third_party/lsp-framework/lsp/uri.cpp`). Two small fixture helpers now
+capture the two different needs precisely:
+- `uriForRelPath(relPath)` — for *input* params (documentSymbol/hover/
+  definition/completion queries, which extract `.path()` directly as the DB
+  lookup key) — goes through the generic `lsp::Uri::parse("file:" + relPath)`,
+  which does no filesystem access at all and preserves the path text exactly.
+- `expectedUriPath(relPath)` — for comparing against *output* `Location`s
+  providers return (which go through `pathToUri()`/`FileUri::fromPath()`, so
+  DO absolutize) — runs the expected value through the identical
+  `FileUri::fromPath()` transform before comparing, rather than assuming a
+  literal match. Self-consistent regardless of what CWD the test binary
+  happens to run from, since both sides go through the same transform in the
+  same process.
+
+This is a real, previously-undocumented subtlety about how this codebase's own
+URI handling behaves — worth remembering for any future test or feature code
+that needs to construct params pointing at a `` `include ``-resolved (not
+`didOpen`-opened) file path.
+
+### Test files (5, one per DB-backed feature)
+
+Ground truth is the 28-symbol candidate list and specific regression sites
+already cataloged in this file (sessions 2/3/5) — reused directly, but every
+line number was freshly re-verified with a live `grep` against the actual
+corpus while writing this suite (all 28 matched exactly; the corpus is a static
+external checkout, so this was expected but worth confirming rather than
+assuming a 94-day-old citation was still accurate).
+
+- **`test_workspace_symbols_uvm.cpp`** — all 28 candidate symbols, each
+  asserting the result set *contains* an entry at the expected file:line
+  (`workspace/symbol` does substring/prefix matching, documented session-3
+  behavior, so not asserting it's the *only* result).
+- **`test_document_symbols_uvm.cpp`** — the 5 files session 3 already
+  validated, as a floor check (`>=`, not exact — see the `uvm_reg.svh`
+  correction below).
+- **`test_definition_uvm.cpp`** / **`test_hover_uvm.cpp`** — the exact
+  symbol-table-pollution regression (hovering/going-to-definition on
+  `uvm_report_object` from `base/uvm_component.svh:59` must resolve to the
+  real `Class` at `base/uvm_report_object.svh:98`, not the bogus `Signal` the
+  pre-token-pasting-fix bug created) plus a positive control
+  (`uvm_sequence_item extends uvm_transaction`) and one more spot check.
+- **`test_completion_uvm.cpp`** — lighter, first-cut coverage (2 scenarios, not
+  part of session 3's already-validated query set): a fully-typed real class
+  name still appears in its own visible scope, and a synthetic partial-prefix
+  scenario filters correctly against real DB data.
+
+### Two more real bugs the suite caught, both fixed before landing
+
+1. **Completion test used a mismatched line/text pairing.** First run: 182 of
+   271 assertions failed, all "every returned item starts with 'uvm_comp'" —
+   turned out `CompletionProvider::getCompletion`'s `wordAtPosition(docText,
+   line, col)` indexes `docText` by the *same* `line` used for the real-file
+   DB scope lookup, but the test's synthetic `docText` was only 1 line long
+   while `line=58` was passed — `wordAtPosition` couldn't find that line,
+   returned an empty prefix, and *no* filtering was applied at all (matching
+   the observed "every visible top-level symbol in the whole corpus" flood).
+   Fixed by padding the synthetic text with 58 leading blank lines so the
+   (line, col) position actually lands on the intended text.
+2. **`reg/uvm_reg.svh`'s documentSymbol floor was stale.** Session 3's cited
+   414 was captured while that file still had unresolved parse errors (the
+   class-scoped-call and `#0`/`sample` gaps, fixed in sessions 5-6) — very
+   plausibly ANTLR's error-recovery was producing extra spurious symbol-shaped
+   artifacts during resync, not real symbols. With the file now parsing
+   cleanly, the correct count is 403 (verified fresh, not just lowered to make
+   the test pass) — the floor was corrected with an explanatory comment
+   rather than silently loosened.
+
+### Verification
+
+`cmake --build --preset release --target uvm_corpus_tests` builds clean
+alongside `unit_tests`. Three full runs while developing this suite (first: 2
+failures found and fixed as above; second: 1 failure found and fixed as above;
+third, final: **all 9 test cases / 90 assertions pass**, ~17 minutes). Confirmed
+`./build/release/unit_tests` is completely unaffected (931/380, ~24s, unchanged)
+and `ctest -N` still lists exactly the same 445 pre-existing tests, no new ones.
+Run-to-run wall-clock time varied surprisingly widely across this session's runs
+(~17 min to ~135 min, CPU time consistently ~17 min and RSS consistently
+~6.7GB in every run) — not investigated further; noted here in case a future
+session sees the same variance and wonders whether something regressed (per the
+consistent CPU/RSS figures, nothing did — this looks like external system load,
+not the test suite itself).
+
+### Not yet done — suggested next steps
+
+1. If `ReferencesProvider`/`RenameProvider`/`SignatureHelpProvider` are ever
+   upgraded to be DB-backed, add corresponding `test_*_uvm.cpp` files here.
+2. Consider whether the completion suite's "first cut" 2-scenario coverage is
+   worth broadening once there's a concrete reason to (e.g. a real completion
+   bug report).
+3. The `DocumentUri` path-representation subtlety this session uncovered
+   (`fromPath()` always absolutizes; bare relative include-resolved paths need
+   `Uri::parse("file:" + path)` instead) is worth a short code comment at
+   `pathToUri()` itself (`src/lsp/symbol_utils.cpp`) for the next person who
+   needs to construct a URI pointing at a non-`didOpen`ed file — not done this
+   session since it's outside this suite's own files.
+4. Everything else carried over from session 6, unchanged: narrowing fix (4)'s
+   performance cost if it proves problematic at Phase 6.5 scale; Gap E (still
+   not confirmed either way); the LSP diagnostics-visibility gap; and Phase 6.4
+   (cross-file invalidation / dependency graph) per `plan.md §6.4`.
 
 ---
 
