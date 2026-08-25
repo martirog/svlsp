@@ -53,7 +53,17 @@ lookups and output `Location`s; a synthetic-docText line-mismatch in the
 completion test; one stale document-symbol count baseline from session 3, now
 corrected with an explanation). See "New test suite: LSP features against the
 real, full UVM corpus DB — session 7" below for full detail.
-**Not yet done:** consider narrowing fix (4)
+**Later, session 8 (2026-08-25):** implemented fuzzy/typo-tolerant completion
+ranking (`src/lsp/fuzzy_match.h/.cpp` + `CompletionProvider` rewire) — no
+DB/schema change needed, see "Fuzzy completion matching — session 8" below for
+full detail. 11 new unit tests, full suite 963/391, zero regressions.
+**Not committed.**
+**Not yet done, immediate next action:** add a functional/Emacs integration
+test for completion that tries a set of fuzzy-match patterns (typo'd/
+non-contiguous prefix, a no-match pattern, and a multi-candidate
+ranking check) — see "Not yet done — next action" at the end of session 8's
+section below for the exact scenarios. Also still open from earlier sessions:
+consider narrowing fix (4)
 if the performance cost proves problematic at Phase 6.5 scale; Gap E (still not
 confirmed either way); the LSP diagnostics-visibility gap; and Phase 6.4
 (cross-file invalidation / dependency graph) per `plan.md §6.4` — not yet planned
@@ -62,6 +72,89 @@ full approved Phase 6.2 plan (exact signatures, schema SQL, algorithms, test nam
 now historical reference, all 6 stages complete) lives at
 `/home/martin/.claude/plans/fluffy-hatching-popcorn.md`.**
 See "Phase 6.2" section below for what was built in each stage.
+
+---
+
+## Fuzzy completion matching — session 8 (2026-08-25)
+
+Explicit user request, following up on `plan.md` §3.6's already-documented
+"Not yet done" note (fuzzy/typo-tolerant completion) and a follow-up question
+("what needs to be done to add fuzzy search of the db in order to generate
+good completion candidates"). Investigated first: no DB/SQL change is actually
+needed. `SymbolDatabase::findSymbolsVisibleAt` (`src/db/symbol_database.cpp:381`)
+already returns the *entire* visible-scope candidate set unfiltered by name —
+its `WHERE`/`UNION ALL` clauses only constrain by `scope`. The only name
+filtering happened in `CompletionProvider::getCompletion`
+(`src/lsp/completion.cpp`), via a strict `row.name.compare(0, prefix.size(),
+prefix) != 0` prefix check. So this is a pure in-memory ranking change, no
+schema/DB work at all.
+
+**Implementation:**
+- New `src/lsp/fuzzy_match.h/.cpp`: `fuzzyScore(candidate, pattern) ->
+  optional<int>` — case-insensitive subsequence matcher (`nullopt` if
+  `pattern` isn't a subsequence of `candidate`; reordering is never a match,
+  only skipping is tolerated). Score rewards contiguous runs (+15), a match
+  landing on a word boundary (start of string, right after `_`/`-`/`.`/`:`,
+  or a lower/digit→upper camelCase transition, +12), and exact-case matches
+  (+3 tiebreak); penalizes skipped characters (−1 per skipped char); as a
+  final tiebreak, slightly prefers shorter overall candidates.
+- `CompletionProvider::getCompletion` rewired: when a prefix is typed, every
+  visible row is scored via `fuzzyScore` (rows scoring `nullopt` are
+  dropped), then survivors are sorted by descending score (name as a stable
+  tiebreak) before being returned. Each item also gets a zero-padded
+  `sortText` (`"%05zu"` of its rank) so LSP clients that re-sort completion
+  results by `sortText` rather than trusting response order still respect the
+  ranking. With no typed prefix, behavior is byte-for-byte unchanged from
+  before (every visible symbol, unranked, no `sortText`).
+- `CMakeLists.txt`: registered `src/lsp/fuzzy_match.cpp` under `svlsp_lib` and
+  `tests/unit/lsp/test_fuzzy_match.cpp` under `unit_tests`.
+
+**Unit tests:**
+- `tests/unit/lsp/test_fuzzy_match.cpp` (new, 9 cases): empty pattern matches
+  everything at score 0; a non-subsequence returns `nullopt`; an exact prefix
+  scores positively; a contiguous prefix outranks a scattered subsequence of
+  the same candidate; an equal-length contiguous run outranks an equal-length
+  scattered match; a typo (skipped character, e.g. `"wdth"` vs `"WIDTH"`)
+  still matches; exact-case scores slightly above a case-insensitive match of
+  the same pattern; a boundary match (right after `_`) scores above an
+  equivalent mid-word match; reordering the pattern's characters is never a
+  match.
+- `tests/unit/lsp/test_completion.cpp` (2 new cases appended): a typo'd/
+  non-contiguous prefix (`"wdth"`) still surfaces `WIDTH` while correctly
+  excluding non-matching symbols; a contiguous/boundary match (`"report_id"`
+  for prefix `"rep"`) ranks ahead of a scattered/mid-word match
+  (`"xxrepxx"`), verified both via response order and via `sortText`.
+
+Full unit suite: **963 assertions / 391 test cases**, all green (up from
+931/380 at session 7 — the 11 new cases here, zero regressions across the
+whole suite, debug/ASan build).
+
+**Not committed this session** — implementation only, per this repo's working
+rule of only committing when the user explicitly asks.
+
+### Not yet done — next action
+
+**Add a functional/Emacs integration test for completion that tries a set of
+fuzzy-match patterns** (e.g. `tests/integration/test_XX_completion_fuzzy.sh`,
+following this repo's existing numbering convention — check the highest
+existing `test_NN_*.sh` number before picking one) — the unit-level coverage
+above is not sufficient on its own per this repo's working rule ("every LSP
+feature needs both a unit test and a functional Emacs test"). Should exercise,
+through the real JSON-RPC/LSP layer (not just `CompletionProvider` in
+isolation):
+- an exact prefix (regression baseline — confirm existing completion
+  integration tests, e.g. `test_05_hover.sh`'s siblings, are unaffected by
+  the new ranking);
+- a non-contiguous/typo'd pattern (a skipped character, mirroring the unit
+  test's `"wdth"` → `WIDTH` case) that a strict-prefix match would have
+  missed entirely;
+- a pattern that should NOT match anything (not a subsequence of any visible
+  symbol) — verify a clean/empty completion result, not a server error;
+- a pattern matching multiple visible symbols with different match quality
+  (contiguous/boundary vs. scattered) — verify the returned order (or
+  `sortText`) puts the better match first, the way `test_completion.cpp`'s
+  new "ranks a contiguous-prefix match above a scattered match" unit test
+  already proves at the `CompletionProvider` level.
 
 ---
 

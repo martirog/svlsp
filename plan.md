@@ -183,6 +183,15 @@ Each sub-phase follows the same pattern:
 ### 3.6 Completion (`textDocument/completion`)
 - Context-aware completions: keywords, module ports, signal names, macros.
 - Functional test: trigger completion at a known context; verify candidate list in Emacs.
+- **Not yet done:** `CompletionProvider::getCompletion` (`src/lsp/completion.cpp`) currently
+  filters `db.findSymbolsVisibleAt(path, line1)` with a strict prefix match
+  (`row.name.compare(0, prefix.size(), prefix) != 0`) — no typo tolerance, no
+  subsequence/fuzzy matching. Add fuzzy matching over the same visible-scope
+  candidate set (e.g. subsequence matching with a relevance score, VSCode-style),
+  so completions still surface when the typed prefix has a typo or skips
+  characters. Score-and-sort the filtered results instead of preserving DB
+  order. Functional test: trigger completion with a misspelled/partial,
+  non-prefix-matching input; verify the intended symbol still appears.
 
 ### 3.7 Document Symbols (`textDocument/documentSymbol`)
 - Return the symbol outline for a file (modules, interfaces, functions, tasks, etc.).
@@ -497,11 +506,179 @@ field, editing `a.sv` must eventually flag `b.sv` as stale and re-check it.
 - Measure and document: time to parse a large SystemVerilog file, time to answer a
   `definition` query, memory footprint.
 - Set minimum acceptable thresholds; add a `make benchmark` target.
+- **Open question:** today `svlsp` is stdio-only (`src/main.cpp` — spawned by the
+  client, reads/writes stdin/stdout, no CLI args), so the full project compile
+  (e.g. ~7-8 min for the full UVM corpus per the handoff's session-3 finding)
+  only starts once the editor spawns the process and sends `initialize`/
+  `didOpen`. Would a standalone-process-plus-port model (start `svlsp` ahead of
+  time as a long-running daemon listening on a TCP/Unix-domain socket, editor
+  connects to it rather than spawning it) let the initial project compile begin
+  in parallel with editor/session startup instead of serialized after it, and is
+  that win worth the added complexity (daemon lifecycle management, port/socket
+  discovery, multi-client handling if more than one editor window connects)?
+  Revisit once a real large-project compile-time baseline exists here to
+  quantify the actual win.
+- **Open question:** the `Database`/`SymbolDatabase` layer already supports
+  opening against a real file path (`Database` constructor,
+  `src/db/database.cpp:11`), but the actual server today always opens
+  `":memory:"` (`src/lsp/server.h:35` — "in-memory for now; file path in Phase
+  6"), so every restart re-runs the full compile from scratch (again, ~7-8 min
+  for the full UVM corpus). If that startup cost proves too slow in practice,
+  is it worth switching to an on-disk DB file that persists across server
+  restarts — reusing cached symbols/diagnostics for files whose content hash
+  (`CompilationController::hashContent`) hasn't changed, only re-parsing what's
+  actually stale — instead of (or alongside) the standalone-daemon idea above?
+  Tradeoffs to weigh: disk-cache invalidation correctness (stale entries for
+  files the DB never revisits), disk space/location conventions, and whether it
+  meaningfully compounds with the daemon-plus-port question above versus being
+  a simpler independent win.
+- **Not yet done:** grammar session 6's Fix 4 (`grammar/Sv.g4`, `class_property`'s
+  `const` initializer, `constant_expression` → `expression`) is suspected (not
+  profiled) to be why the full UVM corpus compile grew from session 5's
+  ~14min/~1.3GB to ~16m47s/~6.7GB — the working theory per the handoff is that
+  widening every `const` class property's initializer to the much larger,
+  recursive `expression` rule triggers ANTLR's expensive full-context prediction
+  fallback far more often corpus-wide, compounding with the pre-existing
+  `data_type`/`variable_decl_assignment` ambiguity. Before narrowing Fix 4's
+  scope (e.g. to a `constant_expression`-plus-`class_new` alternative instead of
+  full `expression`), investigate what narrowing would actually give up: which
+  real, non-`new(...)` UVM constructs (if any) rely on the full `expression`
+  grammar for a `const` property initializer and would regress back to a parse
+  error if narrowed. Confirm the performance theory with profiling (e.g. the
+  SLL-only-mode technique from Phase 6.5's own session-2 finding) before
+  deciding whether the narrowing is worth the risk.
 
 ### 6.6 Packaging
 - A `make install` CMake target that places the `svlsp` binary and a sample `lsp-mode`
   Emacs snippet in a known location.
 - A brief user guide in `docs/usage.md`.
+
+### 6.7 Semantic Diagnostics / Lint Rules — user-extensible pattern rules
+
+**Why this is needed:** today `publishDiagnostics` only ever carries ANTLR parse
+errors, hardcoded to `DiagnosticSeverity::Error` (`src/lsp/diagnostics.cpp:39`) —
+there is no way to flag semantically-valid-but-undesirable code (naming
+conventions, deprecated API usage, project-specific gotchas) without writing new
+C++/grammar code and rebuilding the server. Note also that the real `diagnostics`
+table (schema v5, `src/db/schema.h`) has no `severity` column at all, despite
+§5.1's original table sketch listing one — every diagnostic today is implicitly
+Error. Teams applying svlsp to a real codebase (see `handoff.md`'s UVM-corpus
+work) routinely want lightweight, project-specific checks (e.g. "flag any
+`disable fork` without a preceding guard", "warn on direct use of an internal
+UVM class outside `base/`") that they can add and iterate on themselves, as they
+notice the need, without touching the grammar or recompiling `svlsp`.
+
+**What is missing:**
+- Schema migration `MIGRATION_V5_TO_V6`: add `severity TEXT NOT NULL DEFAULT
+  'error'` and `source TEXT NOT NULL DEFAULT 'parser'` to `diagnostics`
+  (`source = 'parser'` for existing ANTLR diagnostics, `'lint'` for rule-engine
+  ones — lets the lint pass clear/refresh its own rows via `appendDiagnostics`
+  without wiping a file's parser diagnostics, mirroring the existing
+  `appendDiagnostics`/`replaceDiagnostics` split already used for the
+  library-resolver's diagnostics, §5.3).
+- `src/lsp/diagnostics.cpp`'s hardcoded `DiagnosticSeverity::Error` becomes a
+  per-row lookup through a small `severityFor(string) -> lsp::DiagnosticSeverity`
+  helper (`"error"→Error`, `"warning"→Warning`, `"info"→Information`,
+  `"hint"→Hint`; an unrecognized value defaults to `Warning`, not `Error` — a
+  malformed rule's severity typo shouldn't silently become build-breaking).
+- New rule data model (`src/lint/lint_rule.h` — lives alongside the engine
+  below, not `src/compiler/`, for the same "needs `lsp::json`, unavailable to
+  `svlsp_compiler`" reason already documented in §6.2 Stage 3's "Key facts"):
+  ```cpp
+  struct LintRule {
+      std::string id;             // stable identifier, e.g. "no-disable-fork"
+      enum class Target { Text, Symbol } target;
+      std::string pattern;        // regex — matched against a source line (Text)
+                                   // or a SymbolRow field (Symbol)
+      std::string symbolField;    // Symbol only: "name" | "detail" | "kind" | "scope"
+      std::string symbolKind;     // Symbol only, optional: restrict to one
+                                   // ParseRecordKind (e.g. "Class"); "" = any kind
+      std::string severity;       // "error" | "warning" | "info" | "hint"
+      std::string message;        // may reference regex capture groups: $1, $2, ...
+  };
+  ```
+- **The actual user-facing "update warnings/errors by pattern" mechanism:** a
+  plain JSON rules file, `.svlsp-lint.json`, discovered by `ProjectRegistry`
+  using the same upward-search precedence list as `.svlsp.json`/`.svlsp.f`
+  (§6.2 Stage 5) — a user edits and saves this file, no server rebuild and no
+  grammar change required. Example:
+  ```json
+  {
+    "rules": [
+      {
+        "id": "no-disable-fork",
+        "target": "text",
+        "pattern": "\\bdisable\\s+fork\\b",
+        "severity": "warning",
+        "message": "disable fork kills all descendant processes; prefer a named guard"
+      },
+      {
+        "id": "class-naming-convention",
+        "target": "symbol",
+        "symbolKind": "Class",
+        "symbolField": "name",
+        "pattern": "^(?!uvm_)[a-z][a-z0-9_]*$",
+        "severity": "info",
+        "message": "class '$1' does not follow the project naming convention"
+      }
+    ]
+  }
+  ```
+- `src/lint/lint_engine.h/.cpp`: `LintEngine::loadRules(path) -> vector<LintRule>`
+  (JSON parse via `lsp::json`, same dependency `ProjectManifestParser` already
+  uses). `LintEngine::evaluate(text, walkResult, rules) -> vector<LintDiagnostic>`
+  (a small struct mirroring `ParseError{line, column, message}` plus the new
+  `severity`/`ruleId` fields):
+  - `Target::Text` rules: run the regex line-by-line over the original
+    (pre-macro-expansion) source, translated through the existing preprocessor
+    source map (§4.2a) — the same translation path `SvTreeWalker` already uses
+    for parse errors, so a hit on a macro-expanded line still reports at the
+    user's real file/line.
+  - `Target::Symbol` rules: run the regex against each `ParseRecord`/`SymbolRow`
+    field named by `symbolField`, filtered by `symbolKind` when set — reuses
+    records `SvTreeWalker` already produces (§4.3/§4.4); no new parsing pass.
+- `CompilationController::compile` (§5.4) gains a lint pass after the existing
+  parse/extract step: load rules via `ProjectRegistry` (cached per discovered
+  root the same way `ProjectConfig` is, §6.2 Stage 5 — re-parsing
+  `.svlsp-lint.json` on every keystroke would be wasteful), run
+  `LintEngine::evaluate`, and persist results via `appendDiagnostics` tagged
+  `source = 'lint'` — parser diagnostics keep using `replaceDiagnostics` exactly
+  as today, unaffected by this addition.
+- A malformed rule (bad regex, unknown `target`/`symbolField`/`severity` value)
+  must not crash the server or block compilation: `loadRules` skips just the
+  offending rule, records one synthetic diagnostic on the rules file itself
+  (`source = 'lint-engine'`, severity `error`) naming the bad rule's `id` and
+  the problem, and continues evaluating the remaining valid rules.
+
+**Integration tests (once the schema migration and engine exist):**
+- A `.svlsp-lint.json` with one `Text` rule; a fixture containing the pattern
+  gets a `Warning` diagnostic at the correct line, a fixture without it gets none.
+- A `Symbol`/`Class`/`name` rule against a fixture with one conforming and one
+  non-conforming class name; only the non-conforming one is flagged, at its
+  declaration line.
+- Three rules, one per non-error severity (`warning`/`info`/`hint`); verify
+  lsp-mode reports each at its correct LSP severity, not all coerced to `Error`.
+- A rules file with one valid rule and one rule with an invalid regex: the
+  valid rule still fires, the invalid one produces exactly one engine-level
+  diagnostic on the rules file, and the server neither crashes nor hangs.
+- Edit `.svlsp-lint.json` on disk between two `didOpen`/`didChange` calls on the
+  same SV file and verify (or explicitly decide and document, if not yet
+  implemented for v1) whether the new pattern takes effect without a server
+  restart — this exercises whatever cache-invalidation the
+  `ProjectRegistry`-cached rule set needs, since `ProjectConfig` today
+  (§6.2 Stage 5) is cached indefinitely once found with no invalidation on an
+  external edit to the config file itself.
+
+**Unit tests:** rule loading (valid, malformed, unknown `target`/`severity`);
+`Text`-target matching against preprocessed source plus source-map translation;
+`Symbol`-target matching against a `WalkResult`; severity string → enum mapping.
+
+**Open question, deliberately unresolved:** whether `.svlsp-lint.json` rules
+should be scoped one-file-per-project-root (as sketched above, matching every
+other project-config file this codebase already has) or layerable (a repo-root
+file plus optional per-subdirectory override/append files). Start with the
+single-file model; revisit only if a real multi-team monorepo use case asks for
+finer granularity.
 
 ---
 
