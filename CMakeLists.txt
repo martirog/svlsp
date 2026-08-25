@@ -160,6 +160,7 @@ add_library(svlsp_lib STATIC
     src/lsp/document_symbols.cpp
     src/lsp/diagnostics.cpp
     src/lsp/document_store.cpp
+    src/lsp/fuzzy_match.cpp
     src/lsp/hover.cpp
     src/lsp/references.cpp
     src/lsp/rename.cpp
@@ -188,6 +189,7 @@ add_executable(unit_tests
     tests/unit/lsp/test_server_state.cpp
     tests/unit/lsp/test_document_store.cpp
     tests/unit/lsp/test_symbol_utils.cpp
+    tests/unit/lsp/test_fuzzy_match.cpp
     tests/unit/lsp/test_completion.cpp
     tests/unit/lsp/test_definition.cpp
     tests/unit/lsp/test_diagnostics.cpp

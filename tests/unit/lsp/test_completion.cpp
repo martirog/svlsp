@@ -99,3 +99,49 @@ TEST_CASE("CompletionProvider: completion items have correct kind", "[completion
             CHECK(static_cast<lsp::CompletionItemKind>(item.kind.value()) == lsp::CompletionItemKind::Function);
     }
 }
+
+TEST_CASE("CompletionProvider: fuzzy-matches a non-contiguous/typo'd prefix", "[completion]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module,    "adder",   1, 7, "", "", 10, ""},
+        {ParseRecordKind::Parameter, "WIDTH",   5, 4, "adder", "", 0, "adder"},
+        {ParseRecordKind::Port,      "clk",     7, 4, "adder", "input", 0, "adder"},
+    });
+
+    // "wdth" skips the 'I' in WIDTH — not a strict prefix, but still a valid
+    // (typo-tolerant) subsequence match.
+    const std::string text =
+        "module adder #(\n    parameter int WIDTH = 8\n) (\n    input clk\n    wdth";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 4, 8), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "WIDTH"));
+    CHECK_FALSE(hasItem(items, "clk"));   // "wdth" is not a subsequence of "clk"
+    CHECK_FALSE(hasItem(items, "adder")); // "wdth" is not a subsequence of "adder"
+}
+
+TEST_CASE("CompletionProvider: ranks a contiguous-prefix match above a scattered match", "[completion]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module, "report_id", 1, 7, "", "", 5, ""},
+        {ParseRecordKind::Module, "xxrepxx",   2, 7, "", "", 5, ""},
+    });
+
+    // "rep" is a contiguous, word-start prefix of report_id, but only a
+    // mid-word match inside xxrepxx — report_id should be ranked first.
+    const std::string text = "rep";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 0, 3), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    REQUIRE(items.size() == 2);
+    CHECK(items[0].label == "report_id");
+    CHECK(items[1].label == "xxrepxx");
+    // Ranking must also be encoded in sortText, for clients that re-sort by it.
+    REQUIRE(items[0].sortText.has_value());
+    REQUIRE(items[1].sortText.has_value());
+    CHECK(*items[0].sortText < *items[1].sortText);
+}
