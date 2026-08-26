@@ -58,11 +58,38 @@ ranking (`src/lsp/fuzzy_match.h/.cpp` + `CompletionProvider` rewire) — no
 DB/schema change needed, see "Fuzzy completion matching — session 8" below for
 full detail. 11 new unit tests, full suite 963/391, zero regressions.
 **Not committed.**
-**Not yet done, immediate next action:** add a functional/Emacs integration
-test for completion that tries a set of fuzzy-match patterns (typo'd/
-non-contiguous prefix, a no-match pattern, and a multi-candidate
-ranking check) — see "Not yet done — next action" at the end of session 8's
-section below for the exact scenarios. Also still open from earlier sessions:
+**Later, session 9 (2026-08-26):** added the functional/Emacs integration test
+session 8 queued — `tests/integration/test_25_completion_fuzzy.sh` +
+`tests/integration/fixtures/fuzzy_completion.sv` — exercising fuzzy completion
+through the real JSON-RPC/LSP layer. See "Fuzzy-completion integration test —
+session 9" below for full detail, including a real grammar-ambiguity pitfall
+hit and worked around while building the fixture. Also found, then fixed
+(explicit user request, same session), a stale assertion in
+`test_08_completion.sh`: its `"completion returns null outside any scope"`
+case was asserting behavior that was never actually correct for this
+codebase's design — see "`test_08_completion.sh`'s stale assertion — found
+and fixed — session 9" below for the full root-cause and fix. Full
+integration suite: **146 passed / 0 failed** (up from 145/1 after session 9's
+first pass, now fully green).
+**Later, session 9 (continued), explicit user request:** added a `--log-files
+<path>` CLI option to the `svlsp` binary — logs every file the compiler
+parses/persists (primary file + every `include`d file discovered per
+cache-miss compile), so a user can tail the log and confirm a project's full
+expected file set actually got parsed. See "`--log-files` CLI option —
+session 9" below for full detail. **Unrelated operational note, same
+session:** a cleanup command accidentally `rm -rf`'d the repo-root `dist/`
+directory (pre-existing, untracked, not created this session) while removing
+scratch files — root cause was a misplaced `-rf` flag applying to all paths
+in a combined `rm` command. Confirmed harmless on investigation: `dist/` is
+purely a build artifact (ANTLR4 runtime's own `CMakeLists.txt`, fetched via
+`FetchContent`, copies its built `libantlr4-runtime.a`/`.so` there via
+`${CMAKE_HOME_DIRECTORY}/dist` as a post-build step) — a full clean rebuild
+(`rm -rf build/debug build/release`, reconfigure + build both presets)
+regenerated it exactly, and `dist/` has now been added to `.gitignore` since
+it wasn't there before despite being fully generated.
+**Not yet done, immediate next action:** none queued from this line of work —
+see the "Not yet done — suggested next steps" lists carried over from earlier
+sessions below for what's still open generally. Also still open from earlier sessions:
 consider narrowing fix (4)
 if the performance cost proves problematic at Phase 6.5 scale; Gap E (still not
 confirmed either way); the LSP diagnostics-visibility gap; and Phase 6.4
@@ -72,6 +99,163 @@ full approved Phase 6.2 plan (exact signatures, schema SQL, algorithms, test nam
 now historical reference, all 6 stages complete) lives at
 `/home/martin/.claude/plans/fluffy-hatching-popcorn.md`.**
 See "Phase 6.2" section below for what was built in each stage.
+
+---
+
+## `--log-files` CLI option — session 9 (2026-08-26)
+
+Explicit user request: "add the option to run with outputting a log to see
+that all the expected files are parsed."
+
+### Implementation
+
+- `src/db/compilation_controller.h`/`.cpp`: `CompilationController`'s
+  constructor takes an optional `std::ostream* logStream = nullptr` (default
+  preserves every existing call site — unit tests, `uvm_corpus_fixture.cpp`,
+  `LanguageServer` — unchanged). In `compile()`, when `logStream` is set, it
+  writes one flushed line per file: `[parsed] <path>` for the primary file
+  (` (cached)` appended on a cache hit, before the early return), and
+  `[parsed]   included: <path>` for every included file actually persisted
+  in the cache-miss loop over `recsByFile`.
+- `src/lsp/server.h`/`.cpp`: `LanguageServer`'s constructor takes the same
+  optional `std::ostream*` and forwards it straight into `m_compiler`.
+- `src/main.cpp`: parses `--log-files <path>` from `argv`, opens it
+  (`std::ios::app`, so repeated server restarts accumulate rather than
+  clobber), and passes the `ofstream` pointer into `LanguageServer`. No args
+  → `logStream` stays `nullptr`, zero behavior change (this is why no
+  existing test needed updating).
+
+### Verification
+
+Unit suite unaffected (963/391, unchanged — the new parameter is
+default-valued everywhere). Manually smoke-tested with a small one-off
+Python script (`scratchpad/lsp_smoke.py`, not committed — frames raw
+`Content-Length`-delimited JSON-RPC `initialize`/`initialized`/`didOpen`/
+`shutdown`/`exit` over stdio) against two fixtures:
+- `examples/module_basic.sv` (no includes) → log shows exactly one line,
+  `[parsed] .../module_basic.sv`.
+- `tests/integration/fixtures/ml_top.sv` (the multi-level-include fixture,
+  `ml_top.sv` → `ml_level2.sv` → `ml_level3.sv`) → log shows the primary
+  file plus both included files, confirming the full expected chain is
+  reported.
+
+Full integration suite re-run after wiring this in: **146 passed / 0
+failed**, unaffected.
+
+**Not committed this session** — per this repo's working rule of only
+committing when the user explicitly asks.
+
+---
+
+## Fuzzy-completion integration test — session 9 (2026-08-26)
+
+Direct continuation of session 8. Explicit user request to continue with the
+queued "next action": a functional/Emacs integration test for fuzzy
+completion, per session 8's own "Not yet done — next action" note.
+
+### New files
+
+- `tests/integration/fixtures/fuzzy_completion.sv` — module `sensor` declares
+  `WIDTH` (parameter), `report_id` and `xxrepxx` (ports), chosen to mirror
+  session 8's unit-test fixtures exactly. Four `// probe: <text>` comment
+  lines put typed-prefix probe text (`WIDTH`, `wdth`, `rep`, `qqqqq`) at
+  precise `(line, char)` positions for the test script to point
+  `textDocument/completion` at.
+- `tests/integration/test_25_completion_fuzzy.sh` (next number after
+  `test_24_multilevel_include.sh`) — 5 cases, following the
+  `test_08_completion.sh`/`test_16_class_scope_completion.sh` style
+  (`run_test`/`skip_test`/`section`, `lsp-request` + `gethash`/`cl-position`
+  on the raw hash-table result): exact full-name prefix `WIDTH` (regression
+  baseline); typo'd/non-contiguous prefix `wdth` → `WIDTH`, both a positive
+  (`member`) and negative (excludes `report_id`/`xxrepxx`, which aren't
+  subsequences of `wdth`) assertion; a prefix (`qqqqq`) matching nothing
+  returns LSP `null`; and a ranking check that `rep` (ambiguous — matches
+  both `report_id` contiguously/word-start and `xxrepxx` only as a scattered
+  mid-word match) returns `report_id` before `xxrepxx` in response order,
+  via `cl-position`.
+
+### A real grammar pitfall hit while building the fixture — worked around, not fixed
+
+First fixture draft put each probe's typed text directly as a bare,
+no-paren statement (e.g. `wdth;`) inside an `initial begin…end` block,
+reasoning that `subroutine_call_statement`'s parens are optional so it would
+parse as a harmless, unresolved task call. It compiled and ran, but every
+probe matched **only itself** — e.g. querying completion at the `qqqqq;`
+probe returned exactly one candidate, labeled `"qqqqq"`, not `null` as
+intended. Root cause, confirmed via `workspace/symbol` and `documentSymbol`
+debug probes: each bare `IDENTIFIER;` statement was being parsed not as a
+task call but as an **implicit-type variable declaration**, creating a real
+symbol named after the probe's own typed text — directly the
+`data_type`/`variable_decl_assignment` ambiguity documented in session 6
+(`grammar/Sv.g4:740-753`, already flagged there as "benign under default
+prediction almost everywhere" — this is a second, previously-unseen place it
+silently resolves the *wrong* way under default prediction, not just the
+narrow `const local/protected … = new(...)` case session 6 found). **Fix
+(fixture-only, no grammar change):** switched all four probes to
+`// probe: <text>` comment lines instead of bare statements — comment text
+is never lexed at all, so it can't be (mis)parsed as anything, while
+`wordAtPosition` (which reads raw `docText` independent of the parse tree)
+still finds the exact intended prefix at a precisely computed `(line, char)`.
+Scope resolution still works from a comment line because `scopeAtPosition`
+keys off a scope's backpatched `[startLine, endLine]` *line range*
+(`base/uvm_component.svh`-style `backpatchEndLine` calls in
+`sv_tree_walker.cpp`), not off what any individual line's text is.
+
+### `test_08_completion.sh`'s stale assertion — found and fixed — session 9
+
+Running the **full** integration suite (`./tools/emacs-test-daemon.sh`, no
+argument) after adding the new test, to check for regressions, surfaced one
+unrelated failure: `test_08_completion.sh`'s `"completion returns null
+outside any scope"` case (position: blank line 3 of `examples/module_basic.sv`,
+before the `module adder` declaration starts) consistently returned the
+module's own declaration (`{"label":"adder","kind":9}`), not `null` —
+reproduced 3/3 runs, not a flake.
+
+**Confirmed unrelated to the fuzzy-match feature**: diffed `2bcdfaf` (the
+fuzzy-match commit) directly — the no-prefix code path is structurally
+identical before and after (`!prefix.empty() && …` gate in the old code vs.
+`if (!prefix.empty())` in the new fuzzy code; both let every row from
+`findSymbolsVisibleAt` through unfiltered when the prefix is empty), so the
+old strict-prefix code would have returned the exact same single-item
+`adder` result at this position too.
+
+**Root cause (explicit user follow-up request: "fix the test_08
+regression"), confirmed by reading `findSymbolsVisibleAt`
+(`src/db/symbol_database.cpp:381`) in full**: `scopeAtPosition(path, 3)`
+returns `""` (global scope) since no Module/Interface/Class/Function/Task
+range contains line 3 yet. `findSymbolsVisibleAt`'s Part-1 query for the
+global scope is `WHERE f.path = ? AND s.scope IN ('')` — **it does not filter
+by line at all** for same-file top-level symbols, so every top-level symbol
+in the file is always visible regardless of whether the query position is
+textually before or after that symbol's own declaration. This isn't
+special-cased to top-level scope, either — it's the exact same mechanism
+`test_16_class_scope_completion.sh` already exercises and asserts *as
+correct* for members within a named scope (its `"completion inside ClassA
+includes method_a"` case deliberately queries a line *before* `method_a`'s
+own declaration line and asserts `method_a` is still returned). So returning
+`adder` at a global-scope position in its own file, even "before" line 4, is
+the exact same intentional, already-covered, no-forward-reference-filtering
+design — not a bug, and not something to special-case away in production
+code. **Conclusion: the test's 2026-era assumption ("no symbols visible on a
+blank top-level line") was simply stale/incorrect, not a behavior
+regression.**
+
+**Fix**: corrected the test, not the code — renamed `test_08_completion.sh`'s
+third case to `"completion at top-level scope includes the module itself"`,
+changed its assertion from `(null result)` to `(member "adder" labels)`, and
+rewrote the file's header comment to explain the actual (correct, intended)
+behavior and cross-reference `test_16`'s equivalent, already-established
+case.
+
+### Verification
+
+`./tools/emacs-test-daemon.sh tests/integration/test_25_completion_fuzzy.sh`:
+all 5 new cases pass. Full suite (`./tools/emacs-test-daemon.sh`, no
+argument), after the `test_08_completion.sh` fix: **146 passed / 0 failed**
+— fully green, no other regressions.
+
+**Not committed this session** — per this repo's working rule of only
+committing when the user explicitly asks.
 
 ---
 
