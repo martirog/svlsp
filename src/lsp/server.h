@@ -1,5 +1,6 @@
 #pragma once
 
+#include <iosfwd>
 #include <lsp/connection.h>
 #include <lsp/messagehandler.h>
 #include <lsp/io/standardio.h>
@@ -23,7 +24,10 @@
 // ServerState business logic.  All I/O happens here; ServerState stays pure.
 class LanguageServer {
 public:
-    explicit LanguageServer(lsp::io::Stream& io);
+    // `logStream`, when non-null, is forwarded to CompilationController so
+    // every file it parses/persists gets logged — see
+    // CompilationController's own doc comment.
+    explicit LanguageServer(lsp::io::Stream& io, std::ostream* logStream = nullptr);
 
     // Runs the message loop until the client sends 'exit'. Returns the exit
     // code the process should use (0 after clean shutdown, 1 otherwise).

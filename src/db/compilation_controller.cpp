@@ -3,10 +3,12 @@
 #include "compiler/sv_preprocessor.h"
 #include "compiler/sv_tree_walker.h"
 #include <functional>
+#include <ostream>
 #include <unordered_map>
 
-CompilationController::CompilationController(SymbolDatabase& sdb)
+CompilationController::CompilationController(SymbolDatabase& sdb, std::ostream* logStream)
     : m_sdb{sdb}
+    , m_log{logStream}
 {}
 
 std::string CompilationController::hashContent(const std::string& text)
@@ -25,6 +27,7 @@ std::vector<ParseError> CompilationController::compile(const std::string& path,
 
     // Cache hit: return diagnostics from DB without re-parsing.
     if (m_sdb.getFileHash(path) == hash) {
+        if (m_log) { *m_log << "[parsed] " << path << " (cached)\n"; m_log->flush(); }
         auto rows = m_sdb.diagnosticsForFile(path);
         std::vector<ParseError> errs;
         errs.reserve(rows.size());
@@ -32,6 +35,8 @@ std::vector<ParseError> CompilationController::compile(const std::string& path,
             errs.push_back({r.line, r.col, r.message});
         return errs;
     }
+
+    if (m_log) { *m_log << "[parsed] " << path << "\n"; m_log->flush(); }
 
     // Cache miss: run the full pipeline.
     auto stripped = CompilerDirectiveStripper::strip(text, path);
@@ -70,6 +75,7 @@ std::vector<ParseError> CompilationController::compile(const std::string& path,
         m_sdb.replaceDiagnostics(incFid,    errsByFile[filePath]  );
         m_sdb.replaceImports(incFid,        importsByFile[filePath]);
         m_sdb.replaceInstantiations(incFid, instsByFile[filePath]  );
+        if (m_log) { *m_log << "[parsed]   included: " << filePath << "\n"; m_log->flush(); }
     }
 
     return errsByFile[""];

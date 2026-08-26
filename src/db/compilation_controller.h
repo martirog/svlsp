@@ -2,6 +2,7 @@
 #include "db/symbol_database.h"
 #include "compiler/parse_record.h"
 #include "compiler/project_config.h"
+#include <iosfwd>
 #include <string>
 #include <vector>
 
@@ -19,7 +20,12 @@
 // against a file path instead of ":memory:".
 class CompilationController {
 public:
-    explicit CompilationController(SymbolDatabase& sdb);
+    // `logStream`, when non-null, receives one line per file this controller
+    // parses/persists (the primary file on every call, plus every `include`d
+    // file discovered on a cache-miss pass) — lets a caller confirm a
+    // project's full expected file set actually got parsed rather than
+    // silently missing files (e.g. a misconfigured include path).
+    explicit CompilationController(SymbolDatabase& sdb, std::ostream* logStream = nullptr);
 
     // Returns the ParseErrors for `path` / `text`, using the DB cache when
     // the content hash matches. When `config` is non-null, its includeDirs
@@ -32,6 +38,7 @@ public:
 
 private:
     SymbolDatabase& m_sdb;
+    std::ostream*   m_log;
 
     static std::string hashContent(const std::string& text);
 };

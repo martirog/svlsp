@@ -3,10 +3,10 @@
 #include <lsp/messages.h>
 #include <lsp/process.h>
 
-LanguageServer::LanguageServer(lsp::io::Stream& io)
+LanguageServer::LanguageServer(lsp::io::Stream& io, std::ostream* logStream)
     : m_db{":memory:"}
     , m_symbolDb{m_db}
-    , m_compiler{m_symbolDb}
+    , m_compiler{m_symbolDb, logStream}
     , m_projects{m_compiler, m_symbolDb}
     , m_connection{io}
     , m_messageHandler{m_connection}

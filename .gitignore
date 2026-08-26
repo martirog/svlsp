@@ -1,5 +1,6 @@
 # C++ build artefacts
 build/
+dist/
 *.o
 *.a
 *.so
