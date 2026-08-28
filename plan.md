@@ -547,6 +547,19 @@ field, editing `a.sv` must eventually flag `b.sv` as stale and re-check it.
   daemon-plus-port question above once a real compile-time baseline exists to
   quantify how much this would actually save versus its added operational
   complexity.
+  **Prior art confirmed (investigated 2026-08-28):** this is the standard
+  shape for large-codebase build/dev tooling, not a novel idea — Bazel and
+  Buck2 both run a persistent background daemon per workspace precisely to
+  keep an in-memory dependency graph and caches warm across many separate
+  command invocations, rather than re-deriving them from scratch each time;
+  Buck2 daemons are shared across client processes keyed by workspace
+  ("isolation directory") identity, directly analogous to "multiple editor
+  windows on the same codebase share one warm `svlsp`" above. The lifecycle
+  question this plan flags (start/stop/restart ownership, staleness on
+  external file changes) is exactly what those tools' own daemon-management
+  layers solve — worth reading how Bazel/Buck2 handle daemon restart and
+  cache invalidation as a model rather than reinventing it, if this is ever
+  pursued.
 - **Open question:** the `Database`/`SymbolDatabase` layer already supports
   opening against a real file path (`Database` constructor,
   `src/db/database.cpp:11`), but the actual server today always opens
@@ -597,10 +610,46 @@ field, editing `a.sv` must eventually flag `b.sv` as stale and re-check it.
     library's source changes without a corresponding rebuilt DB, and where
     pre-built DBs live/are distributed (built by whom, shipped how — this is
     genuinely unexplored, not just an implementation detail).
-  - First step before designing further: check whether this is a solved
-    problem already — does SQLite (or a library built on it) have established
-    prior art for merging/attaching independently-built databases that this
-    project could reuse rather than inventing from scratch?
+  - **Prior art confirmed (investigated 2026-08-28) — this is a solved problem
+    in the language-tooling space, not something to design from scratch:**
+    - **clangd's background index** validates the attach-and-query shape
+      almost exactly: it persists one index shard per translation unit to an
+      on-disk cache (`.cache/clangd/index`, with common-header shards like the
+      STL cached under `$HOME/.cache/clangd/index` — i.e. already
+      library/version-scoped, separate from any one project), and stitches
+      multiple `SymbolIndex` instances together at query time via a
+      `MergedIndex` that layers one index over another so every LSP feature
+      sees one combined view — no physical merge, no shared key space, exactly
+      the "keep them separate, `UNION` at query time" shape sketched above.
+      Reference design doc: clangd.llvm.org/design/indexing.
+    - **LSIF (Language Server Index Format) / its successor SCIP** validate
+      both the "pre-built-once, reused-by-many-projects" premise *and* solve
+      the id-collision problem the true-merge shape runs into here — LSIF
+      v0.4.0 added support for dumping large systems project-by-project (in
+      reverse dependency order) and combining the separate dumps into one
+      database by **linking on stable "monikers"** (content/identity-derived
+      cross-index symbol identifiers) rather than any per-dump surrogate key.
+      This directly confirms the plan's own aside above: a stable,
+      content-derived key (path+hash, or a moniker-style scheme) sidesteps the
+      `files.id`/`symbols.id` autoincrement-collision problem entirely, rather
+      than needing an id-remapping INSERT pass. (LSIF itself is now considered
+      superseded by SCIP for new work, per Sourcegraph.)
+    - Practical SQLite-level constraint worth remembering if the attach-based
+      shape is pursued: `ATTACH DATABASE`'s default `SQLITE_MAX_ATTACHED` is
+      10 databases per connection — fine for one project DB plus a handful of
+      library DBs, but would need explicit handling (batching, or a higher
+      compile-time limit) if a project ever wanted many separately-versioned
+      library DBs attached at once.
+    - **Conclusion for whoever picks this up:** don't invent the merge
+      mechanism — model the design on clangd's per-shard `MergedIndex` (query
+      time, no merge) as the default, and borrow LSIF/SCIP's moniker-style
+      stable-key idea only if a true physical merge ever turns out to be
+      necessary (e.g. for a single-file-DB distribution format). The
+      still-open part is entirely this codebase's own integration surface:
+      whether `SymbolDatabase`'s existing queries (`§5.3`) can be reshaped to
+      query across an attached library DB cleanly, and the
+      versioning/pinning/staleness story above, which has no external prior
+      art to borrow — it's project-config design work specific to `svlsp`.
 - **Not yet done:** grammar session 6's Fix 4 (`grammar/Sv.g4`, `class_property`'s
   `const` initializer, `constant_expression` → `expression`) is suspected (not
   profiled) to be why the full UVM corpus compile grew from session 5's
