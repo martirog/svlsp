@@ -4,9 +4,10 @@
 narrative detail if ever needed; this file now documents current-state-and-next-steps
 only).
 
-**Status:** Phases 3, 4, 5, 6.1, 6.2, 6.3 complete. Working tree clean, all work
-through commit `f414996` is committed. Full unit suite: 963 assertions / 391 test
-cases, all green. Full Emacs integration suite: 146 passed / 0 failed.
+**Status:** Phases 3, 4, 5, 6.1, 6.2, 6.3 complete, plus §6.8 (debounced `didChange`
+compilation) implemented 2026-08-28. Working tree clean, all work through commit
+`d17855a` is committed. Full unit suite: 1044 assertions / 399 test cases, all
+green (debug + release). Full Emacs integration suite: 146 passed / 0 failed.
 
 ---
 
@@ -150,14 +151,45 @@ that field. No typed prefix → unranked, unchanged behavior (every visible symb
 
 `LanguageServer` owns (construction order): `m_db`, `m_symbolDb`, `m_compiler`,
 `m_projects` (`ProjectRegistry`), `m_connection`, `m_messageHandler`, `m_store`,
-`m_diagnostics`. `m_db` is `":memory:"` — symbols lost on server restart, repopulated
-per `didOpen`/`didChange` via `m_compiler.compile(path, text, m_projects.configFor(path))`.
-Optional constructor `std::ostream* logStream` (default `nullptr`, forwarded to
-`m_compiler`) backs `--log-files`.
+`m_diagnostics`, `m_dataMutex`, `m_debouncer` (`ChangeDebouncer` — declared/
+constructed last so it's destroyed, and its worker thread joined, *first*, before
+any member it calls back into). `m_db` is `":memory:"` — symbols lost on server
+restart, repopulated per `didOpen`/`didChange` via
+`m_compiler.compile(path, text, m_projects.configFor(path))`. Optional constructor
+`std::ostream* logStream` (default `nullptr`, forwarded to `m_compiler`) backs
+`--log-files`.
 
 `registerHandlers()` wires: `initialize`/`initialized`/`shutdown`/`exit`,
 `textDocument/{didOpen,didChange,didClose,hover,definition,references,completion,
 documentSymbol,rename,signatureHelp}`, `workspace/symbol`.
+
+**Debounced `didChange` (plan.md §6.8 — implemented 2026-08-28):** `didChange`
+updates `DocumentStore` immediately, then calls `m_debouncer.schedule(uri.toString())`
+instead of compiling inline — the actual compile+publish happens later, on
+`ChangeDebouncer`'s own background thread, once no further edit for that URI
+arrives within 300ms (`src/lsp/change_debouncer.h/.cpp` — a small standalone,
+unit-tested worker: one thread, a `{key → deadline}` map, coalesces rapid
+`schedule()` calls per key into a single fire, `cancel()` removes a pending one).
+`didClose` calls `m_debouncer.cancel(uri.toString())` before closing. `didOpen`
+still compiles synchronously (unchanged) since it only fires once per file, not a
+burst source. New private `compileAndPublish(uri)` (used by both `didOpen` and
+the debounce-fire callback) re-checks `m_store.contains(uri)` before compiling —
+a harmless no-op if the document was closed in the narrow window between
+scheduling and firing.
+
+Since compiles can now run on a background thread concurrently with hover/
+definition/completion/documentSymbol/workspace-symbol on the main thread, a
+coarse `std::mutex m_dataMutex` guards every access to `m_store`/`m_db`/
+`m_symbolDb`/`m_compiler`/`m_projects` — held across each full read or write in
+every handler. This is the "minimum fix" plan.md §6.8 called for; not split into
+finer-grained locks since none of these operations are hot enough to need it.
+
+Real-world proof + regression coverage: `tests/unit/lsp/test_server_debounce.cpp`
+drives a real `LanguageServer` over a real `Content-Length`-framed pipe
+transport (`PipeStream : lsp::io::Stream`, an OS pipe pair) and asserts actual
+diagnostic *content* changes correctly across a debounced edit (error → fixed →
+error again) and that a rapid-fire burst of `didChange` collapses into exactly
+one publish reflecting the final version — not just a timing/count check.
 
 ---
 
@@ -435,15 +467,16 @@ access) vs. `expectedUriPath` (output comparison — runs the expected value thr
   `uvm_component.svh` at 3780 lines) has an inherent, roughly-linear-but-high-constant
   per-line cost independent of any preprocessor gap — Phase 6.5 territory, not
   attempted (would need profiling, possibly grammar restructuring).
-- **`didChange` recompiles synchronously on the message-read thread, every time,
-  with no debouncing.** Since `textDocumentSync = Full`, every keystroke resends the
-  whole document and triggers a full `compile()` before the server can read its next
-  message (including a concurrent hover/completion request or the next `didChange`)
-  — see `plan.md §6.8` (added 2026-08-28, not started) for the investigated design:
-  a debounce worker plus the framework's existing async-notification support
-  (`lsp::AsyncNotificationResult`), which would also require adding locking around
-  `DocumentStore`/`SymbolDatabase` that doesn't exist today (everything is currently
-  single-threaded by accident, not by design).
+- ~~`didChange` recompiles synchronously on the message-read thread, every time,
+  with no debouncing~~ — **fixed 2026-08-28**, see "Debounced `didChange`" under
+  "I/O wrapper" above (`plan.md §6.8`). One deliberate deviation from that
+  section's original sketch: the implementation does *not* use the framework's
+  `lsp::AsyncNotificationResult`/`ThreadPool` machinery — `didChange`'s handler
+  already returns immediately after `schedule()`, so `ChangeDebouncer`'s own
+  worker thread is sufficient to get the actual compile off the message-read
+  thread without needing that extra layer. Remaining open point from the
+  original design, still true: the 300ms debounce delay is a fixed constant,
+  not configurable via `initializationOptions` — see "Not yet done" #10 below.
 
 ---
 
@@ -476,12 +509,13 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
 9. Minor: a short code comment at `pathToUri()` (`src/lsp/symbol_utils.cpp`) explaining
    the `fromPath()`-always-absolutizes subtlety, for the next person constructing a URI
    for a non-`didOpen`ed file.
-10. **Debounced/async `didChange` compilation** (`plan.md §6.8`, added 2026-08-28) —
-    design investigated but not implemented: a debounce worker so rapid edits coalesce
-    into one compile instead of one per keystroke, moving that compile off the
-    message-read thread via the framework's `AsyncNotificationResult` support, and the
-    locking (`DocumentStore`, `SymbolDatabase`/`Database`) that becomes necessary once
-    compiles can run concurrently with hover/completion/etc. See "Known gaps" above.
+10. ~~Debounced/async `didChange` compilation~~ (`plan.md §6.8`) — **implemented
+    2026-08-28** (commit `d17855a`): `ChangeDebouncer` + `m_dataMutex` + full-stack
+    regression test, see "Debounced `didChange`" under "I/O wrapper" above. What's
+    left, low priority: the 300ms debounce interval is a fixed constant, not
+    configurable via `initializationOptions` — the plan's own open question on this
+    said "start with a fixed constant; revisit only if real usage shows one value
+    doesn't suit both small and very large files," which hasn't happened yet.
 11. **Performance §6.5 — two new open questions; prior art confirmed
     2026-08-28, integration design still not started:**
     - (a) A long-lived, pre-warmed `svlsp` daemon (started once, e.g. every
