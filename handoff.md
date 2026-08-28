@@ -435,6 +435,15 @@ access) vs. `expectedUriPath` (output comparison — runs the expected value thr
   `uvm_component.svh` at 3780 lines) has an inherent, roughly-linear-but-high-constant
   per-line cost independent of any preprocessor gap — Phase 6.5 territory, not
   attempted (would need profiling, possibly grammar restructuring).
+- **`didChange` recompiles synchronously on the message-read thread, every time,
+  with no debouncing.** Since `textDocumentSync = Full`, every keystroke resends the
+  whole document and triggers a full `compile()` before the server can read its next
+  message (including a concurrent hover/completion request or the next `didChange`)
+  — see `plan.md §6.8` (added 2026-08-28, not started) for the investigated design:
+  a debounce worker plus the framework's existing async-notification support
+  (`lsp::AsyncNotificationResult`), which would also require adding locking around
+  `DocumentStore`/`SymbolDatabase` that doesn't exist today (everything is currently
+  single-threaded by accident, not by design).
 
 ---
 
@@ -466,4 +475,24 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
    2-scenario coverage if a concrete completion bug ever motivates it.
 9. Minor: a short code comment at `pathToUri()` (`src/lsp/symbol_utils.cpp`) explaining
    the `fromPath()`-always-absolutizes subtlety, for the next person constructing a URI
+   for a non-`didOpen`ed file.
+10. **Debounced/async `didChange` compilation** (`plan.md §6.8`, added 2026-08-28) —
+    design investigated but not implemented: a debounce worker so rapid edits coalesce
+    into one compile instead of one per keystroke, moving that compile off the
+    message-read thread via the framework's `AsyncNotificationResult` support, and the
+    locking (`DocumentStore`, `SymbolDatabase`/`Database`) that becomes necessary once
+    compiles can run concurrently with hover/completion/etc. See "Known gaps" above.
+11. **Performance §6.5 — two new open questions, investigation only, nothing designed
+    yet:** (a) whether a long-lived, pre-warmed `svlsp` daemon (started once, e.g.
+    every morning, ahead of any editor session, potentially shared by multiple editor
+    windows) would help both cold-start latency and §6.8's debounce/compile load —
+    weigh against the simpler on-disk-DB-persistence option listed right above it in
+    `plan.md`; (b) whether a pre-built, reusable DB for rarely-changing library code
+    (UVM, verification IP — a large fraction of a real project's files, shared
+    unchanged across many projects) is feasible, sketched as either an
+    `ATTACH DATABASE`-and-query approach (no merge, but every query needs checking
+    against a two-database setup) or a true merge (blocked today by `files.id`/
+    `symbols.id`/etc. being plain autoincrement surrogate keys with no cross-database
+    uniqueness). **First step, not yet done:** check whether this is already a solved
+    problem in the SQLite ecosystem before designing further.
    for a non-`didOpen`ed file.
