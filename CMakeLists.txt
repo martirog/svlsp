@@ -155,6 +155,7 @@ target_link_libraries(svlsp_db PUBLIC svlsp_sqlite3 svlsp_compiler svlsp_options
 # Server library (business logic, shared by svlsp binary and unit_tests)
 # ---------------------------------------------------------------------------
 add_library(svlsp_lib STATIC
+    src/lsp/change_debouncer.cpp
     src/lsp/completion.cpp
     src/lsp/definition.cpp
     src/lsp/document_symbols.cpp
@@ -188,6 +189,8 @@ add_executable(unit_tests
     tests/unit/main_test.cpp
     tests/unit/lsp/test_server_state.cpp
     tests/unit/lsp/test_document_store.cpp
+    tests/unit/lsp/test_change_debouncer.cpp
+    tests/unit/lsp/test_server_debounce.cpp
     tests/unit/lsp/test_symbol_utils.cpp
     tests/unit/lsp/test_fuzzy_match.cpp
     tests/unit/lsp/test_completion.cpp

@@ -1,9 +1,11 @@
 #pragma once
 
 #include <iosfwd>
+#include <mutex>
 #include <lsp/connection.h>
 #include <lsp/messagehandler.h>
 #include <lsp/io/standardio.h>
+#include "change_debouncer.h"
 #include "completion.h"
 #include "definition.h"
 #include "diagnostics.h"
@@ -44,9 +46,32 @@ private:
     lsp::MessageHandler   m_messageHandler;
     DiagnosticsPublisher  m_diagnostics; // must follow m_messageHandler
 
+    // Guards every access to m_store, m_db, m_symbolDb, m_compiler, and
+    // m_projects. Needed because compileAndPublish() can now run on
+    // m_debouncer's background thread concurrently with the message-read
+    // thread handling a request (hover/definition/completion/documentSymbol/
+    // workspace-symbol) or another notification (didOpen/didClose) — see
+    // plan.md §6.8. A single coarse mutex is the documented "minimum fix";
+    // none of these operations are hot enough to need finer-grained locking.
+    std::mutex m_dataMutex;
+
+    // Debounces textDocument/didChange: coalesces a burst of edits into one
+    // compileAndPublish() call, fired on its own thread once typing pauses —
+    // see plan.md §6.8 and change_debouncer.h. Declared last so it is
+    // destroyed (and its worker thread joined) before any member it calls
+    // back into.
+    ChangeDebouncer m_debouncer;
+
     void registerHandlers();
 
     // Run the compiler pipeline (or return cached DB result) and publish diagnostics.
+    // Caller must hold m_dataMutex.
     lsp::Array<lsp::Diagnostic> parseDiagnostics(const lsp::DocumentUri& uri,
                                                   const std::string& text);
+
+    // Compiles the given (already-open) document's current text and
+    // publishes its diagnostics. Locks m_dataMutex itself — do not call
+    // while already holding it. If the document was closed in the meantime
+    // (e.g. a debounced fire racing a didClose), this is a harmless no-op.
+    void compileAndPublish(const lsp::DocumentUri& uri);
 };

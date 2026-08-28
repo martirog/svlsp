@@ -2,6 +2,7 @@
 #include <iostream>
 #include <lsp/messages.h>
 #include <lsp/process.h>
+#include <lsp/uri.h>
 
 LanguageServer::LanguageServer(lsp::io::Stream& io, std::ostream* logStream)
     : m_db{":memory:"}
@@ -11,6 +12,9 @@ LanguageServer::LanguageServer(lsp::io::Stream& io, std::ostream* logStream)
     , m_connection{io}
     , m_messageHandler{m_connection}
     , m_diagnostics{m_messageHandler}
+    , m_debouncer{[this](const std::string& uriStr) {
+          compileAndPublish(lsp::DocumentUri{lsp::Uri::parse(uriStr)});
+      }}
 {
     m_db.initSchema();
     registerHandlers();
@@ -40,6 +44,21 @@ lsp::Array<lsp::Diagnostic> LanguageServer::parseDiagnostics(
     return diags;
 }
 
+void LanguageServer::compileAndPublish(const lsp::DocumentUri& uri)
+{
+    lsp::Array<lsp::Diagnostic> diags;
+    int version = 0;
+    {
+        std::lock_guard lock{m_dataMutex};
+        if (!m_store.contains(uri))
+            return; // closed before this fired (didClose cancels the pending
+                     // debounce entry, but guard here too for the narrow race)
+        version = m_store.get(uri).version;
+        diags   = parseDiagnostics(uri, m_store.get(uri).text);
+    }
+    m_diagnostics.publish(uri, version, diags);
+}
+
 void LanguageServer::registerHandlers()
 {
     m_messageHandler
@@ -63,26 +82,35 @@ void LanguageServer::registerHandlers()
             })
         .add<lsp::notifications::TextDocument_DidOpen>(
             [this](lsp::notifications::TextDocument_DidOpen::Params&& params) {
-                const auto uri     = params.textDocument.uri;
-                const auto version = params.textDocument.version;
-                m_store.open(std::move(params));
-                m_diagnostics.publish(uri, version,
-                    parseDiagnostics(uri, m_store.get(uri).text));
+                const auto uri = params.textDocument.uri;
+                {
+                    std::lock_guard lock{m_dataMutex};
+                    m_store.open(std::move(params));
+                }
+                compileAndPublish(uri);
             })
         .add<lsp::notifications::TextDocument_DidChange>(
             [this](lsp::notifications::TextDocument_DidChange::Params&& params) {
-                const auto uri     = params.textDocument.uri;
-                const auto version = params.textDocument.version;
-                m_store.update(std::move(params));
-                m_diagnostics.publish(uri, version,
-                    parseDiagnostics(uri, m_store.get(uri).text));
+                const auto uri = params.textDocument.uri;
+                {
+                    std::lock_guard lock{m_dataMutex};
+                    m_store.update(std::move(params));
+                }
+                // Debounced: coalesces a burst of edits into one
+                // compileAndPublish(), fired off the message-read thread
+                // once typing pauses — see plan.md §6.8.
+                m_debouncer.schedule(uri.toString());
             })
         .add<lsp::notifications::TextDocument_DidClose>(
             [this](lsp::notifications::TextDocument_DidClose::Params&& params) {
+                const auto uri = params.textDocument.uri;
+                m_debouncer.cancel(uri.toString());
+                std::lock_guard lock{m_dataMutex};
                 m_store.close(std::move(params));
             })
         .add<lsp::requests::TextDocument_Hover>(
             [this](lsp::HoverParams&& params) {
+                std::lock_guard lock{m_dataMutex};
                 if (!m_store.contains(params.textDocument.uri))
                     return lsp::TextDocument_HoverResult{nullptr};
                 return HoverProvider::getHover(
@@ -90,6 +118,7 @@ void LanguageServer::registerHandlers()
             })
         .add<lsp::requests::TextDocument_Definition>(
             [this](lsp::DefinitionParams&& params) {
+                std::lock_guard lock{m_dataMutex};
                 if (!m_store.contains(params.textDocument.uri))
                     return lsp::TextDocument_DefinitionResult{nullptr};
                 return DefinitionProvider::getDefinition(
@@ -101,6 +130,7 @@ void LanguageServer::registerHandlers()
             })
         .add<lsp::requests::TextDocument_Completion>(
             [this](lsp::CompletionParams&& params) {
+                std::lock_guard lock{m_dataMutex};
                 if (!m_store.contains(params.textDocument.uri))
                     return lsp::TextDocument_CompletionResult{nullptr};
                 return CompletionProvider::getCompletion(
@@ -108,10 +138,12 @@ void LanguageServer::registerHandlers()
             })
         .add<lsp::requests::TextDocument_DocumentSymbol>(
             [this](lsp::DocumentSymbolParams&& params) {
+                std::lock_guard lock{m_dataMutex};
                 return DocumentSymbolsProvider::getDocumentSymbols(params, m_symbolDb);
             })
         .add<lsp::requests::Workspace_Symbol>(
             [this](lsp::WorkspaceSymbolParams&& params) {
+                std::lock_guard lock{m_dataMutex};
                 return WorkspaceSymbolsProvider::getWorkspaceSymbols(params, m_symbolDb);
             })
         .add<lsp::requests::TextDocument_Rename>(
