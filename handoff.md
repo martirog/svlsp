@@ -482,17 +482,36 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
     message-read thread via the framework's `AsyncNotificationResult` support, and the
     locking (`DocumentStore`, `SymbolDatabase`/`Database`) that becomes necessary once
     compiles can run concurrently with hover/completion/etc. See "Known gaps" above.
-11. **Performance §6.5 — two new open questions, investigation only, nothing designed
-    yet:** (a) whether a long-lived, pre-warmed `svlsp` daemon (started once, e.g.
-    every morning, ahead of any editor session, potentially shared by multiple editor
-    windows) would help both cold-start latency and §6.8's debounce/compile load —
-    weigh against the simpler on-disk-DB-persistence option listed right above it in
-    `plan.md`; (b) whether a pre-built, reusable DB for rarely-changing library code
-    (UVM, verification IP — a large fraction of a real project's files, shared
-    unchanged across many projects) is feasible, sketched as either an
-    `ATTACH DATABASE`-and-query approach (no merge, but every query needs checking
-    against a two-database setup) or a true merge (blocked today by `files.id`/
-    `symbols.id`/etc. being plain autoincrement surrogate keys with no cross-database
-    uniqueness). **First step, not yet done:** check whether this is already a solved
-    problem in the SQLite ecosystem before designing further.
-   for a non-`didOpen`ed file.
+11. **Performance §6.5 — two new open questions; prior art confirmed
+    2026-08-28, integration design still not started:**
+    - (a) A long-lived, pre-warmed `svlsp` daemon (started once, e.g. every
+      morning, ahead of any editor session, potentially shared by multiple
+      editor windows) to help both cold-start latency and §6.8's
+      debounce/compile load. **Not a novel idea** — Bazel and Buck2 already
+      work this way (persistent per-workspace daemon, Buck2 shares one daemon
+      across clients keyed by workspace identity, directly analogous to
+      "multiple editor windows share one warm `svlsp`"). Weigh against the
+      simpler on-disk-DB-persistence option listed right above it in
+      `plan.md` before building this.
+    - (b) A pre-built, reusable DB for rarely-changing library code (UVM,
+      verification IP — a large fraction of a real project's files, shared
+      unchanged across many projects), instead of every project recompiling
+      it from scratch. **Also not novel — two confirmed real-world models to
+      copy rather than reinvent:** clangd's background index (per-translation-
+      unit shards persisted on disk, stitched together at query time via a
+      `MergedIndex` — no physical merge, no shared key space; this is the
+      "attach-and-query" shape) and LSIF/its successor SCIP (pre-built once
+      per project/dependency version, combined by linking on stable
+      *monikers* — content/identity-derived keys — rather than any
+      per-dump surrogate key; this solves the exact `files.id`/`symbols.id`
+      autoincrement-collision problem a true merge would hit here, confirming
+      a path+hash-style key would sidestep it). **Recommended default:**
+      model on clangd's query-time merge; only borrow the LSIF/SCIP
+      moniker-key idea if a true physical merge turns out to be necessary
+      (e.g. for a single-file distribution format). Note
+      `SQLITE_MAX_ATTACHED`'s default limit of 10 attached databases per
+      connection if the attach-based shape is pursued with many separate
+      library DBs. The still-open, no-prior-art part is entirely `svlsp`-
+      specific: reshaping `SymbolDatabase`'s existing queries (§5.3) to query
+      across an attached library DB, and the library-versioning/pinning/
+      staleness story (config field, where pre-built DBs are built/shipped).
