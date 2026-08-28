@@ -798,7 +798,30 @@ file plus optional per-subdirectory override/append files). Start with the
 single-file model; revisit only if a real multi-team monorepo use case asks for
 finer granularity.
 
-### 6.8 Debounced / Asynchronous Compilation on `didChange`
+### 6.8 Debounced / Asynchronous Compilation on `didChange` — Implemented (commit `d17855a`, 2026-08-28)
+
+**Status:** implemented as designed below, with one deliberate deviation. Built:
+`src/lsp/change_debouncer.h/.cpp` (`ChangeDebouncer` — the recommended one-thread,
+`{key → deadline}` scheduler shape below, coalescing rapid `schedule()` calls per
+key into one fire after a 300ms quiet period; `cancel()` for `didClose`); `didChange`
+now updates `DocumentStore` immediately and calls `m_debouncer.schedule(uri)`
+instead of compiling inline; a coarse `std::mutex m_dataMutex` in `LanguageServer`
+guards `DocumentStore`/`Database`/`SymbolDatabase`/`CompilationController`/
+`ProjectRegistry` across every handler, exactly the "minimum fix" described below.
+**Deviation:** the framework's `lsp::AsyncNotificationResult`/`ThreadPool` support
+described below turned out to be unnecessary — `didChange`'s handler already
+returns immediately after `schedule()`, so `ChangeDebouncer`'s own worker thread
+alone is sufficient to get the actual compile off the message-read thread; that
+extra layer would have added complexity with no behavioral benefit here. All four
+integration-test scenarios below are covered by
+`tests/unit/lsp/test_server_debounce.cpp` (a full-stack test driving a real
+`LanguageServer` over a real `Content-Length`-framed pipe transport, asserting
+actual diagnostic *content* changes correctly across a debounced edit, not just
+timing); the unit-test list below is covered by `tests/unit/lsp/
+test_change_debouncer.cpp`. **Still open, unchanged:** the "Open question" at the
+end of this section (fixed vs. configurable debounce interval) — not revisited,
+per its own stated criterion ("only if real usage shows one value doesn't suit
+both small and very large files").
 
 **Why this is needed:** today `didChange` triggers a full, synchronous
 `CompilationController::compile()` on the *same thread* that reads the LSP
