@@ -561,6 +561,46 @@ field, editing `a.sv` must eventually flag `b.sv` as stale and re-check it.
   files the DB never revisits), disk space/location conventions, and whether it
   meaningfully compounds with the daemon-plus-port question above versus being
   a simpler independent win.
+- **Open question, needs investigation — pre-built/shared DBs for rarely-changing
+  library code (UVM, verification IP):** a large fraction of a real verification
+  project's total file count (per `handoff.md`'s UVM-corpus work, ~140 files) is
+  third-party or internal library code that changes rarely — new UVM/VIP
+  releases, not every edit — but gets fully recompiled from scratch by every
+  project that includes it, and again on every server restart while the DB stays
+  `:memory:` (see the open question directly above). Since the same library is
+  typically reused unmodified across many projects, could `svlsp` ship or build
+  **one pre-compiled DB for a given library version once**, and have individual
+  projects reuse it instead of each recompiling all ~140 UVM files themselves?
+  Two shapes worth investigating, not yet designed:
+  - **Attach-and-query, no merge:** point `SymbolDatabase` at the project's own
+    DB plus a separate read-only library DB via SQLite's `ATTACH DATABASE`, and
+    extend queries (`findSymbolsByName`, `findSymbolsVisibleAt`, etc., §5.3) to
+    `UNION` across both. Avoids the id-collision problem below entirely, since
+    each attached DB's rows stay namespaced by schema name — but needs checking
+    whether every existing query pattern (especially the hand-sorted-in-C++
+    `UNION ALL` in `findSymbolsVisibleAt`, and the `file_id`-keyed foreign keys
+    in `symbols`/`diagnostics`/`imports`/`instantiations`, `src/db/schema.h`)
+    still works cleanly across two attached databases, and how project-side
+    edits to a library file (should be rare/unsupported, but must not corrupt
+    a shared, reused-by-other-projects DB) are handled.
+  - **True merge into one DB:** copy the library DB's rows into the project's
+    own DB. Harder, because every table's primary key (`files.id`, `symbols.id`,
+    etc.) is a plain autoincrementing surrogate key with no cross-database
+    uniqueness guarantee — a naive merge would collide ids and corrupt foreign
+    keys; would need an id-remapping INSERT pass (or a schema change to a
+    stable, content-derived key such as a path+hash, sidestepping remapping
+    entirely — worth comparing against just keeping keys as-is and merging via
+    `ATTACH` + `INSERT ... SELECT` with explicit id offsetting).
+  - Either shape needs a **library-versioning/invalidation story**: how a
+    project pins which pre-built library DB version it wants (a config field
+    in `.svlsp.json`/`.svlsp.f`, §6.2?), how staleness is detected if the
+    library's source changes without a corresponding rebuilt DB, and where
+    pre-built DBs live/are distributed (built by whom, shipped how — this is
+    genuinely unexplored, not just an implementation detail).
+  - First step before designing further: check whether this is a solved
+    problem already — does SQLite (or a library built on it) have established
+    prior art for merging/attaching independently-built databases that this
+    project could reuse rather than inventing from scratch?
 - **Not yet done:** grammar session 6's Fix 4 (`grammar/Sv.g4`, `class_property`'s
   `const` initializer, `constant_expression` → `expression`) is suspected (not
   profiled) to be why the full UVM corpus compile grew from session 5's
