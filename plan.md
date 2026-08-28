@@ -518,6 +518,35 @@ field, editing `a.sv` must eventually flag `b.sv` as stale and re-check it.
   discovery, multi-client handling if more than one editor window connects)?
   Revisit once a real large-project compile-time baseline exists here to
   quantify the actual win.
+- **Open question:** taking the standalone-daemon idea above further — instead
+  of just starting the daemon slightly ahead of the editor within one session,
+  would running `svlsp` as a **long-lived, pre-warmed background instance**
+  (started once, e.g. every morning before work begins, or kept running
+  continuously — independent of any particular editor session's lifetime)
+  help with both this section's compile-latency concerns *and* §6.8's
+  debounce/async-compile problem, for large real codebases (UVM-scale)?
+  Potential wins to weigh: (a) the full-project compile (~7-8 min for the full
+  UVM corpus) happens once, off the clock, before anyone opens an editor, so
+  no session ever pays it; (b) multiple editor windows/instances working on
+  the same codebase could share one already-warm compiled DB instead of each
+  independently recompiling the whole project on its own `initialize` (only
+  possible once the DB is file-backed/shared — see the very next open
+  question below); (c) a persistent process could keep §6.8's debounce
+  scheduler "hot" and absorb a burst of edits/recompiles without ever paying
+  cold-start cost, and could even keep compiling/refreshing diagnostics for
+  files not currently open in any editor. Costs to weigh: daemon lifecycle
+  management (who starts/stops/restarts it — a cron job, a systemd user
+  service, a manual habit — and what happens to open editors if it crashes or
+  is restarted mid-day), staleness if files change on disk outside any
+  connected editor's `didChange` notifications (would need filesystem
+  watching, which nothing in this codebase does today), and whether
+  multi-client/multi-workspace support is even worth building versus just
+  making a single editor session's own cold-start faster (the DB-persistence
+  open question directly below is a strict subset of this idea and may
+  capture most of the win at far lower complexity). Revisit alongside the
+  daemon-plus-port question above once a real compile-time baseline exists to
+  quantify how much this would actually save versus its added operational
+  complexity.
 - **Open question:** the `Database`/`SymbolDatabase` layer already supports
   opening against a real file path (`Database` constructor,
   `src/db/database.cpp:11`), but the actual server today always opens
