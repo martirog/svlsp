@@ -1,2141 +1,19 @@
 # svlsp — Handoff Document
 
-**Date:** 2026-07-15  
-**Last completed phase:** Phase 6.2 complete — multi-file project support, all 6 stages
-(6.1 — DB-backed providers; 6.3 — package import *and export* resolution; preprocessor
-source map committed previously)  
-**Current work (2026-08-22, see "Four more grammar gaps — session 6" section below,
-near the top, for full detail):** Root-caused and fixed the four grammar gaps
-behind the last 68 UVM-corpus diagnostics: (1) an implicit `'#0'` lexer token
-(meant only for `assert #0(...)`) stole every bare zero-delay `#0;` statement —
-20 sites in uvm-core alone; (2) an implicit `'sample'` keyword (from the coverage
-`with function sample(...)` construct) blocked any method literally named
-`sample()` — the standard UVM reg/mem coverage callback; (3) `assignment_pattern`
-had no empty-pattern (`` '{} ``) alternative; (4) `class_property`'s `const`
-initializer was wrongly restricted to `constant_expression`, excluding `new(...)`.
-9 new unit tests across 4 tags; full suite 931/380, zero regressions.
-**Full-corpus real-world result: 68 → 1 diagnostic (−67, −98.5% further; −2955,
-−99.97% cumulative from session 3's original 2956)** — only
-`base/uvm_transaction.svh` has 1 remaining diagnostic, a **newly-discovered,
-separate, pre-existing grammar ambiguity** in `data_type`/`variable_decl_assignment`
-(confirmed present on the *unmodified* grammar too, unrelated to any of today's
-fixes) that only manifests when a `local`/`protected` qualifier precedes a
-`const ... = new(...)` property — flagged, not fixed, see below. **Also note:**
-this corpus run took ~16m47s and peaked at ~6.7GB RSS, materially more than
-session 5's ~14min/~1.3GB — likely fix (4)'s `expression` widening triggering
-expensive full-context ANTLR prediction at every `const` property declaration
-corpus-wide; not fatal but a real, unquantified-further performance cost worth
-knowing about. Committed. **Later same session:** investigated the
-`data_type`/`variable_decl_assignment` ambiguity (per explicit user request) —
-root-caused precisely (SV's classic "identifier classification needs a symbol
-table" problem, confirmed pre-existing on the unmodified grammar), tried two
-cheap structural experiments (reordering alternatives; removing a provably-
-redundant one), neither changed the outcome, both reverted. **Not fixed** — a
-real fix needs semantic predicates or risky restructuring of extremely
-heavily-used rules, not justified for the 1 remaining corpus diagnostic it
-currently causes. Fully documented, not committed as a code change (investigation
-only). See "`data_type`/`variable_decl_assignment` ambiguity — investigated, NOT
-fixed" in session 6's section below.
-**Later, session 7 (2026-08-22):** turned six sessions of manual/scratchpad UVM
-real-world validation into a real, committed, repeatable test suite —
-`tests/uvm_corpus/`, new `uvm_corpus_tests` CMake target, covering the 5 LSP
-features that are actually DB-backed (hover, definition, documentSymbol,
-workspace/symbol, completion — `references`/`rename`/`signatureHelp` are still
-Phase-3 stubs that unconditionally return null, confirmed via their own existing
-unit tests, so there's no real behavior to test there yet). Deliberately **not**
-registered with `ctest`/`make test` (opt-in only, run directly) since it depends
-on the external, ~140-file, ~15-minute-to-compile UVM corpus — resolves the
-tension with session 1's original "don't commit a corpus-dependent test" guidance
-by making the *code* committed while the *data* stays external and unvendored.
-9 test cases / 90 assertions, all passing after two rounds of fixing real bugs the
-suite itself caught (a `DocumentUri` path-representation mismatch between input
-lookups and output `Location`s; a synthetic-docText line-mismatch in the
-completion test; one stale document-symbol count baseline from session 3, now
-corrected with an explanation). See "New test suite: LSP features against the
-real, full UVM corpus DB — session 7" below for full detail.
-**Later, session 8 (2026-08-25):** implemented fuzzy/typo-tolerant completion
-ranking (`src/lsp/fuzzy_match.h/.cpp` + `CompletionProvider` rewire) — no
-DB/schema change needed, see "Fuzzy completion matching — session 8" below for
-full detail. 11 new unit tests, full suite 963/391, zero regressions.
-**Not committed.**
-**Later, session 9 (2026-08-26):** added the functional/Emacs integration test
-session 8 queued — `tests/integration/test_25_completion_fuzzy.sh` +
-`tests/integration/fixtures/fuzzy_completion.sv` — exercising fuzzy completion
-through the real JSON-RPC/LSP layer. See "Fuzzy-completion integration test —
-session 9" below for full detail, including a real grammar-ambiguity pitfall
-hit and worked around while building the fixture. Also found, then fixed
-(explicit user request, same session), a stale assertion in
-`test_08_completion.sh`: its `"completion returns null outside any scope"`
-case was asserting behavior that was never actually correct for this
-codebase's design — see "`test_08_completion.sh`'s stale assertion — found
-and fixed — session 9" below for the full root-cause and fix. Full
-integration suite: **146 passed / 0 failed** (up from 145/1 after session 9's
-first pass, now fully green).
-**Later, session 9 (continued), explicit user request:** added a `--log-files
-<path>` CLI option to the `svlsp` binary — logs every file the compiler
-parses/persists (primary file + every `include`d file discovered per
-cache-miss compile), so a user can tail the log and confirm a project's full
-expected file set actually got parsed. See "`--log-files` CLI option —
-session 9" below for full detail. **Unrelated operational note, same
-session:** a cleanup command accidentally `rm -rf`'d the repo-root `dist/`
-directory (pre-existing, untracked, not created this session) while removing
-scratch files — root cause was a misplaced `-rf` flag applying to all paths
-in a combined `rm` command. Confirmed harmless on investigation: `dist/` is
-purely a build artifact (ANTLR4 runtime's own `CMakeLists.txt`, fetched via
-`FetchContent`, copies its built `libantlr4-runtime.a`/`.so` there via
-`${CMAKE_HOME_DIRECTORY}/dist` as a post-build step) — a full clean rebuild
-(`rm -rf build/debug build/release`, reconfigure + build both presets)
-regenerated it exactly, and `dist/` has now been added to `.gitignore` since
-it wasn't there before despite being fully generated.
-**Not yet done, immediate next action:** none queued from this line of work —
-see the "Not yet done — suggested next steps" lists carried over from earlier
-sessions below for what's still open generally. Also still open from earlier sessions:
-consider narrowing fix (4)
-if the performance cost proves problematic at Phase 6.5 scale; Gap E (still not
-confirmed either way); the LSP diagnostics-visibility gap; and Phase 6.4
-(cross-file invalidation / dependency graph) per `plan.md §6.4` — not yet planned
-in file-level detail. **The
-full approved Phase 6.2 plan (exact signatures, schema SQL, algorithms, test names —
-now historical reference, all 6 stages complete) lives at
-`/home/martin/.claude/plans/fluffy-hatching-popcorn.md`.**
-See "Phase 6.2" section below for what was built in each stage.
-
----
-
-## `--log-files` CLI option — session 9 (2026-08-26)
-
-Explicit user request: "add the option to run with outputting a log to see
-that all the expected files are parsed."
-
-### Implementation
-
-- `src/db/compilation_controller.h`/`.cpp`: `CompilationController`'s
-  constructor takes an optional `std::ostream* logStream = nullptr` (default
-  preserves every existing call site — unit tests, `uvm_corpus_fixture.cpp`,
-  `LanguageServer` — unchanged). In `compile()`, when `logStream` is set, it
-  writes one flushed line per file: `[parsed] <path>` for the primary file
-  (` (cached)` appended on a cache hit, before the early return), and
-  `[parsed]   included: <path>` for every included file actually persisted
-  in the cache-miss loop over `recsByFile`.
-- `src/lsp/server.h`/`.cpp`: `LanguageServer`'s constructor takes the same
-  optional `std::ostream*` and forwards it straight into `m_compiler`.
-- `src/main.cpp`: parses `--log-files <path>` from `argv`, opens it
-  (`std::ios::app`, so repeated server restarts accumulate rather than
-  clobber), and passes the `ofstream` pointer into `LanguageServer`. No args
-  → `logStream` stays `nullptr`, zero behavior change (this is why no
-  existing test needed updating).
-
-### Verification
-
-Unit suite unaffected (963/391, unchanged — the new parameter is
-default-valued everywhere). Manually smoke-tested with a small one-off
-Python script (`scratchpad/lsp_smoke.py`, not committed — frames raw
-`Content-Length`-delimited JSON-RPC `initialize`/`initialized`/`didOpen`/
-`shutdown`/`exit` over stdio) against two fixtures:
-- `examples/module_basic.sv` (no includes) → log shows exactly one line,
-  `[parsed] .../module_basic.sv`.
-- `tests/integration/fixtures/ml_top.sv` (the multi-level-include fixture,
-  `ml_top.sv` → `ml_level2.sv` → `ml_level3.sv`) → log shows the primary
-  file plus both included files, confirming the full expected chain is
-  reported.
-
-Full integration suite re-run after wiring this in: **146 passed / 0
-failed**, unaffected.
-
-**Not committed this session** — per this repo's working rule of only
-committing when the user explicitly asks.
-
----
-
-## Fuzzy-completion integration test — session 9 (2026-08-26)
-
-Direct continuation of session 8. Explicit user request to continue with the
-queued "next action": a functional/Emacs integration test for fuzzy
-completion, per session 8's own "Not yet done — next action" note.
-
-### New files
-
-- `tests/integration/fixtures/fuzzy_completion.sv` — module `sensor` declares
-  `WIDTH` (parameter), `report_id` and `xxrepxx` (ports), chosen to mirror
-  session 8's unit-test fixtures exactly. Four `// probe: <text>` comment
-  lines put typed-prefix probe text (`WIDTH`, `wdth`, `rep`, `qqqqq`) at
-  precise `(line, char)` positions for the test script to point
-  `textDocument/completion` at.
-- `tests/integration/test_25_completion_fuzzy.sh` (next number after
-  `test_24_multilevel_include.sh`) — 5 cases, following the
-  `test_08_completion.sh`/`test_16_class_scope_completion.sh` style
-  (`run_test`/`skip_test`/`section`, `lsp-request` + `gethash`/`cl-position`
-  on the raw hash-table result): exact full-name prefix `WIDTH` (regression
-  baseline); typo'd/non-contiguous prefix `wdth` → `WIDTH`, both a positive
-  (`member`) and negative (excludes `report_id`/`xxrepxx`, which aren't
-  subsequences of `wdth`) assertion; a prefix (`qqqqq`) matching nothing
-  returns LSP `null`; and a ranking check that `rep` (ambiguous — matches
-  both `report_id` contiguously/word-start and `xxrepxx` only as a scattered
-  mid-word match) returns `report_id` before `xxrepxx` in response order,
-  via `cl-position`.
-
-### A real grammar pitfall hit while building the fixture — worked around, not fixed
-
-First fixture draft put each probe's typed text directly as a bare,
-no-paren statement (e.g. `wdth;`) inside an `initial begin…end` block,
-reasoning that `subroutine_call_statement`'s parens are optional so it would
-parse as a harmless, unresolved task call. It compiled and ran, but every
-probe matched **only itself** — e.g. querying completion at the `qqqqq;`
-probe returned exactly one candidate, labeled `"qqqqq"`, not `null` as
-intended. Root cause, confirmed via `workspace/symbol` and `documentSymbol`
-debug probes: each bare `IDENTIFIER;` statement was being parsed not as a
-task call but as an **implicit-type variable declaration**, creating a real
-symbol named after the probe's own typed text — directly the
-`data_type`/`variable_decl_assignment` ambiguity documented in session 6
-(`grammar/Sv.g4:740-753`, already flagged there as "benign under default
-prediction almost everywhere" — this is a second, previously-unseen place it
-silently resolves the *wrong* way under default prediction, not just the
-narrow `const local/protected … = new(...)` case session 6 found). **Fix
-(fixture-only, no grammar change):** switched all four probes to
-`// probe: <text>` comment lines instead of bare statements — comment text
-is never lexed at all, so it can't be (mis)parsed as anything, while
-`wordAtPosition` (which reads raw `docText` independent of the parse tree)
-still finds the exact intended prefix at a precisely computed `(line, char)`.
-Scope resolution still works from a comment line because `scopeAtPosition`
-keys off a scope's backpatched `[startLine, endLine]` *line range*
-(`base/uvm_component.svh`-style `backpatchEndLine` calls in
-`sv_tree_walker.cpp`), not off what any individual line's text is.
-
-### `test_08_completion.sh`'s stale assertion — found and fixed — session 9
-
-Running the **full** integration suite (`./tools/emacs-test-daemon.sh`, no
-argument) after adding the new test, to check for regressions, surfaced one
-unrelated failure: `test_08_completion.sh`'s `"completion returns null
-outside any scope"` case (position: blank line 3 of `examples/module_basic.sv`,
-before the `module adder` declaration starts) consistently returned the
-module's own declaration (`{"label":"adder","kind":9}`), not `null` —
-reproduced 3/3 runs, not a flake.
-
-**Confirmed unrelated to the fuzzy-match feature**: diffed `2bcdfaf` (the
-fuzzy-match commit) directly — the no-prefix code path is structurally
-identical before and after (`!prefix.empty() && …` gate in the old code vs.
-`if (!prefix.empty())` in the new fuzzy code; both let every row from
-`findSymbolsVisibleAt` through unfiltered when the prefix is empty), so the
-old strict-prefix code would have returned the exact same single-item
-`adder` result at this position too.
-
-**Root cause (explicit user follow-up request: "fix the test_08
-regression"), confirmed by reading `findSymbolsVisibleAt`
-(`src/db/symbol_database.cpp:381`) in full**: `scopeAtPosition(path, 3)`
-returns `""` (global scope) since no Module/Interface/Class/Function/Task
-range contains line 3 yet. `findSymbolsVisibleAt`'s Part-1 query for the
-global scope is `WHERE f.path = ? AND s.scope IN ('')` — **it does not filter
-by line at all** for same-file top-level symbols, so every top-level symbol
-in the file is always visible regardless of whether the query position is
-textually before or after that symbol's own declaration. This isn't
-special-cased to top-level scope, either — it's the exact same mechanism
-`test_16_class_scope_completion.sh` already exercises and asserts *as
-correct* for members within a named scope (its `"completion inside ClassA
-includes method_a"` case deliberately queries a line *before* `method_a`'s
-own declaration line and asserts `method_a` is still returned). So returning
-`adder` at a global-scope position in its own file, even "before" line 4, is
-the exact same intentional, already-covered, no-forward-reference-filtering
-design — not a bug, and not something to special-case away in production
-code. **Conclusion: the test's 2026-era assumption ("no symbols visible on a
-blank top-level line") was simply stale/incorrect, not a behavior
-regression.**
-
-**Fix**: corrected the test, not the code — renamed `test_08_completion.sh`'s
-third case to `"completion at top-level scope includes the module itself"`,
-changed its assertion from `(null result)` to `(member "adder" labels)`, and
-rewrote the file's header comment to explain the actual (correct, intended)
-behavior and cross-reference `test_16`'s equivalent, already-established
-case.
-
-### Verification
-
-`./tools/emacs-test-daemon.sh tests/integration/test_25_completion_fuzzy.sh`:
-all 5 new cases pass. Full suite (`./tools/emacs-test-daemon.sh`, no
-argument), after the `test_08_completion.sh` fix: **146 passed / 0 failed**
-— fully green, no other regressions.
-
-**Not committed this session** — per this repo's working rule of only
-committing when the user explicitly asks.
-
----
-
-## Fuzzy completion matching — session 8 (2026-08-25)
-
-Explicit user request, following up on `plan.md` §3.6's already-documented
-"Not yet done" note (fuzzy/typo-tolerant completion) and a follow-up question
-("what needs to be done to add fuzzy search of the db in order to generate
-good completion candidates"). Investigated first: no DB/SQL change is actually
-needed. `SymbolDatabase::findSymbolsVisibleAt` (`src/db/symbol_database.cpp:381`)
-already returns the *entire* visible-scope candidate set unfiltered by name —
-its `WHERE`/`UNION ALL` clauses only constrain by `scope`. The only name
-filtering happened in `CompletionProvider::getCompletion`
-(`src/lsp/completion.cpp`), via a strict `row.name.compare(0, prefix.size(),
-prefix) != 0` prefix check. So this is a pure in-memory ranking change, no
-schema/DB work at all.
-
-**Implementation:**
-- New `src/lsp/fuzzy_match.h/.cpp`: `fuzzyScore(candidate, pattern) ->
-  optional<int>` — case-insensitive subsequence matcher (`nullopt` if
-  `pattern` isn't a subsequence of `candidate`; reordering is never a match,
-  only skipping is tolerated). Score rewards contiguous runs (+15), a match
-  landing on a word boundary (start of string, right after `_`/`-`/`.`/`:`,
-  or a lower/digit→upper camelCase transition, +12), and exact-case matches
-  (+3 tiebreak); penalizes skipped characters (−1 per skipped char); as a
-  final tiebreak, slightly prefers shorter overall candidates.
-- `CompletionProvider::getCompletion` rewired: when a prefix is typed, every
-  visible row is scored via `fuzzyScore` (rows scoring `nullopt` are
-  dropped), then survivors are sorted by descending score (name as a stable
-  tiebreak) before being returned. Each item also gets a zero-padded
-  `sortText` (`"%05zu"` of its rank) so LSP clients that re-sort completion
-  results by `sortText` rather than trusting response order still respect the
-  ranking. With no typed prefix, behavior is byte-for-byte unchanged from
-  before (every visible symbol, unranked, no `sortText`).
-- `CMakeLists.txt`: registered `src/lsp/fuzzy_match.cpp` under `svlsp_lib` and
-  `tests/unit/lsp/test_fuzzy_match.cpp` under `unit_tests`.
-
-**Unit tests:**
-- `tests/unit/lsp/test_fuzzy_match.cpp` (new, 9 cases): empty pattern matches
-  everything at score 0; a non-subsequence returns `nullopt`; an exact prefix
-  scores positively; a contiguous prefix outranks a scattered subsequence of
-  the same candidate; an equal-length contiguous run outranks an equal-length
-  scattered match; a typo (skipped character, e.g. `"wdth"` vs `"WIDTH"`)
-  still matches; exact-case scores slightly above a case-insensitive match of
-  the same pattern; a boundary match (right after `_`) scores above an
-  equivalent mid-word match; reordering the pattern's characters is never a
-  match.
-- `tests/unit/lsp/test_completion.cpp` (2 new cases appended): a typo'd/
-  non-contiguous prefix (`"wdth"`) still surfaces `WIDTH` while correctly
-  excluding non-matching symbols; a contiguous/boundary match (`"report_id"`
-  for prefix `"rep"`) ranks ahead of a scattered/mid-word match
-  (`"xxrepxx"`), verified both via response order and via `sortText`.
-
-Full unit suite: **963 assertions / 391 test cases**, all green (up from
-931/380 at session 7 — the 11 new cases here, zero regressions across the
-whole suite, debug/ASan build).
-
-**Not committed this session** — implementation only, per this repo's working
-rule of only committing when the user explicitly asks.
-
-### Not yet done — next action
-
-**Add a functional/Emacs integration test for completion that tries a set of
-fuzzy-match patterns** (e.g. `tests/integration/test_XX_completion_fuzzy.sh`,
-following this repo's existing numbering convention — check the highest
-existing `test_NN_*.sh` number before picking one) — the unit-level coverage
-above is not sufficient on its own per this repo's working rule ("every LSP
-feature needs both a unit test and a functional Emacs test"). Should exercise,
-through the real JSON-RPC/LSP layer (not just `CompletionProvider` in
-isolation):
-- an exact prefix (regression baseline — confirm existing completion
-  integration tests, e.g. `test_05_hover.sh`'s siblings, are unaffected by
-  the new ranking);
-- a non-contiguous/typo'd pattern (a skipped character, mirroring the unit
-  test's `"wdth"` → `WIDTH` case) that a strict-prefix match would have
-  missed entirely;
-- a pattern that should NOT match anything (not a subsequence of any visible
-  symbol) — verify a clean/empty completion result, not a server error;
-- a pattern matching multiple visible symbols with different match quality
-  (contiguous/boundary vs. scattered) — verify the returned order (or
-  `sortText`) puts the better match first, the way `test_completion.cpp`'s
-  new "ranks a contiguous-prefix match above a scattered match" unit test
-  already proves at the `CompletionProvider` level.
-
----
-
-## New test suite: LSP features against the real, full UVM corpus DB — session 7 (2026-08-22)
-
-Direct continuation of session 6. Explicit user request, after the `data_type`
-ambiguity investigation was fully documented: "start creating implementation
-tests all the lsp features usin the full uvm db".
-
-### The tension with session 1's original guidance
-
-Six sessions of work (documented across this file) drove the real 140-file UVM
-corpus from 2956 diagnostics to 1, using a series of scratchpad, **uncommitted**
-C++ probes (`probe_diag.cpp` and its variants) that link directly against
-`libsvlsp_db.a`/`libsvlsp_compiler.a`/`libsvlsp_antlr4.a` and call
-`CompilationController::compile(...)`. Those probes also validated real LSP-layer
-behavior manually (session 3's `documentSymbol`/`workspace/symbol`/hover/
-definition queries against 28 cataloged real UVM symbols, including catching and
-later confirming the fix for the symbol-table-pollution bug), but none of it was
-ever committed as a repeatable test — session 1 explicitly judged that a test
-depending on an external, ~140-file, multi-minute-to-compile corpus (not tracked
-by svlsp's own git) didn't belong in the normal `tests/integration/*.sh`
-(Emacs+lsp-mode-driven) suite.
-
-Asked the user how to resolve this before planning further (see the two
-`AskUserQuestion` decisions this session): (1) commit a **separate, opt-in**
-test binary rather than keep everything scratchpad-only, and (2) cover only the
-LSP features that are actually DB-backed — checking
-`tests/unit/lsp/test_references.cpp`/`test_rename.cpp`/`test_signature_help.cpp`
-confirmed `ReferencesProvider`/`RenameProvider`/`SignatureHelpProvider` are still
-unconditional-null Phase-3 stubs, never upgraded to be DB-backed like `hover`/
-`definition`/`documentSymbol`/`workspaceSymbol`/`completion` were in Phase 6 — so
-there's no real behavior to test against real data for those three yet.
-
-### Architecture
-
-**New directory `tests/uvm_corpus/`**, new CMake executable target
-`uvm_corpus_tests` (`CMakeLists.txt`, alongside `unit_tests`, same link set —
-`svlsp_lib svlsp_antlr4 svlsp_db Catch2::Catch2WithMain`). Deliberately **not**
-passed to `add_test()`, so `ctest`/`make test` never touches it (verified: `ctest
--N` lists exactly the same 445 tests as before, `grep -i uvm_corpus` finds
-nothing) — built by default (compiling it is cheap) but only ever run directly:
-`./build/release/uvm_corpus_tests`.
-
-**Shared fixture** (`tests/uvm_corpus/uvm_corpus_fixture.h`/`.cpp`):
-`uvmCorpusDb()` compiles the corpus into an in-memory DB exactly once
-(function-local static — Catch2 runs test cases sequentially by default, so this
-needs no extra synchronization) using the identical technique every prior
-session's probe used (`ProjectConfig{includeDirs={"."}, defines={"UVM_NO_DPI":
-""}}`, `CompilationController::compile("uvm.sv", text, &cfg)`, chdir'd into the
-corpus root for the duration of the call so `` `include `` resolution works,
-then restored). Corpus root resolves from the `SVLSP_UVM_CORPUS_DIR` environment
-variable, falling back to the path used throughout this whole line of work.
-Throws a clear `std::runtime_error` with setup instructions if the corpus/its
-`uvm.sv` can't be found — appropriate for an opt-in binary only ever run by
-someone who deliberately has the corpus checked out, so no graceful-skip
-machinery needed. `readCorpusFile(relPath)` reads a real file's text from disk
-for providers that need the open document's text.
-
-### A real bug the suite caught while being written: `DocumentUri` path mismatch
-
-While wiring up the first test (`documentSymbol`), calls failed to find files
-that were definitely in the DB. Traced it to a genuine representation mismatch,
-not a test typo: `CompilationController` stores `` `include ``d files under bare
-corpus-root-relative paths (e.g. `"base/uvm_component.svh"`, confirmed via every
-prior probe's output and by reading `db/compilation_controller.cpp` — the stored
-key comes straight from the preprocessor's include resolution, independent of
-whatever path format the primary file was given). But
-`lsp::DocumentUri::fromPath()` (used by every existing hand-written unit test,
-and by this project's own `pathToUri()` in `src/lsp/symbol_utils.cpp` for
-building *output* `Location`s) unconditionally calls
-`std::filesystem::absolute()` internally (`third_party/lsp-framework/lsp/
-fileuri.cpp`) — it cannot represent a bare relative path verbatim; it always
-produces some absolute path relative to the calling process's current working
-directory at the moment it's called.
-
-Verified the fix empirically before writing it into 90 assertions (standalone
-probe, `Uri::parse("file:" + relPath).path() == relPath` exactly, no leading
-slash, since parsing a literal string with no `//` authority marker never
-forces absolute-path syntax — confirmed by reading `Uri::parse`'s own tokenizer
-in `third_party/lsp-framework/lsp/uri.cpp`). Two small fixture helpers now
-capture the two different needs precisely:
-- `uriForRelPath(relPath)` — for *input* params (documentSymbol/hover/
-  definition/completion queries, which extract `.path()` directly as the DB
-  lookup key) — goes through the generic `lsp::Uri::parse("file:" + relPath)`,
-  which does no filesystem access at all and preserves the path text exactly.
-- `expectedUriPath(relPath)` — for comparing against *output* `Location`s
-  providers return (which go through `pathToUri()`/`FileUri::fromPath()`, so
-  DO absolutize) — runs the expected value through the identical
-  `FileUri::fromPath()` transform before comparing, rather than assuming a
-  literal match. Self-consistent regardless of what CWD the test binary
-  happens to run from, since both sides go through the same transform in the
-  same process.
-
-This is a real, previously-undocumented subtlety about how this codebase's own
-URI handling behaves — worth remembering for any future test or feature code
-that needs to construct params pointing at a `` `include ``-resolved (not
-`didOpen`-opened) file path.
-
-### Test files (5, one per DB-backed feature)
-
-Ground truth is the 28-symbol candidate list and specific regression sites
-already cataloged in this file (sessions 2/3/5) — reused directly, but every
-line number was freshly re-verified with a live `grep` against the actual
-corpus while writing this suite (all 28 matched exactly; the corpus is a static
-external checkout, so this was expected but worth confirming rather than
-assuming a 94-day-old citation was still accurate).
-
-- **`test_workspace_symbols_uvm.cpp`** — all 28 candidate symbols, each
-  asserting the result set *contains* an entry at the expected file:line
-  (`workspace/symbol` does substring/prefix matching, documented session-3
-  behavior, so not asserting it's the *only* result).
-- **`test_document_symbols_uvm.cpp`** — the 5 files session 3 already
-  validated, as a floor check (`>=`, not exact — see the `uvm_reg.svh`
-  correction below).
-- **`test_definition_uvm.cpp`** / **`test_hover_uvm.cpp`** — the exact
-  symbol-table-pollution regression (hovering/going-to-definition on
-  `uvm_report_object` from `base/uvm_component.svh:59` must resolve to the
-  real `Class` at `base/uvm_report_object.svh:98`, not the bogus `Signal` the
-  pre-token-pasting-fix bug created) plus a positive control
-  (`uvm_sequence_item extends uvm_transaction`) and one more spot check.
-- **`test_completion_uvm.cpp`** — lighter, first-cut coverage (2 scenarios, not
-  part of session 3's already-validated query set): a fully-typed real class
-  name still appears in its own visible scope, and a synthetic partial-prefix
-  scenario filters correctly against real DB data.
-
-### Two more real bugs the suite caught, both fixed before landing
-
-1. **Completion test used a mismatched line/text pairing.** First run: 182 of
-   271 assertions failed, all "every returned item starts with 'uvm_comp'" —
-   turned out `CompletionProvider::getCompletion`'s `wordAtPosition(docText,
-   line, col)` indexes `docText` by the *same* `line` used for the real-file
-   DB scope lookup, but the test's synthetic `docText` was only 1 line long
-   while `line=58` was passed — `wordAtPosition` couldn't find that line,
-   returned an empty prefix, and *no* filtering was applied at all (matching
-   the observed "every visible top-level symbol in the whole corpus" flood).
-   Fixed by padding the synthetic text with 58 leading blank lines so the
-   (line, col) position actually lands on the intended text.
-2. **`reg/uvm_reg.svh`'s documentSymbol floor was stale.** Session 3's cited
-   414 was captured while that file still had unresolved parse errors (the
-   class-scoped-call and `#0`/`sample` gaps, fixed in sessions 5-6) — very
-   plausibly ANTLR's error-recovery was producing extra spurious symbol-shaped
-   artifacts during resync, not real symbols. With the file now parsing
-   cleanly, the correct count is 403 (verified fresh, not just lowered to make
-   the test pass) — the floor was corrected with an explanatory comment
-   rather than silently loosened.
-
-### Verification
-
-`cmake --build --preset release --target uvm_corpus_tests` builds clean
-alongside `unit_tests`. Three full runs while developing this suite (first: 2
-failures found and fixed as above; second: 1 failure found and fixed as above;
-third, final: **all 9 test cases / 90 assertions pass**, ~17 minutes). Confirmed
-`./build/release/unit_tests` is completely unaffected (931/380, ~24s, unchanged)
-and `ctest -N` still lists exactly the same 445 pre-existing tests, no new ones.
-Run-to-run wall-clock time varied surprisingly widely across this session's runs
-(~17 min to ~135 min, CPU time consistently ~17 min and RSS consistently
-~6.7GB in every run) — not investigated further; noted here in case a future
-session sees the same variance and wonders whether something regressed (per the
-consistent CPU/RSS figures, nothing did — this looks like external system load,
-not the test suite itself).
-
-### Not yet done — suggested next steps
-
-1. If `ReferencesProvider`/`RenameProvider`/`SignatureHelpProvider` are ever
-   upgraded to be DB-backed, add corresponding `test_*_uvm.cpp` files here.
-2. Consider whether the completion suite's "first cut" 2-scenario coverage is
-   worth broadening once there's a concrete reason to (e.g. a real completion
-   bug report).
-3. The `DocumentUri` path-representation subtlety this session uncovered
-   (`fromPath()` always absolutizes; bare relative include-resolved paths need
-   `Uri::parse("file:" + path)` instead) is worth a short code comment at
-   `pathToUri()` itself (`src/lsp/symbol_utils.cpp`) for the next person who
-   needs to construct a URI pointing at a non-`didOpen`ed file — not done this
-   session since it's outside this suite's own files.
-4. Everything else carried over from session 6, unchanged: narrowing fix (4)'s
-   performance cost if it proves problematic at Phase 6.5 scale; Gap E (still
-   not confirmed either way); the LSP diagnostics-visibility gap; and Phase 6.4
-   (cross-file invalidation / dependency graph) per `plan.md §6.4`.
-
----
-
-## Four more grammar gaps — session 6 (2026-08-22)
-
-Direct continuation of session 5. Explicit user request: "continuing root causing
-the remaining" (the 68 diagnostics left after the class-scoped-call fix), then,
-once four root causes were found, "only plan all 4 don't implement yet", then
-"implement all 4 now" as a separate go-ahead.
-
-### Root-causing the remaining 68
-
-Dumped full diagnostic text (not just counts) for the current top-offender files
-(`reg/uvm_reg.svh` 27, `seq/uvm_sequence_base.svh` 15, `reg/uvm_mem.svh` 7,
-`reg/uvm_reg_block.svh` 7, `base/uvm_lru_cache.svh` 4, plus single digits in
-`uvm_event.svh`/`uvm_barrier.svh`/`uvm_root.svh`/`uvm_phase.svh`/
-`uvm_phase_hopper.svh`/`uvm_transaction.svh`/`uvm_reg_sequence.svh`) via an
-extended `probe_diag.cpp`, then read the real source at each site. Found four
-independent, well-defined causes — each confirmed individually via isolated
-parser snippets (the same fast technique used for session 5's class-scoped-call
-gap: link a tiny driver directly against `SvLexer`/`SvParser` +
-`libsvlsp_compiler.a`/`libsvlsp_antlr4.a`/antlr4-runtime, call
-`parser.source_text()`, no corpus rebuild needed to test a hypothesis) before
-committing to any grammar change. A fifth suspected site (`process::self()` at
-`seq/uvm_sequence_base.svh:366`) tested clean in isolation, confirming it was a
-cascade artifact, not a real bug.
-
-### Fix 1 — `#0` lexer-token collision (biggest cluster: 20 sites in uvm-core alone)
-
-`grammar/Sv.g4:2472,2477,2482` (`deferred_immediate_assert_statement`,
-`_assume_`, `_cover_`) each used the raw string literal `` '#0' `` (e.g.
-`` 'assert' '#0' '(' expression ')' action_block ``). ANTLR turns any quoted
-literal into its own implicit lexer token with priority over general
-fragment-based lexing — so the two characters `#0` were *always* lexed as one
-`` '#0' `` token everywhere in the source, never as `` '#' `` followed by
-`DECIMAL_NUMBER "0"`. This broke the extremely common bare zero-delay control
-statement `#0;` (`procedural_timing_control_statement` → `delay_control` =
-`` '#' delay_value ``), a standard "absorb a delta cycle" idiom (e.g.
-`base/uvm_barrier.svh:209`). Confirmed: `#0;` failed (1 error), `#5;` parsed
-fine, before the fix.
-
-**Fix:** replaced `` '#0' `` with `` '#' DECIMAL_NUMBER `` in all three
-`deferred_immediate_*_statement` rules — both already-existing tokens elsewhere
-(`` '#' `` via `delay_control`, `DECIMAL_NUMBER` via `delay_value`), removing the
-implicit `` '#0' `` token entirely (nothing else referenced that literal).
-Trade-off, consistent with this project's established leniency-over-strict-
-validation stance: also now accepts `` assert #5 (...) `` where the LRM requires
-exactly `#0` — acceptable for a parser/LSP not validating assertion semantics.
-
-### Fix 2 — `sample` keyword collision (3 sites: `uvm_reg.svh`, `uvm_mem.svh`, `uvm_reg_block.svh`)
-
-`grammar/Sv.g4:1478`, `coverage_event`'s
-`` 'with' 'function' 'sample' '(' tf_port_list ')' `` alternative used the raw
-literal `` 'sample' ``, making "sample" an implicit reserved keyword *everywhere*
-(same bug category as Fix 1) — even though `sample` is not a real SV reserved
-word, just fixed literal text required by this one LRM production. This blocked
-declaring any method actually named `sample()` — precisely the standard UVM
-register/mem functional-coverage callback name (`reg/uvm_mem.svh:505`,
-`` protected virtual function void sample(...); ``).
-
-**Fix:** replaced the `` 'sample' `` literal with `IDENTIFIER` in that one
-alternative — loosens validation (doesn't enforce the identifier must literally
-be "sample") to remove the collision. `'sample'` wasn't referenced anywhere else
-in the grammar, so this was fully self-contained.
-
-### Fix 3 — empty assignment pattern `` '{} `` (2 sites: `base/uvm_lru_cache.svh:206,273`)
-
-`grammar/Sv.g4:2336`, `assignment_pattern`'s four alternatives all required *at
-least one* expression/pattern-key inside `` '{ ... } `` — none accepted the empty
-form. Real SV uses `` '{} `` as the empty-queue/dynamic-array literal (e.g.
-`` return '{}; `` for an empty `int q[$]`).
-
-**Fix:** added a new alternative, `` SINGLE_QUOTE '{' '}' ``.
-
-### Fix 4 — `const` class-property initializer restricted to `constant_expression`
-
-`grammar/Sv.g4:472-475`, `class_property`'s second alternative
-(`` 'const' class_item_qualifier* data_type const_identifier ('=' constant_expression)? ';' ``
-— confirmed the only alternative a bare `const ...` declaration can match, since
-`const` isn't among `class_item_qualifier`'s `{static,protected,local}`, so no
-ambiguity with the first alternative) restricted the initializer to
-`constant_expression`, excluding `` new(...) `` and any other general runtime
-expression. Real SV allows a `const` class property's initializer to be a
-general expression (only `parameter`/`localparam` require a true compile-time
-constant) — real UVM relies on this for const object handles, e.g.
-`base/uvm_transaction.svh:443`,
-`` const local uvm_event_pool events = new("events"); ``.
-
-**Fix:** changed `` ('=' constant_expression)? `` to `` ('=' expression)? ``.
-
-**Discovered while verifying this fix — a separate, pre-existing grammar
-ambiguity, not fixed here:** the exact real-world target (`const local ... =
-new(...)`, i.e. `const` **plus a `local`/`protected` qualifier** plus a `new(...)`
-initializer) still failed after the fix. Isolated testing narrowed it down
-precisely: `const <no qualifier> T h = new(...)` and `const static T h = new(...)`
-(single `static`) parse fine; `const local T h = new(...)`, `const protected T h
-= new(...)`, and even `const static static T h = new(...)` (two qualifiers) all
-fail. Used ANTLR's `DiagnosticErrorListener` with
-`PredictionMode::LL_EXACT_AMBIG_DETECTION` to get a real diagnosis instead of
-guessing further: it reports a genuine ambiguity at the `data_type` rule
-(`` reportAmbiguity d=295 (data_type): ambigAlts={9, 10, 12} ``) and at
-`variable_decl_assignment` (`` ambigAlts={1, 3} ``) for input like `uvm_object h`
-— **confirmed present on the completely unmodified grammar too** (tested via
-`git stash` back to before any of today's changes, same ambiguity reported for
-plain `` local uvm_object h; `` with no `const`/`new` involved at all). This is a
-real, separate, deeper `data_type`/`variable_decl_assignment` grammar-engineering
-problem that happens to be otherwise-benign under default SLL prediction almost
-everywhere else, and Fix 4's widening is simply what exposes it as an actual
-parse failure for this one specific combination. Flagging for a future session
-rather than attempting to resolve within today's scope.
-
-### Downstream impact check (all four)
-
-Same check as session 5's fix: `src/compiler/sv_tree_walker.cpp` has no listener
-overrides for any of the affected contexts. All four are pure parser-acceptance
-fixes with no `SvTreeWalker` changes needed.
-
-### Unit tests
-
-`tests/unit/compiler/test_sv_parser.cpp`, 9 new cases across four tags
-(`[delayzero]`, `[coveragesample]`, `[emptypattern]`, `[constinitexpr]`),
-following the `[voidcast]`/`[classscopedcall]` style: each fix gets a case
-proving the real-world pattern now parses plus at least one regression guard
-proving the construct the old, narrower rule existed for still parses (bare
-`#0;` + `assert #0(...)` still works + non-zero `#5;` still works; a method named
-`sample` + the `with function sample(...)` coverage-event form still works; empty
-`` '{} `` + non-empty `` '{1,2,3} `` still works; `const` with a general
-`new(...)` expression + `const` with a plain `constant_expression` still works).
-The `constinitexpr` "works" case deliberately uses no qualifier (since the
-`local`/`protected` combination is the newly-discovered separate ambiguity above,
-not something this fix resolves) — documented in the test's own comment so a
-future reader doesn't mistake the gap for a test-coverage hole. All snippets were
-first verified against the isolated-parser probe before being written into the
-permanent suite. Full unit suite: **931 assertions / 380 test cases**, all green
-(up from 922/371 — exactly the 9 new cases, zero regressions).
-
-### Real-world verification
-
-Rebuilt `release`, recreated the standalone `probe_diag.cpp` corpus probe, reran
-against the full 140-file UVM corpus.
-
-**Total diagnostics dropped from 68 → 1 (−67, −98.5% further; −2955, −99.97%
-cumulative from session 3's original 2956)**, files-with-diagnostics 12 → 1.
-`base/uvm_resource_db.svh`, `reg/uvm_mem.svh`, `reg/sequences/
-uvm_reg_mem_shared_access_seq.svh`, `reg/sequences/uvm_reg_mem_built_in_seq.svh`,
-`base/uvm_config_db.svh`, `reg/uvm_reg.svh`, `reg/uvm_reg_block.svh` — every
-previously-nonzero file — dropped to 0. Only `base/uvm_transaction.svh` still
-shows 1 diagnostic, exactly the `local` + `new(...)` `data_type`-ambiguity case
-documented above (not re-dumped verbatim this session, but matches the isolated
-diagnosis precisely: same file, same construct, only one qualifier-plus-`new`
-site in the whole file).
-
-**Performance note:** this run took **16m47s** and peaked at **~6.7GB RSS** —
-materially more than session 5's ~14min/~1.3GB run on the same corpus with the
-same technique. Memory was flat (not still climbing) once it plateaued, so this
-is "slow," not "leaking" — but it's a real, unquantified-further cost. Working
-theory, not confirmed by profiling: Fix 4's `` constant_expression `` →
-`` expression `` widening applies to *every* `const` class property in the
-corpus, and `expression` is a vastly larger, more recursive rule than
-`constant_expression` — combined with the pre-existing `data_type` ambiguity
-described above, this plausibly triggers ANTLR's expensive full-context
-prediction fallback far more often corpus-wide than before. Not investigated
-further this session (would need profiling, e.g. the SLL-only-mode technique
-session 2 used for Phase 6.5). Worth remembering if a future session is
-surprised by corpus-probe timing, and worth reconsidering narrowing Fix 4's
-scope if this cost turns out to matter at real-world (Phase 6.5) usage scale.
-
-### `data_type`/`variable_decl_assignment` ambiguity — investigated, NOT fixed (2026-08-22, later same session)
-
-Per explicit user request ("investigate the data_type ambiguity next"). Confirmed
-the precise root cause and tried two cheap, low-risk structural experiments before
-concluding a real fix is out of scope for now.
-
-**Root cause, confirmed exactly:** `grammar/Sv.g4:740-753`, `data_type`'s
-alternatives 9, 10, and 12 —
-```antlr
-    | (class_scope | package_scope)? type_identifier packed_dimension*   // alt 9
-    | class_type                                                         // alt 10
-    | ps_covergroup_identifier                                           // alt 12
-```
-— all reduce to **exactly one bare `IDENTIFIER` token** when none of their
-optional prefixes/suffixes are present (`type_identifier: IDENTIFIER`,
-`class_type`'s bare form is just `ps_class_identifier` with zero repetitions/
-parameterization, `ps_covergroup_identifier: package_scope? covergroup_identifier`
-with `covergroup_identifier` also `IDENTIFIER`). For an input like `uvm_object h`,
-all three alternatives match "uvm_object" identically — a genuine, unconditional
-syntactic ambiguity, not a bug in any one alternative. This is SystemVerilog's
-well-known "identifier classification" problem (the LRM's own grammar (Annex A)
-acknowledges that distinguishing a type name from a class name from a plain
-identifier requires a symbol table — information a context-free grammar doesn't
-have). The exact same shape recurs at `variable_decl_assignment`'s alternatives 1
-and 3 (`variable_identifier` vs `class_variable_identifier`, and
-`class_variable_identifier: variable_identifier` — literally the same rule under
-a different name).
-
-**Confirmed pre-existing**, unrelated to any fix from today or before: reproduced
-on the completely unmodified grammar (via `git stash` back to before any of
-today's changes) with a case that doesn't even involve `const`/`new`:
-`` class C; local uvm_object h; endclass `` already reports both ambiguities via
-ANTLR's `DiagnosticErrorListener` + `PredictionMode::LL_EXACT_AMBIG_DETECTION`.
-Under *default* prediction (what the real server actually uses), this ambiguity
-is normally silently resolved with a successful parse — it only becomes a hard
-failure for the one narrow combination Fix 4 exposed (`` const local/protected
-... = new(...) ``).
-
-**Failure pattern is narrower and stranger than "which alternative wins the
-tie":** isolated testing found the trigger isn't "any qualifier" — it's
-specifically: zero qualifiers, or exactly one `static`, both succeed; exactly one
-`local`, exactly one `protected`, or **two or more of any qualifier at all**
-(including `static static`) all fail identically. This asymmetry (single
-`static` uniquely safe) doesn't follow from the `data_type` ambiguity alone being
-"resolved differently" — a genuinely ambiguous grammar should resolve the same
-way regardless of unrelated preceding tokens, if the ambiguity were the *whole*
-story.
-
-**Two structural experiments tried, both reverted (no effect):**
-1. Reordering `data_type`'s alternatives to put `class_type` first (testing
-   whether ANTLR's "pick the lowest-numbered alternative on genuine ambiguity"
-   resolution would then favor the working path) — no change.
-2. Removing the `ps_covergroup_identifier` alternative entirely (provably
-   redundant with `type_identifier`'s package-scoped form — same shape, `IDENTIFIER`
-   either way — so removing it is a pure simplification, no loss of parsing
-   power; reduces the ambiguity from 3-way to 2-way) — no change.
-
-Both were applied, rebuilt, and empirically tested via the isolated-parser-snippet
-technique, then `git checkout -- grammar/Sv.g4` reverted them; the committed
-grammar is unaffected by this investigation.
-
-**Conclusion — not pursued further, flagging for whoever picks this up next:**
-since neither cheap experiment changed the outcome, the real mechanism is deeper
-than the surface-level `data_type` ambiguity — most likely an ANTLR ATN/DFA
-full-context-prediction interaction tied to how much more pervasively `local`/
-`protected` are referenced elsewhere across this ~3800-line grammar compared to
-`static`'s much narrower usage (more reachable ATN configurations at those
-tokens increases the chance of a genuine ambiguity-resolution edge case).
-Confirming this would need ATN-level tracing (dumping configuration sets, not
-just `reportAmbiguity`'s alt-number summary) — real effort, and a proper *fix*
-would need either semantic predicates (a real symbol-table integration — a much
-bigger architectural change than anything done in this line of work) or careful
-restructuring of `data_type`/`class_type`/`type_identifier`, some of the most
-heavily-used rules in the entire grammar (real regression risk). Given real-world
-impact is now exactly **1 diagnostic in the entire 140-file UVM corpus**, this
-is being left as a documented, known limitation rather than pursued further —
-revisit only if it starts showing up more broadly (e.g. once Phase 6.4/6.5 work
-exercises a wider variety of real-world code, or if a user-reported false
-diagnostic traces back to this).
-
-### Not yet done — suggested next steps
-
-1. ~~Investigate the `data_type`/`variable_decl_assignment` ambiguity~~ — **done**,
-   root cause confirmed and documented above; not fixed (see conclusion above
-   for why, and what a real fix would require).
-2. Consider whether Fix 4's performance cost is acceptable, or whether it's
-   worth narrowing (e.g. adding just a `class_new`-inclusive alternative
-   instead of the fully general `expression`) once real-world usage data exists.
-3. Gap E (`` `ifdef ``/`` `else ``/`` `endif `` inside `` `define `` bodies) is
-   still neither confirmed nor refuted as a real contributor anywhere in the
-   current (now near-zero-diagnostic) corpus.
-4. Consider the LSP diagnostics-visibility gap (primary-file-only
-   `publishDiagnostics`, session 3) as its own small feature.
-5. Phase 6.4 (cross-file invalidation / dependency graph) per `plan.md §6.4`.
-
----
-
-## Class-scoped call gap — session 5 (2026-08-22)
-
-Direct continuation of session 4. Explicit user request: "investigate Gap E next"
-(session 4's top suspect for the dominant cause of the remaining 884 diagnostics).
-
-### Gap E investigation — inconclusive, but pointed at something else entirely
-
-Before spending a 12-minute corpus-probe cycle, checked whether the new
-post-token-pasting top-offender files (`base/uvm_resource_db.svh` 79,
-`reg/uvm_mem.svh` 73, `reg/sequences/uvm_reg_mem_shared_access_seq.svh` 73,
-`base/uvm_callback.svh` 61, `base/uvm_config_db.svh` 38) use any field-automation
-macro (`` `uvm_field_int ``, etc. — the only known Gap E trigger, via
-`` `m_uvm_field_op_begin ``). **None of them do** (`grep -c` returned 0 across all
-five). So Gap E could not be the cause of *this* top-offender list, though it
-remains neither confirmed nor refuted as a smaller contributor elsewhere.
-
-Ran the full-corpus probe anyway (`probe_gape`, session scratchpad — extended
-`probe_diag.cpp` with a normalized message-pattern histogram and full per-file
-diagnostic dumps for the top 5 offenders) to read the *actual* diagnostic text
-rather than continue guessing.
-
-### Root cause found: `X::Y::method(args)` (class-scoped chained call) is entirely unparseable
-
-The real diagnostics at every one of the top-5 offender files traced to one
-pattern, e.g. (`reg/uvm_mem.svh:1186`, `base/uvm_resource_db.svh:82`,
-`reg/sequences/uvm_reg_mem_shared_access_seq.svh:99`):
-```systemverilog
-rw  = uvm_reg_item::type_id::create("mem_write", , get_full_name());
-imp = uvm_resource_db_implementation_t #(T)::get_imp();
-x   = uvm_resource_db#(bit)::get_by_name("scope", "name", 0);
-```
-`` T::type_id::create(...) `` is **the standard UVM factory-instantiation idiom** —
-used everywhere in real UVM code. Confirmed via isolated parser snippets (a
-lightweight, no-corpus-needed technique: link a tiny driver directly against
-`SvLexer`/`SvParser` + `libsvlsp_compiler.a`/`libsvlsp_antlr4.a`/antlr4-runtime and
-call `parser.source_text()` on hand-written snippets, reusing the exact
-`parseErrors` helper pattern from `tests/unit/compiler/test_sv_parser.cpp` —
-much faster than a 12-minute full-corpus rebuild for grammar hypothesis-testing)
-that even the simplest possible case, `` uvm_reg_item::type_id::create("s") `` with
-no parameterization and no elided argument, fails in complete isolation (3 syntax
-errors) — both as an assignment RHS and as a bare statement. A plain elided
-argument with *no* class scope (`` foo("s",,bar()) ``) parses fine on its own,
-proving the elided-argument compounding seen in some sites isn't a separate bug.
-
-**Traced in `grammar/Sv.g4`:**
-- `tf_call : ps_or_hierarchical_tf_identifier attribute_instance* ('(' list_of_arguments ')')? ;`
-  is reached from both `primary` (expression position) and `subroutine_call`
-  (via `subroutine_call_statement`, bare-statement position) — one fix covers
-  both call shapes.
-- `ps_or_hierarchical_tf_identifier : package_scope? tf_identifier | hierarchical_tf_identifier ;`
-  — **neither alternative accepts a `class_scope` prefix.** `hierarchical_tf_identifier`
-  is dotted paths (`.`) only; `package_scope` is a single non-parameterized
-  `package_identifier '::'` segment.
-- `class_scope : class_type '::' ;`, `class_type : ps_class_identifier parameter_value_assignment? ('::' class_identifier parameter_value_assignment?)* ;`
-  — **already correctly implements** the full `` X#(T)::Y#(U)::... `` chain,
-  already used successfully elsewhere (`` class_scope? 'new' (...) `` at
-  `grammar/Sv.g4:1029`, and non-call class-scoped field access via `primary`'s
-  `` class_qualifier hierarchical_identifier select ``). It was simply never wired
-  into the call-identifier path.
-
-**Real-world scope** (uvm-core corpus alone, a real undercount since this idiom is
-constant in actual testbenches, not just the library): **58** `` ::type_id::create( ``
-sites, **69** general two-level `` X::Y::method( `` call sites.
-
-**Downstream impact check:** grepped `src/compiler/sv_tree_walker.cpp` (the only
-consumer of the parse tree for symbol/diagnostic extraction) for any listener on
-`Tf_callContext`/`Ps_or_hierarchical_tf_identifierContext` — none exists; it only
-overrides declaration-level contexts (module/class/function/task/package/data/net/
-import/instantiation/parameter). Confirmed this is a pure parser-acceptance fix
-with no `SvTreeWalker` changes needed — same low blast radius as the void-cast
-grammar fix, not the higher-touch token-pasting preprocessor change.
-
-### Fix
-
-**`grammar/Sv.g4:3716`**:
-```antlr
-ps_or_hierarchical_tf_identifier :
-      class_scope tf_identifier
-    | package_scope? tf_identifier
-    | hierarchical_tf_identifier
-;
-```
-Reuses the already-correct `class_scope`/`class_type` productions; no other rule
-changes needed. `cmake --build --preset debug` regenerated the ANTLR sources
-cleanly with no ambiguity warnings.
-
-**Unit tests** (`tests/unit/compiler/test_sv_parser.cpp`, tag `[classscopedcall]`,
-6 new cases, following the `[voidcast]` tests immediately above as the style
-template): a plain class-scoped call as an assignment RHS; a parameterized
-single-segment scoped call (`` uvm_resource_db#(bit)::get_by_name(...) `` shape);
-the elided-middle-argument compound case (`reg/uvm_mem.svh:1151`'s exact shape,
-confirming it's the same root cause, not two bugs); a bare-statement class-scoped
-call (proves `subroutine_call_statement` is covered too); and two regression
-guards — non-call class-scoped field access (`` x = A::B::my_static_field; ``, to
-guard against the new alternative stealing a case `primary`'s existing
-`class_qualifier` path already handled) and a plain non-scoped call. All 9
-variants (the 6 above plus 3 more exploratory cases) were first verified against
-the isolated-snippet probe before being written into the permanent suite. Full
-unit suite: **922 assertions / 371 test cases**, all green (up from 916/365 —
-exactly the 6 new cases, zero regressions).
-
-### Real-world verification
-
-Rebuilt `release`, recreated the standalone `probe_diag.cpp` corpus probe per the
-now-standard technique, reran against the full 140-file UVM corpus.
-
-**Total diagnostics dropped from 884 → 68 (−816, −92.3% further; −2888, −97.7%
-cumulative from session 3's original 2956)**, files-with-diagnostics 48 → 12 — by
-far the largest single-fix drop across all five fixes in this line of work.
-`base/uvm_resource_db.svh` (79 before), `base/uvm_config_db.svh` (38 before), and
-both `reg/sequences/uvm_reg_mem_shared_access_seq.svh` (73 before) and
-`reg/sequences/uvm_reg_mem_built_in_seq.svh` (70 before) all **dropped to 0**.
-
-**What's left** (new top offenders, not yet root-caused): `reg/uvm_reg.svh` (27),
-`seq/uvm_sequence_base.svh` (15), `reg/uvm_mem.svh` (7, down from 73 — mostly
-fixed but not entirely), `reg/uvm_reg_block.svh` (7), `base/uvm_lru_cache.svh` (4),
-plus single-digit counts in `uvm_event.svh`/`uvm_barrier.svh`/`uvm_root.svh`/
-`uvm_phase.svh`/`uvm_phase_hopper.svh`/`uvm_transaction.svh`/`uvm_reg_sequence.svh`.
-Not investigated this session — natural next step, following the same
-read-the-actual-diagnostics-first methodology used here rather than guessing from
-file names (which was wrong for Gap E this session).
-
-### Not yet done — suggested next steps
-
-1. Root-cause the remaining 68 diagnostics, concentrated in `reg/uvm_reg.svh` (27)
-   and `seq/uvm_sequence_base.svh` (15) — read actual diagnostic text first.
-2. Gap E (`` `ifdef ``/`` `else ``/`` `endif `` inside `` `define `` bodies) is
-   still neither confirmed nor refuted as a real contributor anywhere in the
-   current corpus — this session only disproved it for the *specific* files it
-   was checked against.
-3. Consider the LSP diagnostics-visibility gap (primary-file-only
-   `publishDiagnostics`, session 3) as its own small feature.
-4. Phase 6.4 (cross-file invalidation / dependency graph) per `plan.md §6.4`.
-
----
-
-## Token-pasting support — session 4 (2026-08-22)
-
-Direct continuation of session 3's item 4 ("decide on full token-pasting support").
-Explicit user request: after asking which remaining fix would most improve the
-UVM-corpus pass rate, the user asked for an implementation plan for token-pasting,
-approved it, then asked to implement it.
-
-### Scope discovery: bigger than session 3 estimated
-
-Session 3 found 3 real macro families using `` `` `` (`` `uvm_register_cb ``,
-`` `M__TABLE_Q ``/`` `M__TABLE_GET ``, `` `uvm_copier_get_function ``/
-`` `uvm_packer::get_packed_``T``s ``). Grepping the whole real UVM corpus for
-`` `` `` while writing the implementation plan found **80+ occurrences across 8
-files**: `macros/uvm_callback_defines.svh`, `uvm_copier_defines.svh`,
-`uvm_tlm_defines.svh` (dozens of TLM `imp`-port class generators — the single
-biggest source, ~50 occurrences), `uvm_phase_defines.svh`, `uvm_packer_defines.svh`,
-`uvm_sequence_defines.svh`, `uvm_object_defines.svh` (~25 occurrences, the
-field-automation macro file), `uvm_printer_defines.svh`, plus `base/uvm_packer.svh`
-and `base/uvm_resource_pool.svh` (the single largest remaining diagnostic offender
-in the corpus at the time, 181, entirely attributable to this gap and completely
-unchanged by all three session-3 fixes). All 80+ occurrences share one shape: `` `` ``
-always appears **inside a `` `define `` macro body** (never in raw top-level
-source), always as a pure textual splice.
-
-### Implementation
-
-**`src/compiler/sv_preprocessor.cpp`**: new static helper `resolveTokenPaste(src)` —
-deletes each `` `` `` occurrence and any immediately adjacent horizontal whitespace,
-splicing the surrounding text together directly (no identifier-fragment awareness
-needed; the right operand can be arbitrary text, e.g. `` QUEUE_NAME``.value `` →
-`rq.value`). Called from both branches of `expandMacroCall`, on the macro body text
-right before the existing `expandStr` call — `def.body` for object-like macros,
-`substituted` (i.e. *after* raw parameter substitution) for function-like ones. Both
-call sites already pass `colShifts == nullptr` into `expandStr`, so this has zero
-interaction with the column-drift bookkeeping used for top-level per-line diagnostic
-mapping — no changes needed anywhere else in `expandStr`, `tryStringify`, or the
-`ColShift` logic.
-
-Running the splice *before* `expandStr` scans the text (rather than as part of its
-scan loop) turns out to handle every real pattern in the corpus for free, with no
-special-casing:
-- Plain/multi-fragment identifier pasting (`` m_register_cb_``CB ``,
-  `` get_packed_``T``s ``).
-- **Pasting that constructs a new macro-invocation name, then invokes it**
-  (`` `uvm_pack_``TYPE``(ARG, __local_packer__) ``, `macros/uvm_object_defines.svh`)
-  — by the time `expandStr`'s scan reaches the leading `` ` ``, `readIdent` reads the
-  *already-spliced* full name (`` `uvm_pack_int ``), so it resolves and invokes
-  normally.
-- **Pasting nested inside a stringification span**
-  (`` `uvm_type_name_decl(`"PREFIX``PHASE``_phase`") ``, `macros/uvm_phase_defines.svh`)
-  — the whole substituted body is spliced in one pass before `expandStr`/`tryStringify`
-  ever look at it, so `` `" `` never sees an unresolved `` `` `` inside its span (`` and
-  `" are lexically distinct, so the splice pass can't misfire on stringify markers).
-
-**Known, deliberate non-goal**, not found anywhere in the real corpus: pasting where
-an operand is itself an *unexpanded* nested macro invocation whose expanded result
-(not its literal name) is needed on one side of the splice. Matches C's `##`, which
-doesn't expand such operands either.
-
-**`src/compiler/sv_preprocessor.h`**: class doc comment updated from a blanket "not
-supported" to describe the new textual-splice scope and the one documented
-limitation above.
-
-**Unit tests** (`tests/unit/compiler/test_sv_preprocessor.cpp`, tag `[tokenpaste]`,
-6 new cases): basic two-fragment paste; paste onto a non-identifier right operand
-(mirrors `` M__TABLE_Q ``); three-fragment paste (mirrors `` get_packed_``T``s ``);
-paste-then-invoke of a constructed macro name (mirrors `` uvm_pack_``TYPE ``); paste
-nested inside a stringification span; and a full real-world reproduction of the
-exact `` `uvm_register_cb(T,CB) `` body text (combines pasting and stringification
-in one macro, and is the exact site behind session 3's symbol-table-pollution bug),
-asserting both the spliced identifier and the stringified args come out correct in
-one pass. Full unit suite: **916 assertions / 365 test cases**, all green (up from
-904/359 — exactly the 6 new cases, zero regressions).
-
-### Real-world verification
-
-Rebuilt `release`, recreated the standalone `probe_diag.cpp` corpus probe per
-session 3's documented technique (`libsvlsp_db.a` + `libsvlsp_compiler.a` +
-`libsvlsp_antlr4.a` + antlr4-runtime + `libsvlsp_sqlite3.a`, `g++-13` since the
-system default `g++` is 7.5.0 and doesn't support `-std=c++20`), reran against the
-full 140-file UVM corpus.
-
-**Total diagnostics dropped from 1254 → 884 (−370, −29.5% further; −2072, −70.1%
-cumulative from session 3's original 2956)**, files-with-diagnostics 51 → 48.
-`base/uvm_resource_pool.svh` (181 before this fix, completely unchanged by all three
-session-3 fixes) **dropped to 1 diagnostic** — confirming the fix resolves it at the
-source as predicted, and the single biggest per-file win of this whole line of work.
-`reg/uvm_vreg.svh` (5 before) dropped to 2, `base/uvm_report_catcher.svh` (5 before)
-dropped to 2.
-
-**The session-3 symbol-table-pollution bug is confirmed fixed at the source**: a
-follow-up run added `findSymbolsByName("uvm_report_object")` to the probe. It now
-returns exactly one row — `Class uvm_report_object @ base/uvm_report_object.svh:98`
-— the bogus `Signal` that `` `uvm_register_cb ``'s broken expansion used to create at
-`uvm_report_catcher.svh:71` (shadowing the real class alphabetically in hover/
-definition) is gone entirely, exactly as session 3 speculated would happen once
-token-pasting was fixed. No separate `findSymbolsByName`/hover disambiguation
-defense-in-depth work is needed for *this* instance, though the general "no kind
-preference, alphabetical tiebreak" pattern in `hover.cpp`/`definition.cpp` could
-still bite in an unrelated future name collision.
-
-The full-corpus compile itself took noticeably longer than session 3's ~420-480s
-(~7-8 min) baseline — around 12 min in this run. Consistent with, not contradicting,
-session 2's Phase 6.5 performance finding: token-pasting now lets substantially more
-of the corpus (all of `uvm_tlm_defines.svh`'s ~25 generated TLM port-implementation
-classes, previously aborting early on "undefined macro" errors from unresolved
-`` `` ``) reach ANTLR's genuinely expensive full-class-body parse path instead of
-failing fast — more successfully-preprocessed text, not a new performance bug. Not
-investigated further this session; worth remembering if a future session is
-surprised by corpus-probe timing.
-
-### What's left, root-caused
-
-The new top-offender list (`base/uvm_resource_db.svh` 79, `reg/uvm_mem.svh` 73,
-`reg/sequences/uvm_reg_mem_shared_access_seq.svh` 73, `reg/sequences/
-uvm_reg_mem_built_in_seq.svh` 70, `base/uvm_callback.svh` 61, `reg/uvm_reg.svh` 59,
-several more `reg/sequences/*.svh` files, `base/uvm_config_db.svh` 38) is a
-different shape than session 3's — none of these were called out as token-pasting
-sites, and `uvm_object_defines.svh` (826-831, `` `m_uvm_field_op_begin ``) is the
-one site this session already knew would remain only partially fixed: it combines
-token-pasting (now fixed) with `` `ifdef ``/`` `else ``/`` `endif `` *inside the
-macro body* (Gap E, still unimplemented, first found in session 2). **Not
-re-investigated in detail this session** — the shift in which files dominate the
-remaining diagnostics is consistent with Gap E now being the largest remaining
-single cause, but this is inference from the file list, not confirmed by reading
-the actual remaining diagnostic messages at each site the way every previous
-root-cause in this line of work was confirmed. That confirmation is the natural
-first step for whoever picks this up next.
-
-### Not yet done — suggested next steps
-
-1. **Investigate Gap E** (`` `ifdef ``/`` `else ``/`` `endif `` inside `` `define ``
-   bodies, described in session 2's section below) against the new top-offender
-   list above — read the actual diagnostics at a few of `uvm_resource_db.svh`,
-   `uvm_mem.svh`, `uvm_reg_mem_shared_access_seq.svh` to confirm or refute that it's
-   the dominant remaining cause before committing to a fix, following the same
-   grounded-in-real-corpus methodology used for every fix so far.
-2. ~~Confirm the symbol-table-pollution bug (session 3) is fixed~~ — **confirmed
-   fixed**, see "Real-world verification" above (`findSymbolsByName` now returns
-   only the real `uvm_report_object` class). The general disambiguation gap in
-   `hover.cpp`/`definition.cpp` (no kind preference, alphabetical tiebreak) is
-   still present in the code and could resurface on an unrelated name collision,
-   but is no longer blocking on this specific bug.
-3. Consider the LSP diagnostics-visibility gap (primary-file-only
-   `publishDiagnostics`, session 3) as its own small feature.
-4. Phase 6.4 (cross-file invalidation / dependency graph) per `plan.md §6.4`.
-
----
-
-## UVM real-world smoke test — session 3 (2026-08-21, full-corpus parse + exploratory LSP queries)
-
-Direct continuation of session 2 below (paused 2026-08-20), resuming exactly where
-its "Not yet done" list left off. Explicit user instruction: "resume UVM realworld
-test", then later "keep going, update the handoff when done" — i.e. investigate as
-far as productive and record findings, not necessarily fix anything yet.
-
-### Setup
-
-Rebuilt the `release` preset (picked up Gap A/D fixes from commits `9b8abed`/
-`5ba19f9`, already current — no recompilation needed, confirming those commits were
-already built). Recreated the JSON-RPC driver (`lsp_driver.py`, session scratchpad,
-not committed — session 2 predicted this would need recreating and it did) with two
-additions beyond session 2's design: an interactive stdin phase that can send
-further typed LSP requests (tagged with `_tag` for correlation) after the initial
-`didOpen` completes, against the *same still-running server process* — letting a
-single ~8-minute corpus load be reused for many follow-up queries instead of paying
-the load cost per query — and a `_notify` flag for fire-and-forget notifications
-(`didOpen` on secondary files) alongside request/response pairs.
-
-### Part 1 — Full UVM corpus through the real LSP server (item 1 of session 2's "not yet done" list)
-
-Ran `build/release/svlsp` via the driver: `initialize` → `initialized` → `didOpen` on
-the real `uvm.sv` (project manifest unchanged from session 1/2, at
-`/home/martin/src/verilator_test/uvm-core/src/.svlsp.json`) → wait for
-`publishDiagnostics`. **Completed in 421-477s (~7-8 min) across three separate runs**
-(not a hang, not "many minutes" indefinitely — the session-2 Phase 6.5 performance
-concern was real but bounded, at real full-corpus scale, to single-digit minutes).
-`publishDiagnostics` for `uvm.sv` itself reported **0 diagnostics** — this is
-expected and uninteresting, not a fix confirmation: see "LSP diagnostics-visibility
-gap" below for why the primary file alone was never going to show anything.
-
-### Part 2 — What the corpus actually contains: standalone `CompilationController` probe
-
-Session 2's probes only ever exercised the preprocessor or the ANTLR parser
-*in isolation*; nobody had run the **full production pipeline** —
-`CompilerDirectiveStripper` → `SvPreprocessor` → `SvTreeWalker` →
-`SymbolDatabase` persistence, i.e. exactly what `CompilationController::compile`
-(and therefore the real server) does — over the *entire* corpus in one pass, because
-session 2 judged even a 5-file bounded subset too slow to be worth the wait (>60s
-without finishing, standalone ANTLR-only, no DB persistence). This session did it
-anyway, since the LSP-driver run above proved the whole thing finishes in single-digit
-minutes end-to-end.
-
-**Probe** (`probe_diag.cpp`, session scratchpad, not committed — standard
-`libsvlsp_db.a` + `libsvlsp_compiler.a` + `libsvlsp_antlr4.a` + antlr4-runtime +
-`libsvlsp_sqlite3.a` static-link technique from session 1/2, extended to also link
-`svlsp_db` and use `Database`/`SymbolDatabase`/`CompilationController` directly):
-constructs an in-memory `Database`, calls
-`CompilationController::compile("uvm.sv", text, &cfg)` with the same
-`includeDirs: ["."]`/`UVM_NO_DPI` config as the real manifest, then queries the
-resulting DB directly — total files, per-file diagnostic counts, distinct message
-patterns, and `findSymbolsByName` lookups for all 28 candidate symbols.
-
-**Results** (three separate runs, consistent: 430-478s compile time):
-- **140 files** land in the DB (1 primary + 139 transitively `` `include ``d).
-- **2956 diagnostics total, spread across 73 of the 140 files** (67 files fully
-  clean). Worst offenders: `reg/uvm_vreg.svh` (330), `reg/sequences/
-  uvm_reg_mem_shared_access_seq.svh` (201), `base/uvm_resource_pool.svh` (181),
-  `reg/uvm_reg.svh` (151) — the `reg/` (register-abstraction-layer) subtree is
-  disproportionately hit, consistent with it being both class-registration-macro-heavy
-  (see root cause 1) and message-string-heavy (root cause 2).
-- **All 28/28 candidate symbols found** via `findSymbolsByName`, each resolving to
-  its correct declaring file:line exactly as catalogued in session 2's candidate
-  list — confirms the corpus's *symbol* extraction is intact overall even though a
-  majority of files have parse errors somewhere (ANTLR's error recovery keeps
-  producing a mostly-usable partial tree around the errors, not abandoning the whole
-  file).
-
-### Root cause 1 — Gap C (stringification) impact was significantly underestimated in session 1
-
-Session 1's original Gap C writeup judged real-world impact "low" based on counting
-only direct `` `uvm_field_* `` invocations (17) and files referencing any
-`` `uvm_*_utils `` macro (43) — but never traced what `` `uvm_object_utils ``/
-`` `uvm_component_utils `` *themselves* expand to. They do not use token-pasting, but
-they do chain into stringification: `` `uvm_object_utils(T) `` →
-`` `m_uvm_object_registry_internal(T,T) `` → (`macros/uvm_object_defines.svh:555`)
-```
-typedef uvm_object_registry#(T,`"S`") type_id;
-```
-`` `"S`" `` is exactly the stringification form `SvPreprocessor`'s own doc comment
-already declares unsupported (see Gap C in session 1's section below) — so the
-literal `` ` `` characters survive into the parser's input, producing immediately
-this pattern (verified against `reg/uvm_reg.svh:52`, `base/uvm_phase.svh:614`,
-`base/uvm_packer.svh:62`, `reg/uvm_vreg.svh:354`, `reg/sequences/
-uvm_reg_mem_shared_access_seq.svh:78` — every one is a `` `uvm_object_utils(T) ``/
-`` `uvm_object_param_utils(T) ``-family invocation, confirmed by reading the actual
-source at each cited line):
-```
-no viable alternative at input 'uvm_object_registry#(<T>,`'
-mismatched input '#' expecting {';', '['}
-mismatched input '`' expecting IDENTIFIER
-extraneous input '`' expecting {...}     (×2 per site — one per `` ` `` in `` `"S`" ``)
-```
-**Corrected assessment: this is not a rare edge case.** `` `uvm_object_utils ``/
-`` `uvm_component_utils `` (or their `_begin`/`_param` variants) are the standard
-factory-registration idiom used in **every** UVM class that participates in the
-factory — which is most of them. This single macro chain plausibly accounts for a
-large fraction of the 73 affected files and a meaningful share of the 2956
-diagnostics (each site produces ~5 immediate diagnostics before resynchronizing, not
-counting further cascade). Still not fixed — fixing it means implementing
-stringification (`` `" ``) in `SvPreprocessor`, which is a real (if bounded) feature
-addition, not a quick patch; see Gap C's original note in session 1's section for the
-"needs a slang-backed implementation" caveat, though a minimal stringification-only
-implementation (converting `` `"...`" ``/`` `"ident`" `` spans to a quoted string
-literal, without full token-pasting) may be tractable on its own.
-
-### Root cause 2 — NEW: `STRING_LITERAL` lexer rule has no escape-sequence handling
-
-`grammar/Sv.g4:3795`:
-```
-STRING_LITERAL : '"' .*? '"' ;
-```
-A non-greedy "shortest string between two `"` characters" rule — it has **no
-awareness of backslash-escapes at all**. Any string literal containing an embedded
-`\"` (e.g. `` `uvm_error("ID", $sformatf("Virtual register \"%s\" cannot have 0
-bits", name)) ``, `reg/uvm_vreg.svh:435`) causes the `STRING_LITERAL` token to
-terminate at that first embedded `"` (the preceding `\` is just an ordinary
-character to this rule), leaving the remainder of the intended string
-(`` %s\" cannot have 0 bits" ``) to be re-tokenized as ordinary code — producing
-long, confusing cascades of `mismatched input ',' expecting '.'` /
-`extraneous input ')' expecting ';'` / `no viable alternative` diagnostics for
-the rest of that physical line (macro-expanded lines are long, so the fallout can
-span many "diagnostics" per single root cause). Directly confirmed at two
-independent, unrelated sites: `reg/uvm_vreg.svh:435` (inside a `` `uvm_error ``
-call) and `base/uvm_root.svh:600` (inside `uvm_report_info(...)`, note: *not* inside
-any macro invocation at all here — this is a plain function call, so this is a pure
-grammar/lexer gap, unrelated to any preprocessor macro-argument-parsing gap like
-Gap A). This is almost certainly the **second largest contributor** to the 2956
-diagnostics, likely larger than root cause 1 in raw diagnostic count given how
-common quoted sub-strings are inside UVM's own message-formatting calls (which use
-this pattern constantly for good, readable error/log messages) — not yet counted
-precisely, but the `mismatched input ',' expecting '.'` pattern alone (600
-occurrences, the single largest message-pattern bucket) is consistent with this
-being the dominant cause: after a corrupted string literal, the parser sees a
-sequence of comma-separated "expression-like" tokens where it expects member-access
-`.` chains, which is exactly the shape produced by re-tokenizing text like
-`","test_name,"` as separate tokens instead of one string literal.
-**Not fixed this session.** This is a real, independent grammar/lexer bug (not a
-preprocessor limitation, not previously documented anywhere in this file) — fixing
-`STRING_LITERAL` to support at minimum `\"` (and ideally the other standard SV
-string escapes: `\\`, `\n`, `\t`, `\%03o`, etc., per LRM §5.9) is likely the
-**single highest-value next fix** found this session: cheap (one lexer-rule change,
-`'"' ('\\' . | ~["\\])*? '"'` or similar), and unlike Gap C it requires no design
-discussion — it's an unambiguous lexer correctness bug with clear, pervasive
-real-world impact.
-
-### Confirmed (not new) — `void'(...)` cast gap has heavy real-world impact
-
-The `extraneous input ''' expecting '('` pattern (135 occurrences, 3rd-largest
-bucket) is the **already-documented** grammar quirk from the "Sv.g4 grammar quirks"
-table further down this file (`void'(f())` not supported, workaround `void(f())`).
-Confirmed at `base/uvm_callback.svh:219`, `base/uvm_root.svh:916/941/945`, and
-others — all genuine `void'(...)` casts in real UVM code (e.g.
-`void'(clp.get_arg_matches(...))`). Not a new finding, but confirms this
-fixture-only-tested gap has real, pervasive real-world impact and is a plausible
-low-effort fix candidate alongside root cause 2 above (both are pure Sv.g4 grammar
-changes, no preprocessor design work needed).
-
-### Part 3 — Exploratory LSP-layer queries (item 3 of session 2's "not yet done" list)
-
-Reused the same driver's interactive stdin phase (`gen_uvm_queries.py`, session
-scratchpad, not committed) against the live server process from the same `didOpen`
-run that produced Part 1's result (i.e. these queries ran against the identical
-140-file, 2956-diagnostic DB state characterized in Part 2 — same corpus, same
-in-process run, not a separate reload).
-
-- **`workspace/symbol` for all 27 remaining candidate names** (28th, `uvm_component`,
-  covered separately below): all returned results, all in the expected files —
-  e.g. `uvm_reg` → 71 results (itself plus every `uvm_reg_*` prefix match across the
-  whole `reg/` subtree — `workspace/symbol` is prefix-ish/substring by design per
-  existing behavior, not a bug), `uvm_analysis_port` → 1 exact result in the correct
-  file, `uvm_tlm_generic_payload` → 2 results both in `uvm_tlm2_generic_payload.svh`
-  (real file, name doesn't match its own class name exactly — `tlm2` vs `tlm` in the
-  path — worth knowing if a future test hardcodes path-from-name assumptions).
-- **`documentSymbol` for all 5 candidate files, queried by path without opening
-  them** (per Phase 6.1's DB-direct design — confirmed still true at this scale):
-  `base/uvm_component.svh` → 387 symbols, `base/uvm_object.svh` → 87,
-  `seq/uvm_sequence_item.svh` → 74, `reg/uvm_reg.svh` → 414, `tlm1/
-  uvm_analysis_port.svh` → 14. All non-empty, all plausible (uvm_reg.svh and
-  uvm_component.svh are the two largest/most complex classes in the whole library,
-  matching their symbol counts being the two largest here).
-- **Hover/definition, requiring an open buffer (`m_store.contains` check) — two
-  cross-file base-class resolution tests:**
-  1. `base/uvm_component.svh:59`, `` uvm_component extends uvm_report_object `` —
-     hovering `uvm_report_object` **returned the wrong symbol**: a `Signal` at
-     `base/uvm_report_catcher.svh:71`, not the real `Class` at `base/
-     uvm_report_object.svh:98`. See "New bug: symbol-table pollution" below — this
-     is a real, reproducible-in-real-code bug, not a fixture artifact.
-  2. `seq/uvm_sequence_item.svh:52`, `` uvm_sequence_item extends uvm_transaction ``
-     — hovering `uvm_transaction` **correctly** resolved to `**Class**
-     \`uvm_transaction\` → \`uvm_object\`` at its real declaration,
-     `base/uvm_transaction.svh:138`. Positive control: proves cross-file,
-     no-collision base-class hover/definition still works correctly at real-world
-     scale — the bug in (1) is specifically a name-collision problem, not a general
-     regression.
-
-### New bug — Gap C garbage pollutes the symbol table, causing silent wrong hover/definition answers
-
-Root cause, confirmed by reading the actual source: `base/uvm_report_catcher.svh:72`
-contains
-```
-`uvm_register_cb(uvm_report_object,uvm_report_catcher)
-```
-— a **token-pasting** macro (a genuine Gap C site, distinct from the
-stringification sub-case in root cause 1 above; this one really does use
-`` T``CB `` internally). Since token-pasting isn't implemented, the broken expansion
-leaves stray text that `SvTreeWalker` parses into a bogus symbol: a `Signal`-kind
-record literally named `uvm_report_object` at that file/line — coincidentally the
-exact same name as the real `class uvm_report_object` declared at `base/
-uvm_report_object.svh:98`.
-
-`HoverProvider::getHover` / `DefinitionProvider::getDefinition` (`src/lsp/hover.cpp`,
-`src/lsp/definition.cpp`) call `SymbolDatabase::findSymbolsByName(word)`, which
-orders results `ORDER BY f.path, s.line` (`src/db/symbol_database.cpp`) — pure
-alphabetical-by-path, **no kind preference** (e.g. Class over Signal) and no
-"is this actually a declaration vs. macro-expansion garbage" signal. `hover.cpp`
-then does "prefer same-file match; otherwise use the first match" — and since
-`uvm_component.svh` (where the hover was requested) declares neither symbol, no
-same-file preference applies, so it silently takes `rows.front()`. Because
-`"base/uvm_report_catcher.svh"` sorts alphabetically before
-`"base/uvm_report_object.svh"` (`'c' < 'o'`), **the garbage symbol wins**, and the
-user gets a plausible-looking but completely wrong hover result with **no
-diagnostic anywhere indicating anything is off** — the file with the garbage symbol
-(`uvm_report_catcher.svh`) does have 5 real diagnostics elsewhere (from this same
-Gap C site's parse fallout), but the diagnostic and the wrong-hover-answer are not
-obviously connected from a user's perspective.
-
-**Why this matters beyond "Gap C causes parse errors" (already known):** this shows
-Gap C's damage isn't confined to the file it occurs in — it can silently corrupt
-*lookups for an unrelated, correctly-declared symbol in a completely different
-file*, with no error surfaced to the user. This is a strictly new category of
-finding this session (symbol-table integrity, not parse coverage), independent of
-whatever the eventual Gap C fix looks like. **Not fixed this session** — flagging
-as a real bug for the next session to consider, either as part of a Gap C fix (which
-would eliminate the garbage symbol at the source) or as a defense-in-depth
-improvement to `findSymbolsByName`/hover's disambiguation (e.g. prefer `Class`-kind
-results, or exclude symbols from files with diagnostics at that exact line).
-
-### LSP diagnostics-visibility gap (confirmed, not new behavior, but not previously written down)
-
-Traced through `src/lsp/server.cpp`'s `didOpen`/`didChange` handlers and
-`src/db/compilation_controller.cpp`'s `compile()`: the notification sent to the
-client is built from `parseDiagnostics()`, which returns only
-`m_compiler.compile(...)`'s return value — and `compile()` (`compilation_controller.cpp`
-line ~85) returns `errsByFile[""]`, i.e. **only diagnostics attributed to the
-primary opened file**. Diagnostics for every transitively-`` `include ``d file are
-computed, partitioned by file, and persisted via `replaceDiagnostics(incFid, ...)`
-in the same function — but nothing ever calls `m_diagnostics.publish()` for those
-included files' URIs. A user opening `uvm.sv` (a 35-line wrapper) sees "0 problems"
-in their editor even though the DB holds 2956 diagnostics across 73 included files.
-This is why session 2's "1,241 diagnostics" and "335 → 173 → 86" progress tracking
-always used direct preprocessor/DB probes, never the LSP protocol surface — the LSP
-surface was never going to show them. Not a bug in the sense of "wrong behavior for
-what's implemented" (documentSymbol/hover/definition all correctly reach into
-included files' data via direct DB queries, as designed), but a real **gap**: there
-is currently no way for an LSP client to discover that an included file has
-diagnostics without separately opening that exact file itself. Worth a design note
-for whoever picks up Phase 6.4 (cross-file invalidation) — that work will need to
-reason about included-file diagnostics anyway.
-
-### Verification / cleanup
-
-- Release build confirmed current (Gap A/D commits `9b8abed`/`5ba19f9` already
-  built; `cmake --build --preset release` was a no-op rebuild).
-- Deleted `/home/martin/src/verilator_test/uvm-core/src/svlsp_subset_probe.sv` (the
-  bounded 5-file fallback fixture prepared in case the full-corpus run didn't finish
-  in time — it did, so the fallback was never used).
-- All scratchpad tooling (`lsp_driver.py`, `probe_diag.cpp`, `gen_uvm_queries.py`,
-  `uvm_queries.jsonl`) lived only in the session scratchpad, not committed — per
-  session 1/2 precedent, recreate from the descriptions above if needed for a future
-  session; exact paths won't survive to a new session.
-- No production code changed this session — investigation/measurement only, per
-  explicit user instruction ("keep going, update the handoff when done" — understood
-  as "keep investigating," not "keep fixing").
-
-### `STRING_LITERAL` escape-sequence gap — FIXED (2026-08-21, later same session, uncommitted)
-
-Per explicit user request ("fix the STRING_LITERAL escape gap"). `grammar/Sv.g4:3795`:
-```
-- STRING_LITERAL : '"' .*? '"' ;
-+ STRING_LITERAL : '"' ( '\\' . | ~["\\] )* '"' ;
-```
-The new rule: an escaped-anything alternative (`'\\' .` — consumes a backslash plus
-whatever follows it, including a `"`, without treating it as the terminator) or any
-ordinary non-quote/non-backslash character, repeated, still bounded by a real
-(unescaped) closing `"`. No longer non-greedy — doesn't need to be, since the
-negated char class already excludes the closing quote, so it can't over-consume.
-
-**Unit tests** (`tests/unit/compiler/test_sv_parser.cpp`, tag `[stringescape]`,
-4 new cases, following this file's existing `parseErrors(src)`-helper convention):
-an escaped quote (reproducing the real `reg/uvm_vreg.svh:435` pattern without the
-macro layer, since `STRING_LITERAL` is a pure lexer rule and macros aren't needed to
-exercise it), an escaped backslash, a cascade-prevention case (escaped quote
-followed by more comma-separated concatenation members on the same statement,
-mirroring `base/uvm_root.svh:600`), and a negative control confirming a *truly*
-unterminated string still errors (guards against an over-permissive fix that
-accidentally consumes to EOF). Full unit suite: **895 assertions / 353 test cases**,
-all green (up from 891/349 baseline — exactly the 4 new cases, zero regressions).
-
-**Real-world verification**: rebuilt `release`, relinked the `probe_diag.cpp`-style
-standalone probe (recreated per this section's description — the scratchpad copy
-didn't survive between turns, as expected), reran the full UVM corpus. **Total
-diagnostics dropped from 2956 → 1796 (−1160, −39%)**, files-with-diagnostics 73 → 72
-(most affected files still have *some* remaining diagnostics from the other, still-
-unfixed root causes, so this count barely moved even though per-file severity did).
-Per-file drops confirm the fix is doing exactly what was predicted: `reg/
-uvm_vreg.svh` 330 → 14, `reg/uvm_reg.svh` 151 → 77, `reg/sequences/
-uvm_reg_mem_shared_access_seq.svh` 201 → 90, `base/uvm_root.svh` 67 → 27,
-`base/uvm_component.svh` 26 → 2, `reg/uvm_vreg_field.svh` 115 → 15, `reg/
-uvm_reg_field.svh` 92 → 55. Remaining diagnostics in these same files are exactly
-the two other root causes identified above, untouched as expected — e.g.
-`uvm_vreg.svh:74`/`:354` still show the Gap C stringification pattern
-(`` `uvm_abstract_object_registry#(uvm_vreg_cbs,` `` `` ` `` ``), and `uvm_vreg.svh:457/
-548/557` still show the `void'(...)` cast gap (`extraneous input ''' expecting '('`).
-**Committed** at the user's explicit request: `b5cda7c` (fix + unit tests) and
-`4e4fe5d` (this handoff section, at the time — since amended by later edits in
-this same file for the Gap C work below, still uncommitted as of this writing).
-
-### Gap C stringification — FIXED (2026-08-21, later same session, uncommitted)
-
-Per explicit user request ("continue on gap c"), following up on root cause 1
-above. Implemented the "stringification only, not token-pasting" scope suggested
-by the original next-steps list.
-
-**`src/compiler/sv_preprocessor.cpp`**: new static helper `tryStringify(src, i,
-macros, errors, depth)`, called from `expandStr`'s backtick-dispatch loop whenever
-`` ` `` is immediately followed by `"`. Scans forward for the next `` `" `` marker
-pair (not nested — SV stringification spans don't nest), recursively
-`expandStr`s the text between the two markers (so a stringified macro parameter —
-already substituted to plain text by `substituteParams` before `expandStr` ever
-runs — or a genuine nested macro invocation inside the span both resolve
-correctly before quoting), backslash-escapes any `"`/`\` in the result so it forms
-a syntactically valid string literal, and wraps it in real double quotes. An
-unterminated `` `" `` (no matching close) records an error and stops, rather than
-scanning to EOF. Existing column-shift bookkeeping (`colShifts`, used for
-mid-line macro column-drift translation) is extended to also cover stringification
-spans, using the same "record a breakpoint after the replacement text" pattern as
-the macro-invocation branch right below it. Token-pasting (` `` `) is still not
-recognized or supported anywhere — `src/compiler/sv_preprocessor.h`'s class doc
-comment updated to reflect the new, narrower scope boundary.
-
-**Unit tests** (`tests/unit/compiler/test_sv_preprocessor.cpp`, tag `[stringify]`,
-4 new cases): a basic parameterized stringification; the *exact* real UVM
-`` `uvm_type_name_decl ``/`` `m_uvm_object_registry_internal `` pattern from root
-cause 1 (`` `define uvm_type_name_decl(TNAME_STRING) ... return `"TNAME_STRING`";
-... `` invoked with a real class name, asserting the expected `return
-"uvm_reg_err_service";` text appears in the output); a case proving the
-stringification span's *contents* are macro-expanded before quoting (not just
-copied literally); and an unterminated-marker negative control. Full unit suite:
-**902 assertions / 357 test cases**, all green (up from 895/353 — exactly the 4
-new cases, zero regressions).
-
-**Real-world verification**: rebuilt `release`, relinked the standalone probe,
-reran the full UVM corpus. **Total diagnostics dropped from 1796 → 1401
-(−395, −22% further; −1555, −53% cumulative from the session's original 2956)**,
-files-with-diagnostics 72 → 62. `` `uvm_object_utils ``/`` `uvm_component_utils ``
-sites (root cause 1's primary target) are now confirmed fixed at the source —
-e.g. `reg/uvm_reg.svh:52`'s `` `uvm_object_utils(uvm_reg_err_service) `` no longer
-appears anywhere in that file's remaining diagnostics.
-
-**What's left, root-caused**: re-inspected the largest remaining offenders
-(`base/uvm_resource_pool.svh`, still 181 — completely unchanged by this fix; `reg/
-uvm_vreg.svh`, 14 remaining, down from 330). Both point to **token-pasting**
-(` `` `, still unsupported by design), and — importantly — this reveals
-token-pasting's *own* real-world impact was also underestimated by session 1's
-original "low impact" assessment (which only cited `` `uvm_copier_get_function ``/
-`` `uvm_packer::get_packed_``T``s ``). Two more, distinct, common macro families
-use it:
-- `` `uvm_register_cb(T,CB) `` (`macros/uvm_callback_defines.svh:71-72`):
-  `` static local bit m_register_cb_``CB = uvm_callbacks#(T,CB)::m_register_pair(
-  `"T`",`"CB`"); `` — note this macro uses **both** token-pasting (`` m_register_cb_
-  ``CB ``) **and** stringification (`` `"T`",`"CB`" ``) in the same expansion; the
-  stringification half is now fixed (confirmed: `reg/uvm_vreg.svh:74`'s diagnostic
-  changed from `` mismatched input '`' expecting IDENTIFIER `` to `` mismatched
-  input '"uvm_vreg_cbs"' expecting IDENTIFIER `` post-fix — the quoted string is
-  now syntactically correct, but the surrounding parse is still wrecked by the
-  *earlier*, still-broken token-pasted prefix). This is also the exact macro
-  behind the symbol-table-pollution bug found earlier this session
-  (`uvm_report_catcher.svh:71`'s `` `uvm_register_cb(uvm_report_object,
-  uvm_report_catcher) `` call) — so fixing token-pasting would likely also fix
-  that bug at the source, as speculated there.
-- `` `M__TABLE_Q(QUEUE_NAME) ``/`` `M__TABLE_GET(QUEUE_NAME, ITER) ``
-  (`base/uvm_resource_pool.svh:136-143`, a locally-`` `define ``d, file-private
-  macro pair, not a shared UVM macro): `` QUEUE_NAME``.value ``/`` QUEUE_NAME``
-  .get(ITER) `` — confirms this file's unchanged 181 diagnostics (the single
-  largest remaining offender) are *entirely* a token-pasting artifact, unrelated
-  to stringification.
-
-Also still present, unrelated to Gap C entirely: the already-documented
-`void'(...)` cast gap (e.g. `reg/uvm_vreg.svh:457/548/557`, unchanged by either
-fix this session) — see "`void'(...)` cast gap — FIXED" below, fixed shortly
-after this section was originally written.
-
-**Not implementing full token-pasting this session** — it's a materially bigger
-feature than stringification was: stringification is a spans-in/string-out
-substitution that fits the existing `expandStr` architecture directly, but
-token-pasting needs identifier-*fragment*-level concatenation (`` A``B `` glues
-two adjacent token fragments into one new identifier, potentially spanning
-multiple macro-expansion boundaries) — a different, harder problem, and exactly
-the boundary `SvPreprocessor`'s original design doc already called out
-("use a slang-backed implementation for UVM-heavy codebases" for this specific
-case). Flagging as a real, now better-quantified candidate for a future session
-if the user decides it's worth the larger effort, rather than attempting it
-without an explicit decision to do so.
-
-### `void'(...)` cast gap — FIXED (2026-08-21, later same session)
-
-Per explicit user request ("fix the void'(...) cast gap next"), following up on
-the already-documented (pre-session-3) grammar quirk confirmed still pervasive in
-real UVM by this session's measurements (e.g. `base/uvm_root.svh:916/941/945`,
-`reg/uvm_vreg.svh:457/548/557`).
-
-**`grammar/Sv.g4`**: `subroutine_call_statement`'s void-cast alternative
-```
-- | 'void' '(' subroutine_call ')' ';'
-+ | 'void' SINGLE_QUOTE? '(' subroutine_call ')' ';'
-```
-The LRM (1800-2017 A.6.9) specifies `void ' ( function_subroutine_call ) ;` — this
-grammar had dropped the apostrophe entirely, so only the non-standard `void(f())`
-workaround form (used by `examples/dpi.sv`, with a comment explaining why)
-parsed. Made the `SINGLE_QUOTE` *optional* rather than replacing it outright, so
-both the LRM-correct `void'(f())` form used throughout real UVM and the existing
-workaround form (still used by `examples/dpi.sv`) parse — no fixture needed to
-change.
-
-**Unit tests** (`tests/unit/compiler/test_sv_parser.cpp`, tag `[voidcast]`, 2 new
-cases): the LRM-correct `void'(f())` form, and a regression guard confirming the
-`void(f())` workaround form still parses (guards against the `SINGLE_QUOTE?` fix
-accidentally becoming `SINGLE_QUOTE` required). Full unit suite: **904 assertions
-/ 359 test cases**, all green (up from 902/357 — exactly the 2 new cases, zero
-regressions).
-
-**Real-world verification**: rebuilt `release`, relinked the standalone probe,
-reran the full UVM corpus. **Total diagnostics dropped from 1401 → 1254
-(−147, −10.5% further; −1702, −57.6% cumulative from the session's original
-2956)**, files-with-diagnostics 62 → 51. Confirmed at the
-per-file level: `reg/uvm_vreg.svh` 14 → 5 (the 3 `void'(...)` diagnostics at
-lines 457/548/557 are gone; the remaining 5 are entirely the unrelated,
-still-unfixed `` `uvm_register_cb `` token-pasting cascade at line 74), `base/
-uvm_root.svh` 27 → 19, `base/uvm_callback.svh` 75 → 61.
-
-**Committed**: `88f1610` (grammar + unit tests), `9cfd7a8` (this file's
-grammar-quirks-table entry, committed before this fuller write-up and its
-measured numbers were added).
-
-### Session 3 cumulative result
-
-Three fixes this session (`STRING_LITERAL` escapes, Gap C stringification,
-`void'(...)` casts), each real-world-verified against the same 140-file UVM
-corpus: **2956 → 1796 → 1401 → 1254 total diagnostics (−57.6% cumulative)**,
-files-with-diagnostics **73 → 51**. All three are pure grammar/lexer/preprocessor
-correctness fixes with no design ambiguity — the remaining diagnostics are now
-concentrated almost entirely in token-pasting cascades (` `` `, deliberately
-unsupported, see "Not implementing full token-pasting this session" above) plus
-whatever Gap E (`` `ifdef `` inside `` `define `` bodies, not yet investigated this
-session) turns out to be responsible for.
-
-### Not yet done — suggested next steps
-
-1. ~~Fix the `STRING_LITERAL` escape-sequence lexer gap~~ — **done**, committed
-   (`b5cda7c`).
-2. ~~Fix Gap C stringification~~ — **done**, committed (`5a41322`/`aca4eb1`).
-3. ~~Fix the `void'(...)` cast gap~~ — **done**, committed (`88f1610`/`9cfd7a8`).
-4. **Decide on full token-pasting support** — now confirmed to be the dominant
-   remaining real-world diagnostic source (three distinct macro families found
-   this session: `` `uvm_register_cb ``, `` `M__TABLE_Q ``/`` `M__TABLE_GET ``, plus
-   the original `` `uvm_copier_get_function ``/`` `uvm_packer::get_packed_``T``s ``
-   sites) but a materially larger implementation effort than stringification was
-   — see "Not implementing full token-pasting this session" above for why. This is
-   the natural next step if UVM-corpus diagnostic count keeps being a priority,
-   but is a real design decision, not a quick follow-on fix.
-5. Gap E (`` `ifdef `` inside `` `define `` bodies) still not investigated further
-   this session — re-run the full-corpus probe after any of the above to see how
-   much of the remaining ~1254 it's actually responsible for before deciding if
-   it's worth pursuing on its own.
-6. Consider the `findSymbolsByName`/hover disambiguation improvement noted in the
-   symbol-pollution bug section — lower priority than a token-pasting fix, since
-   fixing token-pasting would remove the garbage symbol at its source (see above)
-   and would likely resolve that specific instance on its own, but the general "no
-   kind preference, alphabetical tiebreak" pattern could still bite in unrelated
-   future name collisions.
-7. Consider whether the LSP diagnostics-visibility gap (primary-file-only
-   `publishDiagnostics`) is worth addressing as its own small feature — e.g.
-   proactively publishing diagnostics for every file touched by a `compile()` call,
-   not just the primary one — independent of Phase 6.4's larger cross-file
-   invalidation work, since it's a real, immediately-actionable editor-UX gap.
-
----
-
-## UVM real-world smoke test — session 2 (2026-08-20, paused mid-session)
-
-Continuation of the "UVM real-world smoke test" section further down this doc
-(2026-07-20). That session left off with Gap A found-but-not-fixed and Gap B fixed.
-This session's goal (explicit user request): "retry running uvm code. when it is all
-in the database, create tests that tries to find random functionality from deep down
-in uvm in order to see if there are more gaps."
-
-### Gap A — FIXED (commit `9b8abed`)
-
-`parseInvokeArgs` (`src/compiler/sv_preprocessor.cpp`) now tracks `{}`/`[]` nesting
-depth alongside `()`, and is string-literal aware (a `"..."` argument containing a
-comma or an unmatched paren — very common in real UVM message strings like
-`` `uvm_warning(ID, {"...", behavior}) `` or `` `uvm_error("...(see above)...", x) `` —
-no longer perturbs argument splitting or paren-depth tracking). 4 new unit tests,
-tag `[bracenesting]`.
-
-### Gap D (new) — multi-line macro invocations without backslash — FIXED (commit `5ba19f9`)
-
-Real UVM (`base/uvm_phase.svh:1619-1624`, `` `UVM_PH_TRACE(...) `` split across two
-lines with no trailing `\`) showed this doesn't parse: SV macro invocations, unlike
-`` `define `` bodies, may split their argument list across physical lines using only
-an open paren/brace/bracket — no LRM-mandated backslash continuation needed. The
-line-by-line preprocessor only ever fed one physical line to `expandStr`, so such
-invocations produced "missing required argument" errors and the trailing lines fell
-through as unexpanded raw text (a downstream parse error).
-
-**Fix:** `hasUnterminatedInvocation(line, macros)` (new,
-`src/compiler/sv_preprocessor.cpp`) scans a line for invocations of *already-known*
-function-like macros and reports whether the invocation's arg-list depth (same
-paren/brace/bracket/string-aware counter as `parseInvokeArgs`) is still open at end
-of line. `mergeInvocationContinuation` (new, a lambda inside `processSource`) pulls
-in further physical lines via the same `std::getline` stream until it balances,
-advancing `lineNo` as it goes. **Ordering subtlety that cost real debugging time:**
-the merged invocation's *real* (expanded) content must be emitted to `ctx.output`
-**before** the blank lines for the continuation lines it consumed — not after — both
-because `ctx.output` is parsed by ANTLR sequentially (wrong order = tokens land on
-the wrong output line entirely) and because the sourceMap entry for the real content
-must say the *first* line, not whatever `lineNo` had advanced to by the time it's
-emitted. `emitLine`/`emitBlank` both gained an optional explicit `atLine` parameter
-for this reason (default `-1` = "use current `lineNo`", unchanged for every existing
-call site). 5 new unit tests, tag `[multiinvoke]`. Known accepted imprecision: any
-token that lands specifically on a continuation line (not the first) is still
-attributed to the first line for diagnostics/hover — matches the existing precedent
-for multi-line `` `define `` bodies.
-
-**Verification:** full unit suite 349 cases/891 assertions (debug/ASan), zero
-regressions from 340/868 baseline at session start.
-
-### Standalone UVM corpus re-run after both fixes
-
-Using the same standalone-probe technique from session 1 (recreate `probe.cpp` per
-that section's notes if missing — this session's copies all lived in the session
-scratchpad, not committed, paths won't survive to a new session):
-preprocessor-only errors on the real UVM corpus (`uvm.sv`, `includeDirs: ["."]`,
-`UVM_NO_DPI` defined, release build) dropped **335 → 173 → 86**: Gap A's fix alone
-resolved 162 (the brace-nesting arity-mismatch cluster); Gap D's fix resolved the
-remaining 87 "missing required argument" cases (arity=0 after both fixes). The
-remaining 86 are **all** "undefined macro" errors, in two known clusters — no third
-cluster:
-
-- **Gap C (already known, deliberately unsupported)** — token-pasting (` `` `).
-  `` `uvm_copier_get_function(FUNCTION) `` (`macros/uvm_copier_defines.svh`) expands
-  `` get_``FUNCTION``_copy `` and `` uvm_packer::get_packed_``T``s ``
-  (`base/uvm_packer.svh`) — both leave literal `` `` `` in the output that then gets
-  mis-scanned as more macro invocations (`` `first ``, `` `_copy ``, `` `byte ``,
-  `` `s ``, etc. — matches the FUNCTION/T argument names actually used at each call
-  site). Confirmed low real-world impact *on uvm-core itself* (not necessarily on
-  end-user testbenches, which use field-automation macros far more): only 17 direct
-  `` `uvm_field_* `` invocations and 43 files referencing any `` `uvm_*_utils ``
-  macro across the whole ~170-file corpus.
-
-- **Gap E (new) — `` `ifdef ``/`` `else ``/`` `endif `` embedded inside a `` `define ``
-  body are not evaluated at macro-expansion time.** Real UVM
-  (`macros/uvm_object_defines.svh:826-831`):
-  ```
-  `define m_uvm_field_op_begin(OP, FLAG) \
-  UVM_``OP: \
-    if ( \
-       `ifndef UVM_LEGACY_FIELD_MACRO_SEMANTICS (((FLAG)&UVM_``OP)) && `endif \
-       (!((FLAG)&UVM_NO``OP)) \
-    ) begin
-  ```
-  and `macros/uvm_object_defines.svh:797-808` (`` `m_warn_if_no_positive_ops ``,
-  `` `ifdef UVM_LEGACY_FIELD_MACRO_SEMANTICS ... `else ... `endif `` inside the body).
-  When such a macro is invoked, `expandStr` recursively expands the body text but has
-  no concept of conditional directives inside it — `` `ifdef ``/`` `else ``/`` `endif ``
-  are scanned like any other `` ` `` + identifier and hit `expandMacroCall`'s
-  "undefined macro" path (they're not in the macro table), which just emits `""` for
-  each and moves on — meaning **both** branches' literal text end up concatenated
-  into the output, un-conditioned. **Fix sketch (not attempted — substantial,
-  needs design):** when parsing/expanding a macro body, recognize
-  `` `ifdef ``/`` `ifndef ``/`` `elsif ``/`` `else ``/`` `endif `` tokens and
-  re-run the same conditional-compilation logic used at the top level, evaluated
-  against the *current* (invocation-time) `ctx.macros` state — not definition-time,
-  since e.g. `UVM_LEGACY_FIELD_MACRO_SEMANTICS` could be defined by the invoking
-  file but not by whatever file originally `` `define ``d the macro. This is a
-  distinctly separate design problem from Gap C (token-pasting) even though both
-  currently manifest as "undefined macro `ifdef`/`else`/`endif`/`COPY`/`COMPARE`/
-  `PACK`/`UNPACK`" in the error list — the `COPY`/`COMPARE`/`PACK`/`UNPACK` names
-  are `` `m_uvm_field_op_begin ``'s `OP` argument at each of its real call sites,
-  confirming it's this macro, not a different one. Same low-real-impact caveat as
-  Gap C applies (only reachable via the same 17 field-automation-macro call sites
-  inside uvm-core itself).
-
-### Major finding (new): ANTLR parse performance at real-world scale — NOT FIXED, Phase 6.5 territory
-
-**This is the most significant discovery of this session** and the reason the
-"get UVM fully into the DB" part of the user's request is not yet complete.
-
-**Symptom:** opening the real `uvm.sv` (full `` `include `` chain, ~170 files,
-~85K preprocessed lines) through the actual `svlsp` binary via a JSON-RPC driver
-(`didOpen` → wait for `publishDiagnostics`) did not return within several minutes
-(observed: still running, 100% CPU, RSS climbing steadily — 727MB+ — past 6 minutes
-of wall time before being killed to investigate). This is **not an infinite loop**:
-RSS grows roughly linearly, not explosively, and standalone measurements below
-confirm it eventually terminates, just very slowly.
-
-**Isolation technique (extends the session-1 standalone-probe method):** rather than
-going through the full LSP/DB layer, link a tiny driver directly against
-`build/release/libsvlsp_compiler.a` + `libsvlsp_antlr4.a` +
-`_deps/antlr4_runtime-build/runtime/libantlr4-runtime.a` (include paths:
-`-I src -I build/release/generated/antlr4
--I build/release/_deps/antlr4_runtime-src/runtime/Cpp/runtime/src`, and
-**`-pthread` is required** — omitting it causes an immediate
-`std::system_error: Unknown error -1` crash inside the ANTLR runtime's static
-initialization, which looks alarming but is just a missing link flag, not a real
-bug) and call `SvTreeWalker::walk` directly, timing it separately from
-`SvPreprocessor::process`. None of these probes were committed — recreate from this
-description if needed for a future session.
-
-**Measurements (release build, no ASan):**
-- Full corpus preprocessing alone: ~0.08-0.2s (fast, as in session 1 — the
-  preprocessor itself was never the bottleneck).
-- `base/uvm_barrier.svh` alone (236 lines, standalone/no macro context so
-  `` `uvm_object_utils `` is "undefined" → 3 real parse errors from the resulting
-  malformed class-body text): **2.45-2.79s** to parse. Forcing ANTLR's SLL-only
-  prediction mode (`parser.getInterpreter<antlr4::atn::ParserATNSimulator>()->
-  setPredictionMode(antlr4::atn::PredictionMode::SLL)`, tested standalone, **not**
-  applied to product code) brought this to 2.13s (~20% faster) — a real but
-  partial improvement; the dominant cost is ANTLR's error-recovery/resynchronization
-  machinery itself, not full-context (SLL→LL fallback) prediction.
-- `base/uvm_base.svh` (150-line aggregator, `` `include ``s ~50 files under `base/`,
-  tested standalone so its 144 "undefined macro" errors are mostly the same
-  missing-macro-context artifact as above, not real Gap C/E errors): **334.578s
-  (~5.6 minutes)** to parse.
-- A **bounded, properly macro-primed** 5-real-file subset was built to separate
-  "slow because of preprocessor-error-driven parse errors" from "slow because large
-  real SV class bodies are just inherently expensive to parse": a synthetic top file
-  `` `include ``ing `uvm_macros.svh` first (so `` `uvm_info ``/`` `uvm_object_utils ``/
-  etc. are genuinely defined, unlike the standalone-file tests above) then
-  `base/uvm_object.svh`, `base/uvm_component.svh`, `seq/uvm_sequence_item.svh`,
-  `reg/uvm_reg.svh`, `tlm1/uvm_analysis_port.svh` directly (these 5 files have zero
-  or one `` `include `` of their own — chosen specifically to avoid the aggregator
-  fan-out). **Even with proper macro context, this timed out past 60s** — i.e. the
-  slowness is **not solely** a Gap C/E artifact; large real UVM class bodies
-  (`uvm_component.svh` is 3780 lines) are independently, inherently slow to parse
-  under this grammar. Per-file standalone timings (missing-macro-context artifact
-  errors present, so treat as upper bounds, not clean numbers): `uvm_object.svh`
-  (1325 lines, 3 pp errors) 8.3s; `uvm_sequence_item.svh` (568 lines, 1 pp error)
-  9.85s; `tlm1/uvm_analysis_port.svh` (175 lines, 4 pp errors) 1.7s;
-  `uvm_component.svh` (3780 lines, 36 pp errors) and `reg/uvm_reg.svh` (3060 lines,
-  41 pp errors) both exceeded 30s without finishing.
-- **Conclusion:** two compounding effects, not one — (1) a genuine, inherent
-  per-line ANTLR parsing cost on real (correctly-preprocessed) SV that's roughly
-  linear but with a high constant factor (order 10-20ms/line extrapolated from the
-  clean small-file numbers above), and (2) a much larger, super-linear penalty
-  (multiple seconds *per site*) wherever a Gap C/E preprocessor error leaves
-  malformed text, driven by ANTLR's error-recovery/resynchronization cost on this
-  3828-line grammar. Both are real; (2) is avoidable by fixing Gap C/E, (1) is not
-  without deeper ANTLR/grammar performance work (Phase 6.5 territory: profiling,
-  possibly grammar restructuring to reduce ambiguity, possibly a different parsing
-  strategy for hot paths). **Not attempted this session.**
-
-### Not yet done — exactly where to resume
-
-The user's request has two parts; only the fix/investigation part above is done.
-Still outstanding:
-
-1. **Get the full real UVM corpus into the DB via the actual `svlsp` LSP server**
-   (not just the standalone preprocessor/parser probes above) — i.e. actually run
-   `build/release/svlsp`, `didOpen` on `uvm.sv` (project manifest already exists at
-   `/home/martin/src/verilator_test/uvm-core/src/.svlsp.json`, recreate if missing:
-   `{"files": ["uvm.sv"], "includeDirs": ["."], "defines": {"UVM_NO_DPI": ""}}`), and
-   let it run to completion. Given the performance finding above, budget **at least
-   10-20 minutes** of wall time for this, run it as a true background process (not
-   inside a single tool-call timeout), and expect it to eventually succeed (not
-   hang forever) based on the standalone measurements. A JSON-RPC driver script for
-   this was written this session at (session scratchpad, not committed, recreate
-   from scratch — straightforward stdio Content-Length framing, see session 1's
-   "Debugging technique notes" for the pattern) `lsp_driver.py`: spawns
-   `build/release/svlsp`, does `initialize`/`initialized` with `rootUri` pointing at
-   the UVM src dir, `didOpen`s `uvm.sv` with its own text (the server resolves
-   `` `include ``s from disk itself, no need to preload them client-side), and waits
-   for `publishDiagnostics`.
-2. **As a faster near-term alternative** (while the full corpus run is pending, or
-   instead of it if 10-20 minutes is judged not worth it for exploratory testing):
-   use the bounded 5-real-file subset described above (`uvm_macros.svh` +
-   `uvm_object.svh` + `uvm_component.svh` + `uvm_sequence_item.svh` + `uvm_reg.svh`
-   + `uvm_analysis_port.svh`) as the corpus opened through the real LSP instead —
-   still genuine, unmodified, deep UVM source spanning `base/`, `seq/`, `reg/`,
-   `tlm1/`, just without the full ~170-file fan-out. Note this subset alone was
-   *also* slow in the standalone ANTLR-only probe (>60s, see above) — confirm it
-   actually finishes before relying on it, budget a few minutes.
-3. **Write exploratory hover/definition/documentSymbol/workspace-symbol queries**
-   against real, deep UVM symbols once whichever corpus above is loaded, to look for
-   *further* LSP-layer gaps (not preprocessor-layer — those are covered above)
-   beyond what's already known. Candidate symbols already located this session
-   (grep `^\s*(virtual\s+)?class\s+NAME\b` across the corpus for exact
-   file:line — re-run if the corpus changes):
-   - `uvm_component` → `base/uvm_component.svh:59`
-   - `uvm_object` → `base/uvm_object.svh:61`
-   - `uvm_root` → `base/uvm_root.svh:98`
-   - `uvm_phase` → `base/uvm_phase.svh:147`
-   - `uvm_objection` → `base/uvm_objection.svh:79`
-   - `uvm_report_server` → `base/uvm_report_server.svh:65`
-   - `uvm_resource_db` → `base/uvm_resource_db.svh:66`
-   - `uvm_config_db` → `base/uvm_config_db.svh:58`
-   - `uvm_event` → `base/uvm_event.svh:282`
-   - `uvm_barrier` → `base/uvm_barrier.svh:45`
-   - `uvm_heartbeat` → `base/uvm_heartbeat.svh:67`
-   - `uvm_coreservice_t` → `base/uvm_coreservice.svh:71`
-   - `uvm_domain` → `base/uvm_domain.svh:78`
-   - `uvm_agent` → `comps/uvm_agent.svh:51`
-   - `uvm_driver` → `comps/uvm_driver.svh:58`
-   - `uvm_monitor` → `comps/uvm_monitor.svh:45`
-   - `uvm_scoreboard` → `comps/uvm_scoreboard.svh:47`
-   - `uvm_algorithmic_comparator` → `comps/uvm_algorithmic_comparator.svh:81`
-   - `uvm_sequence` → `seq/uvm_sequence.svh:47`
-   - `uvm_sequence_item` → `seq/uvm_sequence_item.svh:52`
-   - `uvm_sequencer` → `seq/uvm_sequencer.svh:44`
-   - `uvm_sequence_base` → `seq/uvm_sequence_base.svh:153`
-   - `uvm_reg` → `reg/uvm_reg.svh:102`
-   - `uvm_reg_field` → `reg/uvm_reg_field.svh:50`
-   - `uvm_mem` → `reg/uvm_mem.svh:57`
-   - `uvm_reg_block` → `reg/uvm_reg_block.svh:40`
-   - `uvm_analysis_port` → `tlm1/uvm_analysis_port.svh:68`
-   - `uvm_tlm_generic_payload` → `tlm2/uvm_tlm2_generic_payload.svh:114`
-
-   Plan: `workspace/symbol` for each name (verify resolved URI matches expected
-   file); `documentSymbol` by path on a handful of the files above (works without
-   opening them — per Phase 6.1, `documentSymbol`/`workspace/symbol` query the DB
-   directly, no `m_store.contains` check, unlike hover/definition); for
-   hover/definition specifically (which *do* require the doc open via
-   `m_store.contains`), `didOpen` 2-3 of the files above directly and test hover/
-   definition on a cross-file base-class or type reference inside them.
-4. Given the corpus is real, external, and not tracked by svlsp's own git (per
-   session 1's note), any test built from this **should stay a scratchpad/manual
-   exploration tool**, not a committed `tests/integration/*.sh` — consistent with
-   how session 1 handled this same tension.
-5. Update this section (or add a new dated one) with whatever the exploratory
-   queries find, once run.
-
----
-
-## UVM real-world smoke test (2026-07-20, in progress)
-
-**Goal:** the user asked to set up a project compiling the real UVM core library
-(`../verilator_test/uvm-core/src/uvm.sv`, a sibling checkout **outside** this repo at
-`/home/martin/src/verilator_test/`, not tracked by svlsp's git) with
-`includeDirs: ["."]` and `defines: { UVM_NO_DPI: "" }`, and see whether it compiles —
-a first real-world stress test of the preprocessor/parser beyond hand-written fixtures.
-
-**Project manifest created** (outside this repo, not committed anywhere — recreate if
-missing) at `/home/martin/src/verilator_test/uvm-core/src/.svlsp.json`:
-```json
-{
-    "files": ["uvm.sv"],
-    "includeDirs": ["."],
-    "defines": { "UVM_NO_DPI": "" }
-}
-```
-Placed *alongside* `uvm.sv` so `ProjectRegistry`'s upward search finds it immediately
-when that file is opened. `uvm.sv` itself is a 35-line wrapper that `` `include ``s
-`uvm_pkg.sv`, which transitively `` `include ``s ~170 files under `uvm-core/src/`.
-
-### Debugging technique notes (reusable for future investigations)
-
-- **`ptrace` is blocked in this sandbox** — `gdb -p <pid>` fails with "Operation not
-  permitted" even for your own process. Don't waste time on attach-based debugging
-  here; instead copy the suspect `.cpp` to scratch, add `std::cerr` progress prints
-  (e.g. one per `` `include `` enter/exit, one every N lines of a loop), and compile
-  it standalone.
-- **Isolating the preprocessor from the full LSP/ANTLR stack is fast and cheap.**
-  `SvPreprocessor` has no ANTLR dependency (only `SvTreeWalker` does), so a standalone
-  probe that only calls `CompilerDirectiveStripper::strip` + `SvPreprocessor::process`
-  compiles and links in seconds against the already-built static lib:
-  `g++-13 -std=c++20 -O2 -I src probe.cpp build/release/libsvlsp_compiler.a -o probe`
-  (no antlr4 headers/objects get pulled in since `sv_tree_walker.o` is never
-  referenced). This is what actually found both bugs below — going through the full
-  JSON-RPC/LSP layer first only wastes time confirming "it's slow/hung" without
-  saying where.
-- **Use the `release` CMake preset for anything performance-sensitive.** The default
-  `debug` preset has ASan+UBSan instrumentation; both hung indefinitely on real UVM
-  before the fixes below, and `release` was needed to get fast (~0.1s) iteration once
-  actually measuring rather than debugging a hang.
-- A throwaway Python JSON-RPC driver script (spawn `build/release/svlsp`, send
-  `initialize`/`initialized`/`didOpen`, read the `publishDiagnostics` notification with
-  a `Content-Length`-framed reader) was used for the one true end-to-end check: it
-  lived in the session scratchpad only, not committed — recreate if needed, it's
-  ~70 lines, straightforward stdio JSON-RPC framing matching the smoke-test example
-  already in this doc's "Build and test" section.
-
-### Bug 1 — infinite loop on function-like macro default argument values — FIXED, uncommitted
-
-SV/Verilog macro parameter lists may give a parameter a default value
-(`` `define M(A, B=expr) ``), used when the invocation omits that trailing argument.
-UVM's `uvm_report_begin` macro (`uvm-core/src/macros/uvm_message_defines.svh`) uses
-exactly this: `` `define uvm_report_begin(SEVERITY, ID, VERBOSITY,
-RO=uvm_get_report_object()) \ ... ``. `parseMacroDefinition`'s function-like
-parameter-list loop (`src/compiler/sv_preprocessor.cpp`) read the parameter name via
-`readIdent`, then only checked for a following `,` before looping back — on hitting
-`=` it recognized neither `,` nor `)`, so the `while` condition stayed true forever
-without `i` ever advancing: **a true infinite loop**, not just slow. This is what was
-actually hanging both the debug *and* release builds indefinitely on `uvm.sv` (a 35
-line top file — the hang has nothing to do with file size or ASan overhead, contrary
-to the initial assumption while debugging).
-
-**Minimal repro** (still useful as a regression check if the unit tests below are
-ever deleted): `` `define FOO(A, B=default_expr()) A B `` then invoke `` `FOO(1) ``.
-
-**Fix:**
-- `MacroDef` (`src/compiler/sv_preprocessor.cpp`) gained
-  `std::vector<std::optional<std::string>> defaults;`, parallel to `params`.
-- The parameter-list loop now: (a) if `readIdent` returns empty at a position where a
-  param name was expected, pushes an error and `break`s instead of looping forever —
-  a general safety net against any future malformed-list hang, not just this one
-  pattern; (b) after reading a param name, checks for `=` and if found scans the
-  default-value expression up to the next **top-level** `,` or `)`, tracking paren
-  depth so a default value that is itself a call (`uvm_get_report_object()`) doesn't
-  end the scan early at its own closing paren.
-- `expandMacroCall`: arity check changed from `args.size() != params.size()` to
-  `args.size() > params.size()` (too many is still an error), then for every
-  param index beyond the supplied args, uses `def.defaults[k]` if present, else
-  errors `"missing required argument"`.
-- The other `MacroDef` construction site (predefined macros via `SvPreprocessor::
-  define()`) used positional aggregate init `MacroDef{false, {}, value}` assuming
-  3 fields — updated to designated-init `MacroDef{.isFunctionLike = false, .body =
-  value}` now that there are 4 fields.
-- Unit tests added (`tests/unit/compiler/test_sv_preprocessor.cpp`, tag
-  `[defaultargs]`, 5 cases): default used when omitted, default overridden when
-  supplied, default value containing nested parens doesn't hang (direct regression
-  test for the UVM pattern), missing required non-default arg still errors, too many
-  args still errors.
-
-### Bug 2 — `//` comments scanned for macro invocations — FIXED, uncommitted
-
-UVM's source is heavily doc-commented with examples like
-`` // |`uvm_info(ID, MSG, VERBOSITY) `` (literal backtick-macro syntax shown inside a
-`//` comment, `uvm-core/src/macros/uvm_message_defines.svh` and many other files).
-`expandStr` (`src/compiler/sv_preprocessor.cpp`) scanned the **entire raw line** for
-`` ` `` characters with no awareness of `//` comments at all, so it tried to expand
-`` `uvm_info ``, `` `ifdef ``, `` `define ``, `` `endif `` etc. found inside comment
-text as if they were real invocations — producing ~1780 spurious "undefined macro"
-errors on the UVM corpus alone (confirmed via `grep -rn '//.*`ifdef\|//.*`define
-\|//.*`uvm_info' uvm-core/src/` before fixing, which found many matches).
-
-**Fix:** new helper `splitLineComment(line)` (naive `find("//")`, mirrors the
-existing `stripLineComment` used for directive-argument lines) splits a regular
-source line into a macro-expandable code portion and a literal trailing comment
-portion. `processSource`'s regular-line branch now only calls `expandStr` on the code
-portion and appends the comment portion verbatim afterward — column-shift tracking
-(the mid-line-macro fix from earlier this session) is unaffected since it's computed
-from the code-portion expansion only, and the comment text after it never contains
-real symbols anyway.
-Unit tests added (tag `[comments]`, 2 cases): backtick-like text inside a
-comment-only line is not expanded and passes through unchanged; a real macro
-invocation earlier on a line still expands correctly even when a comment
-*containing another backtick-like token* follows on the same line.
-
-### Verification (both fixes together)
-
-- Unit suite: 337 cases / 861 assertions, all green.
-- Full Emacs integration suite: 124 passed / 1 failed — the 1 failure is the
-  pre-existing, already-documented `test_08_completion.sh` flake (confirmed
-  unrelated by running it in isolation earlier this session); zero regressions.
-- Real UVM (`uvm.sv` + full include chain, `UVM_NO_DPI` defined): preprocessing now
-  completes in **~0.07-0.09s** (previously hung indefinitely, confirmed >5 minutes
-  with no progress on both debug and release builds before the fix) — 85,787 output
-  lines / ~2.8MB from ~170 recursively included files. **1,241 diagnostics remain**,
-  breakdown: the large majority are the arity-mismatch pattern from Gap A below
-  (confirmed by manually inspecting several `` `uvm_warning ``/`` `uvm_error ``
-  call sites in `uvm_object_defines.svh` that pass a `{...}` concatenation
-  expression as an argument); the remainder (17: 9× `` `__FILE__ ``, 8× `` `__LINE__ ``)
-  are Gap B below.
-
-### Remaining gaps found but NOT fixed (real, reproducible, not yet started)
-
-**Gap A — macro-argument parsing doesn't track `{}`/`[]` nesting.**
-`parseInvokeArgs` (`src/compiler/sv_preprocessor.cpp`) only tracks `(`/`)` depth when
-deciding whether a `,` is a top-level argument separator or part of a nested
-sub-expression. SystemVerilog concatenation expressions `{a, b}` and array/queue
-literals are common macro-argument contents and use `{`/`}`, not `(`/`)`. Real
-example (`uvm-core/src/macros/uvm_object_defines.svh:805` and similar):
-`` `uvm_warning("UVM/FIELDS/NO_FLAG",{"Field macro for ARG uses FLAG without or'ing
-any explicit UVM_xxx actions. ",behavior}) `` — the comma inside `{...}` is
-incorrectly treated as ending the 2nd argument early, splitting it into 2 extra
-arguments and producing `` macro `uvm_warning`: expected at most 2 args, got 4 ``.
-**Fix sketch:** extend `parseInvokeArgs`'s existing `depth` counter (currently only
-incremented/decremented on `(`/`)`) to also count `{`/`}` (and probably `[`/`]` for
-consistency, though no real example of that surfaced yet) toward the same depth
-value — a comma is only a real separator at depth == 1 measuring "inside the
-invocation's outer parens, at no nested bracket of any kind". Add a unit test using
-literally this pattern (2-param macro invoked with a 2nd argument that's a brace
-expression containing a comma) as the regression case.
-
-**Gap B — `` `__FILE__ ``/`` `__LINE__ `` unresolved inside `` `include ``d files —
-FIXED, uncommitted (2026-07-20).**
-The two-pass pipeline is: pass 1 (`CompilerDirectiveStripper::strip`) substitutes
-`` `__FILE__ ``/`` `__LINE__ `` with literals, then pass 2 (`SvPreprocessor::process`)
-handles `` `include `` (among other things) by reading the included file's raw text
-and recursing into `processSource` directly — it never ran pass 1 on included
-files, only on the single top-level source handed to `SvPreprocessor::process` by
-its caller (`CompilationController`, which itself calls `CompilerDirectiveStripper::
-strip` once before calling `SvPreprocessor::process`). So any `` `__FILE__ ``/
-`` `__LINE__ `` inside an included file reached `expandStr` as a literal, still-unresolved
-macro invocation → "undefined macro" error. Confirmed via the UVM run (9×
-`` `__FILE__ ``, 8× `` `__LINE__ ``, all presumably inside included `.svh` files, not
-`uvm.sv` itself which has neither literal).
-
-**Fix applied:** option (a) from the original sketch — `processInclude`
-(`src/compiler/sv_preprocessor.cpp`) now runs `CompilerDirectiveStripper::
-strip(includedText, foundPath)` on each included file's raw text before recursing
-into `processSource`, passing `stripped.source` instead of the raw text. Line count
-is preserved (stripped directives become blank lines, same as pass 1's existing
-guarantee for the top-level file), so the preprocessor source map is unaffected.
-`stripped.directives` is discarded — nothing currently consumes that field even at
-the top level (`CompilationController::compile` only uses `.source`). No design
-issue turned up in practice: pass 1 becoming "recursive" (once per file, called from
-inside pass 2's include handling rather than only once up front by the external
-caller) required no restructuring beyond the one call site — `CompilerDirectiveStripper::
-strip` was already a pure function of `(source, filepath)` with no shared state.
-
-**Verification:** new unit tests (`tests/unit/compiler/test_sv_preprocessor.cpp`,
-3 cases): `` `__LINE__ `` inside an included file resolves to that file's own line
-number; `` `__FILE__ `` inside an included file resolves to the included file's path
-(not the top-level file's); a `` `timescale `` (pass-1 metadata directive) inside an
-included file is stripped silently instead of falling through to pass 2. Full unit
-suite: 340 cases / 868 assertions, all green (up from 337/861 before this fix — the
-3 new cases). Manually re-confirmed against a standalone nested-include repro
-(`__FILE__`/`__LINE__` used inside a macro body defined in an included file, invoked
-from that same file) via the g++-13-against-`libsvlsp_compiler.a` probe technique
-documented above: `` `__FILE__ `` now correctly resolves to the *included* file's
-path, not the top-level file's. (Note: `` `__LINE__ `` used *inside a macro
-definition* resolves to the line where the `` `define `` itself sits, not the
-invocation site — this is pass 1 substituting literally wherever the token appears
-in the raw source, before macro expansion even begins; that's pre-existing behavior
-for top-level files too, not something this fix changed or introduced.)
-Re-run against the real UVM corpus (`uvm.sv`, `includeDirs: ["."]`,
-`UVM_NO_DPI` defined) via the standalone `libsvlsp_compiler.a` probe technique,
-release build: preprocessing completes in ~0.16s, errors dropped from 1,241 to
-**335** with **zero** `` `__FILE__ ``/`` `__LINE__ `` errors remaining (previously
-9 + 8 = 17) — confirms the fix on the real corpus, not just the unit tests. The
-remaining 335 are all Gap A (brace-nesting arity mismatches), still unfixed.
-
-**Gap B end-to-end regression test (`test_23_include_file_line.sh`, 6 cases,
-committed):** the unit tests above exercise `SvPreprocessor::process` directly;
-this test proves the fix through the real JSON-RPC/LSP layer, matching this
-codebase's "every LSP feature needs both a unit test and a functional Emacs test"
-working rule. Fixtures `tests/integration/fixtures/gapb_top.sv` (`` `include ``s
-`gapb_inc.sv`, defines `gapb_top_mod`) and `gapb_inc.sv` (`gapb_before_mod`,
-then `gapb_marker_mod` whose parameter defaults use `` `__FILE__ ``/`` `__LINE__ ``,
-then `gapb_after_mod` — the before/after modules straddle the marker so a
-broken line count from pass-1 stripping would misplace `gapb_after_mod`).
-Assertions: zero diagnostics after opening `gapb_top.sv` (the primary
-regression check — before the fix this was a non-zero "undefined macro"
-diagnostic); `documentSymbol` on `gapb_top.sv` has `gapb_top_mod` only, not
-the included file's modules; `documentSymbol` on `gapb_inc.sv` (by path) has
-all three modules at their correct original lines; `workspace/symbol` for
-`gapb_marker_mod` points to `gapb_inc.sv`. All 6 pass; full integration suite
-rerun clean (130 passed / 1 failed — the same pre-existing
-`test_08_completion.sh` flake noted above, zero new regressions).
-
-**Gap C — stringification (`` `" ``) and token-pasting (` ``` `) — NOT a bug, deliberately unsupported.**
-UVM uses `` `"ARG`" `` (stringify) in several macros (e.g.
-`uvm_object_defines.svh:1151` and elsewhere). `SvPreprocessor`'s own class doc
-comment already states this scope boundary explicitly: "Stringification (`") and
-token-pasting (``) are not supported in this implementation; use a slang-backed
-implementation for UVM-heavy codebases." Not something to silently fix as a
-byproduct of this investigation — flagging here only so a future full "does UVM
-compile" attempt doesn't mistake it for a new discovery. Revisit only if/when a
-slang-backed preprocessor replacement is undertaken.
-
-### Multi-level `` `include `` integration test — Complete (2026-07-20)
-
-The existing `test_15_preprocessor_lsp.sh` only covers **one level** of `` `include ``
-(`preproc_main.sv` includes `preproc_defs.sv`, which defines one macro and one
-module, no conditionals). The user asked for a new test covering **multiple levels**
-of `` `include `` where preprocessor *statements* (not just plain symbols) appear in
-*multiple* of the nested files — i.e. macro definitions and `` `ifdef `` conditionals
-interacting across more than one include boundary, which nothing today exercises.
-A `Write` call for the first fixture file was interrupted before any file existed —
-below is the full design, ready to implement from scratch next session.
-
-**Fixture layout** (3 levels, new files under `tests/integration/fixtures/`):
-- `ml_top.sv` (level 1, opened directly by the test) — `` `define ML_TOP_WIDTH 8 ``
-  *before* `` `include "ml_level2.sv" ``; after the include, a module using
-  `` `ML_TOP_WIDTH `` (defined right there) **and** `` `ML_LEVEL3_DEPTH `` (defined
-  two include-levels down, in `ml_level3.sv` — proves a macro survives back up to
-  the top once the whole include chain unwinds); instantiates both
-  `ml_level2_mod` (1 level down) and `ml_level3_mod` (2 levels down) so hover/
-  definition can be tested at both distances from a single opened buffer.
-- `ml_level2.sv` (level 2) — `` `define ML_LEVEL2_SCALE 2 ``, then
-  `` `include "ml_level3.sv" ``, then `` `ifdef ML_LEVEL3_FLAG `` gating
-  `module ml_level2_mod` — the flag is defined **inside** `ml_level3.sv`, so this
-  proves an `` `ifdef `` in the *middle* file correctly sees a macro defined by the
-  *deepest* file, textually inserted just above it by the nested include. Also add a
-  **negative** `` `ifdef ML_NEVER_DEFINED `` guarding a `module ml_should_not_exist`
-  that must never appear anywhere (in output, diagnostics, or any DB query) —
-  without a negative case, a test could pass even if `` `ifdef `` were accidentally
-  short-circuited to "always true".
-- `ml_level3.sv` (level 3, deepest) — `` `define ML_LEVEL3_FLAG `` and
-  `` `define ML_LEVEL3_DEPTH 4 ``, then `module ml_level3_mod` whose body uses
-  `` `ML_TOP_WIDTH `` (defined in the *top* file, two include-levels *above* —
-  proves downward visibility through more than one nested include, the mirror image
-  of the upward case tested in `ml_top.sv`).
-
-**New test file:** `tests/integration/test_24_multilevel_include.sh` (renumbered from
-`test_23` — that slot was taken by the Gap-B regression test below), following the
-exact `run_test`/`section`/guard-block conventions already used by
-`test_15_preprocessor_lsp.sh` (read that file first — it's the closest existing
-precedent, just extended from 1 include level to 3, and from "no conditionals" to
-"`` `ifdef `` spanning include boundaries in both directions"). Planned assertions:
-- Diagnostics: zero, after opening `ml_top.sv` (proves the whole 3-level chain with
-  both cross-boundary macro directions and the ifdef compiles clean).
-- Hover on the `ml_level2_mod` instantiation site in `ml_top.sv` → non-null.
-- Hover on the `ml_level3_mod` instantiation site in `ml_top.sv` → non-null (proves
-  cross-file resolution works at 2 levels of include distance, not just 1 — nothing
-  existing tests this; `findSymbolsByName` is already global/unscoped per the Phase
-  6.2 "key facts" note above so this is expected to already work with zero code
-  changes, but it's untested).
-- Definition on `ml_level2_mod` instantiation → resolves to `ml_level2.sv` at its
-  correct original (pre-`` `include ``-expansion) line.
-- Definition on `ml_level3_mod` instantiation → resolves to `ml_level3.sv` at its
-  correct original line (2-level case).
-- `documentSymbol` on `ml_top.sv` → contains `ml_top_mod`, does **not** contain
-  `ml_level2_mod`/`ml_level3_mod`/`ml_should_not_exist`.
-- `documentSymbol` on `ml_level2.sv` (queried by path, not opened as a buffer — same
-  pattern as `test_15`'s `DEFS_FIXTURE` check) → contains `ml_level2_mod` at its
-  correct original line, does **not** contain `ml_should_not_exist` (the negative
-  `` `ifdef `` case).
-- `documentSymbol` on `ml_level3.sv` (by path) → contains `ml_level3_mod` at its
-  correct original line.
-- `workspace/symbol` query for `ml_level3_mod` → location URI points to
-  `ml_level3.sv`, not `ml_top.sv` or `ml_level2.sv` (proves correct file attribution
-  survives 2 levels of include nesting through the source map, matching the
-  single-level assertion `test_15` already makes for 1 level).
-- `workspace/symbol` query for `ml_should_not_exist` → no match anywhere (negative
-  `` `ifdef `` case, global check).
-Exact original line numbers for each assertion were computed by reading the fixture
-files back with the `Read` tool after writing them, per the note above.
-
-**Implemented as designed, no changes to the design needed.** Fixtures
-`tests/integration/fixtures/{ml_top,ml_level2,ml_level3}.sv` and
-`tests/integration/test_24_multilevel_include.sh` (10 test cases, all from the
-planned-assertions list above, none dropped or added). Verified line numbers and
-zero preprocessor/parse errors first with a standalone probe (same
-`libsvlsp_compiler.a` + `svlsp_antlr4` + `antlr4-runtime` static-link technique
-noted above, extended to also call `SvTreeWalker::walk` and inspect `walked.records`
-directly) before writing the Emacs test, to catch any grammar/fixture mistakes
-without paying the Emacs-daemon round-trip cost — all 10 assertions then passed on
-the first Emacs run with no fixture rework needed. Full integration suite rerun
-clean: 140 passed / 1 failed (the same pre-existing `test_08_completion.sh` flake
-noted throughout this doc), zero new regressions. Confirms (all with zero
-production-code changes, exactly as predicted in the original design): `` `ifdef ``
-in a middle include file correctly sees a macro defined by a deeper include;
-macros defined in the deepest file remain visible after the whole chain unwinds
-back to the top file; hover/definition/`workspace symbol` all resolve correctly at
-2 levels of include distance, not just the 1 level `test_15` already covered; a
-negative `` `ifdef `` guarding a never-defined macro correctly excludes its module
-everywhere (diagnostics, `documentSymbol`, and `workspace/symbol`, not just one of
-the three).
+**Last updated:** 2026-08-28 (compressed from full session history — see git log for
+narrative detail if ever needed; this file now documents current-state-and-next-steps
+only).
+
+**Status:** Phases 3, 4, 5, 6.1, 6.2, 6.3 complete. Working tree clean, all work
+through commit `f414996` is committed. Full unit suite: 963 assertions / 391 test
+cases, all green. Full Emacs integration suite: 146 passed / 0 failed.
 
 ---
 
 ## What this project is
 
 A SystemVerilog Language Server Protocol (LSP) server written in C++20.
-The full scope is documented in `plan.md`. Short version:
+Full phased plan: `plan.md` (read this first for anything not covered below).
 
 - **LSP protocol layer** (C++, lsp-framework) — talks to Emacs/editors
 - **ANTLR4 compiler front-end** — parses SystemVerilog into an AST
@@ -2148,22 +26,25 @@ The full scope is documented in `plan.md`. Short version:
 
 ```
 src/lsp/           server_state, server, document_store, diagnostics,
-                   hover, definition, references, completion,
+                   hover, definition, references, completion, fuzzy_match,
                    document_symbols, workspace_symbols, rename,
-                   signature_help, symbol_utils — LSP layer (Phase 6.1 complete)
+                   signature_help, symbol_utils, project_manifest_parser,
+                   project_registry — LSP layer
 src/compiler/      compiler_directive_stripper, sv_preprocessor, sv_tree_walker,
-                   parse_record, parse_cache — compiler front-end (Phase 4 complete)
+                   parse_record, parse_cache, filelist_parser, project_config,
+                   file_utils — compiler front-end
 src/db/            database, symbol_database, compilation_controller,
-                   schema — SQLite persistence layer (Phase 5 complete, schema v3)
-src/main.cpp       entry point
-tests/unit/        Catch2 unit tests (268 cases, 672 assertions)
-tests/integration/ Emacs functional test scripts (19 files, 84 test cases)
+                   library_resolver, project_compiler, schema — SQLite persistence (schema v5)
+src/main.cpp       entry point (supports `--log-files <path>`, see below)
+tests/unit/        Catch2 unit tests (391 cases, 963 assertions)
+tests/integration/ Emacs functional test scripts (146 test cases across ~25 files)
+tests/uvm_corpus/  opt-in test suite against a real, external UVM corpus (NOT in
+                   ctest/make test — see "UVM corpus testing" below)
 tools/             emacs-test-daemon.sh, emacs-test-init.el, emacs-test-lib.sh
-examples/          20 .sv fixture files (all created in Phase 4.2)
-grammar/           Sv.g4 — 3828-line SystemVerilog grammar (Phase 4.1 complete)
-cmake/             CMake helper modules
-  ANTLR4Tool.cmake  tool detection: PATH → antlr4 cmd; fallback → download JAR
-build/debug/generated/antlr4/   generated SvLexer/SvParser/SvVisitor sources (not committed)
+examples/          .sv fixture files
+grammar/           Sv.g4 — ~3830-line SystemVerilog grammar
+cmake/             CMake helper modules (ANTLR4Tool.cmake: PATH → antlr4 cmd; fallback → download JAR)
+build.debug|release/generated/antlr4/  generated SvLexer/SvParser/SvVisitor sources (not committed)
 docs/              per-phase docs and architecture decision records
 plan.md            full phased plan — read this first
 ```
@@ -2174,29 +55,31 @@ plan.md            full phased plan — read this first
 
 ```bash
 # Build
-cmake --preset debug
-cmake --build --preset debug
-# or:
-make configure build
+cmake --preset debug && cmake --build --preset debug
+# or: make configure build
 
 # Unit tests
-make test-unit
-# or: build/debug/unit_tests
-
-# Parser tests only
-build/debug/unit_tests "[compiler][parser]"
+build/debug/unit_tests
+build/debug/unit_tests "[compiler][parser]"   # subset by tag
 
 # Integration tests (Emacs daemon, requires display or Xvfb)
-DISPLAY=:99 make test-integration   # runs all 17 test files
-# or individually:
-bash tools/emacs-test-daemon.sh tests/integration/test_05_hover.sh
+DISPLAY=:99 make test-integration
+bash tools/emacs-test-daemon.sh tests/integration/test_05_hover.sh   # individually
+
+# Opt-in UVM corpus test suite (NOT part of ctest — see below)
+cmake --build --preset release --target uvm_corpus_tests
+./build/release/uvm_corpus_tests
 
 # Smoke-test the binary directly
 printf 'Content-Length: 152\r\n\r\n{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":null,"capabilities":{}}}' | build/debug/svlsp
+
+# Log every file parsed/persisted (primary + every discovered include) to a file
+build/release/svlsp --log-files /path/to/log.txt
 ```
 
-Compiler: **g++-13** (system g++ 7.5 does not support C++20 — pinned in `CMakePresets.json`).  
-ASan + UBSan are enabled in debug builds.
+Compiler: **g++-13** (system g++ 7.5 does not support C++20 — pinned in `CMakePresets.json`).
+ASan + UBSan enabled in debug builds; use `release` for anything performance-sensitive
+(debug/ASan can be 10-100x slower on large real-world input).
 
 ---
 
@@ -2204,909 +87,383 @@ ASan + UBSan are enabled in debug builds.
 
 ### State machine (`src/lsp/server_state.h/.cpp`)
 
-Pure business logic, no I/O. Directly instantiable in unit tests.
-
 ```
 Uninitialized ──(initialize)──► Active ──(shutdown)──► Shutdown ──(exit)──► Inactive
 ```
+Wrong-state requests throw `lsp::RequestError`. `ServerState` also captures
+`rootUri` and `explicitProjectConfigPath` (from `initializationOptions.svlsp.projectConfig`)
+during `handleInitialize`.
 
-- Wrong-state requests throw `lsp::RequestError` with the correct LSP error code.
-- `initialized` notification is a no-op (reserved for cache warm-up).
-- `exit` without prior `shutdown` is allowed by spec; both paths set `Inactive`.
+Advertised capabilities: positionEncoding=UTF16, textDocumentSync=Full,
+completion/hover/signatureHelp/definition/references/documentSymbol/workspaceSymbol/
+rename all registered. **Note:** C++ designated initializers must follow
+`ServerCapabilities` declaration order; `signatureHelpProvider` sits between
+`hoverProvider` and `definitionProvider`.
 
-Advertised capabilities (all Phase 3 providers registered):
+### Document store / diagnostics / symbol_utils (`src/lsp/`)
 
-```cpp
-positionEncoding     = UTF16
-textDocumentSync     = Full (openClose + save enabled)
-completionProvider   = CompletionOptions{}
-hoverProvider        = true
-signatureHelpProvider= SignatureHelpOptions{}
-definitionProvider   = true
-referencesProvider   = true
-documentSymbolProvider  = true
-workspaceSymbolProvider = true
-renameProvider       = true
-serverInfo           = { name: "svlsp", version: "0.1.0" }
-```
+- `DocumentStore`: pure `uri → {text, version}` map (`open`/`update`/`close`/`contains`/`get`).
+- `DiagnosticsPublisher::publish(uri, version, diags)`: sends `publishDiagnostics`.
+  **Known gap:** only ever called with the *primary* opened file's diagnostics
+  (`compile()` returns `errsByFile[""]`) — diagnostics for transitively-included files
+  are computed and persisted to the DB but never `publish()`'d to the client. A user
+  opening a thin wrapper file sees "0 problems" even if included files have errors.
+  Not fixed — see "Not yet done" below.
+- `symbol_utils.h/.cpp`: `symbolKindFor`/`completionKindFor` (DB kind string → LSP enum),
+  `wordAtPosition(text, line, char)` (extracts identifier at cursor, walks left even off
+  an id char — intentional, completion needs the prefix), `makeRange`, `pathToUri`
+  (`lsp::FileUri::fromPath` — **always absolutizes**; for a bare `` `include ``-resolved
+  relative path that was never absolutized, use `lsp::Uri::parse("file:" + relPath)`
+  instead, which preserves the literal path — this distinction matters for any code/test
+  constructing a URI for a non-`didOpen`ed file).
 
-**Important:** C++ designated initialisers must follow `ServerCapabilities` declaration
-order. `completionProvider` and `signatureHelpProvider` use `Opt<XxxOptions>` (not
-`OneOf<bool, XxxOptions>`). `signatureHelpProvider` sits between `hoverProvider` and
-`definitionProvider` in the struct — insert it there, not at the end.
+### LSP feature providers (`src/lsp/<name>.h/.cpp`)
 
-### Document store (`src/lsp/document_store.h/.cpp`)
-
-Pure business logic, no I/O. Tracks open documents as `uri → { text, version }`.
-
-| Method | Description |
-|---|---|
-| `open(DidOpenTextDocumentParams)` | Stores URI → { text, version } |
-| `update(DidChangeTextDocumentParams)` | Replaces text and version (Full sync) |
-| `close(DidCloseTextDocumentParams)` | Removes the document |
-| `contains(uri)` | Returns true if the URI is currently open |
-| `get(uri)` | Returns the stored document; throws `std::out_of_range` if unknown |
-
-### Diagnostics publisher (`src/lsp/diagnostics.h/.cpp`)
-
-Sends `textDocument/publishDiagnostics` notifications to the client.
-
-| Method | Description |
-|---|---|
-| `publish(uri, version, diags={})` | Sends `publishDiagnostics` via `MessageHandler` |
-| `static buildParams(uri, version, diags={})` | Builds params without sending — for unit tests |
-
-### Symbol utilities (`src/lsp/symbol_utils.h/.cpp`)
-
-Shared helpers used by all LSP feature providers:
-
-| Function | Description |
-|---|---|
-| `symbolKindFor(kind)` | Maps DB kind string → `lsp::SymbolKind` |
-| `completionKindFor(kind)` | Maps DB kind string → `lsp::CompletionItemKind` |
-| `wordAtPosition(text, line, char)` | Extracts identifier at 0-based cursor position; walks left even when cursor is on a non-id character (intentional — completion needs the prefix to the left of the insertion point) |
-| `makeRange(line1, col0, nameLen)` | Converts 1-based line to 0-based `lsp::Range` |
-| `pathToUri(path)` | Calls `lsp::FileUri::fromPath(path)` |
-
-### LSP feature providers (Phase 6.1 — DB-backed)
-
-Each lives in `src/lsp/<name>.h/.cpp`. All five providers now accept a
-`SymbolDatabase&` and return real results from the SQLite database.
-
-| File | Class | Signature | Behaviour |
-|---|---|---|---|
-| `hover.h/.cpp` | `HoverProvider` | `getHover(HoverParams, SymbolDatabase&, docText)` | `wordAtPosition` → `findSymbolsByName` → Markdown `**Kind** \`name\`` |
-| `definition.h/.cpp` | `DefinitionProvider` | `getDefinition(DefinitionParams, SymbolDatabase&, docText)` | `wordAtPosition` → `findSymbolsByName` → `Location` |
-| `completion.h/.cpp` | `CompletionProvider` | `getCompletion(CompletionParams, SymbolDatabase&, docText)` | `findSymbolsVisibleAt(path, line1)` → filter by prefix → `CompletionItem[]` |
-| `document_symbols.h/.cpp` | `DocumentSymbolsProvider` | `getDocumentSymbols(DocumentSymbolParams, SymbolDatabase&)` | `symbolsForFile` → `DocumentSymbol[]` with scope ranges |
-| `workspace_symbols.h/.cpp` | `WorkspaceSymbolsProvider` | `getWorkspaceSymbols(WorkspaceSymbolParams, SymbolDatabase&)` | `findSymbolsByNamePrefix(query)` → `WorkspaceSymbol[]` |
-| `references.h/.cpp` | `ReferencesProvider` | `getReferences(ReferenceParams)` | Returns `nullptr` — Phase 6.2+ |
-| `rename.h/.cpp` | `RenameProvider` | `getRename(RenameParams)` | Returns `nullptr` — Phase 6.2+ |
-| `signature_help.h/.cpp` | `SignatureHelpProvider` | `getSignatureHelp(SignatureHelpParams)` | Returns `nullptr` — Phase 6.2+ |
+| File | Class | Behaviour |
+|---|---|---|
+| `hover.h/.cpp` | `HoverProvider` | `wordAtPosition` → `findSymbolsByName` → Markdown `**Kind** \`name\`` |
+| `definition.h/.cpp` | `DefinitionProvider` | `wordAtPosition` → `findSymbolsByName` → `Location` |
+| `completion.h/.cpp` | `CompletionProvider` | `findSymbolsVisibleAt(path, line1)` → fuzzy-scored (see below) → `CompletionItem[]` |
+| `document_symbols.h/.cpp` | `DocumentSymbolsProvider` | `symbolsForFile` → `DocumentSymbol[]` with scope ranges |
+| `workspace_symbols.h/.cpp` | `WorkspaceSymbolsProvider` | `findSymbolsByNamePrefix(query)` → `WorkspaceSymbol[]` |
+| `references.h/.cpp` | `ReferencesProvider` | Returns `nullptr` — **unimplemented stub** |
+| `rename.h/.cpp` | `RenameProvider` | Returns `nullptr` — **unimplemented stub** |
+| `signature_help.h/.cpp` | `SignatureHelpProvider` | Returns `nullptr` — **unimplemented stub** |
 
 Position-based providers (hover, definition, completion) check `m_store.contains(uri)`
-before querying the DB and return `nullptr` if the document is not open.
+first and return `nullptr` if the document isn't open. Hover/Definition do **global**
+cross-file `findSymbolsByName` lookup — same-file match preferred, else first row by
+`ORDER BY path, line` (no kind preference — see "Known gaps" below for the
+alphabetical-tiebreak risk this creates on name collisions).
+
+**Fuzzy completion matching** (`src/lsp/fuzzy_match.h/.cpp`): `fuzzyScore(candidate,
+pattern) -> optional<int>`, case-insensitive subsequence matcher (not a subsequence →
+`nullopt`; reordering never matches, only skipping is tolerated). Rewards contiguous
+runs (+15), word-boundary landings (start of string, after `_`/`-`/`.`/`:`, or a
+camelCase transition, +12), exact-case (+3); penalizes skipped chars (−1 each); shorter
+candidate is the final tiebreak. `CompletionProvider` scores every visible row when a
+prefix is typed, drops `nullopt` rows, sorts by descending score (name as stable
+tiebreak), and assigns each item a zero-padded `sortText` for clients that re-sort by
+that field. No typed prefix → unranked, unchanged behavior (every visible symbol).
 
 ### I/O wrapper (`src/lsp/server.h/.cpp`)
 
-`LanguageServer` owns (in construction order):
-`m_db`, `m_symbolDb`, `m_compiler`, `m_connection`, `m_messageHandler`, `m_store`, `m_diagnostics`.
+`LanguageServer` owns (construction order): `m_db`, `m_symbolDb`, `m_compiler`,
+`m_projects` (`ProjectRegistry`), `m_connection`, `m_messageHandler`, `m_store`,
+`m_diagnostics`. `m_db` is `":memory:"` — symbols lost on server restart, repopulated
+per `didOpen`/`didChange` via `m_compiler.compile(path, text, m_projects.configFor(path))`.
+Optional constructor `std::ostream* logStream` (default `nullptr`, forwarded to
+`m_compiler`) backs `--log-files`.
 
-`m_db` is opened as `":memory:"` — symbols persist across requests within one server session
-but are lost on restart. The DB is re-populated on every `didOpen`/`didChange` via
-`m_compiler.compile(path, text)`.
+`registerHandlers()` wires: `initialize`/`initialized`/`shutdown`/`exit`,
+`textDocument/{didOpen,didChange,didClose,hover,definition,references,completion,
+documentSymbol,rename,signatureHelp}`, `workspace/symbol`.
 
-`registerHandlers()` wires all message types:
+---
 
-| Message | Kind | Handler |
-|---|---|---|
-| `initialize` | request | `handleInitialize` — stores processId, returns capabilities |
-| `initialized` | notification | `handleInitialized` — no-op |
-| `shutdown` | request | `handleShutdown` — transitions to Shutdown |
-| `exit` | notification | `handleExit` — transitions to Inactive, breaks run() loop |
-| `textDocument/didOpen` | notification | `m_store.open()` → `m_compiler.compile()` → `m_diagnostics.publish()` |
-| `textDocument/didChange` | notification | `m_store.update()` → `m_compiler.compile()` → `m_diagnostics.publish()` |
-| `textDocument/didClose` | notification | `m_store.close()` |
-| `textDocument/hover` | request | `HoverProvider::getHover(params, m_symbolDb, docText)` |
-| `textDocument/definition` | request | `DefinitionProvider::getDefinition(params, m_symbolDb, docText)` |
-| `textDocument/references` | request | `ReferencesProvider::getReferences(params)` — null |
-| `textDocument/completion` | request | `CompletionProvider::getCompletion(params, m_symbolDb, docText)` |
-| `textDocument/documentSymbol` | request | `DocumentSymbolsProvider::getDocumentSymbols(params, m_symbolDb)` |
-| `workspace/symbol` | request | `WorkspaceSymbolsProvider::getWorkspaceSymbols(params, m_symbolDb)` |
-| `textDocument/rename` | request | `RenameProvider::getRename(params)` — null |
-| `textDocument/signatureHelp` | request | `SignatureHelpProvider::getSignatureHelp(params)` — null |
+## Database layer (`src/db/`)
+
+### Schema v5 (`src/db/schema.h`, `db::SCHEMA_VERSION = 5`)
+
+- `files (id, path UNIQUE, content_hash, parsed_at)`
+- `symbols (id, file_id, kind, name, line, col, parent, detail, end_line, scope)` —
+  indexed on name, file_id, scope, (scope,name), (file_id,line,end_line)
+- `diagnostics (id, file_id, line, col, message)`
+- `imports (id, file_id, pkg_name, item, is_export)` — `item="*"` = wildcard,
+  `is_export=1` = `export pkg::item`/`export pkg::*`
+- `instantiations (id, file_id, type_name, inst_name, line)` — one row per
+  module/interface/program instantiation; drives library resolution
+
+Migrations (`database.cpp`, run automatically): v1→v2 adds end_line/scope; v2→v3 adds
+`imports`; v3→v4 adds `imports.is_export`; v4→v5 adds `instantiations`.
+
+### Query API (`src/db/symbol_database.h/.cpp`)
+
+| Method | Description |
+|---|---|
+| `upsertFile`/`getFileHash` | stable file_id for a path; hash for cache-hit checks |
+| `replaceSymbols`/`replaceDiagnostics`/`replaceImports`/`replaceInstantiations` | DELETE + INSERT per file, transactional |
+| `appendDiagnostics` | INSERT-only (unlike `replaceDiagnostics`) — used by the library resolver so it doesn't wipe a file's own parse diagnostics |
+| `symbolsForFile`/`diagnosticsForFile`/`importsForFileId` | by path/file_id |
+| `findSymbolsByName`/`findSymbolsByNamePrefix` | cross-file; ordered `path, line` — no kind preference |
+| `findSymbolsInScope(scope)` | exact scope match |
+| `scopeAtPosition(path, line)` | innermost enclosing scope name, `""` if top-level |
+| `findSymbolsVisibleAt(path, line)` | UNION ALL: (1) file-local scope chain, (2) cross-file top-level + wildcard-imported (+ transitively re-exported) package scopes, (3) one arm per specific import (+ re-exported specific items); **sorted in C++, not SQL** — SQLite disallows expressions like `length(scope)` in `ORDER BY` after `UNION ALL` |
+| `collectExportedImports` *(private)* | cycle-safe recursive walk of `export pkg::*`/`export pkg::item` |
+| `fileIdForPackage` *(private)* | file_id declaring a top-level package by name |
+| `instantiationsOfType(typeName)` | every file referencing an unresolved instantiated type |
+| `unresolvedInstantiatedTypeNames()` | distinct instantiated type names with no matching declaration anywhere — drives `LibraryResolver` |
+
+`SymbolRow { id, kind, name, line, col, parent, detail, filePath, endLine, scope }`.
+
+### `CompilationController` (`src/db/compilation_controller.h/.cpp`)
+
+`compile(path, text, const ProjectConfig* config = nullptr)` — hash check → skip or
+recompile → update DB. `config` seeds `SvPreprocessor`'s include dirs/defines; `nullptr`
+(default) preserves pre-multi-file-project behavior exactly. Optional
+`std::ostream* logStream` ctor param (default `nullptr`): when set, logs `[parsed] <path>`
+(primary; ` (cached)` on a cache hit) and `[parsed]   included: <path>` per file in the
+cache-miss loop — backs `--log-files`.
+
+### Library dependency graph
+
+```
+svlsp_compiler (compiler_directive_stripper, sv_preprocessor, sv_tree_walker,
+                parse_cache, filelist_parser, project_config, file_utils)
+    → svlsp_antlr4
+
+svlsp_db (database, symbol_database, compilation_controller, library_resolver, project_compiler)
+    → svlsp_sqlite3 → svlsp_compiler
+
+svlsp_lib (lsp/*, incl. project_manifest_parser, project_registry — needs lsp::json,
+           not available to svlsp_compiler)
+    → lsp → svlsp_compiler → svlsp_db
+```
+
+---
+
+## Multi-file project support (Phase 6.2/6.3 — complete)
+
+Two independent project-config formats both produce one `ProjectConfig`:
+`.svlsp.json` manifest, and a VCS/Questa/Xcelium-style `.f` filelist. Any unsupported
+`.f` switch is a **hard error**. Unresolved instantiations emit a diagnostic on the
+referencing file.
+
+- **`FilelistParser::parse(path, baseDir = "")`** (`src/compiler/filelist_parser.h/.cpp`):
+  `-f FILE` recurses with the *same* baseDir (CWD-relative paths inside stay
+  CWD-relative); `-F FILE` recurses with baseDir = that file's own parent dir.
+  `baseDir=""` means "use CWD", matching pre-existing/CLI-tool behavior — **auto-discovery
+  callers (`ProjectRegistry`) must pass the discovered config file's own parent dir
+  explicitly**, or relative `-y`/bare-filename entries resolve against the server's CWD
+  instead of the project (a real bug hit and fixed during Stage 6 — the two parsers are
+  asymmetric here; `ProjectManifestParser` already resolves against its own dir
+  internally). Cycle detection = active-recursion-stack (not permanent-visited) so
+  diamond includes are legal (parsed twice, harmless — `compile()` is hash-cached).
+- **`ProjectManifestParser::parse(path)`** (`src/lsp/project_manifest_parser.h/.cpp`):
+  JSON via `lsp::json`. Unknown top-level keys silently ignored (opposite policy from
+  the filelist parser). `"mode"` only accepts `"sv"`/`"v95"`. Relative
+  `files`/`includeDirs`/`libraryDirs`/`libraryFiles` resolve against the manifest's
+  own parent dir.
+- **`LibraryResolver::resolve(config, controller, sdb)`** (`src/db/library_resolver.h/.cpp`):
+  resolves one unresolved name at a time, re-querying `unresolvedInstantiatedTypeNames()`
+  after every compile (simpler than a batch-per-round loop, same termination guarantee:
+  failed names never retried, compiled paths never recompiled). `-v` files are indexed
+  by a raw parse, not persisted, unless actually resolved against. `-y` search order:
+  `libraryDirs` outer × `libExtensions` inner, first `readFile()` hit wins.
+- **`ProjectCompiler::loadProject(config, controller, sdb)`** (`src/db/project_compiler.h/.cpp`):
+  compiles every `config.files` entry (missing ones silently skipped), then invokes
+  `LibraryResolver::resolve`.
+- **`ProjectRegistry::configFor(filePath)`** (`src/lsp/project_registry.h/.cpp`): (1)
+  explicit config path if set via `setExplicitConfigPath` — wins unconditionally; (2)
+  upward filesystem search from the file's dir, checking `.svlsp.json`, `svlsp.json`,
+  `.svlsp.f`, `svlsp.f`, `files.f` at each level; (3) `nullptr` if none found (today's
+  single-file behavior, unchanged). **Cached by the discovered config file's own path**
+  — first call parses + `loadProject`s, every later call for any file under that root
+  returns the same cached pointer. A directory with no manifest in its ancestry is
+  **not** cached negatively (redoes the cheap walk each time — not a bottleneck).
+- **A real project's filelist/manifest must list every source file, including
+  packages** — import/export resolution is a DB lookup by package name
+  (`fileIdForPackage`) with no on-demand "go find this package's file" mechanism the
+  way `LibraryResolver` does for module instantiations. Packages aren't
+  instantiated, so it's easy to wrongly assume they don't need listing.
+
+### Package import/export resolution (Phase 6.3 — complete)
+
+`import pkg::*` / `import pkg::Foo` / `export pkg::*` / `export pkg::item` are tracked
+(`ImportRecord` in `src/compiler/parse_record.h`, emitted by
+`SvRecordListener::enterPackage_import_item`) and extend `findSymbolsVisibleAt`'s
+UNION ALL (wildcard packages, specific items, plus transitively re-exported symbols via
+`collectExportedImports`, cycle-safe). **Plain (non-`export`) imports are never
+followed transitively.** The LRM's `export *::*;` shorthand (re-export everything
+imported into current scope) is **not implemented** — that literal doesn't route
+through the `package_import_item` grammar rule at all.
+
+---
+
+## Preprocessor (`src/compiler/`)
+
+Two-pass pipeline: **pass 1** (`CompilerDirectiveStripper::strip`) resolves
+`` `__FILE__ ``/`` `__LINE__ `` against the original source and strips metadata
+directives (runs once per file, including recursively for each `` `include ``d file,
+so `` `__FILE__ ``/`` `__LINE__ `` inside includes resolve correctly); **pass 2**
+(`SvPreprocessor::process`) handles `` `define ``, `` `ifdef ``, `` `include ``, macro
+invocation/expansion.
+
+**Source map** (`sourceMap: vector<SourceLine>`, returned alongside expanded text):
+maps each output line back to `{file, line}` (`file==""` = primary file) plus
+`colShifts: vector<ColShift>` (`{outputCol, delta}` breakpoints) for column drift from
+mid-line macro expansion. `SvTreeWalker::walk` uses `translateLine`/`translateColumn`
+to convert every `ParseRecord`/`ParseError` back to original-file coordinates before
+they leave the compiler layer.
+
+**Supported:** function-like macro default argument values (`` `define M(A,
+B=expr) ``, arbitrary-expression defaults incl. nested calls); `{}`/`[]`-aware (and
+string-literal-aware) macro-argument splitting; multi-line macro *invocations* without
+backslash continuation (paren/brace/bracket balance tracked across physical lines) and
+multi-line `` `define `` *bodies* via backslash continuation; `//` comments are never
+scanned for macro invocations; stringification (`` `"..."`" ``, recursively expands
+macro references inside the span before quoting); token-pasting (` `` `, textual splice
+— deletes ` `` ` and adjacent whitespace, splicing surrounding text; run before
+`expandStr` scans, so it transparently handles pasting into a new macro-invocation name
+and pasting nested inside a stringification span).
+
+**Not supported (by design):** token-pasting where an operand is itself an *unexpanded*
+nested macro invocation whose expanded (not literal) result is needed — matches C's
+`##` behavior; the `` `ifdef ``/`` `else ``/`` `endif `` directives *inside* a
+`` `define `` body are not evaluated at expansion time — both branches' text end up
+concatenated unconditionally (real UVM site: `` `m_uvm_field_op_begin ``,
+`macros/uvm_object_defines.svh:826-831` — low real-world impact, only reachable via
+field-automation macros; not confirmed as a corpus contributor beyond that one site).
+
+---
+
+## Working rules
+
+- Every function has a unit test before the implementation is written.
+- Every LSP feature needs **both** a unit test and a functional Emacs test — neither
+  alone is sufficient.
+- Two commits per feature: `feat(<module>): ...` then `docs(<module>): ...`.
+- `main` branch is always green (unit + functional tests passing).
+- Only commit when the user explicitly asks.
+
+## Key decisions
+
+| Decision | Choice |
+|---|---|
+| LSP framework | lsp-framework v1.3.1 (submodule) |
+| Unit test framework | Catch2 v3.8.1 (FetchContent) |
+| Transport | stdio |
+| Compiler | g++-13 |
+| Parser generator | ANTLR4 v4.13.2 (FetchContent) |
+| Database | SQLite3 (amalgamation, schema v5) |
+| SV preprocessor | Minimal in-house C++ (not slang) |
+| `__FILE__`/`__LINE__` | Resolved in pass 1, before include shifts line numbers |
 
 ---
 
 ## Emacs test infrastructure
 
-`tools/emacs-test-daemon.sh` drives all functional tests:
+`tools/emacs-test-daemon.sh`: installs lsp-mode from MELPA into `.emacs-test/` on
+first run (stamp file skips re-download), starts an `emacs --daemon`, sources
+`tools/emacs-test-lib.sh`, runs each `test_*.sh` argument, reports pass/fail.
+`tools/emacs-test-init.el` registers svlsp for `verilog-mode`.
 
-1. First run: installs lsp-mode from MELPA into `.emacs-test/` (stamp file prevents re-download).
-2. Starts `emacs --daemon=svlsp-test-<PID>` with `tools/emacs-test-init.el`.
-3. Sources `tools/emacs-test-lib.sh`, then runs each `test_*.sh` file passed as arguments.
-4. Reports pass/fail counts; kills daemon on exit.
-
-`tools/emacs-test-init.el` registers svlsp as the LSP server for `verilog-mode`.
-
-Helper functions: `svlsp-test/open-file`, `svlsp-test/wait-for-lsp`, `svlsp-test/close-file`.
-
-### Integration test patterns
-
-- All Elisp passed to `emacsclient` must be wrapped in `(condition-case err ... (error ...))`.
-  The daemon script uses `set -euo pipefail`; an uncaught Elisp error returns exit 1 and kills the script.
-- `(lsp-workspaces)` is buffer-local — always call inside `(with-current-buffer buf ...)`.
-- `(lsp--get-buffer-diagnostics)` reads per-buffer diagnostics.
-- `lsp-request` returns `nil` for a JSON null response — use `(null result)` to check.
-- `workspace/symbol` requests can be sent from any buffer context; the query spans all indexed files.
+- All Elisp passed to `emacsclient` must be wrapped in `condition-case` — the daemon
+  script uses `set -euo pipefail`, an uncaught Elisp error kills the script.
+- `(lsp-workspaces)` is buffer-local — call inside `with-current-buffer`.
+- `lsp-request` returns `nil` for a JSON null response.
+- **The entire Emacs daemon session shares one svlsp server process and one growing
+  in-memory DB across every `test_*.sh` file.** Any new fixture's symbol names must be
+  checked against the whole `tests/integration/fixtures/**` + `examples/**` tree, not
+  just its own file — a name collision with an unrelated fixture will make
+  hover/definition ambiguous.
 
 ---
 
-## Key decisions
+## UVM corpus testing (`tests/uvm_corpus/`)
 
-| Decision | Choice | Where documented |
+Opt-in, separate CMake target `uvm_corpus_tests` (not registered with `ctest`/`make
+test` — deliberately, since it depends on an external ~140-file UVM checkout not
+tracked by this repo's git). Covers the 5 DB-backed LSP features (hover, definition,
+documentSymbol, workspace/symbol, completion) against a real, full compile of UVM.
+Corpus root resolves from `SVLSP_UVM_CORPUS_DIR` env var. If
+references/rename/signatureHelp are ever upgraded from stub to DB-backed, add
+corresponding `test_*_uvm.cpp` files here.
+
+**Real-world result of all grammar/preprocessor fixes below:** the 140-file corpus
+went from 2956 diagnostics (session 3 baseline) to **1 remaining diagnostic** — see
+"data_type ambiguity" in Known gaps below for what that one is.
+
+**URI subtlety for this suite specifically:** `` `include ``d files are stored under
+bare corpus-root-relative paths, but `lsp::DocumentUri::fromPath()` always
+absolutizes and can't represent a bare relative path verbatim. Fixture helpers
+`uriForRelPath` (input params — `lsp::Uri::parse("file:" + relPath)`, no filesystem
+access) vs. `expectedUriPath` (output comparison — runs the expected value through
+`FileUri::fromPath()` first) handle this; see `tests/uvm_corpus/uvm_corpus_fixture.h`.
+
+---
+
+## Sv.g4 grammar quirks
+
+| Construct | Issue | Status |
 |---|---|---|
-| LSP framework | lsp-framework v1.3.1 (submodule) | `docs/decisions/lsp-framework.md` |
-| Unit test framework | Catch2 v3.8.1 (FetchContent) | `CMakeLists.txt` |
-| Transport | stdio (stdin/stdout) | `src/main.cpp` |
-| Compiler | g++-13 | `CMakePresets.json` |
-| Parser generator | ANTLR4 v4.13.2 (FetchContent) | `CMakeLists.txt` |
-| Database | SQLite3 (amalgamation, schema v3) | `src/db/schema.h` |
-| SV directive taxonomy | Two-pass: strip compiler directives first, preprocess second | `docs/decisions/sv-preprocessor.md` (complete) |
-| `__FILE__` / `__LINE__` | Resolved in pass 1 against original source, before include shifts line numbers | `plan.md §4.2b` |
-| SV preprocessor tool | Minimal in-house C++ — slang upgrade path documented | `docs/decisions/sv-preprocessor.md` (complete) |
-| SQLite ORDER BY after UNION ALL | Expressions like `length(scope)` are not allowed; sort in C++ | `src/db/symbol_database.cpp findSymbolsVisibleAt` |
-
----
-
-## Working rules (from plan.md)
-
-- Every function has a **unit test before the implementation is written**.
-- Every LSP feature needs **both** a unit test and a functional Emacs test (real JSON-RPC over wire). Neither alone is sufficient.
-- Two commits per feature: `feat(<module>): ...` then `docs(<module>): ...`.
-- `main` branch is always green (unit + functional tests passing).
-
----
-
-## Phase 3 status — Complete
-
-| Sub-phase | Feature | LSP method | Status |
-|---|---|---|---|
-| 3.1 | Text document sync | `didOpen`, `didChange`, `didClose` | Complete |
-| 3.2 | Diagnostics | `textDocument/publishDiagnostics` | Complete |
-| 3.3 | Hover | `textDocument/hover` | Complete (real results — Phase 6.1) |
-| 3.4 | Go-to-definition | `textDocument/definition` | Complete (real results — Phase 6.1) |
-| 3.5 | Find references | `textDocument/references` | Wired (null — Phase 6.2+) |
-| 3.6 | Completion | `textDocument/completion` | Complete (real results — Phase 6.1) |
-| 3.7 | Document symbols | `textDocument/documentSymbol` | Complete (real results — Phase 6.1) |
-| 3.8 | Workspace symbols | `workspace/symbol` | Complete (real results — Phase 6.1) |
-| 3.9 | Rename | `textDocument/rename` | Wired (null — Phase 6.2+) |
-| 3.10 | Signature help | `textDocument/signatureHelp` | Wired (null — Phase 6.2+) |
-
----
-
-## Phase 4 status — Complete
-
-### 4.1 Grammar Integration — Complete
-
-| Step | Status | Notes |
-|---|---|---|
-| ANTLR4 tool detection in CMake | **Done** | `cmake/ANTLR4Tool.cmake` — PATH first, JAR fallback |
-| Fetch `Sv.g4` → `grammar/Sv.g4` | **Done** | 3828 lines from `miguel-guerrero/antlr4_system_verilog_parser` |
-| ANTLR4 C++ runtime (FetchContent) | **Done** | `antlr/antlr4` GIT_SHALLOW + `SOURCE_SUBDIR runtime/Cpp`, v4.13.2 |
-| CMake `add_custom_command` for generation | **Done** | Generates SvLexer/SvParser/SvListener/SvVisitor/SvBase* |
-| `svlsp_antlr4` static lib target | **Done** | Strict warnings suppressed (`-w`) on machine-generated code |
-| Unit tests: parse fixtures + error detection | **Done** | 4 tests in `tests/unit/compiler/test_sv_parser.cpp` |
-
-#### Architecture note — generated targets
-
-```
-grammar/Sv.g4
-    └─(add_custom_command: antlr4 -Dlanguage=Cpp -visitor)
-        └─ build/debug/generated/antlr4/
-               SvLexer.{h,cpp}  SvParser.{h,cpp}
-               SvListener.{h,cpp}  SvBaseListener.{h,cpp}
-               SvVisitor.{h,cpp}   SvBaseVisitor.{h,cpp}
-               └─ svlsp_antlr4 (static lib, links antlr4_static)
-                      └─ unit_tests (links svlsp_antlr4 directly)
-                         (svlsp_lib will link svlsp_antlr4 in Phase 4.5)
-```
-
-### 4.2 SystemVerilog Example Library — Complete
-
-All 20 fixture files exist in `examples/`. All 22 parser test cases pass.
-
-**Grammar quirks discovered during Phase 4.2** (see section below).
-
-### 4.2a Directive Taxonomy and Scope — Complete
-
-Two-pass pipeline:
-- **Pass 1 — compiler directive strip (§4.2b):** metadata directives, `__FILE__`, `__LINE__`
-- **Pass 2 — preprocessor (§4.2c):** `` `define ``, `` `ifdef ``, `` `include ``, macro invocations
-
-### 4.2b Compiler Directive Strip Pass — Complete
-
-`src/compiler/compiler_directive_stripper.h/.cpp`, `tests/unit/compiler/test_compiler_directive_stripper.cpp`
-
-### 4.2c Preprocessor Tool Selection and Integration — Complete
-
-`src/compiler/sv_preprocessor.h/.cpp`, `tests/unit/compiler/test_sv_preprocessor.cpp`
-
-### 4.3 AST Visitor / Listener — Complete
-
-`SvTreeWalker` in `src/compiler/sv_tree_walker.h/.cpp`.
-
-Scope stack tracks Module/Interface/Package/Class/Function/Task/**Program** — names are
-pushed on enter hooks and popped on exit hooks. Each `ParseRecord` carries the `scope` chain
-(e.g. `"MyModule::MyClass"`) and `endLine` (last line of scope body, for range building).
-Exit hooks call `backpatchEndLine` to patch the record after the closing token is seen.
-(`Program` support added in Phase 6.2 Stage 1 — previously programs weren't tracked at all.)
-
-### 4.4 Symbol Extraction — Complete
-
-`ParseRecord` fields: `kind, name, line, column, parent, detail, endLine, scope`.
-
-- `endLine` — 1-based last line of scope body; 0 for leaf symbols (ports, signals, parameters)
-- `scope` — full enclosing scope chain (e.g. `"MyModule::MyClass"`); `""` for top-level symbols
-
-**`InstantiationRecord`** (Phase 6.2 Stage 1, `src/compiler/parse_record.h`): one per
-module/interface/program instantiation (`Foo u0(...);`), fields `typeName, instName,
-line, file`. Emitted by `enterModule_instantiation`/`enterInterface_instantiation`/
-`enterProgram_instantiation` in `sv_tree_walker.cpp`; `WalkResult` carries it as
-`instantiations`. This is a *reference*, not a declaration — it's how the Phase 6.2
-library resolver (`-y`/`-v` filelist support, not yet implemented) will know which
-instantiated type names aren't declared anywhere yet.
-
-### 4.5 Error Recovery — Complete
-
-`ParseError { line, column, message }`. `SvErrorListener` installed on lexer + parser.
-`DiagnosticsPublisher::buildDiagnostic(ParseError)` converts to `lsp::Diagnostic`.
-
-### 4.6 Incremental Parsing — Complete
-
-`ParseCache` replaced by `CompilationController` (Phase 5.4) which uses SQLite hash storage.
-
----
-
-## Phase 5 — SQLite Database Layer — Complete
-
-### Schema v5
-
-Defined in `src/db/schema.h`. `db::SCHEMA_VERSION = 5`.
-
-Five tables:
-- `files (id, path UNIQUE, content_hash, parsed_at)`
-- `symbols (id, file_id→files, kind, name, line, col, parent, detail, end_line, scope)` —
-  indexes on `name`, `file_id`, `scope`, `(scope,name)`, `(file_id,line,end_line)`
-- `diagnostics (id, file_id→files, line, col, message)`
-- `imports (id, file_id→files, pkg_name, item, is_export)` — `item = "*"` for wildcard
-  imports; `is_export = 1` for `export pkg::item`/`export pkg::*` declarations;
-  index on `file_id`
-- `instantiations (id, file_id→files, type_name, inst_name, line)` — one row per
-  module/interface/program instantiation (`Foo u0(...)`); indexes on `file_id`
-  and `type_name`. Drives `unresolvedInstantiatedTypeNames()` (Phase 6.2's
-  library resolver — see that section above).
-
-Migrations run automatically in `database.cpp`:
-- `MIGRATION_V1_TO_V2`: adds `end_line` and `scope` columns plus three new indexes
-- `MIGRATION_V2_TO_V3`: adds the `imports` table and its index
-- `MIGRATION_V3_TO_V4`: adds the `is_export` column to `imports` (default 0)
-- `MIGRATION_V4_TO_V5`: adds the `instantiations` table and its two indexes
-
-### 5.2 Database Abstraction Layer — Complete
-
-`src/db/database.h/.cpp` — RAII `Database` wrapper around `sqlite3*`.
-
-### 5.3 Query API — Complete
-
-`src/db/symbol_database.h/.cpp`:
-
-| Method | Description |
-|---|---|
-| `upsertFile(path, hash) → file_id` | INSERT or UPDATE; stable id for same path |
-| `getFileHash(path) → string` | Returns `""` for unknown paths |
-| `replaceSymbols(file_id, records)` | DELETE + INSERT in a transaction (9 columns incl. end_line, scope) |
-| `replaceDiagnostics(file_id, errors)` | DELETE + INSERT in a transaction |
-| `symbolsForFile(path) → vector<SymbolRow>` | Ordered by line |
-| `findSymbolsByName(name) → vector<SymbolRow>` | Cross-file, with path |
-| `diagnosticsForFile(path) → vector<DiagnosticRow>` | |
-| `findSymbolsInScope(scope) → vector<SymbolRow>` | All symbols with exactly this scope value |
-| `findSymbolsByNamePrefix(prefix) → vector<SymbolRow>` | LIKE `prefix%`, cross-file |
-| `scopeAtPosition(path, line) → string` | Innermost scope-defining symbol containing `line` (1-based); returns `""` if top-level |
-| `findSymbolsVisibleAt(path, line) → vector<SymbolRow>` | UNION ALL: (1) file-local scope chain, (2) cross-file top-level + wildcard-imported package scopes (plus their transitively re-exported packages), (3) one arm per specific import (plus re-exported specific items); C++ sorted by scope depth then name |
-| `replaceImports(file_id, imports)` | DELETE + INSERT import records (incl. `is_export`) in a transaction |
-| `importsForFileId(file_id) → vector<ImportRow>` | Returns `{ pkgName, item, isExport }` for the given file |
-| `fileIdForPackage(pkgName) → int64_t` *(private)* | file_id of the file declaring top-level package `pkgName`, or -1 |
-| `collectExportedImports(pkgName, ...)` *(private)* | Recursively follows `export pkg::*`/`export pkg::item` reachable from `pkgName`; cycle-safe via a `visited` list |
-| `replaceInstantiations(file_id, insts)` | DELETE + INSERT instantiation records in a transaction |
-| `unresolvedInstantiatedTypeNames() → vector<string>` | Distinct `type_name`s instantiated somewhere with no matching Module/Interface/Program declaration anywhere in the DB — drives Phase 6.2's library resolver |
-| `appendDiagnostics(file_id, extra)` | INSERT-only (unlike `replaceDiagnostics`'s delete-then-insert) — lets the library resolver attach diagnostics without wiping a file's own ANTLR diagnostics |
-
-`SymbolRow { id, kind, name, line, col, parent, detail, filePath, endLine, scope }`.
-
-**SQLite UNION ALL ORDER BY limitation:** expressions like `length(scope)` are not
-allowed in `ORDER BY` after a compound SELECT — only bare output column names are valid.
-`findSymbolsVisibleAt` therefore omits the `ORDER BY` clause and sorts with `std::sort`
-in C++ after fetching all rows.
-
-### 5.4 Incremental Compilation Controller — Complete
-
-`src/db/compilation_controller.h/.cpp` — hash check → skip or recompile → update DB.
-
-### Library dependency graph
-
-```
-svlsp_compiler  (compiler_directive_stripper, sv_preprocessor, sv_tree_walker, parse_cache)
-    → svlsp_antlr4
-
-svlsp_db  (database, symbol_database, compilation_controller)
-    → svlsp_sqlite3
-    → svlsp_compiler
-
-svlsp_lib  (lsp/*, no compiler sources)
-    → lsp
-    → svlsp_compiler
-    → svlsp_db
-```
-
----
-
-## Preprocessor source map — Complete
-
-`SvPreprocessor::process` returns a `sourceMap: vector<SourceLine>` alongside the
-expanded text. Each entry maps one output line (index = line − 1) back to its
-original `{file, line}`:
-
-- `SourceLine.file == ""` → line belongs to the primary compiled file
-- `SourceLine.file == "/path/to/inc.sv"` → line belongs to that included file
-
-`SvTreeWalker::walk` consumes the map via `translateLine`, converting every
-`ParseRecord` and `ParseError` to original-file coordinates before they leave the
-compiler layer. `CompilationController::compile` groups by `file` and calls
-`replaceSymbols`/`replaceDiagnostics` per distinct file, routing included-file
-records to their own `file_id`.
-
-Integration tests 15 (`test_15_preprocessor_lsp.sh`, 9 tests) verify that
-hover, definition, completion, documentSymbol, and workspaceSymbol all report
-correct paths and line numbers through the source map.
-
----
-
-## Phase 6.3 — Package Import Resolution — Complete
-
-`import pkg::*` (wildcard) and `import pkg::Foo` (specific) imports are now tracked
-and used to extend `findSymbolsVisibleAt`.
-
-### New components
-
-**`ImportRecord`** (`src/compiler/parse_record.h`):
-```cpp
-struct ImportRecord {
-    std::string pkgName;   // package being imported/exported
-    std::string item;      // symbol name, or "*" for wildcard
-    int         line{0};
-    std::string file{};    // empty = primary compiled file
-    bool        isExport{false}; // true for `export`, false for plain `import`
-};
-```
-
-**ANTLR4 hook** (`SvRecordListener::enterPackage_import_item`):
-Fires on every `import pkg::item` **and** `export pkg::item` statement (both
-alternatives reuse the same `package_import_item` grammar production).
-`enterPackage_export_declaration`/`exitPackage_export_declaration` toggle an
-`m_inExport` flag around the export form so the emitted `ImportRecord` can be
-stamped `isExport = true`. Translates the token line via the source map and
-pushes onto `m_imports`. `WalkResult` gains a third field: `imports`.
-
-**`imports` DB table** (schema v4):
-`(id, file_id, pkg_name, item, is_export)` — `item = "*"` for wildcards,
-`is_export = 1` for `export` declarations. `replaceImports` is called by
-`CompilationController::compile` alongside `replaceSymbols`.
-`MIGRATION_V3_TO_V4` adds the `is_export` column (default 0) to existing DBs.
-
-**Extended `findSymbolsVisibleAt`** (`src/db/symbol_database.cpp`):
-Loads the file's import records, then builds a three-part UNION ALL query:
-1. File-local symbols in the scope chain (unchanged)
-2. Cross-file symbols where `scope IN ('', ...wildcardPkgs)` — adds each
-   wildcard-imported package scope to the permitted set
-3. One additional UNION ALL arm per specific import: `scope = pkg AND name = item`
-
-**Export re-exports** (`SymbolDatabase::collectExportedImports`, cycle-safe via
-a `visited` list): for each directly wildcard-imported package, looks up that
-package's own declaring file (`fileIdForPackage`) and follows its `export
-pkg::*` / `export pkg::item` declarations, merging re-exported wildcard
-packages and specific items into the same `wildcardPkgs`/`specificImports`
-sets used above. **Plain (non-exported) imports are never followed** — only
-the immediately imported scope is visible unless that scope explicitly
-re-exports it. Only the `export pkg::item` / `export pkg::*` grammar
-alternative is handled; the LRM's `export *::*;` shorthand (re-export
-everything imported into the current scope, regardless of package) is not
-wired up — that literal doesn't route through `package_import_item` at all.
-
-### Tests
-
-Unit: `[import]`/`[export]` test cases across `test_sv_listener.cpp` (export
-vs. plain-import tagging) and `test_symbol_database.cpp` (transitive-export
-resolution, plus a regression test proving a plain import does *not* leak a
-second-level import).
-
-Integration (`test_17_import_resolution.sh`, 10 tests):
-- Prerequisite: open `util_pkg.sv` to seed DB
-- Wildcard: completion includes all three util_pkg symbols (DataItem, Logger, compute)
-- Wildcard: hover on DataItem → non-null; definition → util_pkg.sv at LSP line 2
-- Specific: completion includes DataItem; excludes Logger and compute
-
-Fixtures: `tests/integration/fixtures/{util_pkg,import_wildcard,import_specific}.sv`
-
-Integration (`test_18_export_resolution.sh`, 10 tests):
-- Prerequisites: seed `base_pkg.sv`, `middle_pkg.sv` (imports + exports
-  `base_pkg::*`), and `plain_middle_pkg.sv` (imports `base_pkg::*`, no export)
-- Export: completion in `export_user.sv` (imports only `middle_pkg::*`)
-  includes both `Beta` (middle_pkg's own) and `Alpha` (re-exported from
-  `base_pkg`); hover/definition on `Alpha` confirm it resolves to
-  `base_pkg.sv` at its true declaration line — not merely that a same-named
-  symbol is visible
-- Regression: completion in `plain_import_user.sv` (imports only
-  `plain_middle_pkg::*`, which does *not* export) includes `Gamma` but
-  excludes `Alpha` — proving plain imports still don't leak transitively
-
-Fixtures: `tests/integration/fixtures/{base_pkg,middle_pkg,export_user,plain_middle_pkg,plain_import_user}.sv`
-
----
-
-## Phase 6.2 — Multi-File Project Support — Complete (6/6 stages)
-
-**Full plan file (read this first to resume):**
-`/home/martin/.claude/plans/fluffy-hatching-popcorn.md` — contains the complete
-approved design: exact struct/method signatures, schema SQL, the library-resolution
-fixpoint algorithm spelled out step-by-step, file/test naming, and PR sequencing.
-This section is a status summary only; the plan file is the source of truth.
-
-### Scope (confirmed with the user)
-
-- Support **two** independent project-config formats, both producing one shared
-  `ProjectConfig` struct: a custom, extensible `.svlsp.json` manifest, **and** a
-  VCS/Questa/Xcelium-style `.f` filelist (for interop with existing EDA build flows).
-- The filelist parser implements **full `-y`/`-v`/`+libext+` library resolution**
-  (auto-discover a module's defining file by name when referenced/instantiated
-  but not explicitly listed) — not a stub.
-- Any `.f` switch not explicitly supported is a **hard error**, not silently ignored.
-- Unresolved instantiations (not found in project files, `-v` files, or `-y` dirs)
-  **emit a diagnostic** on the referencing file, reusing the existing `ParseError`
-  pipeline (confirmed with the user — see plan file §Stage 4).
-
-### Stage status
-
-| Stage | What | Status |
-|---|---|---|
-| 1 | Program tracking (`ParseRecordKind::Program`) + `InstantiationRecord` + schema v5 (`instantiations` table) + `unresolvedInstantiatedTypeNames`/`appendDiagnostics` | **Complete** — commit `fe0f817`, 15 new unit tests, full suite 268 cases/672 assertions passing |
-| 2 | `.f` filelist parser (`src/compiler/filelist_parser.h/.cpp`, `ProjectConfig` in `src/compiler/project_config.h`) | **Complete** — 13 new unit tests, full suite 281 cases/702 assertions passing |
-| 3 | `.svlsp.json` manifest parser (`src/lsp/project_manifest_parser.h/.cpp`, via `lsp::json`) | **Complete** — 10 new unit tests, full suite 291 cases/738 assertions passing |
-| 4 | Thread `ProjectConfig` into `CompilationController::compile`; `LibraryResolver` (-v/-y fixpoint); `ProjectCompiler` batch loader | **Complete** — 14 new unit tests, full suite 305 cases/769 assertions passing |
-| 5 | Server wiring: capture `rootUri`/`initializationOptions` in `ServerState`; new `ProjectRegistry` (upward-search discovery, caching, lazy load) | **Complete** — 12 new unit tests, full suite 317 cases/790 assertions passing; full Emacs integration suite rerun (89 passed, 6 failed — all 6 pre-existing/documented, zero new regressions) |
-| 6 | End-to-end Emacs test `test_21_multifile_project.sh` + `multifile_project/` fixtures (renumbered from `test_19` after two unrelated macro-expansion regression tests were inserted — see "Known gaps") | **Complete** — 4 new integration cases; also found and fixed a real bug (see below) |
-
-### Key facts discovered during planning (still true, don't re-derive)
-
-- `program` declarations were **not tracked at all** before Stage 1 — now fixed
-  (mirrors Module/Interface hooks exactly; grammar rules confirmed at
-  `grammar/Sv.g4:89-101,3673`).
-- **Hover/Definition already do global cross-file lookup** via `findSymbolsByName`
-  (no scope/file filtering) — so once a library-resolved file's symbols land in
-  the DB, hover/definition on an instantiation site work with **zero changes**
-  to `hover.cpp`/`definition.cpp`. The only new capability needed is the
-  *resolver* knowing which names to search for.
-- No JSON library is linked except lsp-framework's own `lsp::json` (confirmed
-  API: `isObject()`/`object()`/`find()`/`isString()`/`string()`) — already
-  transitively available via `svlsp_lib`, but **not** via `svlsp_compiler`
-  (confirmed: `svlsp_compiler` links only `svlsp_antlr4`/`svlsp_options`). This
-  is why the JSON manifest parser must live under `src/lsp/`, while the filelist
-  parser belongs in `src/compiler/`.
-- `InitializeParams` (generated `types.h:6080-6159`) has `rootUri`
-  (`NullOr<DocumentUri>`), `rootPath` (`Opt<NullOr<String>>`),
-  `initializationOptions` (`Opt<LSPAny>`, `LSPAny = json::Value`), and
-  `workspaceFolders` — all currently unread anywhere in the codebase.
-- Filelist format confirmed via web research (VCS/Questa/Xcelium): bare
-  filenames; `+define+NAME[=VALUE]` and `+incdir+DIR` chainable on `+`;
-  `-f FILE` (nested, CWD-relative) vs `-F FILE` (nested, relative to the
-  filelist's own dir); `-sv`/`-sverilog`; `-y DIR`; `-v FILE`; `+libext+.ext`
-  chainable; `-top MODULE`; `//` comments; double-quoted filenames.
-
-### Stage 2 — `.f` filelist parser — Complete
-
-`src/compiler/project_config.h` (new, header-only `ProjectConfig`/`SvLanguageMode`)
-and `src/compiler/filelist_parser.h/.cpp` (new, `FilelistParser::parse(path)`),
-both registered in `CMakeLists.txt` under `svlsp_compiler`.
-
-- **CWD-relative vs. file-relative resolution is implemented via a per-recursion-frame
-  `baseDir` string**, not a global. `-f FILE`: recurses with the *same* `baseDir` as the
-  current frame (paths inside the nested file stay CWD-relative, matching vendor tool
-  behavior). `-F FILE`: recurses with `baseDir` = the nested file's own parent directory.
-  The top-level `parse(path)` call seeds `baseDir = fs::current_path()` — i.e. the entry
-  point behaves as if it were itself `-f`'d in from the CWD.
-- **Cycle detection uses an "active recursion stack" set** (`insert` on entry,
-  `erase` on return), not a permanent "ever visited" set — so a diamond include
-  (A includes B and C; both B and C include D) is legal and D is parsed twice
-  (harmless: `compile()` is content-hash-cached downstream), while true cycles
-  (A → B → A) throw. Don't switch this to a permanent-visited set without checking
-  this distinction is still wanted.
-- Any `-x`/`+x` token not in the explicitly supported list throws
-  `std::runtime_error` naming the offending token and `path:line` — no silent
-  ignoring, per the confirmed scope above.
-- Unit tests: `tests/unit/compiler/test_filelist_parser.cpp`, tag `[compiler][filelist]`
-  — 13 cases covering every bullet in the Context section's format list, using real
-  temp files under `/tmp/svlsp_test_filelist/` (nested `-f`/`-F` targets must exist on
-  disk since the parser opens them to canonicalize for cycle detection).
-
-### Stage 3 — `.svlsp.json` manifest parser — Complete
-
-`src/lsp/project_manifest_parser.h/.cpp` (new, `ProjectManifestParser::parse(path)`),
-registered in `CMakeLists.txt` under `svlsp_lib` (not `svlsp_compiler` — needs `lsp::json`,
-confirmed unavailable there; see "Key facts" above).
-
-- `lsp::json::parse`'s `ParseError` and `Value::string()`/`object()`'s `TypeError`
-  both derive from `lsp::Exception → std::runtime_error`, so they already satisfy
-  "throws `std::runtime_error`" — caught once at the top of `parse()` and rewrapped
-  with the manifest path prepended for a clearer message; every other validation
-  (wrong-typed field, non-object root, invalid `"mode"` value) throws its own
-  `std::runtime_error` directly, naming the offending field.
-- **Unknown top-level keys are silently ignored** (JSON is self-describing — a
-  typo'd key can't corrupt parsing of an unrelated field), the deliberate opposite
-  of the filelist parser's hard-error policy — see the plan file's design note if
-  you want to revisit that asymmetry.
-- `"mode"` only accepts the literal strings `"sv"` / `"v95"`; anything else throws
-  (not in the original plan spec, added defensively since an unrecognized mode
-  string silently keeping the default would be a worse failure mode than an error).
-- Relative paths in `"files"`/`"includeDirs"`/`"libraryDirs"`/`"libraryFiles"`
-  resolve against the manifest's own parent directory (`libExtensions` values are
-  bare extension strings, not paths — no resolution).
-- Unit tests: `tests/unit/lsp/test_project_manifest_parser.cpp`, tag
-  `[lsp][project-manifest]` — 10 cases: full/partial fields, `"mode":"v95"`,
-  unknown key ignored, malformed JSON, non-object root, wrong-typed `"files"` and
-  `"defines"` values, invalid `"mode"` value, missing file on disk.
-
-### Stage 4 — Config threading + library resolution — Complete
-
-- **`CompilationController::compile`** gained a 3rd parameter
-  `const ProjectConfig* config = nullptr`. Every existing call site (`server.cpp`,
-  all pre-Stage-4 unit tests) is untouched — the default preserves exactly the old
-  behavior (bare `SvPreprocessor`, no defines/include dirs). When non-null,
-  `config->includeDirs` seeds the `SvPreprocessor` constructor and each
-  `config->defines` entry is applied via `.define(name, value)` before `.process()`.
-- **`src/compiler/file_utils.h/.cpp`** (new, under `svlsp_compiler`): one function,
-  `readFile(path) -> std::optional<std::string>`, returning `nullopt` (not throwing)
-  on a missing file — both `LibraryResolver` and `ProjectCompiler` treat a missing
-  file as "skip", never a hard error, unlike the filelist/manifest parsers.
-- **`SymbolDatabase::instantiationsOfType(typeName) -> vector<InstantiationRow>`**
-  (new; `InstantiationRow{fileId, filePath, line}`) — added because Stage 4 needed
-  "every file referencing an unresolved name" and no existing query provided it;
-  not spelled out with an exact signature in the plan file, so this is a Stage-4
-  design decision, not something to hunt for in the plan doc.
-- **`src/db/library_resolver.h/.cpp`** (new): `LibraryResolver::resolve(config,
-  controller, sdb)`. Implementation detail worth knowing — it resolves **one name
-  at a time**, re-querying `unresolvedInstantiatedTypeNames()` from scratch after
-  every single compile, rather than resolving a whole batch before re-querying (the
-  plan sketches a batch-per-round shape). Chosen because re-checking after each
-  compile is trivially correct (a name that a same-round compile happens to resolve
-  is never redundantly re-attempted) at a cost of a few extra cheap `SELECT`s — not
-  a deviation in observable behavior, just a simpler loop. Termination still rests
-  on the same two facts the plan calls out: a name in `failedNames` is never
-  retried, and `compiledPaths` prevents recompiling the same resolved file twice.
-  `-v` files are pre-indexed by a raw parse (`CompilerDirectiveStripper` →
-  `SvPreprocessor` → `SvTreeWalker`, using `config.includeDirs`/`config.defines` so
-  they preprocess consistently with the rest of the project) that is **not**
-  persisted to the DB — only a file that's actually resolved against gets
-  `controller.compile()`'d. `-y` search order is strictly `libraryDirs` outer loop
-  × `libExtensions` inner loop, first `readFile()` hit wins (verified by a test
-  fixture where two candidates declare the same module name but differ in a
-  secondary nested instantiation, so whichever version "won" is observable).
-- **`src/db/project_compiler.h/.cpp`** (new): `ProjectCompiler::loadProject(config,
-  controller, sdb)` reads and compiles every `config.files` entry (missing ones
-  silently skipped, mirroring `readFile`'s no-throw contract), then calls
-  `LibraryResolver::resolve`. Returns total files compiled (explicit + library).
-- Unit tests: 3 new cases appended to `tests/unit/db/test_compilation_controller.cpp`
-  (tag `[db][ctrl][project-config]`, directly exercising the new 3-arg `compile()`
-  overload — not explicitly named in the plan's Stage 4 test list but added for
-  direct unit-level coverage of the config-threading change itself, separate from
-  the higher-level `ProjectCompiler`/`LibraryResolver` coverage the plan does call
-  for). `tests/unit/db/test_library_resolver.cpp` (new, tag `[db][library-resolver]`,
-  6 cases: `-v` resolution, `-y` dir-order and extension-order preference, A→B→C
-  fixpoint chain, dead-end name stays unresolved with zero files compiled, diagnostic
-  attached to the referencing file). `tests/unit/db/test_project_compiler.cpp` (new,
-  tag `[db][project-compiler]`, 5 cases: explicit files loaded, missing file skipped,
-  config defines/includeDirs affect preprocessing, `LibraryResolver` invoked
-  end-to-end through `loadProject`).
-
-### Stage 5 — Server wiring — Complete
-
-- **`ServerState`** (`src/lsp/server_state.h/.cpp`) captures two things during
-  `handleInitialize`: `m_rootUri` (raw `lsp::NullOr<lsp::DocumentUri>`, exposed via
-  `rootUri()` — captured for completeness only, **not** consumed anywhere; see
-  `ProjectRegistry`'s header comment for why upward search was chosen over it) and
-  `m_explicitProjectConfigPath` (a `std::string`, "" if absent), extracted from
-  `initializationOptions.svlsp.projectConfig` by a private static
-  `extractProjectConfigPath` helper that returns "" (never throws) at every step
-  where the shape doesn't match: options absent, options not an object, no
-  `"svlsp"` key, `"svlsp"` not an object, no `"projectConfig"` key, or
-  `"projectConfig"` not a string.
-- **`src/lsp/project_registry.h/.cpp`** (new): `ProjectRegistry::configFor(filePath)`
-  is the single entry point. Discovery order: (1) `m_explicitConfigPath` if set via
-  `setExplicitConfigPath` — wins unconditionally, no filesystem walk at all; (2)
-  upward search from `filePath`'s own directory, checking `.svlsp.json`,
-  `svlsp.json`, `.svlsp.f`, `svlsp.f`, `files.f` in that precedence at each
-  directory level before moving to the parent, stopping at the filesystem root;
-  (3) `nullptr` if nothing found (today's single-file behavior, byte-for-byte
-  unchanged — this is why every pre-Stage-5 integration test still passes
-  unmodified). Parser dispatch is by suffix: paths ending in `.json` go through
-  `ProjectManifestParser`, everything else through `FilelistParser`.
-- **Caching is keyed by the discovered config file's own path**, not a separately
-  computed "root directory" — the config file's parent directory *is* the root
-  for every practical purpose here, so this sidesteps computing/normalizing a
-  second identity for the same thing. First `configFor` call for a given config
-  path parses it and runs `ProjectCompiler::loadProject` (which itself internally
-  invokes `LibraryResolver`); every subsequent call for any file under that root
-  returns the same cached `ProjectConfig*` with no re-parse and no re-`loadProject`
-  — verified in the unit tests by pointer-identity equality across two different
-  files under one discovered root. **A directory with no manifest anywhere in its
-  ancestry is not cached as a negative result** — each such `configFor` call redoes
-  the (cheap) upward filesystem walk; deliberately not optimized further since
-  redoing a `fs::exists` walk per edit is not the bottleneck anywhere in this
-  codebase yet.
-- **`server.h/.cpp`**: `LanguageServer` gained `m_projects` (constructed right
-  after `m_compiler`/`m_symbolDb`, matching the plan's ordering requirement since
-  `ProjectRegistry`'s constructor takes references to both). `parseDiagnostics`
-  now calls `m_compiler.compile(path, text, m_projects.configFor(path))` — for
-  any file with no discoverable project, `configFor` returns `nullptr`, which
-  `compile`'s defaulted 3rd parameter already treats as "no project" (Stage 4),
-  so this is a no-op change for every currently-passing integration test. The
-  `Initialize` handler calls `m_projects.setExplicitConfigPath(m_state.
-  explicitProjectConfigPath())` immediately after `m_state.handleInitialize` —
-  unconditionally (an empty string is a harmless no-op, since that's already
-  `ProjectRegistry`'s default).
-- Unit tests: 6 cases appended to `tests/unit/lsp/test_server_state.cpp` (tag
-  `[lsp][server-state][project]` — rootUri capture, and every
-  present/absent/malformed shape of `explicitProjectConfigPath` extraction).
-  `tests/unit/lsp/test_project_registry.cpp` (new, tag `[lsp][project-registry]`,
-  6 cases: no-manifest-found, upward search into a parent directory,
-  closest-directory-wins over an outer manifest, `.svlsp.json`-over-`svlsp.f`
-  precedence in the same directory, load-once caching via pointer identity,
-  explicit-path override regardless of the file's own directory tree).
-- **Verification beyond unit tests**: the full Emacs integration suite (all
-  `test_*.sh` files) was rerun after this stage — 89 passed, 6 failed, and all 6
-  failures are the pre-existing ones already documented in "Known gaps" below
-  (5 from the macro mid-line/multi-line column-drift gaps, 1 unrelated
-  `test_08_completion.sh` flake) — zero new regressions from the server wiring.
-
-### Stage 6 — End-to-end Emacs integration test — Complete
-
-New fixture `tests/integration/fixtures/multifile_project/` (`.svlsp.f` = `top.sv`
-+ `-y libs` + `+libext+.sv`; `top.sv` instantiates `leaf_mod` without declaring or
-listing it anywhere; `libs/leaf_mod.sv` declares it, reachable only via `-y`
-search). New `tests/integration/test_21_multifile_project.sh`, 4 cases: hover and
-definition on the `leaf_mod` instantiation site in `top.sv`, proving the
-library-resolved file's symbols are reachable with **zero changes** to
-`HoverProvider`/`DefinitionProvider`.
-
-**Real bug found and fixed while writing this test** (not a pre-existing/documented
-gap like the macro ones — this one is fixed, not deferred): the first attempt at
-this test failed all 4 cases. Manual JSON-RPC probing against the `svlsp` binary
-directly (bypassing Emacs to narrow the search space) showed zero diagnostics but
-a null hover — i.e. `leaf_mod` was never actually getting compiled at all.
-Root cause: `FilelistParser::parse(path)` resolves every bare relative path (`-y
-libs`, the bare `top.sv` entry) against `fs::current_path()` — correct for the
-plan's original CLI-tool framing ("the top-level call behaves as if it were
-itself `-f`'d in from the CWD"), but meaningless for `ProjectRegistry`'s
-auto-discovery use case, where the server process's CWD has no relation to
-wherever a discovered `.svlsp.f` happens to live. `ProjectRegistry::loadAndCache`
-was calling `FilelistParser::parse(configPath)` with no way to override that.
-**Fix**: `FilelistParser::parse` gained a second parameter, `baseDir = ""` (empty
-means "behave exactly as before, i.e. CWD" — every pre-existing call site and unit
-test is unaffected); `ProjectRegistry::loadAndCache` now passes
-`fs::path(configPath).parent_path().string()` explicitly. `ProjectManifestParser`
-needed no equivalent change — Stage 3 already resolves its own paths against the
-manifest's own directory internally, which is why this asymmetry between the two
-parsers wasn't visible until a filelist with actual relative paths was exercised
-through discovery.
-This also means the Stage 5 unit tests had a real coverage gap: every
-`test_project_registry.cpp` case up to this point used `.svlsp.json` fixtures
-with only a `"top"` string field — never a path-bearing field through
-`FilelistParser`, so the bug went undetected until this end-to-end test forced a
-real `-y`/bare-filename resolution through the discovery path. Two regression
-tests were added to close this gap: `test_filelist_parser.cpp` ("relative bare
-filenames resolve against an explicit baseDir, not CWD" / "... when baseDir is
-omitted") and `test_project_registry.cpp` ("a discovered .svlsp.f's relative
-paths resolve against its own directory, not the server's CWD").
-
-**Deviation from the plan, deliberate**: the plan additionally called for
-exercising `ProjectRegistry`'s explicit-path override end-to-end via a dynamic
-`svlsp-test/initialization-options` Elisp variable (wired into
-`tools/emacs-test-init.el`'s `:initialization-options`, reset to nil afterward).
-That variable **is** wired up as specified, but `test_21` does not use it:
-lsp-mode reuses one workspace/server process per detected project root, every
-fixture in this repo resolves to the same git-root workspace, and that
-workspace's one-time `initialize` handshake (and thus `ServerState::
-explicitProjectConfigPath`) already happened earlier in the suite (as early as
-`test_02`) — mutating the variable at `test_21` time has no effect without a
-`lsp-workspace-restart`, which risks destabilizing every test after it. The
-explicit-path-override behavior itself is already fully covered at the unit
-level (`test_project_registry.cpp`, "an explicit config path overrides upward
-search for every file"). `test_21` instead proves the upward-search discovery
-path — Stage 5's actual behavior for every real editor session, since nobody
-hand-configures `initializationOptions` in practice.
-
-Full verification after this stage: unit suite 320 cases/800 assertions (all
-green); full Emacs integration suite 93 passed / 6 failed — the same 6
-pre-existing/documented failures as before this stage, plus all 4 new `test_21`
-cases passing.
-
-### Post-Stage-6 — Extensive combined-features integration test — Complete
-
-`tests/integration/test_22_full_project.sh` + `fixtures/full_project/` — a single
-project fixture deliberately combining every Phase 6.2/6.3 mechanism at once
-(`` `include ``, an explicit project file, `-y` library resolution, a wildcard
-import, a specific import, and transitive export), checked against every LSP
-feature: diagnostics, hover, definition, completion, documentSymbol, and
-workspace/symbol. 26 test cases, all passing.
-
-- **`.svlsp.f` must list the package files explicitly** (`fp_util_pkg.sv`,
-  `fp_reexport_pkg.sv`), alongside `fp_top.sv`/`fp_extra_mod.sv` and `-y libs`.
-  First attempt omitted them (reasoning "packages aren't instantiated like
-  modules, so they don't need `-y`/`-v` resolution") — wrong: import/export
-  resolution is a **DB lookup by package name** (`fileIdForPackage`), with *no*
-  library-resolution-style mechanism to go find a package's declaring file on
-  demand the way `LibraryResolver` does for module instantiations. All 10
-  import/export/completion/workspaceSymbol cases failed until the two package
-  files were added to the explicit file list — a real project's filelist/manifest
-  must list every source file, packages included, not just modules that get
-  instantiated.
-- **All symbol names are `fp_`-prefixed** (`fp_top`, `fp_sub_block`, `fp_extra_mod`,
-  `fp_leaf_mod`, `FpWidget`, `FpExtra`, `fp_compute`) and were checked against
-  every existing name across `tests/integration/fixtures/**` and `examples/**`
-  before writing the fixture. This matters because **the entire Emacs daemon
-  session shares one svlsp server process and one growing in-memory DB across
-  every `test_*.sh` file** — e.g. this fixture's library-resolved module could
-  not be named `leaf_mod` (test_21's `multifile_project` fixture already uses
-  that exact name), since `findSymbolsByName`/hover/definition would then have
-  to arbitrarily pick between two same-named symbols in two unrelated files.
-  Any future fixture must do the same name-collision check against the whole
-  tree, not just its own subdirectory.
-- Deliberately does **not** assert on the macro-affected wire (`fp_top_bus`,
-  driven by `` `FP_BUS_WIDTH `` mid-declaration): its column would hit the
-  known, documented mid-line-macro column-drift gap (test_19/test_20). Zero
-  diagnostics is used as the (sufficient) proof that the macro expanded
-  correctly — a broken expansion produces a parse error, per that same gap's
-  root cause.
-- Full verification: unit suite unchanged at 320 cases/800 assertions
-  (integration-only change); full Emacs integration suite 119 passed / 6
-  failed — the same 6 pre-existing/documented failures, plus all 26 new cases
-  passing, confirmed via a second full run to rule out flakiness.
-
----
-
-## Phase 6.1 — DB-Backed LSP Providers — Complete
-
-All five active providers rewritten to query `SymbolDatabase`:
-
-- **DocumentSymbols** (`symbolsForFile`) — builds `DocumentSymbol[]`; scope symbols get a
-  multi-line `range` (`endLine`-based) and a point `selectionRange` at the identifier.
-  Leaf symbols (endLine = 0) get `range == selectionRange`.
-- **WorkspaceSymbols** (`findSymbolsByNamePrefix`) — builds `WorkspaceSymbol[]` with `Location`.
-- **Hover** (`wordAtPosition` + `findSymbolsByName`) — prefers same-file match; returns
-  Markdown `**Kind** \`name\`` with optional detail and scope.
-- **Definition** (`wordAtPosition` + `findSymbolsByName`) — returns first matching `Location`.
-- **Completion** (`findSymbolsVisibleAt`) — scope-aware; filters by any already-typed prefix;
-  returns `CompletionItem[]` with `completionKindFor` and optional `detail`.
-
-Integration tests 05/06/08/09/10 updated from "expect null" to verify real results.
-
-### Phase 6 sub-phase status
-
-| Sub-phase | Feature | Status |
-|---|---|---|
-| 6.1 | DB-backed LSP providers | **Complete** |
-| 6.2 | Multi-file project support (`.svlsp.json` + `.f` filelist, incl. `-y`/`-v` library resolution) | **Complete** (6/6 stages), see Phase 6.2 section above |
-| 6.3 | Package import/export resolution (`import pkg::*`, `export pkg::*`) | **Complete** |
-| 6.4 | Cross-file invalidation (dependency graph) | Not started — see `plan.md §6.4` |
-| 6.5 | Performance baseline | Not started |
-| 6.6 | Packaging / `make install` | Not started |
-
----
-
-## Sv.g4 grammar quirks (discovered in Phase 4.2)
-
-| Construct | Expected SV | Grammar behaviour | Workaround |
-|---|---|---|---|
-| Backtick directives | `` `define ``, `` `ifdef ``, `` `timescale `` | Not in grammar at all — no lexer rules | Must be preprocessed before parsing (Phase 4.2a) |
-| `bind` double semicolon | `bind M C u (.p(p));` | `bind_directive` adds `';'` on top of `module_instantiation`'s own `';'` | Write `bind M C u (.p(p));;` |
-| `bind` parameter override | `bind M C #(.W(W)) u (.p(p));;` | LL(\*) prediction fails after `#(...)` | Omit parameter override; use default params |
-| Cross body `ignore_bins` | `cross A, B { ignore_bins x = ...; }` | `cross_body_item` already consumes `';'`, then `cross_body` adds another — double semicolon | Use `cross A, B;` (empty cross body) |
-| `timeunit`/`timeprecision` vs `` `timescale `` | `` `timescale 1ns/1ps `` | No backtick directive support | Use `timeunit 1ns; timeprecision 1ps;` inside module |
-
-**Fixed, no longer a quirk:** string literal escapes (`"a \"quoted\" word"`) —
-`STRING_LITERAL` previously had no escape-sequence awareness (`'"' .*? '"' ;`,
-terminated at the first embedded `"` regardless of a preceding `\`). Found and fixed
-2026-08-21 (committed `b5cda7c`; see "UVM real-world smoke test — session 3" §
-"`STRING_LITERAL` escape-sequence gap — FIXED" above) — now
-`` '"' ( '\\' . | ~["\\] )* '"' ``.
-
-**Fixed, no longer a quirk:** void cast (`void'(f())`) — `subroutine_call_statement`
-previously required `'void' '(' subroutine_call ')' ';'` with no `SINGLE_QUOTE`, so
-the LRM-correct `void'(...)` form (used pervasively in real UVM) failed to parse;
-only the workaround `void(f())` form (no longer needed, but still accepted) worked.
-Found and fixed 2026-08-21 (uncommitted; see "UVM real-world smoke test — session 3"
-§"`void'(...)` cast gap — FIXED" below) — now
-`` 'void' SINGLE_QUOTE? '(' subroutine_call ')' ';' ``.
+| Backtick directives (`` `define ``, `` `ifdef ``, `` `timescale ``) | Not in grammar at all | Must be preprocessed first (by design) |
+| `bind M C u (.p(p));` | `bind_directive` adds its own `';'` on top of `module_instantiation`'s | Write `;;` |
+| `bind` with parameter override (`#(...)`) | LL(*) prediction fails | Omit override; use default params |
+| `cross A, B { ignore_bins x = ...; }` | Double semicolon from `cross_body_item` + `cross_body` | Use `cross A, B;` (empty body) |
+| `` `timescale `` | No backtick directive support | Use `timeunit`/`timeprecision` inside module |
+| String literal escapes (`\"`) | **Fixed** — `STRING_LITERAL` now `'"' ('\\' . | ~["\\])* '"'` | — |
+| `void'(f())` cast | **Fixed** — `SINGLE_QUOTE?` made optional in `subroutine_call_statement` | — |
+| `#0;` bare zero-delay statement | **Fixed** — was colliding with an implicit `'#0'` literal token from assert syntax; now `'#' DECIMAL_NUMBER` | — |
+| Method named `sample()` | **Fixed** — was colliding with `coverage_event`'s `'sample'` literal; now `IDENTIFIER` | — |
+| Empty assignment pattern `` '{} `` | **Fixed** — added as a 4th `assignment_pattern` alternative | — |
+| `const` class property initialized with `new(...)` | **Fixed** — `class_property`'s `('=' constant_expression)?` widened to `('=' expression)?` | — |
+| `class_scope`d chained call, `` X::Y::method(args) `` (e.g. UVM's `T::type_id::create(...)` factory idiom) | **Fixed** — `ps_or_hierarchical_tf_identifier` gained a `class_scope tf_identifier` alternative | — |
+| SV token-pasting (` `` `) inside `` `define `` bodies | **Fixed** — see preprocessor section above | — |
+| Stringification (`` `"..."`" ``) | **Fixed** — see preprocessor section above | — |
+| **`data_type`/`variable_decl_assignment` ambiguity** (`grammar/Sv.g4:740-753`, alts 9/10/12 all reduce to a bare `IDENTIFIER` — SV's classic "identifier classification needs a symbol table" problem, LRM Annex A acknowledges this) | **Confirmed, not fixed.** Under default (SLL) prediction this is silently resolved correctly almost everywhere; fails specifically for `const local`/`const protected` (or any 2+ qualifiers) + `new(...)` initializer combos. Real fix needs semantic predicates (symbol table) or risky restructuring of some of the grammar's most heavily-used rules — not attempted; two cheap structural experiments (reordering alts, removing a redundant one) had no effect. Real-world impact: **1 diagnostic in the entire 140-file UVM corpus** (`base/uvm_transaction.svh`). | Open — revisit only if it starts showing up more broadly |
 
 ---
 
 ## Known gaps / things to watch out for
 
-- `handleExit` does not distinguish clean vs. abnormal exit for the process exit code.
-  `LanguageServer::run()` always returns 0. Fix when exit-code handling is needed.
-- `m_parentProcessId` is stored but never used — reserved for parent-process monitoring.
-- The Emacs test harness requires a graphical display (or Xvfb) because lsp-mode starts a
-  child process and monitors its output. Run `Xvfb :99 &; DISPLAY=:99 make test-integration`
-  in a headless environment.
-- lsp-framework's `messages.h` is generated at build time by `lspgen`. A clean build takes
-  longer than a rebuild. This is normal.
-- `CompilationController` uses `":memory:"` SQLite — symbols are lost on server restart.
-  Each file must be re-opened for its symbols to reappear. Cross-session persistence
-  requires a file-backed DB path (straightforward swap, just change the path in `server.cpp`).
-- The `export *::*;` LRM shorthand (re-export everything imported into the current scope,
-  regardless of package) is not implemented. Only `export pkg::*` / `export pkg::item` are
-  handled — see Phase 6.3 section above. That literal alternative doesn't route through the
-  `package_import_item` grammar rule at all, so `SvRecordListener` silently ignores it.
-- References, rename, and signature help providers still return `nullptr`. These are next
-  after Phase 6.3/6.4.
-- **Mid-line macro expansion column drift — Fixed (2026-07-19).** `SvPreprocessor`'s
-  source map (`sourceMap`) previously only translated line numbers across macro
-  expansion; it never adjusted columns for the text-length delta a macro invocation
-  introduces mid-line. Fix: `SourceLine` (`src/compiler/parse_record.h`) gained a
-  `colShifts: vector<ColShift>` field — `ColShift{outputCol, delta}` breakpoints,
-  one per macro invocation on that output line, where `delta = invocationLen -
-  replacementLen`. `expandStr` (`sv_preprocessor.cpp`) now accepts an optional
-  `vector<ColShift>*` (only passed at the top-level per-line call, `depth == 0` —
-  recursive calls into a macro's own body pass `nullptr`, since a nested invocation's
-  own span already collapses into the outer invocation's net `replacementLen`) and
-  appends a breakpoint after each expansion; multiple macros on one line accumulate
-  a running delta. `sv_tree_walker.cpp` gained `translateColumn(compiledLine,
-  compiledCol, map)` (linear scan over that line's `colShifts`, applied alongside
-  the existing `translateLine`) and both `pushId()` (all `ParseRecord`s) and
-  `SvErrorListener::syntaxError` (all `ParseError`s) now translate columns, not
-  just lines. `tests/integration/test_19_macro_midline_expansion.sh` — all 5 cases
-  now pass (previously 2 failing). As a side effect this also fixed 2 of the 3
-  previously-failing column cases in `test_20_macro_multiline_midline.sh`
-  (see below, also since fixed) — only that test's diagnostics case needed the
-  separate multi-line-`` `define ``-body fix below.
-  Unit coverage: `tests/unit/compiler/test_sv_preprocessor.cpp` (4 new `[sourcemap]`
-  cases — shrinking macro, growing macro, no-macro line, two-macros-on-one-line
-  delta accumulation) and `tests/unit/compiler/test_sv_listener.cpp` (2 new
-  `[sourcemap]` cases exercising `translateColumn` through a full `walk()`).
-- **Multi-line (backslash-continuation) `` `define `` bodies — Fixed (2026-07-19).**
-  `SvPreprocessor::processSource` used to read and expand strictly one physical line at
-  a time (`std::getline` loop) with no check for a trailing `\` on a `` `define `` line
-  — the continuation line was emitted as ordinary source code instead of being merged
-  into the macro body, and the literal trailing backslash was left in the body text,
-  producing a stray `\` in the expanded output and a spurious ANTLR parse error.
-  Fix: inside the `dir == "define"` branch of `processSource`, after copying `rest`
-  into a local `std::string mergedRest`, a loop strips a trailing `\` and appends
-  (via nested `std::getline` calls, bypassing the outer per-line loop) each further
-  physical line directly — no separator inserted, matching the C-preprocessor
-  splicing rule — until a line without a trailing `\` is read; `parseMacroDefinition`
-  then runs once on the fully merged body. Each consumed physical line (the `` `define ``
-  line itself, plus every continuation line) still gets its own `emitBlank()` call so
-  the source map stays 1:1 with input line count; the macro's recorded `line` is the
-  *starting* `` `define `` line, captured before the merge loop mutates `lineNo`.
-  Scoped to `` `define `` only (per the LRM, other directives could theoretically use
-  continuation too, but no other directive here reads a multi-token body, so this
-  wasn't extended speculatively). `tests/integration/test_20_macro_multiline_midline.sh`
-  — all 6 cases now pass (previously 3 failing: diagnostics, declaration column,
-  go-to-definition column — the latter two already fixed by the mid-line column-drift
-  fix above, this change closes the remaining diagnostics case).
-  Unit coverage: `tests/unit/compiler/test_sv_preprocessor.cpp` (4 new `[multiline]`
-  cases — two-line merge, three-line chained merge, output-line-count preservation,
-  and column-shift correctness when a multi-line-defined macro is invoked mid-line).
-  Full verification (both fixes together): unit suite 330 cases/848 assertions (all
-  green); full Emacs integration suite 124 passed / 1 failed — the sole remaining
-  failure is the pre-existing, unrelated `test_08_completion.sh` flake (confirmed by
-  running it in isolation), zero new regressions from either fix.
+- `handleExit` doesn't distinguish clean vs. abnormal exit code; `run()` always returns 0.
+- `m_parentProcessId` stored but unused (reserved for parent-process monitoring).
+- Emacs test harness needs a display (`Xvfb :99 &; DISPLAY=:99 make test-integration`).
+- `CompilationController` uses `":memory:"` SQLite — symbols lost on server restart
+  (swap to a file-backed path in `server.cpp` for persistence, straightforward change).
+- `export *::*;` LRM shorthand not implemented (see Phase 6.3 section above).
+- **References, rename, signature help are unconditional-null stubs.** No real
+  implementation exists yet.
+- **LSP diagnostics-visibility gap**: only the primary opened file's diagnostics are
+  ever `publish()`'d to the client; included files' diagnostics are computed/persisted
+  to the DB but never sent. See "Document store / diagnostics" above.
+- **`findSymbolsByName`/hover/definition have no kind-preference tiebreak** — pure
+  `ORDER BY path, line` when no same-file match exists. This previously caused a
+  reproducible wrong-hover bug in real UVM (a token-pasting-corrupted `Signal` symbol
+  alphabetically outranked the real `Class` of the same name) — that specific case is
+  now fixed at the source (token-pasting works), but the general risk of an unrelated
+  future name collision picking the wrong symbol is still present in the code.
+- **Fix 4's `expression`-widening perf cost** (the `const` class-property change above):
+  full UVM corpus compile went from ~14min/~1.3GB RSS to ~17min/~6.7GB RSS after this
+  fix, working theory being `expression` is a much larger/more recursive rule than
+  `constant_expression`, combined with the `data_type` ambiguity above triggering more
+  ANTLR full-context prediction fallback. Not profiled/confirmed. Worth narrowing
+  (e.g. a `class_new`-inclusive alternative instead of fully general `expression`) if
+  this matters at real-world (Phase 6.5 performance) scale.
+- ANTLR parse performance at real-world scale (large real SV class bodies, e.g.
+  `uvm_component.svh` at 3780 lines) has an inherent, roughly-linear-but-high-constant
+  per-line cost independent of any preprocessor gap — Phase 6.5 territory, not
+  attempted (would need profiling, possibly grammar restructuring).
+
+---
+
+## Not yet done — next steps
+
+Roughly in suggested priority order; none are blocking, pick based on what matters most:
+
+1. **Phase 6.4 — cross-file invalidation / dependency graph** (`plan.md §6.4`) — not
+   yet planned in file-level detail. Needed for correct incremental recompilation when
+   a shared/included file changes.
+2. **LSP diagnostics-visibility gap** — publish diagnostics for every file touched by
+   a `compile()` call, not just the primary opened one. Small, self-contained,
+   immediately-actionable editor-UX fix independent of Phase 6.4.
+3. **Implement real `references`/`rename`/`signatureHelp`** — currently unconditional
+   null stubs; if upgraded, add matching `tests/uvm_corpus/test_*_uvm.cpp` coverage too.
+4. **`data_type`/`variable_decl_assignment` ambiguity** — documented, not fixed (see
+   grammar quirks table above). Only pursue if it starts causing more than the current
+   1 known corpus diagnostic, or a user-reported false diagnostic traces back to it.
+5. **Fix 4 performance cost** — consider narrowing the `const` property initializer
+   grammar rule if full-corpus/real-world compile time becomes a problem.
+6. **Gap E** (`` `ifdef ``/`` `else ``/`` `endif `` inside `` `define `` bodies) —
+   still not confirmed as a real contributor beyond the one known
+   `` `m_uvm_field_op_begin `` site. Re-check against corpus diagnostics if it ever
+   seems to resurface.
+7. Consider a `findSymbolsByName`/hover disambiguation improvement (prefer `Class`-kind
+   results, or exclude symbols from files with a diagnostic at that exact line) as
+   defense-in-depth against the alphabetical-tiebreak risk noted above.
+8. Consider broadening `tests/uvm_corpus/test_completion_uvm.cpp`'s "first cut"
+   2-scenario coverage if a concrete completion bug ever motivates it.
+9. Minor: a short code comment at `pathToUri()` (`src/lsp/symbol_utils.cpp`) explaining
+   the `fromPath()`-always-absolutizes subtlety, for the next person constructing a URI
+   for a non-`didOpen`ed file.
