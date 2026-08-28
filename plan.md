@@ -680,6 +680,91 @@ file plus optional per-subdirectory override/append files). Start with the
 single-file model; revisit only if a real multi-team monorepo use case asks for
 finer granularity.
 
+### 6.8 Debounced / Asynchronous Compilation on `didChange`
+
+**Why this is needed:** today `didChange` triggers a full, synchronous
+`CompilationController::compile()` on the *same thread* that reads the LSP
+transport (`src/lsp/server.cpp:72-79`, `MessageHandler::processIncomingMessages`
+reads and processes exactly one message per call, `messagehandler.cpp:23-64`).
+Since `textDocumentSync = Full`, every keystroke resends the whole document and
+re-runs a full compile before the server reads its next message — including a
+concurrent `hover`/`completion` request or the *next* `didChange`. Given the
+documented per-file ANTLR parse cost (`handoff.md` — multi-second on large real
+class bodies), fast typing can back the server up arbitrarily far behind the
+editor, with no debouncing or coalescing today: each queued `didChange` is
+compiled in full, one at a time, in arrival order.
+
+**What is missing:**
+- A debounce layer: on `didChange`, don't compile immediately — store the
+  latest text/version for that URI and (re)start a short timer (~250-500ms,
+  exact value TBD by feel-testing in Emacs). Only compile when the timer fires
+  with no newer edit having arrived for that URI in the meantime. Standard
+  pattern used by vscode/rust-analyzer/clangd; this codebase has no timer or
+  event-loop facility today, so this needs a small purpose-built scheduler —
+  not a per-keystroke thread. Recommended shape: one dedicated background
+  thread owning a `{uri → {pendingText, pendingVersion, deadline}}` map,
+  woken by a `std::condition_variable` either on a new `didChange` (reset the
+  deadline) or when the nearest deadline elapses (compile, then remove the
+  entry); `didClose` erases any pending entry for that URI.
+- Getting the compile itself off the message-read thread. The framework
+  already has the primitive for this: a notification handler may return
+  `lsp::AsyncNotificationResult` (`= std::future<void>`), and when the
+  incoming message isn't part of a batch (the normal case), the framework
+  offloads waiting on that future to its own `ThreadPool` instead of blocking
+  `processIncomingMessages()` (`third_party/lsp-framework/lsp/
+  messagehandler.inl:113-142`). This alone is *necessary but not sufficient*:
+  without the debounce layer above, it just moves per-keystroke compiles onto
+  background threads without coalescing them, wasting work and still
+  producing out-of-order diagnostic publishes.
+- **Thread-safety, the real cost of this change.** Every shared piece of state
+  is touched only from the single message-loop thread today and has zero
+  locking: `DocumentStore` (`src/lsp/document_store.h`) is a bare `std::map`
+  with no mutex; `m_symbolDb`/`m_db` are read by every position-based provider
+  (hover/definition/completion) with no synchronization against a concurrent
+  compile's writes. Moving compiles to a background thread makes
+  `m_store.update()` (from the debounce worker) race against `m_store.get()`
+  (from a hover/completion request on the main thread) — undefined behavior
+  as the code is written today. Minimum fix: a mutex guarding `DocumentStore`
+  access and one guarding `SymbolDatabase`/`Database` access, held across each
+  full read or write (SQLite's own internal locking protects its process-wide
+  state but not this codebase's higher-level assumption that a read observes
+  a fully-compiled, self-consistent set of files).
+- **Version correctness on publish.** After a debounced compile finishes,
+  `publishDiagnostics` must carry the version that was actually compiled. With
+  a "latest-edit-wins, older pending edit is simply replaced" debounce design
+  this falls out naturally (there is only ever one pending version per URI),
+  but it's worth an explicit test since a race here would silently show stale
+  diagnostics as current.
+- **What this does *not* fix:** debouncing reduces compile *frequency*, not
+  per-compile *cost* — a multi-second compile on a large real file will still
+  stall that file's diagnostics after the user pauses typing. That's the
+  separate, already-tracked ANTLR parse-performance gap in §6.5; the two are
+  complementary, not redundant.
+
+**Integration tests:**
+- Rapid-fire `didChange` (e.g. 10 changes within 100ms) on one document
+  results in exactly one compile/`publishDiagnostics` for that document, not
+  ten, and it reflects the *final* text.
+- A `hover`/`completion` request sent while a debounced compile is pending (or
+  running) for the same document still gets answered promptly from the
+  previously-compiled DB state, rather than blocking behind the pending
+  compile.
+- `didClose` sent before a debounce timer fires results in no compile and no
+  `publishDiagnostics` for that URI.
+- Two different open documents each get their own independent debounce timer
+  (editing one does not delay or coalesce with edits to the other).
+
+**Unit tests:** debounce scheduler in isolation (reset-on-new-edit behavior,
+fires once after the quiet period, per-URI independence, cancellation on
+close) — should be testable without spinning up the real LSP transport, using
+a fake clock or a short real interval plus generous test timeouts.
+
+**Open question, deliberately unresolved:** whether the debounce interval
+should be a fixed constant or configurable via `initializationOptions`
+(mirroring how `explicitProjectConfigPath` is already threaded through, §6.2
+Stage 5) — start with a fixed constant; revisit only if real usage shows one
+value doesn't suit both small and very large files.
+
 ---
 
 ## Appendix A — Technology Stack Summary
