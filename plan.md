@@ -976,6 +976,91 @@ chosen above; only trim if real usage shows the completion list feels noisy.
 
 ---
 
+### 6.10 Dot / Member-Access Completion (`foo.bar`)
+
+**Status:** not started.
+
+**Why this is needed:** `CompletionProvider::getCompletion` always scores
+candidates from `db.findSymbolsVisibleAt(path, line1)` — every symbol visible
+by lexical scope at that line, regardless of what was typed before the
+cursor. When completion is triggered right after a `.` (e.g. typing `foo.` or
+`foo.ba`), the only sensible candidates are `foo`'s own members (its class's
+methods/properties, an interface's signals, a struct's fields) — not every
+symbol visible in the enclosing scope. Today a `.` gets no special handling
+at all: `wordAtPosition` (`src/lsp/symbol_utils.cpp`) treats `.` as a
+non-identifier boundary and simply stops there, so the object being
+dereferenced is silently dropped and the candidate set stays scope-wide
+instead of narrowing to the object's type.
+
+**What is missing:**
+- **Detecting a dot-completion context.** `wordAtPosition` walks left from
+  the cursor only over identifier characters (`isId`: alnum/`_`/`$`); it
+  needs a sibling helper (or an extension returning both the typed prefix
+  *and* whatever identifier chain precedes an immediately-preceding `.`) that
+  additionally walks left across `.` to recover the object expression, e.g.
+  for `foo.b|` (cursor at `|`) yield `{object: "foo", prefix: "b"}`, and for
+  `foo.|` yield `{object: "foo", prefix: ""}`. Only the single-segment case
+  (`foo.bar`) is in scope for a first cut; chained access (`foo.bar.baz`) is
+  explicitly deferred (see open question below).
+- **Resolving the object's declared type.** This is the real gap, not the
+  parsing above: nothing in the schema captures a variable's declared type
+  today. `enterData_declaration` (`src/compiler/sv_tree_walker.cpp:241-250`)
+  emits a `Signal` `ParseRecord` with an empty `detail` — the `MyClass` in
+  `MyClass foo;` is parsed but never recorded anywhere. `detail` is
+  otherwise used for exactly this kind of kind-specific payload (port
+  direction, class parent, return type — see `ParseRecord::detail` in
+  `src/compiler/parse_record.h`), so the natural fix is populating it with
+  the declared type text for `Signal`/`Port`/`Parameter` records whose
+  declaration is a named user type (class/interface/struct/typedef), leaving
+  it empty for built-in types (`logic`, `int`, ...) where there's no member
+  scope to resolve into. Schema/`SymbolRow` need no changes — `detail`
+  already round-trips through `symbols.detail`.
+- **Looking up the type's member scope.** Once the object's declared type
+  name is known, `SymbolDatabase::findSymbolsInScope(scope)`
+  (`src/db/symbol_database.cpp:336`) already does exact-scope member lookup
+  — this is exactly what backs today's non-dot completion's local-scope arm,
+  so no new query is needed, only a new call site: resolve `foo`'s `detail`
+  by looking `foo` itself up (`findSymbolsByName`/`findSymbolsVisibleAt`
+  scoped search for the identifier before the dot), then
+  `findSymbolsInScope(thatDetailValue)` instead of
+  `findSymbolsVisibleAt(path, line1)` for the member list.
+- **`CompletionProvider::getCompletion` branch.** Add the dot-context check
+  before building the candidate set: if `wordAtPosition`'s extended helper
+  reports an object expression, resolve it to member rows as above and
+  fuzzy-score only those against `prefix`; otherwise fall through to
+  today's `findSymbolsVisibleAt` behavior unchanged. An object that fails to
+  resolve (undeclared variable, built-in type, unresolved cross-file type)
+  should return `nullptr`/empty rather than silently falling back to
+  scope-wide completion — offering unrelated symbols after an explicit `.`
+  would be a worse result than offering nothing.
+
+**Functional test:** declare `MyClass foo;` with `MyClass` having a known
+method/property; trigger completion at `foo.` and at `foo.<partial-prefix>`;
+verify only `MyClass` members appear (Emacs). Negative case: completion after
+`.` on a built-in-typed variable (e.g. `int x; x.`) returns no completions,
+not the whole visible scope.
+
+**Unit tests:** the dot-detection helper on `foo.|`, `foo.b|`, and (for
+contrast) `foo|` / bare `.` with no preceding identifier; `detail`
+population for a class-typed `Signal`/`Port` declaration; end-to-end
+`getCompletion` returning exactly the target class's member rows for a
+`foo.` request, scored/sorted the same way as the existing prefix path.
+
+**Open question, deliberately unresolved:** whether to support chained
+member access (`foo.bar.baz`, where `bar`'s own type must itself be resolved
+to reach `baz`'s scope) in this pass or defer it — start with the
+single-segment case (`foo.bar`) as recommended above, since it already
+requires the new `detail`-population work end to end; extend to chains only
+if real usage shows single-segment dot completion isn't enough. Also
+unresolved: whether array/queue-typed objects (`foo[0].bar`) and `this.`/
+`super.` inside a class body are treated specially or naturally fall out of
+the same object-identifier resolution (`this`/`super` aren't ordinary
+declared variables, so `findSymbolsByName` won't find them as-is) —
+worth a quick scoped follow-up once the base case above lands, not blocking
+it.
+
+---
+
 ## Appendix A — Technology Stack Summary
 
 | Concern | Choice | Rationale |

@@ -524,7 +524,21 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
     literals), merged into the same fuzzy-scored candidate set, plus a fix to
     the `rows.empty()` early return so an empty/new buffer still offers
     keywords. See plan.md for full detail.
-12. **Performance §6.5 — two new open questions; prior art confirmed
+12. **Dot / member-access completion (`plan.md §6.10`)** — not started.
+    `foo.` should narrow completion to `foo`'s type members, but nothing
+    captures a declared variable's type today (`enterData_declaration` in
+    `src/compiler/sv_tree_walker.cpp` leaves `Signal` records' `detail`
+    empty), so `getCompletion` has no way to resolve `foo` to a class/struct
+    scope and fall back to `findSymbolsInScope`. Needs: (1) populating
+    `detail` with the declared type for class/interface/struct/typedef-typed
+    `Signal`/`Port`/`Parameter` declarations, (2) a dot-aware extension to
+    `wordAtPosition` to recover the object expression before the cursor, (3)
+    a new branch in `CompletionProvider::getCompletion` that resolves the
+    object's type and queries `findSymbolsInScope` instead of
+    `findSymbolsVisibleAt`. First cut is single-segment (`foo.bar`) only —
+    chained access (`foo.bar.baz`) and `this`/`super` deferred. See plan.md
+    for full detail.
+13. **Performance §6.5 — two new open questions; prior art confirmed
     2026-08-28, integration design still not started:**
     - (a) A long-lived, pre-warmed `svlsp` daemon (started once, e.g. every
       morning, ahead of any editor session, potentially shared by multiple
