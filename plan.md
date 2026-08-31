@@ -1061,6 +1061,77 @@ it.
 
 ---
 
+### 6.11 Configurable Fuzzy-Matching Toggle
+
+**Status:** not started.
+
+**Why this is needed:** `CompletionProvider::getCompletion`
+(`src/lsp/completion.cpp`) unconditionally fuzzy-scores every candidate via
+`fuzzyScore` when a prefix is typed (§3.6). This is a good default, but it's
+a real behavior change from strict-prefix matching (skip-tolerant, reordered
+matches never match but non-contiguous ones do) that not every user/editor
+setup wants — e.g. someone relying on the exact-prefix ordering for muscle
+memory, or wanting deterministic results for scripted/automated completion
+requests. There's no way to turn it off today short of editing source.
+This should apply uniformly to whatever candidate set completion is scoring
+against, including keyword rows (§6.9) and dot/member rows (§6.10) once
+those land, since both are proposed to reuse the same `fuzzyScore`/sort call.
+
+**What is missing:**
+- **A new `initializationOptions.svlsp.fuzzyCompletion` boolean**, following
+  the exact pattern `ServerState::extractProjectConfigPath`
+  (`src/lsp/server_state.cpp:60-70`) already establishes for
+  `svlsp.projectConfig`: absent/non-object/wrong-type all mean "use the
+  default" (fuzzy **on**, preserving today's behavior unchanged) — no client
+  needs to opt in to get current behavior. `ServerState` gains a
+  `fuzzyCompletionEnabled()` accessor mirroring
+  `explicitProjectConfigPath()` (`src/lsp/server_state.h:46-50`), set once
+  in `handleInitialize`, fixed for the server's lifetime — same "resolved at
+  `initialize`, not live-reconfigurable" posture as the project-config path,
+  for the same reason (no `workspace/didChangeConfiguration` handling exists
+  in this codebase today).
+- **Threading the flag into `CompletionProvider::getCompletion`.**
+  `getCompletion` is currently a stateless `static` method
+  (`src/lsp/completion.h`) taking `(params, db, docText)` with no server
+  reference; it needs either a new `bool fuzzyEnabled` parameter (simplest,
+  keeps it stateless — `LanguageServer` reads
+  `m_state.fuzzyCompletionEnabled()` at the `textDocument/completion`
+  handler call site and passes it through) or the class becomes
+  non-static/constructed with the flag. Prefer the parameter — matches this
+  codebase's existing "pass config in, don't stash server-wide flags on
+  providers" style (`CompilationController::compile`'s `config` parameter is
+  the closest precedent).
+- **Disabled behavior.** With the flag off, restore exactly the
+  pre-fuzzy-matching semantics §3.6 describes as the prior state: strict
+  prefix filter (`row.name.compare(0, prefix.size(), prefix) != 0` to
+  reject), DB order preserved, no `sortText` assigned, no ranking — i.e.
+  skip the `fuzzyScore` call and the `std::sort` entirely rather than
+  special-casing fuzzy score `0` as "off" (a real fuzzy match can legitimately
+  score low; that's not the same thing as strict-prefix-only).
+
+**Functional test:** two Emacs runs (or two requests against the same
+running server via two different `initialize` calls) with
+`fuzzyCompletion: true` vs `false`/absent — a misspelled/non-contiguous
+prefix that fuzzy-matches a symbol should be present in the `true` case and
+absent in the `false` case.
+
+**Unit tests:** `ServerState::extractFuzzyCompletionEnabled`-equivalent
+parsing (present-true, present-false, absent, non-object, wrong-type — all
+mirroring the existing `extractProjectConfigPath` test matrix); `getCompletion`
+with the flag off returns strict-prefix-only, DB-ordered, un-ranked results
+for a non-contiguous prefix that would otherwise fuzzy-match; with the flag
+on (or omitted), behavior is byte-for-byte unchanged from today's tests.
+
+**Open question, deliberately unresolved:** whether this ever needs to be
+per-request rather than server-wide/fixed-at-`initialize` (e.g. a client
+exposing its own "fuzzy matching" editor setting that can flip mid-session)
+— start with the fixed-at-`initialize` model above, consistent with how
+`explicitProjectConfigPath` already works and how §6.8's debounce interval
+is deliberately *not* made configurable yet; revisit only if a real editor
+integration needs it to change without restarting the server.
+
+---
+
 ## Appendix A — Technology Stack Summary
 
 | Concern | Choice | Rationale |

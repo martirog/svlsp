@@ -538,7 +538,17 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
     `findSymbolsVisibleAt`. First cut is single-segment (`foo.bar`) only —
     chained access (`foo.bar.baz`) and `this`/`super` deferred. See plan.md
     for full detail.
-13. **Performance §6.5 — two new open questions; prior art confirmed
+13. **Configurable fuzzy-matching toggle (`plan.md §6.11`)** — not started.
+    `CompletionProvider::getCompletion` always fuzzy-scores when a prefix is
+    typed, with no way to opt out. Needs an `initializationOptions.svlsp.
+    fuzzyCompletion` boolean (default true, absent/wrong-type = default —
+    same pattern as `svlsp.projectConfig` in `ServerState::
+    extractProjectConfigPath`), threaded through as a new `getCompletion`
+    parameter; disabled mode restores the pre-fuzzy strict-prefix, DB-order,
+    unranked behavior. Fixed at `initialize`, not live-reconfigurable — no
+    `workspace/didChangeConfiguration` handling exists in this codebase.
+    See plan.md for full detail.
+14. **Performance §6.5 — two new open questions; prior art confirmed
     2026-08-28, integration design still not started:**
     - (a) A long-lived, pre-warmed `svlsp` daemon (started once, e.g. every
       morning, ahead of any editor session, potentially shared by multiple
