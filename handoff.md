@@ -516,7 +516,15 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
     configurable via `initializationOptions` — the plan's own open question on this
     said "start with a fixed constant; revisit only if real usage shows one value
     doesn't suit both small and very large files," which hasn't happened yet.
-11. **Performance §6.5 — two new open questions; prior art confirmed
+11. **Keyword completion (`plan.md §6.9`)** — not started. Reserved SV words
+    (`always_ff`, `logic`, `endmodule`, etc.) never appear as completion
+    candidates today; `CompletionProvider::getCompletion` only ranks DB rows
+    from `findSymbolsVisibleAt`. Needs a keyword list (hand-maintained from
+    LRM Annex B, or script-extracted from `grammar/Sv.g4`'s scattered string
+    literals), merged into the same fuzzy-scored candidate set, plus a fix to
+    the `rows.empty()` early return so an empty/new buffer still offers
+    keywords. See plan.md for full detail.
+12. **Performance §6.5 — two new open questions; prior art confirmed
     2026-08-28, integration design still not started:**
     - (a) A long-lived, pre-warmed `svlsp` daemon (started once, e.g. every
       morning, ahead of any editor session, potentially shared by multiple

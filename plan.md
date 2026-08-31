@@ -908,6 +908,74 @@ value doesn't suit both small and very large files.
 
 ---
 
+### 6.9 Keyword Completion
+
+**Status:** not started.
+
+**Why this is needed:** `CompletionProvider::getCompletion`
+(`src/lsp/completion.cpp`) only ever ranks rows from
+`db.findSymbolsVisibleAt(path, line1)` — declared symbols (modules, classes,
+signals, etc.). SystemVerilog reserved words (`always_ff`, `logic`, `endmodule`,
+`interface`, `foreach`, ...) never appear as completion candidates today, even
+where one is the only thing that can syntactically go next (e.g. right after a
+newline inside a module body, or after `always_`). §3.6's original scope
+("keywords, module ports, signal names, macros") already named this; it was
+never implemented and dropped off the visible gap list once fuzzy-matching
+symbols shipped.
+
+**What is missing:**
+- **A keyword list.** The grammar (`grammar/Sv.g4`) has no centralized lexer
+  token for keywords — they're inline string literals scattered across parser
+  rules (e.g. `'module'` at `Sv.g4:69`, `'always'` at `Sv.g4:2053`), so there is
+  no single rule to enumerate. Two options: (a) hand-maintain a list from the
+  LRM (IEEE 1800-2017 Annex B, "Keywords"), or (b) script-extract every quoted
+  literal from `grammar/Sv.g4` matching identifier syntax (`'[a-z_][a-z0-9_]*'`)
+  and dedupe — cheaper to keep in sync as the grammar evolves, but would need a
+  one-time pass to hand-filter any accidental non-keyword matches. Store as a
+  `static const` list (e.g. `src/lsp/sv_keywords.h`), not derived at runtime.
+- **Context-blind vs. context-aware surfacing.** Simplest correct starting
+  point: always include the keyword list as additional candidates in
+  `getCompletion`, fuzzy-scored against the prefix exactly like symbol rows
+  today (same `fuzzyScore` call, same sort) — a keyword is a candidate
+  wherever an identifier-like token is being typed, same as any symbol.
+  **Not pursuing real syntactic position-awareness** (e.g. suppressing
+  `endmodule` inside an expression) in the first cut — that needs parser
+  state at the cursor, which nothing in `SvTreeWalker`/`ParseRecord` provides
+  today; matches this codebase's existing "text/fuzzy, not semantic" posture
+  for completion.
+- **The `rows.empty()` early return.** `getCompletion` currently does
+  `if (rows.empty()) return nullptr;` before any scoring — a file with zero
+  visible DB symbols (e.g. an empty new buffer) returns no completions at
+  all today. Once keywords are a candidate source independent of
+  `findSymbolsVisibleAt`, this early return must move past the point where
+  keyword rows are merged in, or keyword completions will wrongly disappear
+  exactly when a mostly-empty file needs them most.
+- **Completion item kind.** LSP has `CompletionItemKind.Keyword` (14) —
+  `completionKindFor` (`src/lsp/symbol_utils.cpp`) maps DB kind strings to
+  `CompletionItemKind` today; keyword rows aren't DB rows, so they need their
+  own direct `item.kind = lsp::CompletionItemKind::Keyword` assignment rather
+  than going through that DB-kind mapping function.
+
+**Functional test:** trigger completion at a position where only a keyword
+plausibly makes sense (e.g. start of a line inside a module body, or a
+partial like `alw` triggering `always`/`always_comb`/`always_ff`/`always_latch`);
+verify the keyword appears in the Emacs completion list alongside any
+symbol matches.
+
+**Unit tests:** keyword list is present in results with no typed prefix
+(merged with symbol rows, not replacing them); a keyword-matching prefix
+(`alw`) ranks and returns the right keyword candidates via the existing
+fuzzy scorer; a file with zero DB symbols still returns keyword completions
+(regression test for the `rows.empty()` early-return fix above).
+
+**Open question, deliberately unresolved:** whether to ship the full LRM
+Annex B keyword set as-is, or trim to commonly-typed ones (there are a few
+hundred, including many rarely-used verification/assertion keywords) — start
+with the full set from whichever source (Annex B or grammar-extracted) is
+chosen above; only trim if real usage shows the completion list feels noisy.
+
+---
+
 ## Appendix A — Technology Stack Summary
 
 | Concern | Choice | Rationale |
