@@ -516,6 +516,7 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
     configurable via `initializationOptions` — the plan's own open question on this
     said "start with a fixed constant; revisit only if real usage shows one value
     doesn't suit both small and very large files," which hasn't happened yet.
+    Now planned as `plan.md §6.12` — see #14 below.
 11. **Keyword completion (`plan.md §6.9`)** — not started. Reserved SV words
     (`always_ff`, `logic`, `endmodule`, etc.) never appear as completion
     candidates today; `CompletionProvider::getCompletion` only ranks DB rows
@@ -548,7 +549,20 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
     unranked behavior. Fixed at `initialize`, not live-reconfigurable — no
     `workspace/didChangeConfiguration` handling exists in this codebase.
     See plan.md for full detail.
-14. **Performance §6.5 — two new open questions; prior art confirmed
+14. **Configurable debounce interval (`plan.md §6.12`)** — not started.
+    Resolves §6.8's own open question. `ChangeDebouncer`'s 300ms delay
+    (`src/lsp/change_debouncer.h:26-27`) is a hardcoded default, never
+    overridden by `LanguageServer`. Needs an `initializationOptions.svlsp.
+    debounceMs` integer (same absent/wrong-type-means-default pattern as
+    `projectConfig`/§6.11's flag). **Real blocker:** `m_debouncer` is
+    constructed in `LanguageServer`'s member-initializer list
+    (`src/lsp/server.cpp:15-17`) — at process startup, before `initialize`
+    (and thus `initializationOptions`) exists — so the value can't just be
+    passed to `ChangeDebouncer`'s constructor. Plan recommends adding a
+    `ChangeDebouncer::setDelay()` mutator (guarded by its existing mutex)
+    called from the `initialize` handler, over restructuring `m_debouncer`
+    into a lazily-constructed member. See plan.md for full detail.
+15. **Performance §6.5 — two new open questions; prior art confirmed
     2026-08-28, integration design still not started:**
     - (a) A long-lived, pre-warmed `svlsp` daemon (started once, e.g. every
       morning, ahead of any editor session, potentially shared by multiple

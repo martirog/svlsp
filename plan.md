@@ -1127,8 +1127,93 @@ per-request rather than server-wide/fixed-at-`initialize` (e.g. a client
 exposing its own "fuzzy matching" editor setting that can flip mid-session)
 — start with the fixed-at-`initialize` model above, consistent with how
 `explicitProjectConfigPath` already works and how §6.8's debounce interval
-is deliberately *not* made configurable yet; revisit only if a real editor
-integration needs it to change without restarting the server.
+is deliberately *not* made configurable yet (§6.12 proposes changing that);
+revisit only if a real editor integration needs it to change without
+restarting the server.
+
+---
+
+### 6.12 Configurable Debounce Interval
+
+**Status:** not started. Resolves the open question §6.8 deliberately left
+unresolved ("start with a fixed constant; revisit only if real usage shows
+one value doesn't suit both small and very large files") and item #10/§6.8's
+"Remaining open point" in `handoff.md`.
+
+**Why this is needed:** `ChangeDebouncer`'s 300ms quiet-period is currently a
+hardcoded default (`std::chrono::milliseconds delay =
+std::chrono::milliseconds{300}` at `src/lsp/change_debouncer.h:26-27`), and
+`LanguageServer` never passes an explicit value, so every project gets the
+same interval regardless of file size or machine speed. §6.5's documented
+per-file ANTLR parse cost (multi-second on large real class bodies) means
+300ms may fire a debounced compile that's still nowhere near done before the
+*next* keystroke's compile is queued behind it on very large files, while a
+tiny file might tolerate (and a fast typist might prefer) a shorter delay.
+This should be a value users/editors can tune per-project rather than a
+constant baked into the binary.
+
+**What is missing:**
+- **A new `initializationOptions.svlsp.debounceMs` integer**, same
+  extraction pattern as `svlsp.projectConfig`
+  (`ServerState::extractProjectConfigPath`, `src/lsp/server_state.cpp:60-70`)
+  and the proposed `svlsp.fuzzyCompletion` in §6.11: absent/non-object/
+  wrong-type/non-positive all mean "use the existing 300ms default." Add a
+  `ServerState::debounceInterval()` accessor (or similar) returning
+  `std::chrono::milliseconds`, mirroring `explicitProjectConfigPath()`.
+- **The construction-order wrinkle, the real blocker here.** Unlike §6.11's
+  flag (only ever read at the moment a `textDocument/completion` request is
+  handled, well after `initialize`), `m_debouncer` is a `LanguageServer`
+  member constructed **in the constructor's member-initializer list**
+  (`src/lsp/server.cpp:15-17`), which runs at process startup — before the
+  client has sent `initialize` and before `initializationOptions` exist at
+  all. `ChangeDebouncer`'s constructor can't be handed a value that doesn't
+  exist yet. Two ways through:
+  (a) give `ChangeDebouncer` a `setDelay(std::chrono::milliseconds)` mutator
+      called from the `initialize` handler once `m_state.debounceInterval()`
+      is available, applied to future `schedule()` deadlines only (not
+      retroactively to whatever's already pending); requires guarding
+      `m_delay` with the existing `m_mutex` (`src/lsp/change_debouncer.h:44,
+      46`) since it's currently read unsynchronized in the worker's `run()`
+      loop, safe only because it's never mutated post-construction today; or
+  (b) keep `ChangeDebouncer` immutable but stop constructing it in
+      `LanguageServer`'s member-initializer list — switch it to a
+      `std::optional<ChangeDebouncer>` or heap-owned member, constructed
+      lazily inside `handleInitialize`'s call path once the interval is
+      known. Larger structural change (every use site would need a
+      null/not-yet-constructed check for the brief window between process
+      start and `initialize`, though in practice `didChange` can't arrive
+      before `initialize` per the LSP spec's own ordering guarantee, so that
+      window is inert).
+  Prefer (a): smaller diff, keeps `ChangeDebouncer` unconditionally
+  constructed (matching every other `LanguageServer` member today), and the
+  mutex it already has makes a synchronized setter cheap.
+- **Validation.** A client-supplied `debounceMs` of `0` or negative is
+  nonsensical (0 would mean "never coalesce," defeating §6.8 entirely) —
+  clamp to the existing 300ms default rather than accepting it literally, and
+  note this in whatever docs eventually cover `initializationOptions.svlsp.*`
+  (none exist yet as of this writing — first configurable option was
+  `projectConfig`, this would be the third alongside §6.11's flag).
+
+**Functional test:** start the server with `debounceMs: 50` and with the
+default (absent); type a burst of edits into an Emacs buffer in both cases
+and confirm the shorter interval visibly reduces time-to-diagnostics-update
+without breaking the existing single-publish-per-burst guarantee from
+§6.8's integration tests.
+
+**Unit tests:** `ServerState` extraction matrix for `debounceMs` (present
+valid, present zero/negative, absent, non-object, wrong-type); `ChangeDebouncer::setDelay`
+changes the interval used for *subsequently scheduled* keys without
+disturbing an already-pending deadline for a key scheduled before the call
+(extends `tests/unit/lsp/test_change_debouncer.cpp`); a `LanguageServer`-level
+test (extending `tests/unit/lsp/test_server_debounce.cpp`) confirming a
+custom `initializationOptions.svlsp.debounceMs` actually changes observed
+fire timing end-to-end.
+
+**Open question, deliberately unresolved:** what the effective interval
+should default to, or whether it should scale automatically with file size
+instead of being a single flat value — out of scope here; this section only
+makes the *existing* fixed 300ms into a configurable-but-still-flat value,
+per §6.8's own stated resolution criterion.
 
 ---
 
