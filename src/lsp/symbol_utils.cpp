@@ -2,6 +2,14 @@
 #include <lsp/fileuri.h>
 #include <cctype>
 
+namespace {
+bool isDeclarationLikeKind(const std::string& kind)
+{
+    return kind == "Module" || kind == "Interface" || kind == "Program" ||
+           kind == "Package" || kind == "Class" || kind == "Function" || kind == "Task";
+}
+} // namespace
+
 lsp::SymbolKind symbolKindFor(const std::string& kind)
 {
     if (kind == "Module")    return lsp::SymbolKind::Module;
@@ -72,4 +80,15 @@ lsp::Range makeRange(int line1, int col0, int nameLen)
 lsp::DocumentUri pathToUri(const std::string& path)
 {
     return lsp::FileUri::fromPath(path);
+}
+
+const SymbolRow* pickBestSymbol(const std::vector<SymbolRow>& rows, const std::string& curPath)
+{
+    for (const auto& r : rows)
+        if (r.filePath == curPath) return &r;
+
+    for (const auto& r : rows)
+        if (isDeclarationLikeKind(r.kind)) return &r;
+
+    return &rows.front();
 }

@@ -1,5 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include "lsp/symbol_utils.h"
+#include "db/symbol_database.h"
+#include <vector>
 
 // ---------------------------------------------------------------------------
 // wordAtPosition
@@ -85,4 +87,56 @@ TEST_CASE("makeRange: converts 1-based line to 0-based LSP range", "[symbol_util
     CHECK(r.start.character == 7u);
     CHECK(r.end.line        == 3u);
     CHECK(r.end.character   == 12u);
+}
+
+// ---------------------------------------------------------------------------
+// pickBestSymbol
+// ---------------------------------------------------------------------------
+
+namespace {
+SymbolRow makeRow(std::string kind, std::string filePath)
+{
+    return {0, std::move(kind), "Foo", 1, 0, "", "", std::move(filePath), 0, ""};
+}
+} // namespace
+
+TEST_CASE("pickBestSymbol: prefers a same-file match over anything else", "[symbol_utils]")
+{
+    std::vector<SymbolRow> rows{
+        makeRow("Class",  "/a.sv"),
+        makeRow("Signal", "/b.sv"),
+    };
+    const auto* best = pickBestSymbol(rows, "/b.sv");
+    CHECK(best->filePath == "/b.sv");
+    CHECK(best->kind == "Signal");
+}
+
+TEST_CASE("pickBestSymbol: no same-file match — prefers a declaration-like kind", "[symbol_utils]")
+{
+    // Simulates the real UVM bug: a corrupted Signal named "Foo" sorts before
+    // the real Class "Foo" by path, but the Class should still win.
+    std::vector<SymbolRow> rows{
+        makeRow("Signal", "/aaa_corrupted.sv"),
+        makeRow("Class",  "/zzz_real.sv"),
+    };
+    const auto* best = pickBestSymbol(rows, "/current.sv");
+    CHECK(best->kind == "Class");
+    CHECK(best->filePath == "/zzz_real.sv");
+}
+
+TEST_CASE("pickBestSymbol: no declaration-like kind present — falls back to first row", "[symbol_utils]")
+{
+    std::vector<SymbolRow> rows{
+        makeRow("Signal", "/a.sv"),
+        makeRow("Port",   "/b.sv"),
+    };
+    const auto* best = pickBestSymbol(rows, "/current.sv");
+    CHECK(best == &rows.front());
+}
+
+TEST_CASE("pickBestSymbol: single row — returned regardless of kind", "[symbol_utils]")
+{
+    std::vector<SymbolRow> rows{makeRow("Signal", "/a.sv")};
+    const auto* best = pickBestSymbol(rows, "/current.sv");
+    CHECK(best == &rows.front());
 }

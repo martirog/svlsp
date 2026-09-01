@@ -12,11 +12,8 @@ lsp::TextDocument_DefinitionResult DefinitionProvider::getDefinition(
     const auto rows = db.findSymbolsByName(word);
     if (rows.empty()) return nullptr;
 
-    // Prefer the definition in the same file; fall back to the first match.
     const std::string curPath{params.textDocument.uri.path()};
-    const SymbolRow* best = &rows.front();
-    for (const auto& r : rows)
-        if (r.filePath == curPath) { best = &r; break; }
+    const SymbolRow* best = pickBestSymbol(rows, curPath);
 
     lsp::Location loc;
     loc.uri   = pathToUri(best->filePath);

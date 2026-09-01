@@ -12,11 +12,8 @@ lsp::TextDocument_HoverResult HoverProvider::getHover(
     const auto rows = db.findSymbolsByName(word);
     if (rows.empty()) return nullptr;
 
-    // Prefer a definition in the same file; otherwise use the first match.
     const std::string curPath{params.textDocument.uri.path()};
-    const SymbolRow* best = &rows.front();
-    for (const auto& r : rows)
-        if (r.filePath == curPath) { best = &r; break; }
+    const SymbolRow* best = pickBestSymbol(rows, curPath);
 
     std::string content = "**" + best->kind + "** `" + best->name + "`";
     if (!best->detail.empty())
