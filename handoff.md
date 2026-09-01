@@ -1,13 +1,15 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-08-28 (compressed from full session history — see git log for
+**Last updated:** 2026-09-01 (compressed from full session history — see git log for
 narrative detail if ever needed; this file now documents current-state-and-next-steps
 only).
 
 **Status:** Phases 3, 4, 5, 6.1, 6.2, 6.3 complete, plus §6.8 (debounced `didChange`
-compilation) implemented 2026-08-28. Working tree clean, all work through commit
-`d17855a` is committed. Full unit suite: 1044 assertions / 399 test cases, all
-green (debug + release). Full Emacs integration suite: 146 passed / 0 failed.
+compilation) implemented 2026-08-28, plus a `pickBestSymbol()` hover/definition
+disambiguation improvement implemented 2026-09-01 (see "Not yet done" #7 below).
+Working tree clean, all work through commit `37e581f` is committed. Full unit suite:
+1050 assertions / 403 test cases, all green (debug). Full Emacs integration suite:
+146 passed / 0 failed (as of 2026-08-28; not re-run for the 2026-09-01 change).
 
 ---
 
@@ -133,9 +135,12 @@ rename all registered. **Note:** C++ designated initializers must follow
 
 Position-based providers (hover, definition, completion) check `m_store.contains(uri)`
 first and return `nullptr` if the document isn't open. Hover/Definition do **global**
-cross-file `findSymbolsByName` lookup — same-file match preferred, else first row by
-`ORDER BY path, line` (no kind preference — see "Known gaps" below for the
-alphabetical-tiebreak risk this creates on name collisions).
+cross-file `findSymbolsByName` lookup via the shared `pickBestSymbol()` helper
+(`src/lsp/symbol_utils.h/.cpp`): same-file match preferred, else a declaration-like
+kind (`Module`/`Interface`/`Program`/`Package`/`Class`/`Function`/`Task`) preferred
+over a data-like one (`Signal`/`Port`/`Parameter`/`Macro`), else the first row by
+`ORDER BY path, line` — see "Known gaps" below for the residual alphabetical-tiebreak
+risk this still leaves *within* a kind tier.
 
 **Fuzzy completion matching** (`src/lsp/fuzzy_match.h/.cpp`): `fuzzyScore(candidate,
 pattern) -> optional<int>`, case-insensitive subsequence matcher (not a subsequence →
@@ -450,12 +455,17 @@ access) vs. `expectedUriPath` (output comparison — runs the expected value thr
 - **LSP diagnostics-visibility gap**: only the primary opened file's diagnostics are
   ever `publish()`'d to the client; included files' diagnostics are computed/persisted
   to the DB but never sent. See "Document store / diagnostics" above.
-- **`findSymbolsByName`/hover/definition have no kind-preference tiebreak** — pure
-  `ORDER BY path, line` when no same-file match exists. This previously caused a
-  reproducible wrong-hover bug in real UVM (a token-pasting-corrupted `Signal` symbol
-  alphabetically outranked the real `Class` of the same name) — that specific case is
-  now fixed at the source (token-pasting works), but the general risk of an unrelated
-  future name collision picking the wrong symbol is still present in the code.
+- ~~`findSymbolsByName`/hover/definition have no kind-preference tiebreak~~ —
+  **mitigated 2026-09-01** via `pickBestSymbol()` (see above): declaration-like kinds
+  (`Module`/`Interface`/`Program`/`Package`/`Class`/`Function`/`Task`) now outrank
+  data-like kinds (`Signal`/`Port`/`Parameter`/`Macro`) when no same-file match exists.
+  This previously caused a reproducible wrong-hover bug in real UVM (a
+  token-pasting-corrupted `Signal` symbol alphabetically outranked the real `Class` of
+  the same name) — that specific case was already fixed at the source (token-pasting
+  works) and this closes the general risk class. Residual risk: two symbols of the
+  *same* kind-tier with no same-file match still fall back to plain
+  `ORDER BY path, line` (e.g. two same-named `Signal`s in different files) — not
+  pursued further since no real-world case has surfaced.
 - **Fix 4's `expression`-widening perf cost** (the `const` class-property change above):
   full UVM corpus compile went from ~14min/~1.3GB RSS to ~17min/~6.7GB RSS after this
   fix, working theory being `expression` is a much larger/more recursive rule than
@@ -501,9 +511,14 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
    still not confirmed as a real contributor beyond the one known
    `` `m_uvm_field_op_begin `` site. Re-check against corpus diagnostics if it ever
    seems to resurface.
-7. Consider a `findSymbolsByName`/hover disambiguation improvement (prefer `Class`-kind
-   results, or exclude symbols from files with a diagnostic at that exact line) as
-   defense-in-depth against the alphabetical-tiebreak risk noted above.
+7. ~~Consider a `findSymbolsByName`/hover disambiguation improvement~~ — **implemented
+   2026-09-01**: `pickBestSymbol()` (`src/lsp/symbol_utils.h/.cpp`), used by both
+   `HoverProvider` and `DefinitionProvider`, now falls back to preferring a
+   declaration-like kind (`Module`/`Interface`/`Program`/`Package`/`Class`/`Function`/
+   `Task` over `Signal`/`Port`/`Parameter`/`Macro`) when no same-file match exists,
+   before falling back to the first `path,line`-ordered row. The "exclude symbols from
+   files with a diagnostic at that exact line" alternative was not pursued — kind
+   preference is simpler and covers the real UVM bug's shape directly.
 8. Consider broadening `tests/uvm_corpus/test_completion_uvm.cpp`'s "first cut"
    2-scenario coverage if a concrete completion bug ever motivates it.
 9. Minor: a short code comment at `pathToUri()` (`src/lsp/symbol_utils.cpp`) explaining
