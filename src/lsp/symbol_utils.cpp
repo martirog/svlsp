@@ -8,6 +8,28 @@ bool isDeclarationLikeKind(const std::string& kind)
     return kind == "Module" || kind == "Interface" || kind == "Program" ||
            kind == "Package" || kind == "Class" || kind == "Function" || kind == "Task";
 }
+
+bool isIdChar(char c)
+{
+    return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '$';
+}
+
+// Finds [lineStart, lineEnd) for `line` (0-based) in `text`. Returns false
+// (bounds left unset) if `text` has fewer than `line + 1` lines.
+bool findLineBounds(const std::string& text, unsigned line, size_t& lineStart, size_t& lineEnd)
+{
+    unsigned curLine = 0;
+    lineStart = 0;
+    while (curLine < line) {
+        size_t nl = text.find('\n', lineStart);
+        if (nl == std::string::npos) return false;
+        lineStart = nl + 1;
+        ++curLine;
+    }
+    lineEnd = text.find('\n', lineStart);
+    if (lineEnd == std::string::npos) lineEnd = text.size();
+    return true;
+}
 } // namespace
 
 lsp::SymbolKind symbolKindFor(const std::string& kind)
@@ -42,30 +64,15 @@ lsp::CompletionItemKind completionKindFor(const std::string& kind)
 
 std::string wordAtPosition(const std::string& text, unsigned line, unsigned character)
 {
-    // Walk forward through the text to find the start of the requested line.
-    unsigned curLine = 0;
-    size_t lineStart = 0;
-    while (curLine < line) {
-        size_t nl = text.find('\n', lineStart);
-        if (nl == std::string::npos) return "";
-        lineStart = nl + 1;
-        ++curLine;
-    }
-
-    size_t lineEnd = text.find('\n', lineStart);
-    if (lineEnd == std::string::npos) lineEnd = text.size();
-
+    size_t lineStart, lineEnd;
+    if (!findLineBounds(text, line, lineStart, lineEnd)) return "";
     if (lineStart + character > lineEnd) return "";
     const size_t pos = lineStart + character;
 
-    auto isId = [](char c) {
-        return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '$';
-    };
-
     size_t start = pos;
-    while (start > lineStart && isId(text[start - 1])) --start;
+    while (start > lineStart && isIdChar(text[start - 1])) --start;
     size_t end = pos;
-    while (end < lineEnd && isId(text[end])) ++end;
+    while (end < lineEnd && isIdChar(text[end])) ++end;
 
     return (start < end) ? text.substr(start, end - start) : "";
 }
@@ -91,4 +98,33 @@ const SymbolRow* pickBestSymbol(const std::vector<SymbolRow>& rows, const std::s
         if (isDeclarationLikeKind(r.kind)) return &r;
 
     return &rows.front();
+}
+
+std::optional<DotCompletion> dotCompletionContext(
+    const std::string& text, unsigned line, unsigned character)
+{
+    size_t lineStart, lineEnd;
+    if (!findLineBounds(text, line, lineStart, lineEnd)) return std::nullopt;
+    if (lineStart + character > lineEnd) return std::nullopt;
+    const size_t pos = lineStart + character;
+
+    // Same left/right identifier walk as wordAtPosition, to recover the
+    // (possibly empty) typed member prefix.
+    size_t prefixStart = pos;
+    while (prefixStart > lineStart && isIdChar(text[prefixStart - 1])) --prefixStart;
+    size_t prefixEnd = pos;
+    while (prefixEnd < lineEnd && isIdChar(text[prefixEnd])) ++prefixEnd;
+    const std::string prefix =
+        (prefixStart < prefixEnd) ? text.substr(prefixStart, prefixEnd - prefixStart) : "";
+
+    // No '.' immediately to the left of the prefix -> not a dot-completion.
+    if (prefixStart == lineStart || text[prefixStart - 1] != '.') return std::nullopt;
+
+    // Walk left from the '.' to recover the object identifier before it.
+    const size_t dotPos = prefixStart - 1;
+    size_t objStart = dotPos;
+    while (objStart > lineStart && isIdChar(text[objStart - 1])) --objStart;
+    if (objStart == dotPos) return std::nullopt; // bare '.', nothing identifier-like before it
+
+    return DotCompletion{text.substr(objStart, dotPos - objStart), prefix};
 }

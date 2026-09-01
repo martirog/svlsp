@@ -1,5 +1,6 @@
 #pragma once
 #include <lsp/messages.h>
+#include <optional>
 #include <string>
 #include <vector>
 #include "db/symbol_database.h"
@@ -34,3 +35,27 @@ lsp::DocumentUri pathToUri(const std::string& path);
 //    over the intended definition on an unlucky name collision.
 // 3. Otherwise, the first row (caller's existing path,line order).
 const SymbolRow* pickBestSymbol(const std::vector<SymbolRow>& rows, const std::string& curPath);
+
+// A dot/member-access completion context: `object` is the identifier
+// immediately before the triggering '.', `prefix` is whatever partial member
+// name has been typed after it (possibly empty, e.g. right after `foo.`).
+struct DotCompletion {
+    std::string object;
+    std::string prefix;
+};
+
+// Detects a dot-completion context at (line, character) — an identifier
+// chain immediately preceded by a '.' (e.g. "foo.b|" -> {object:"foo",
+// prefix:"b"}, "foo.|" -> {object:"foo", prefix:""}). Returns std::nullopt
+// when the cursor isn't in one: no '.' immediately before the prefix
+// identifier, or nothing identifier-like before that '.' either (a bare "."
+// with no object).
+//
+// Only the single segment immediately before the last '.' is captured —
+// chained access ("foo.bar.baz") resolves "bar" as the object, not "foo".
+// This is a deliberate first-cut limitation (plan.md §6.10): the caller
+// looks "bar" up as if it were a declared variable, which naturally fails to
+// resolve (it isn't one), so chained access degrades to no completions
+// rather than a wrong one.
+std::optional<DotCompletion> dotCompletionContext(
+    const std::string& text, unsigned line, unsigned character);

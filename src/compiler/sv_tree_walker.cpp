@@ -37,6 +37,29 @@ static int translateColumn(int compiledLine, int compiledCol,
     return compiledCol + delta;
 }
 
+// Extracts the bare identifier for a class/interface/struct/typedef-typed
+// declaration's data_type_or_implicit (e.g. "MyClass" from "MyClass foo;"),
+// or "" for a built-in type (logic, int, ...) or any other data_type
+// alternative with no member scope to resolve into (struct/enum literal,
+// string, event, ...). Powers dot-completion's object-type resolution
+// (plan.md §6.10) via Signal/Parameter ParseRecord::detail.
+// Ignores any trailing packed_dimension/parameter_value_assignment: `foo` is
+// what SymbolDatabase::findSymbolsInScope keys a class/interface's member
+// scope by, not `foo [7:0]` or `foo#(...)`.
+static std::string userTypeName(SvParser::Data_type_or_implicitContext* dtoi)
+{
+    if (!dtoi) return "";
+    auto* dt = dtoi->data_type();
+    if (!dt) return "";
+    if (auto* ti = dt->type_identifier())
+        return ti->IDENTIFIER() ? ti->IDENTIFIER()->getText() : "";
+    if (auto* ct = dt->class_type())
+        if (auto* psci = ct->ps_class_identifier())
+            if (auto* ci = psci->class_identifier())
+                return ci->IDENTIFIER() ? ci->IDENTIFIER()->getText() : "";
+    return "";
+}
+
 // ---------------------------------------------------------------------------
 // SvErrorListener — collects ANTLR4 syntax errors into ParseError[]
 // ---------------------------------------------------------------------------
@@ -242,30 +265,42 @@ public:
     void enterData_declaration(SvParser::Data_declarationContext* ctx) override {
         auto* list = ctx->list_of_variable_decl_assignments();
         if (!list) return;
+        const std::string typeName = userTypeName(ctx->data_type_or_implicit());
         for (auto* vda : list->variable_decl_assignment()) {
             auto* vi = vda->variable_identifier();
             if (!vi) continue;
             auto* id = vi->IDENTIFIER();
             if (!id) continue;
-            pushId(ParseRecordKind::Signal, id, vda, currentScope());
+            pushId(ParseRecordKind::Signal, id, vda, currentScope(), typeName);
         }
     }
 
     // ---- Signals: net declarations ----
 
     void enterNet_declaration(SvParser::Net_declarationContext* ctx) override {
+        // A bare `MyClass foo;` is grammatically ambiguous between
+        // data_declaration (MyClass classified as a data_type's
+        // type_identifier) and this rule's own alt 2 (MyClass classified as
+        // a net_type_identifier — a user-defined nettype); this grammar
+        // resolves that case here, not in enterData_declaration. Only alt 2
+        // sets net_type_identifier(); alt 1's ordinary net_type ... data_type
+        // form still goes through the normal userTypeName() path.
+        const std::string typeName = ctx->net_type_identifier()
+            ? ctx->net_type_identifier()->IDENTIFIER()->getText()
+            : userTypeName(ctx->data_type_or_implicit());
+
         // Form 1: comma-separated assignment list
         if (auto* list = ctx->list_of_net_decl_assignments()) {
             for (auto* nda : list->net_decl_assignment()) {
                 auto* ni = nda->net_identifier();
                 if (!ni || !ni->IDENTIFIER()) continue;
-                pushId(ParseRecordKind::Signal, ni->IDENTIFIER(), nda, currentScope());
+                pushId(ParseRecordKind::Signal, ni->IDENTIFIER(), nda, currentScope(), typeName);
             }
         }
         // Form 2: bare net_identifier list (alternative grammar production)
         for (auto* ni : ctx->net_identifier()) {
             if (ni->IDENTIFIER())
-                pushId(ParseRecordKind::Signal, ni->IDENTIFIER(), ctx, currentScope());
+                pushId(ParseRecordKind::Signal, ni->IDENTIFIER(), ctx, currentScope(), typeName);
         }
     }
 
@@ -310,12 +345,12 @@ public:
     // ---- Parameters ----
 
     void enterParameter_declaration(SvParser::Parameter_declarationContext* ctx) override {
-        extractParams(ctx->list_of_param_assignments());
+        extractParams(ctx->list_of_param_assignments(), userTypeName(ctx->data_type_or_implicit()));
     }
 
     void enterLocal_parameter_declaration(
         SvParser::Local_parameter_declarationContext* ctx) override {
-        extractParams(ctx->list_of_param_assignments());
+        extractParams(ctx->list_of_param_assignments(), userTypeName(ctx->data_type_or_implicit()));
     }
 
 private:
@@ -358,12 +393,13 @@ private:
         }
     }
 
-    void extractParams(SvParser::List_of_param_assignmentsContext* list) {
+    void extractParams(SvParser::List_of_param_assignmentsContext* list,
+                        const std::string& typeName = "") {
         if (!list) return;
         for (auto* pa : list->param_assignment()) {
             auto* pi = pa->parameter_identifier();
             if (!pi || !pi->IDENTIFIER()) continue;
-            pushId(ParseRecordKind::Parameter, pi->IDENTIFIER(), pa, currentScope());
+            pushId(ParseRecordKind::Parameter, pi->IDENTIFIER(), pa, currentScope(), typeName);
         }
     }
 
