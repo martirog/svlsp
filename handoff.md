@@ -691,3 +691,25 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
     with `$`), and open questions (dynamic arrays, `randomize() with
     {...}` constraint-block completion, `semaphore`) left for whoever picks
     it up.
+17. **Function-call return-type chained dot-completion (`plan.md §6.14`)**
+    — not started, added 2026-09-01. Extends §6.10 and resolves its own
+    deferred "chained access" open question: `func_ret_class().member` and
+    multi-level chains (`obj.get_child().greet`) aren't completable today —
+    §6.10 only ever resolves one bare-identifier object immediately before
+    the last `.`. plan.md §6.14 has the design: a harder chain-parse than
+    §6.10's single-identifier walk (paren-balance-aware, segments split on
+    top-level `.`, each segment either a bare identifier or a call),
+    iterative per-segment scope resolution reusing `findSymbolsInScope`,
+    and a real ambiguity it surfaces — `Function::detail` stores the *raw*
+    return-type text for hover's benefit (unlike Signal/Parameter's
+    filtered §6.10 convention), so chain resolution needs its own
+    class-vs-built-in-type check (recommended: a small hand-maintained
+    built-in-type-keyword list, not a schema change). Explicitly scoped to
+    **classes only, not structs** — the LRM allows struct member access
+    chained off a function call too, but per direct real-world experience
+    the major commercial simulators don't actually implement that despite
+    the LRM permitting it, so this matches real-world behavior over the
+    letter of the spec; revisit only if that changes. Also out of scope:
+    `this`/`super` as a chain's first segment, `Class::static_method()`
+    call syntax, and constraint-block completion inside
+    `randomize() with {...}`.

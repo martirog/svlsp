@@ -1407,6 +1407,153 @@ collision case.
 
 ---
 
+### 6.14 Function-Call Return-Type Chained Dot-Completion (`func_ret_class().member`, multi-level)
+
+**Status:** not started. Extends §6.10 (dot/member-access completion) and,
+once landed, subsumes §6.10's own deliberately-deferred "chained access
+(`foo.bar.baz`)" open question — this section is where that gets resolved,
+generalized to include function/method calls as a segment kind.
+
+**Why this is needed:** §6.10 only resolves a single bare-identifier object
+immediately before the last `.` (`foo.bar`); `foo.bar.baz` was explicitly
+deferred, and a call result was never in scope at all
+(`func_ret_class().member`, or a method call mid-chain,
+`obj.get_child().greet`). Real verification code chains through factory
+methods, builders, and accessor methods constantly — a completion feature
+that only ever works one hop off a plain variable misses a large share of
+where `foo.` completion is actually typed in practice.
+
+**LRM vs. real-world simulator support (struct scoping note):** the LRM
+allows selecting a member directly off a function call's result for
+*structs* as well as classes (a function returning a `struct` type, then
+`.field` chained straight off the call). Per direct experience, this isn't
+actually implemented by the major commercial simulators — struct-returning
+function calls don't support chained member access there even though the
+LRM permits it. This section's design should keep that door open (the
+segment-resolution mechanism below is generic over "does this type have a
+member scope," not class-specific in principle) but the **scope of
+implementation here is classes only**, matching real-world simulator
+behavior rather than the letter of the LRM; add struct support later only
+if that ever changes or a concrete need shows up, not preemptively.
+
+**What is missing — chain parsing:**
+- **Recovering a multi-segment chain, not just one identifier.** `foo.bar.baz`,
+  `func_ret_class().member`, and `obj.get_child().greet` all need the text
+  left of the cursor walked as a sequence of segments split on top-level
+  `.`, where each segment is either a bare identifier or
+  `identifier '(' ... ')'` — and the `(...)` itself must be walked with
+  paren-balance tracking (an argument can itself contain nested calls,
+  strings, or literal `.`s, e.g. `foo(bar.baz, "a.b").member`). This is a
+  materially harder parse than §6.10's `dotCompletionContext` (a single
+  identifier-chars-only left-walk); the closest prior art in this codebase
+  is the preprocessor's existing paren/brace/bracket-balance-aware
+  macro-argument splitting (`src/compiler/sv_preprocessor.cpp` — reuse the
+  *technique*, not the code, since that operates on preprocessor tokens,
+  not a raw document-text left-walk from a cursor position). Comments and
+  string literals earlier on the same line need to be respected the same
+  way `wordAtPosition`/`dotCompletionContext` already ignore them implicitly
+  (they only ever look at the literal characters, no lexing) — worth an
+  explicit test since a `)` or `.` inside a string argument must not
+  confuse the paren-balance walk.
+- **Segment-by-segment scope resolution, iterating left to right.** Segment
+  0 resolves like today (§6.10's variable lookup) if it's a bare
+  identifier, or via a **new** lookup if it's a call: find a `Function`
+  visible at this position by name (`findSymbolsVisibleAt`, same
+  scope-chain precedence already used for variable resolution) and resolve
+  *its* return type instead of a variable's declared type. Each later
+  segment resolves as a **member** of the previous segment's resolved class
+  scope (`findSymbolsInScope(prevClass)`): a bare identifier segment looks
+  up a `Signal`/`Parameter` member and reads *its* declared-type `detail`
+  (already populated by §6.10); a called segment (`identifier(...)`) looks
+  up a `Function` member and reads *its* return type. The final segment
+  (whatever's after the last `.`, being typed right now) is the fuzzy-match
+  prefix against the last resolved class scope's members — unchanged from
+  §6.10 from that point on. A resolution failure at *any* segment (unknown
+  name, non-class return type, wrong kind) aborts the whole chain and
+  returns no completions, same "fail closed" posture as §6.10.
+- **The `detail`-as-return-type ambiguity this surfaces.** Function's
+  `detail` today stores the **raw** return-type text verbatim
+  (`enterFunction_body_declaration`, `retType = fdt->getText()`) —
+  deliberately unfiltered, unlike Signal/Parameter's §6.10 `userTypeName()`
+  convention, because hover displays it as-is and a raw `"void"`/`"int
+  unsigned"`/`"logic [7:0]"` is exactly the useful information a user wants
+  to see there. Chain resolution instead needs to know "is this return type
+  a class I can look members up in," which raw text alone doesn't answer
+  cleanly (`"void"` and `"int"` are non-empty but not classes; a genuine
+  bare class name looks textually identical to a genuine bare `typedef`
+  name). Three ways through, in recommended order:
+  1. **(Recommended)** At the resolution call site, re-check the already-
+     stored raw `detail` against a small hand-maintained list of SV
+     built-in data-type keywords (`void`, `logic`, `int`, `byte`, `bit`,
+     `shortint`, `integer`, `longint`, `time`, `real`, `shortreal`,
+     `realtime`, `string`, `chandle`, `event`, `signed`, `unsigned`, ...) —
+     a bare single-token `detail` not in that list is treated as a
+     candidate class name (verified for real by whether
+     `findSymbolsInScope` actually returns anything); anything
+     multi-token/bracketed (`"int unsigned"`, `"logic [7:0]"`) fails a
+     single-identifier-token check trivially and is correctly never
+     treated as a class. Small, stable, no schema change, and the list is
+     a strict subset of whatever §6.9's full keyword list ends up being
+     (share it from there if §6.9 lands first).
+  2. Give `SvTreeWalker` a second, `userTypeName()`-style *filtered*
+     extraction for function return types, stored in a **new**
+     `ParseRecord`/schema field dedicated to "resolvable type scope,"
+     decoupled from `detail`'s existing raw-text/display role. Cleaner
+     separation of concerns, but a real schema/migration cost
+     (`src/db/schema.h`, `SCHEMA_VERSION` bump, `SymbolRow`, every query
+     that selects `detail` today) for a problem option 1 solves without one.
+  3. Reuse `userTypeName()`'s filtered extraction *in place of* the current
+     raw `getText()` for `detail` itself — rejected: would regress hover's
+     current, useful display of a function's exact return type (including
+     `void`/dimensions/qualifiers) for every function, not just
+     class-returning ones. The same mistake §6.10 deliberately avoided for
+     `Port`'s `detail`; don't repeat it here for `Function`.
+- **`CompletionProvider` integration.** Generalize §6.10's dot-branch from
+  "resolve one object, then look up its scope" into "resolve a chain of
+  segments, threading the resolved class scope through each hop," reusing
+  `findSymbolsInScope` and `buildCompletionItems` unchanged at the end.
+
+**Functional test:** three-level chain, e.g.
+`class Greeter; function void greet(); endfunction endclass`,
+`class Factory; function Greeter get_child(); endfunction endclass`, a
+free function `function Factory make_factory();`, then trigger completion
+at `make_factory().get_child().gr` (Emacs) and verify `greet` is the only
+candidate; also verify a broken link (e.g. a function returning `int`
+mid-chain) yields no completions rather than falling back to scope-wide
+completion.
+
+**Unit tests:** chain-parsing helper on 2-level (`foo.bar.b|`) and 3-level
+(`a().b().c|`) inputs, including a call argument containing a literal `.`
+or `)` inside a string (`foo("a.b").c|`) to prove the paren-balance walk
+isn't confused by it; segment resolution for {bare identifier, call} ×
+{first segment, later segment} — four combinations; the built-in-type-
+keyword-list check rejecting `void`/`int`-returning intermediate calls;
+`CompletionProvider` end-to-end for the 3-level functional-test chain
+above plus a broken-link negative case.
+
+**Open questions, deliberately unresolved:**
+- Struct support (see LRM-vs-simulator note above) — deliberately out of
+  scope; the segment-resolution design isn't class-specific in principle
+  (a struct's fields could in theory be looked up the same way if this
+  codebase ever gains struct-member `ParseRecord`s of its own, which it
+  doesn't today), so revisit only if that changes.
+- `this.method().field` / `super.method().field` inside a class body —
+  `this`/`super` aren't ordinary declared variables (§6.10 already noted
+  this for the plain-object case), so segment 0 being `this`/`super` needs
+  its own special-cased resolution (the enclosing class scope itself,
+  found via `scopeAtPosition`) rather than the normal identifier lookup;
+  not addressed here.
+- Static/class-scoped calls (`Factory::make()`, using `::` rather than a
+  preceding `.`) as segment 0 — a different call syntax than an ordinary
+  function call or instance method call; not addressed here, left as a
+  follow-up if it turns out to be common enough to matter.
+- How deep a chain to support in practice — no hard limit is proposed;
+  the design above is naturally recursive/iterative per segment, so depth
+  isn't expected to need a cap, but this hasn't been stress-tested against
+  a pathological input (e.g. a very long chain) for parse-time cost.
+
+---
+
 ## Appendix A — Technology Stack Summary
 
 | Concern | Choice | Rationale |
