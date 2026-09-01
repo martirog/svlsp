@@ -6,9 +6,11 @@ only).
 
 **Status:** Phases 3, 4, 5, 6.1, 6.2, 6.3 complete, plus §6.8 (debounced `didChange`
 compilation) implemented 2026-08-28, plus a `pickBestSymbol()` hover/definition
-disambiguation improvement implemented 2026-09-01 (see "Not yet done" #7 below).
-Working tree clean, all work through commit `37e581f` is committed. Full unit suite:
-1050 assertions / 403 test cases, all green (debug). Full Emacs integration suite:
+disambiguation improvement (with unit + functional test coverage) implemented
+2026-09-01 (see "Not yet done" #7 below), plus broadened UVM-corpus completion
+coverage implemented 2026-09-01 (see "Not yet done" #8 below). Working tree clean,
+all work through commit `253c8c9` is committed. Full unit suite: 1056 assertions /
+405 test cases, all green (debug). Full Emacs integration suite:
 146 passed / 0 failed (as of 2026-08-28; not re-run for the 2026-09-01 change).
 
 ---
@@ -519,8 +521,26 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
    before falling back to the first `path,line`-ordered row. The "exclude symbols from
    files with a diagnostic at that exact line" alternative was not pursued — kind
    preference is simpler and covers the real UVM bug's shape directly.
-8. Consider broadening `tests/uvm_corpus/test_completion_uvm.cpp`'s "first cut"
-   2-scenario coverage if a concrete completion bug ever motivates it.
+8. ~~Consider broadening `tests/uvm_corpus/test_completion_uvm.cpp`'s "first cut"
+   2-scenario coverage~~ — **done 2026-09-01**: 2 more scenarios added (now 4,
+   193 assertions), closing the two gaps the original pair never touched — an
+   empty typed prefix (the `rows.empty()` unranked-full-list path) and true
+   fuzzy/skip-tolerant scoring (vs. only exact/contiguous-prefix filtering),
+   both now proven against real, full-corpus-scale data for the first time.
+   Surfaced a real scoping subtlety worth knowing for any future corpus test:
+   every real UVM class lives inside `package uvm_pkg`, so its symbol's own
+   `scope` column is `"uvm_pkg"`, never `""` — `findSymbolsVisibleAt`'s
+   cross-file union only ever matches scope `""`, so a symbol from one corpus
+   file is genuinely invisible to a completion request from another corpus
+   file unless that requesting file has its own explicit
+   `import uvm_pkg::*` (files *inside* the package, like `uvm_component.svh`
+   itself, don't import themselves). All 4 scenarios stayed anchored on
+   `base/uvm_component.svh`'s own same-file symbols (including out-of-class
+   `uvm_component::method_name(...)` body definitions, which — despite
+   sitting textually after `endclass` — are still inside the enclosing
+   `package uvm_pkg`, so they remain visible from anywhere else in that same
+   file) to sidestep that gap rather than exercise real cross-file
+   completion, which would need a fixture with an actual import.
 9. Minor: a short code comment at `pathToUri()` (`src/lsp/symbol_utils.cpp`) explaining
    the `fromPath()`-always-absolutizes subtlety, for the next person constructing a URI
    for a non-`didOpen`ed file.
