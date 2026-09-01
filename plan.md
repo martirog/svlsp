@@ -1238,6 +1238,175 @@ per §6.8's own stated resolution criterion.
 
 ---
 
+### 6.13 Built-in Container & Randomization Method Completion (queues, associative arrays, mailboxes, `randomize`)
+
+**Status:** not started. Extends §6.10 (dot/member-access completion,
+implemented 2026-09-01) — depends on it, doesn't replace any of it.
+
+**Why this is needed:** §6.10's dot-completion only ever resolves an object
+to a DB-declared `Class`/`Interface` scope via `findSymbolsInScope`. Two
+whole categories of real-world dot-completion targets are still
+unsupported: (1) SystemVerilog's built-in container types — queues
+(`T q[$]`), associative arrays (`T aa[K]`), and the built-in
+`mailbox`/`mailbox #(T)` class — none of which have a `Class`-kind
+`ParseRecord` in the DB (queues/associative arrays aren't classes at all;
+`mailbox`'s own member functions are specified by the LRM, never parsed
+from any source file this server sees), so `foo.` on any of these returns
+nothing today; and (2) every user-declared class implicitly gains a set of
+built-in randomization methods (`randomize`, `pre_randomize`, ...) the LRM
+grants automatically, which never appear as a `ParseRecord` since nothing
+in user source declares them — `foo.` on an ordinary class instance today
+only ever shows what the user explicitly wrote in the class body.
+
+**Native method lists — researched from recollection of IEEE 1800-2017;
+cross-check exact names/signatures/section numbers against an actual LRM
+copy before shipping user-facing completion text, this server has no
+access to the (copyrighted) spec to verify against directly:**
+
+- **Queue methods** — §7.10.2 (queue-specific) plus §7.12 (array locator/
+  ordering/reduction methods, which a queue also supports as a
+  variable-size ordered collection):
+  - `size()`
+  - `insert(index, item)`
+  - `delete([index])` — `delete()` with no argument empties the whole queue
+  - `pop_front()`, `pop_back()`
+  - `push_front(item)`, `push_back(item)`
+  - Locator methods (§7.12.1, each also accepts an optional `with (expr)`
+    clause): `find()`, `find_index()`, `find_first()`, `find_first_index()`,
+    `find_last()`, `find_last_index()`, `min()`, `max()`, `unique()`,
+    `unique_index()`
+  - Ordering methods (§7.12.2): `reverse()`, `sort()`, `rsort()`,
+    `shuffle()`
+  - Reduction methods (§7.12.3): `sum()`, `product()`, `and()`, `or()`,
+    `xor()`
+- **Associative array methods** — §7.8.3, plus the §7.12.3 reduction
+  methods only (**not** the locator/ordering ones — an associative array's
+  index isn't linearly ordered unless the index type itself is, so
+  `sort`/`min`/`max`/etc. don't carry over the way they do for queues; do
+  not reuse the queue list wholesale):
+  - `num()`
+  - `delete([index])` — `delete()` with no argument empties the whole array
+  - `exists(index)`
+  - `first(ref index)`, `last(ref index)`, `next(ref index)`,
+    `prev(ref index)`
+  - `sum()`, `product()`, `and()`, `or()`, `xor()`
+- **`mailbox`/`mailbox #(T)` methods** — §15.4 (`mailbox` is itself
+  specified as a built-in parameterized class):
+  - `new([bound])`
+  - `put(message)` *(task)*, `try_put(message)` *(function, returns `int`)*
+  - `get(ref message)` *(task)*, `try_get(ref message)` *(function, returns
+    `int`)*
+  - `peek(ref message)` *(task)*, `try_peek(ref message)` *(function,
+    returns `int`)*
+  - `num()`
+- **Randomization-family methods, implicitly present on every class** —
+  §18.6–§18.8:
+  - `randomize()` — also usable as `randomize() with { constraints }`, a
+    distinct grammar construct from a plain method call; this section only
+    covers plain-call completion of the method name itself, not
+    `with`-clause-aware completion (see open questions)
+  - `pre_randomize()`, `post_randomize()` — user-overridable hooks, called
+    automatically by `randomize()`
+  - `srandom(seed)`
+  - `get_randstate()`, `set_randstate(state)`
+  - `rand_mode(on_off)`, `constraint_mode(on_off)`
+
+**What is missing — detection & wiring:**
+- **Recognizing a queue/associative-array-typed declaration.** Unlike
+  §6.10's `userTypeName()` (which reads the *base* `data_type`), a
+  queue/associative array is signaled by the *dimension* suffix on the
+  specific declarator, not the base type — `int q[$]` is `data_type=int`,
+  and the `[$]` lives on `variable_decl_assignment`'s own
+  `variable_dimension()` list (`grammar/Sv.g4:1055-1064`;
+  `Variable_dimensionContext` exposes `queue_dimension()`/
+  `associative_dimension()`/`unsized_dimension()`/`unpacked_dimension()` as
+  direct, individually-checkable accessors). So `int a[$], b;` must record
+  `a` as a queue and `b` as a plain `int` even though they share one
+  `data_type` — detection has to happen per-`vda` inside
+  `enterData_declaration`'s existing loop (`src/compiler/sv_tree_walker.cpp`),
+  not on the shared `data_type_or_implicit`.
+- **Recognizing `mailbox`/`mailbox #(T)`.** No new grammar traversal
+  needed — `userTypeName()` already extracts `"mailbox"` as plain text via
+  its existing `class_type` alt (mailbox is parsed as an ordinary
+  parameterized class-type reference); detection is just a literal-name
+  check (`typeName == "mailbox"`) after the fact. `T` itself (the queued
+  message type) isn't needed for method-name completion, only for
+  hovering/typing the arguments, which is out of scope here.
+- **A `ParseRecord::detail` tagging convention distinct from a real type
+  name.** `findSymbolsInScope(scope)` only ever answers "what's declared
+  with `scope == this class name" — there is no DB scope named "queue" or
+  "mailbox" to look up. Proposed: reserve a `detail` value starting with
+  `$` (e.g. `"$queue"`, `"$assoc_array"`, `"$mailbox"`) for these —
+  SystemVerilog identifiers can never start with `$` (the LRM reserves
+  that lexical class for system tasks/functions), so this can never
+  collide with a real user type name extracted by `userTypeName()`. Plain
+  `int`/`logic`/other built-in scalar types keep the existing
+  empty-`detail` convention (no container, no member scope at all).
+- **A static built-in-method table, entirely independent of
+  `SymbolDatabase`.** `CompletionProvider`'s dot-completion branch
+  (`src/lsp/completion.cpp`, added by §6.10) needs a new pre-check before
+  calling `findSymbolsInScope`: if the resolved object's `detail` is one of
+  the `$`-tagged container markers, build the candidate list from a new
+  hand-maintained static table (e.g. `src/lsp/sv_builtin_methods.h`,
+  listing the method-name/kind/detail triples above per container kind)
+  instead of querying the DB at all, then fuzzy-score/sort exactly like any
+  other candidate set (reuse `buildCompletionItems`).
+  `CompletionItemKind::Method` (or `Function`) is the natural
+  `completionKindFor`-equivalent mapping for these; `item.detail` can carry
+  a short signature string (e.g. `"push_back(item)"`) since there's no real
+  `ParseRecord` to source it from.
+- **Randomize-family methods on ordinary classes.** Once the dot-completion
+  branch resolves an object to a real DB `Class` scope (the existing §6.10
+  path, unchanged), *always* union in the randomize-family method list
+  above as synthetic candidates before scoring — every class gets them
+  regardless of what it explicitly declares, so this is a flat addition at
+  the call site, not per-class detection. Note the possible name collision
+  this creates: nothing stops a user class from declaring its own method
+  literally named `randomize` (the LRM allows overriding it) — if
+  `findSymbolsInScope` already returned a real, DB-backed `randomize` for
+  that class, prefer the real one and skip adding the synthetic candidate
+  for that specific name (a simple name-collision check by candidate name,
+  not full override semantics).
+
+**Functional test:** declare a queue-typed (`int q[$];`), an
+associative-array-typed (`int aa[string];`), and a `mailbox`-typed
+(`mailbox #(int) mbx;`) variable, plus an ordinary class instance with no
+explicitly-declared `randomize`; trigger completion at `q.`, `aa.`, `mbx.`,
+and `obj.` (Emacs); verify each returns exactly its own built-in method set
+(e.g. `push_back`/`pop_front` for the queue, `exists`/`num` for the
+associative array, `put`/`get` for the mailbox, `randomize`/
+`pre_randomize`/... for the class instance, alongside whatever it
+explicitly declares) and nothing from an unrelated container kind.
+
+**Unit tests:** `sv_tree_walker` detail-tagging for a queue-typed, an
+associative-array-typed, and a plain (non-container) declarator sharing one
+`data_type_or_implicit` (the `int a[$], b;` case above); `mailbox`/
+`mailbox #(T)` still resolves via `userTypeName()`'s existing `class_type`
+path; `CompletionProvider` end-to-end for each of the four `$`-tagged/class
+cases above, including the `randomize`-vs-user-declared-`randomize`
+collision case.
+
+**Open questions, deliberately unresolved:**
+- Whether to also cover dynamic arrays (`int a[]`, detected via
+  `unsized_dimension()`) — the LRM gives them `size()`/`delete()`/`new[]`/
+  the same §7.12 locator/ordering/reduction methods as queues, minus
+  `push_front`/`push_back`/`pop_front`/`pop_back`/`insert`. Not explicitly
+  requested; natural to add alongside queues in the same pass given the
+  detection mechanism is identical, but left out of the method-list
+  research above — enumerate before implementing if pursued.
+- `randomize() with { constraints }` is a distinct grammar construct
+  (`randomize_call`, not a plain method-call/argument-list) — this section
+  only completes the bare `randomize()` method name; completion *inside* a
+  `with` block's constraint braces is a different, harder problem (would
+  need to resolve back to the class's own `rand`/`randc` member names) and
+  is out of scope here.
+- Whether `semaphore` (LRM §15.3, another built-in parameterized-class-like
+  type: `new`/`put`/`get`/`try_get`) belongs in the same pass as `mailbox`
+  — same detection mechanism (`userTypeName()` returning the literal name),
+  not researched here, left for whoever picks this up.
+
+---
+
 ## Appendix A — Technology Stack Summary
 
 | Concern | Choice | Rationale |

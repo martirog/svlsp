@@ -673,3 +673,21 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
       specific: reshaping `SymbolDatabase`'s existing queries (§5.3) to query
       across an attached library DB, and the library-versioning/pinning/
       staleness story (config field, where pre-built DBs are built/shipped).
+16. **Built-in container & randomization method completion (`plan.md
+    §6.13`)** — not started, added 2026-09-01. Extends §6.10 (dot/
+    member-access completion): today `foo.` only resolves to a DB-declared
+    `Class`/`Interface` scope, so it returns nothing for a queue-typed
+    (`T q[$]`), associative-array-typed (`T aa[K]`), or `mailbox`-typed
+    variable — none of these have a `Class`-kind `ParseRecord` — and misses
+    the `randomize`/`pre_randomize`/`post_randomize`/... method family the
+    LRM implicitly grants every class regardless of what it declares.
+    plan.md §6.13 has the full native-method lists (queue/associative-array/
+    mailbox/randomize-family, researched from recollection of IEEE
+    1800-2017 — flagged there as needing cross-check against an actual LRM
+    copy before shipping), the detection design (`variable_dimension`'s
+    `queue_dimension()`/`associative_dimension()` accessors for containers,
+    a `$`-prefixed `ParseRecord::detail` tagging convention that can never
+    collide with a real user type name since SV identifiers can't start
+    with `$`), and open questions (dynamic arrays, `randomize() with
+    {...}` constraint-block completion, `semaphore`) left for whoever picks
+    it up.
