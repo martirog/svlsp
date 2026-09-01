@@ -98,3 +98,24 @@ TEST_CASE("HoverProvider: hover includes detail for function return type", "[hov
     CHECK(val.find("logic")    != std::string::npos);
     CHECK(val.find("Function") != std::string::npos);
 }
+
+TEST_CASE("HoverProvider: prefers a declaration-like kind over an alphabetically-earlier data-like one", "[hover]")
+{
+    Fixture f;
+    // "/a_signal.sv" sorts before "/z_class.sv" — without the kind-preference
+    // tiebreak in pickBestSymbol(), the plain ORDER BY path, line in
+    // findSymbolsByName would pick the Signal here.
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/a_signal.sv", "h"),
+        {{ParseRecordKind::Signal, "Widget", 3, 2, "", "", 0, ""}});
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/z_class.sv",  "h"),
+        {{ParseRecordKind::Class, "Widget", 5, 6, "", "", 20, ""}});
+
+    // Requested from neither candidate file.
+    const std::string text = "Widget obj;";
+    auto result = HoverProvider::getHover(makeParams("/user.sv", 0, 0), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    const std::string val{std::get<lsp::MarkupContent>(result->contents).value};
+    CHECK(val.find("Class")  != std::string::npos);
+    CHECK(val.find("Signal") == std::string::npos);
+}

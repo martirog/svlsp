@@ -81,3 +81,24 @@ TEST_CASE("DefinitionProvider: cross-file definition lookup", "[definition]")
     CHECK(std::string(loc.uri.path()) == "/pkg.sv");
     CHECK(loc.range.start.line == 9u); // 1-based 10 → 0-based 9
 }
+
+TEST_CASE("DefinitionProvider: prefers a declaration-like kind over an alphabetically-earlier data-like one", "[definition]")
+{
+    Fixture f;
+    // "/a_signal.sv" sorts before "/z_class.sv" — without the kind-preference
+    // tiebreak in pickBestSymbol(), the plain ORDER BY path, line in
+    // findSymbolsByName would pick the Signal here.
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/a_signal.sv", "h"),
+        {{ParseRecordKind::Signal, "Widget", 3, 2, "", "", 0, ""}});
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/z_class.sv",  "h"),
+        {{ParseRecordKind::Class, "Widget", 5, 6, "", "", 20, ""}});
+
+    // Requested from neither candidate file.
+    const std::string text = "Widget obj;";
+    auto result = DefinitionProvider::getDefinition(makeParams("/user.sv", 0, 0), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    const auto& loc = std::get<lsp::Location>(result.get<lsp::Definition>());
+    CHECK(std::string(loc.uri.path()) == "/z_class.sv");
+    CHECK(loc.range.start.line == 4u); // 1-based 5 → 0-based 4
+}
