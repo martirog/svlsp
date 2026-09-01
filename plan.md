@@ -978,7 +978,28 @@ chosen above; only trim if real usage shows the completion list feels noisy.
 
 ### 6.10 Dot / Member-Access Completion (`foo.bar`)
 
-**Status:** not started.
+**Status:** implemented 2026-09-01. Single-segment case only, as recommended
+below. Two scoped deviations from this section's original sketch, both
+documented in code:
+- `detail`-population only covers `Signal` and `Parameter`, not `Port` —
+  `Port`'s `detail` was already in use for port direction (see
+  `ParseRecord::detail`'s doc comment and `enterAnsi_port_declaration`), and
+  overloading it with type text too would have silently broken existing
+  Port-hover behavior (`test_sv_listener.cpp`/`test_document_symbols.cpp`
+  hardcode `"input"` as a Port's `detail`). Dot-completion on a class/
+  interface-typed port isn't supported by this first cut.
+- `enterNet_declaration` also needed the same `userTypeName()` treatment,
+  not just `enterData_declaration` as originally sketched: a bare
+  `MyClass foo;` turned out to be grammatically ambiguous between
+  `data_declaration` (MyClass classified as a `data_type`'s
+  `type_identifier`) and `net_declaration`'s own alt 2 (MyClass classified
+  as a `net_type_identifier` — a user-defined nettype) — this codebase's
+  grammar resolves that case via the latter, not the former, so
+  `enterData_declaration` alone never saw it. A second, distinct
+  manifestation of the same "identifier classification needs a symbol
+  table" problem already documented for `data_type`'s own alternatives
+  (grammar quirks table, `handoff.md`) — not previously noticed because
+  nothing depended on which alt fired until now.
 
 **Why this is needed:** `CompletionProvider::getCompletion` always scores
 candidates from `db.findSymbolsVisibleAt(path, line1)` — every symbol visible

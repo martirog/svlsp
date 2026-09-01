@@ -5,13 +5,15 @@ narrative detail if ever needed; this file now documents current-state-and-next-
 only).
 
 **Status:** Phases 3, 4, 5, 6.1, 6.2, 6.3 complete, plus §6.8 (debounced `didChange`
-compilation) implemented 2026-08-28, plus a `pickBestSymbol()` hover/definition
-disambiguation improvement (with unit + functional test coverage) implemented
-2026-09-01 (see "Not yet done" #7 below), plus broadened UVM-corpus completion
-coverage implemented 2026-09-01 (see "Not yet done" #8 below). Working tree clean,
-all work through commit `253c8c9` is committed. Full unit suite: 1056 assertions /
-405 test cases, all green (debug). Full Emacs integration suite:
-146 passed / 0 failed (as of 2026-08-28; not re-run for the 2026-09-01 change).
+compilation) implemented 2026-08-28. On 2026-09-01: a `pickBestSymbol()`
+hover/definition disambiguation improvement (see "Not yet done" #7), broadened
+UVM-corpus completion coverage (#8), and §6.10 dot/member-access completion (#12,
+single-segment first cut) all implemented, each with unit + functional test
+coverage. Working tree clean, all work through commit `2c4a848` is committed.
+Full unit suite: 1092 assertions / 419 test cases, all green (debug).
+Full Emacs integration suite: 157 passed / 0 failed. Full UVM-corpus suite (real
+140-file compile, opt-in, not part of `ctest`): 278 assertions / 11 test cases, all
+green.
 
 ---
 
@@ -153,6 +155,52 @@ candidate is the final tiebreak. `CompletionProvider` scores every visible row w
 prefix is typed, drops `nullopt` rows, sorts by descending score (name as stable
 tiebreak), and assigns each item a zero-padded `sortText` for clients that re-sort by
 that field. No typed prefix → unranked, unchanged behavior (every visible symbol).
+`CompletionProvider::getCompletion` now delegates both this and the dot-completion
+branch below to a shared private `buildCompletionItems(rows, prefix)` helper.
+
+**Dot/member-access completion** (plan.md §6.10, implemented 2026-09-01):
+`dotCompletionContext(text, line, character)` (`src/lsp/symbol_utils.h/.cpp`)
+detects an identifier chain immediately preceded by a `.` (e.g. `foo.b|` →
+`{object:"foo", prefix:"b"}`), sharing `wordAtPosition`'s left/right identifier-walk
+logic via a new private `findLineBounds` helper. Only the single segment before the
+*last* `.` is captured — chained access (`foo.bar.baz`) resolves `"bar"` as the
+object, which naturally fails to resolve (it isn't a declared variable) rather than
+being specially detected and rejected.
+
+When `getCompletion` sees a dot-completion context, it resolves the object's
+declared type by scanning `findSymbolsVisibleAt`'s own result for an exact-name
+`Signal`/`Parameter` match (reusing that query's existing scope-depth-sorted
+precedence for free — the first match is the innermost-scoped declaration), then
+queries `findSymbolsInScope(thatType)` for the member candidates instead of
+falling back to scope-wide completion. Any failure to resolve (undeclared object,
+built-in type, wrong kind, unknown scope) returns `nullptr` rather than the whole
+visible scope — offering unrelated symbols after an explicit `.` would be worse
+than offering nothing.
+
+The declared type itself comes from a new `userTypeName()` helper
+(`src/compiler/sv_tree_walker.cpp`) that reads a `data_type_or_implicit`'s
+`type_identifier()`/`class_type()` accessor (both alternatives an unqualified
+class/interface/typedef name can parse as — see the `data_type` grammar-ambiguity
+row in "Sv.g4 grammar quirks" below) and returns `""` for every other alternative
+(built-in types, struct/enum literals, `string`, `event`, ...). Wired into
+`enterData_declaration` and both `enterParameter_declaration`/
+`enterLocal_parameter_declaration` (→ `extractParams`'s new optional `typeName`
+param), populating `ParseRecord::detail` for `Signal`/`Parameter` only.
+**Deliberately not wired into `Port`**: `Port`'s `detail` already holds direction
+(`"input"`/`"output"`/...) and `test_sv_listener.cpp`/`test_document_symbols.cpp`
+hardcode that — overloading it with type text would silently break existing Port
+hover. Dot-completion on a class/interface-typed port isn't supported by this first
+cut.
+
+Also required a fix in `enterNet_declaration`, not just `enterData_declaration`: a
+bare `MyClass foo;` turned out to be grammatically ambiguous between
+`data_declaration` (`MyClass` classified as `data_type`'s `type_identifier`) and
+`net_declaration`'s own alt 2 (`MyClass` classified as a `net_type_identifier` — a
+user-defined nettype) — this grammar resolves that case via the latter, so
+`enterData_declaration` alone never saw it. A second, distinct manifestation of the
+same "identifier classification needs a symbol table" problem already documented
+for `data_type`'s own internal alternatives (see grammar quirks table) — not
+previously noticed because nothing depended on which alt fired until now.
 
 ### I/O wrapper (`src/lsp/server.h/.cpp`)
 
@@ -441,6 +489,7 @@ access) vs. `expectedUriPath` (output comparison — runs the expected value thr
 | SV token-pasting (` `` `) inside `` `define `` bodies | **Fixed** — see preprocessor section above | — |
 | Stringification (`` `"..."`" ``) | **Fixed** — see preprocessor section above | — |
 | **`data_type`/`variable_decl_assignment` ambiguity** (`grammar/Sv.g4:740-753`, alts 9/10/12 all reduce to a bare `IDENTIFIER` — SV's classic "identifier classification needs a symbol table" problem, LRM Annex A acknowledges this) | **Confirmed, not fixed.** Under default (SLL) prediction this is silently resolved correctly almost everywhere; fails specifically for `const local`/`const protected` (or any 2+ qualifiers) + `new(...)` initializer combos. Real fix needs semantic predicates (symbol table) or risky restructuring of some of the grammar's most heavily-used rules — not attempted; two cheap structural experiments (reordering alts, removing a redundant one) had no effect. Real-world impact: **1 diagnostic in the entire 140-file UVM corpus** (`base/uvm_transaction.svh`). | Open — revisit only if it starts showing up more broadly |
+| A bare `MyClass foo;` at `module_common_item` level is ALSO ambiguous between `data_declaration` (`MyClass` as a `data_type`) and `net_declaration` alt 2 (`MyClass` as a `net_type_identifier`, i.e. a user-defined nettype) — a second, distinct manifestation of the same underlying problem, discovered 2026-09-01 building §6.10 dot-completion's type-detail population (`enterData_declaration` alone never saw plain class-typed signals; this grammar resolves them via `enterNet_declaration` instead) | **Not a diagnostic-producing bug** — both alts still record a `Signal` with the right name, so hover/definition/completion were unaffected before 2026-09-01. Only became visible because `userTypeName()` needed wiring into the alt that actually fires. Now handled in both listener methods (see "Dot/member-access completion" above). | Resolved for the one dependent (§6.10); the underlying grammar ambiguity itself is unchanged |
 
 ---
 
@@ -560,20 +609,14 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
     literals), merged into the same fuzzy-scored candidate set, plus a fix to
     the `rows.empty()` early return so an empty/new buffer still offers
     keywords. See plan.md for full detail.
-12. **Dot / member-access completion (`plan.md §6.10`)** — not started.
-    `foo.` should narrow completion to `foo`'s type members, but nothing
-    captures a declared variable's type today (`enterData_declaration` in
-    `src/compiler/sv_tree_walker.cpp` leaves `Signal` records' `detail`
-    empty), so `getCompletion` has no way to resolve `foo` to a class/struct
-    scope and fall back to `findSymbolsInScope`. Needs: (1) populating
-    `detail` with the declared type for class/interface/struct/typedef-typed
-    `Signal`/`Port`/`Parameter` declarations, (2) a dot-aware extension to
-    `wordAtPosition` to recover the object expression before the cursor, (3)
-    a new branch in `CompletionProvider::getCompletion` that resolves the
-    object's type and queries `findSymbolsInScope` instead of
-    `findSymbolsVisibleAt`. First cut is single-segment (`foo.bar`) only —
-    chained access (`foo.bar.baz`) and `this`/`super` deferred. See plan.md
-    for full detail.
+12. ~~Dot / member-access completion (`plan.md §6.10`)~~ — **implemented
+    2026-09-01**, single-segment (`foo.bar`) first cut as recommended;
+    chained access (`foo.bar.baz`) and `this`/`super` still deferred. See
+    "Dot/member-access completion" under "LSP feature providers" below for
+    the full design, and plan.md §6.10 for the two scoped deviations from
+    its original sketch (Port excluded from `detail`-population; a real
+    `data_declaration`/`net_declaration` grammar ambiguity surfaced along
+    the way).
 13. **Configurable fuzzy-matching toggle (`plan.md §6.11`)** — not started.
     `CompletionProvider::getCompletion` always fuzzy-scores when a prefix is
     typed, with no way to opt out. Needs an `initializationOptions.svlsp.
