@@ -1512,6 +1512,23 @@ if that ever changes or a concrete need shows up, not preemptively.
   "resolve one object, then look up its scope" into "resolve a chain of
   segments, threading the resolved class scope through each hop," reusing
   `findSymbolsInScope` and `buildCompletionItems` unchanged at the end.
+- **`this`/`super` as segment 0.** In scope for this section (not deferred):
+  `this.method().field` and `super.method().field` inside a class body need
+  their own special case, since `this`/`super` aren't ordinary declared
+  variables and the normal segment-0 identifier/call lookup won't find
+  them. When segment 0's text is literally `this`, resolve directly to the
+  enclosing class scope via `scopeAtPosition` (the same call §6.10's own
+  `findSymbolsVisibleAt` already makes internally) instead of a
+  `findSymbolsVisibleAt`/`Function`-return-type lookup — no DB query needed
+  beyond that. `super` resolves the same way but one level up: look up the
+  enclosing class's own `Class` `ParseRecord` and read *its* `detail`
+  (already populated with the parent-class name — see `ParseRecord::detail`'s
+  doc comment, "class parent" — by whatever emits `Class` records today),
+  then use *that* as the starting scope instead of the enclosing class
+  itself. Both are then just a normal segment-0 resolution result feeding
+  into the same iterative member-resolution loop as any other chain — `this`/
+  `super` only special-cases *how* segment 0's scope is found, nothing
+  downstream of it.
 
 **Functional test:** three-level chain, e.g.
 `class Greeter; function void greet(); endfunction endclass`,
@@ -1520,16 +1537,23 @@ free function `function Factory make_factory();`, then trigger completion
 at `make_factory().get_child().gr` (Emacs) and verify `greet` is the only
 candidate; also verify a broken link (e.g. a function returning `int`
 mid-chain) yields no completions rather than falling back to scope-wide
-completion.
+completion. Also cover `this`/`super`: inside a method body, trigger
+completion at `this.get_child().gr` and verify it resolves the same as the
+free-function chain above; with `Factory` extending a `BaseFactory` that
+itself declares `get_child`, trigger completion at `super.get_child().gr`
+from inside a `Factory` method and verify it resolves through the parent
+class, not `Factory`'s own (potentially overriding) `get_child`.
 
 **Unit tests:** chain-parsing helper on 2-level (`foo.bar.b|`) and 3-level
 (`a().b().c|`) inputs, including a call argument containing a literal `.`
 or `)` inside a string (`foo("a.b").c|`) to prove the paren-balance walk
 isn't confused by it; segment resolution for {bare identifier, call} ×
-{first segment, later segment} — four combinations; the built-in-type-
-keyword-list check rejecting `void`/`int`-returning intermediate calls;
-`CompletionProvider` end-to-end for the 3-level functional-test chain
-above plus a broken-link negative case.
+{first segment, later segment} — four combinations; `this`/`super` as
+segment 0 resolving to the enclosing class / its parent class
+respectively; the built-in-type-keyword-list check rejecting `void`/`int`-
+returning intermediate calls; `CompletionProvider` end-to-end for the
+3-level functional-test chain above, the `this`/`super` functional-test
+cases, plus a broken-link negative case.
 
 **Open questions, deliberately unresolved:**
 - Struct support (see LRM-vs-simulator note above) — deliberately out of
@@ -1537,12 +1561,6 @@ above plus a broken-link negative case.
   (a struct's fields could in theory be looked up the same way if this
   codebase ever gains struct-member `ParseRecord`s of its own, which it
   doesn't today), so revisit only if that changes.
-- `this.method().field` / `super.method().field` inside a class body —
-  `this`/`super` aren't ordinary declared variables (§6.10 already noted
-  this for the plain-object case), so segment 0 being `this`/`super` needs
-  its own special-cased resolution (the enclosing class scope itself,
-  found via `scopeAtPosition`) rather than the normal identifier lookup;
-  not addressed here.
 - Static/class-scoped calls (`Factory::make()`, using `::` rather than a
   preceding `.`) as segment 0 — a different call syntax than an ordinary
   function call or instance method call; not addressed here, left as a

@@ -709,7 +709,8 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
     chained off a function call too, but per direct real-world experience
     the major commercial simulators don't actually implement that despite
     the LRM permitting it, so this matches real-world behavior over the
-    letter of the spec; revisit only if that changes. Also out of scope:
-    `this`/`super` as a chain's first segment, `Class::static_method()`
-    call syntax, and constraint-block completion inside
-    `randomize() with {...}`.
+    letter of the spec; revisit only if that changes. `this`/`super` as a
+    chain's first segment is in scope (resolves to the enclosing class /
+    its parent class via `scopeAtPosition`, not a normal identifier
+    lookup); still out of scope: `Class::static_method()` call syntax, and
+    constraint-block completion inside `randomize() with {...}`.
