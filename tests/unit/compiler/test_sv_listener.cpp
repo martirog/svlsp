@@ -227,6 +227,33 @@ TEST_CASE("signals from functions_tasks.sv captured", "[compiler][listener][phas
 }
 
 // ---------------------------------------------------------------------------
+// Signal detail (declared type, for dot-completion's object-type resolution
+// — plan.md §6.10)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("class-typed signal records its declared type in detail", "[compiler][listener][phase6.10]") {
+    auto [recs, errs, imps, insts] = walkSource(
+        "module m;\n"
+        "  MyClass foo;\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    auto* r = findRecord(recs, ParseRecordKind::Signal, "foo");
+    REQUIRE(r != nullptr);
+    CHECK(r->detail == "MyClass");
+}
+
+TEST_CASE("built-in-typed signal leaves detail empty", "[compiler][listener][phase6.10]") {
+    auto [recs, errs, imps, insts] = walkSource(
+        "module m;\n"
+        "  logic [7:0] data;\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    auto* r = findRecord(recs, ParseRecordKind::Signal, "data");
+    REQUIRE(r != nullptr);
+    CHECK(r->detail.empty());
+}
+
+// ---------------------------------------------------------------------------
 // Parent scope tracking
 // ---------------------------------------------------------------------------
 
@@ -381,6 +408,27 @@ TEST_CASE("parameter parent is the enclosing module", "[compiler][listener][phas
     auto* r = findRecord(recs, ParseRecordKind::Parameter, "N");
     REQUIRE(r != nullptr);
     CHECK(r->parent == "param_mod");
+}
+
+TEST_CASE("class-typed localparam records its declared type in detail", "[compiler][listener][phase6.10]") {
+    auto [recs, errs, imps, insts] = walkSource(
+        "module m;\n"
+        "  localparam MyClass DEFAULT_FOO = null;\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    auto* r = findRecord(recs, ParseRecordKind::Parameter, "DEFAULT_FOO");
+    REQUIRE(r != nullptr);
+    CHECK(r->detail == "MyClass");
+}
+
+TEST_CASE("built-in-typed parameter leaves detail empty", "[compiler][listener][phase6.10]") {
+    auto [recs, errs, imps, insts] = walkSource(
+        "module m #(parameter int N = 4) ();\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    auto* r = findRecord(recs, ParseRecordKind::Parameter, "N");
+    REQUIRE(r != nullptr);
+    CHECK(r->detail.empty());
 }
 
 // ---------------------------------------------------------------------------

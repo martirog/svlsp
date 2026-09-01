@@ -140,3 +140,48 @@ TEST_CASE("pickBestSymbol: single row — returned regardless of kind", "[symbol
     const auto* best = pickBestSymbol(rows, "/current.sv");
     CHECK(best == &rows.front());
 }
+
+// ---------------------------------------------------------------------------
+// dotCompletionContext
+// ---------------------------------------------------------------------------
+
+TEST_CASE("dotCompletionContext: foo.b| yields object=foo, prefix=b", "[symbol_utils]")
+{
+    auto ctx = dotCompletionContext("foo.b", 0, 5);
+    REQUIRE(ctx.has_value());
+    CHECK(ctx->object == "foo");
+    CHECK(ctx->prefix == "b");
+}
+
+TEST_CASE("dotCompletionContext: foo.| yields object=foo, empty prefix", "[symbol_utils]")
+{
+    auto ctx = dotCompletionContext("foo.", 0, 4);
+    REQUIRE(ctx.has_value());
+    CHECK(ctx->object == "foo");
+    CHECK(ctx->prefix.empty());
+}
+
+TEST_CASE("dotCompletionContext: foo| with no dot is not a dot-completion context", "[symbol_utils]")
+{
+    CHECK_FALSE(dotCompletionContext("foo", 0, 3).has_value());
+}
+
+TEST_CASE("dotCompletionContext: bare '.' with no preceding identifier is not a dot-completion context", "[symbol_utils]")
+{
+    CHECK_FALSE(dotCompletionContext(".", 0, 1).has_value());
+}
+
+TEST_CASE("dotCompletionContext: multi-line text resolves the dot on the requested line", "[symbol_utils]")
+{
+    const std::string src = "module m;\n  foo.ba\nendmodule";
+    auto ctx = dotCompletionContext(src, 1, 7); // "  foo.ba" -> cursor after "ba"
+    REQUIRE(ctx.has_value());
+    CHECK(ctx->object == "foo");
+    CHECK(ctx->prefix == "ba");
+}
+
+TEST_CASE("dotCompletionContext: out-of-range position returns nullopt", "[symbol_utils]")
+{
+    CHECK_FALSE(dotCompletionContext("foo.b", 1, 0).has_value()); // no line 1
+    CHECK_FALSE(dotCompletionContext("foo.b", 0, 99).has_value()); // char past EOL
+}

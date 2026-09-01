@@ -145,3 +145,80 @@ TEST_CASE("CompletionProvider: ranks a contiguous-prefix match above a scattered
     REQUIRE(items[1].sortText.has_value());
     CHECK(*items[0].sortText < *items[1].sortText);
 }
+
+// ---------------------------------------------------------------------------
+// Dot / member-access completion (plan.md §6.10)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("CompletionProvider: dot-completion narrows to the object's class members", "[completion][dot]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module,   "top",     1, 7,  "",        "",        10, ""},
+        {ParseRecordKind::Signal,   "foo",     2, 10, "top",     "MyClass", 0,  "top"},
+        {ParseRecordKind::Class,    "MyClass", 5, 7,  "",        "",        8,  ""},
+        {ParseRecordKind::Function, "bar",     6, 10, "MyClass", "void",    6,  "MyClass"},
+        {ParseRecordKind::Signal,   "baz",     7, 10, "MyClass", "",        0,  "MyClass"},
+    });
+
+    // "  foo." (0-based line 1), cursor right after the dot.
+    const std::string text = "module top;\n  foo.";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 1, 6), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "bar"));
+    CHECK(hasItem(items, "baz"));
+    // Only MyClass's own members -- not foo itself or unrelated top-level symbols.
+    CHECK_FALSE(hasItem(items, "foo"));
+    CHECK_FALSE(hasItem(items, "top"));
+    CHECK_FALSE(hasItem(items, "MyClass"));
+}
+
+TEST_CASE("CompletionProvider: dot-completion filters class members by typed prefix", "[completion][dot]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module,   "top",     1, 7,  "",        "",        10, ""},
+        {ParseRecordKind::Signal,   "foo",     2, 10, "top",     "MyClass", 0,  "top"},
+        {ParseRecordKind::Class,    "MyClass", 5, 7,  "",        "",        8,  ""},
+        {ParseRecordKind::Function, "alpha",   6, 10, "MyClass", "void",    6,  "MyClass"},
+        {ParseRecordKind::Function, "beta",    7, 10, "MyClass", "void",    6,  "MyClass"},
+    });
+
+    // "  foo.al" (0-based line 1), cursor right after "al".
+    const std::string text = "module top;\n  foo.al";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 1, 8), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "alpha"));
+    CHECK_FALSE(hasItem(items, "beta"));
+}
+
+TEST_CASE("CompletionProvider: dot-completion on a built-in-typed variable returns no completions", "[completion][dot]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module, "top", 1, 7,  "",    "", 10, ""},
+        {ParseRecordKind::Signal, "x",   2, 10, "top", "", 0,  "top"}, // built-in type -> no detail
+    });
+
+    // "  x." (0-based line 1), cursor right after the dot.
+    const std::string text = "module top;\n  x.";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 1, 4), f.sdb, text);
+    REQUIRE(result.isNull());
+}
+
+TEST_CASE("CompletionProvider: dot-completion on an undeclared object returns no completions", "[completion][dot]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module, "top", 1, 7, "", "", 10, ""},
+    });
+
+    // "  bogus." (0-based line 1), cursor right after the dot.
+    const std::string text = "module top;\n  bogus.";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 1, 8), f.sdb, text);
+    REQUIRE(result.isNull());
+}
