@@ -84,6 +84,13 @@ plan.md            full phased plan — read this first
 cmake --preset debug && cmake --build --preset debug
 # or: make configure build
 
+# From-scratch build (wipes build/<preset> first, then configure + build) —
+# tools/build.sh [debug|release] [--target NAME], defaults to debug/everything
+tools/build.sh                        # from-scratch debug build, everything
+tools/build.sh release                # from-scratch release build, everything
+tools/build.sh debug --target svlsp   # from-scratch debug build, svlsp only
+tools/build.sh --help                 # full usage
+
 # Unit tests
 build/debug/unit_tests
 build/debug/unit_tests "[compiler][parser]"   # subset by tag
