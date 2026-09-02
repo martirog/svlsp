@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-09-01 (compressed from full session history — see git log for
+**Last updated:** 2026-09-02 (compressed from full session history — see git log for
 narrative detail if ever needed; this file now documents current-state-and-next-steps
 only).
 
@@ -9,11 +9,16 @@ compilation) implemented 2026-08-28. On 2026-09-01: a `pickBestSymbol()`
 hover/definition disambiguation improvement (see "Not yet done" #7), broadened
 UVM-corpus completion coverage (#8), and §6.10 dot/member-access completion (#12,
 single-segment first cut) all implemented, each with unit + functional test
-coverage. Working tree clean, all work through commit `2c4a848` is committed.
-Full unit suite: 1092 assertions / 419 test cases, all green (debug).
-Full Emacs integration suite: 157 passed / 0 failed. Full UVM-corpus suite (real
-140-file compile, opt-in, not part of `ctest`): 278 assertions / 11 test cases, all
-green.
+coverage. On 2026-09-02: §6.9 keyword completion implemented, extended beyond
+its original sketch with context-legality rules (a keyword is only offered
+where its enclosing declaration scope makes it legal — e.g. `module` is
+rejected once already inside any scope, since SV design units can't nest) —
+see "Dot/member-access completion" sibling section below, "Keyword
+completion" for the full design. Unit suite now at 1167 assertions / 433 test
+cases, all green (debug); Emacs integration suite gained
+`test_28_keyword_completion.sh` (8 new passing cases) with no regressions in
+the existing completion suite. Working tree has uncommitted changes for this
+feature as of this writing — not yet committed (only commit when asked).
 
 ---
 
@@ -155,8 +160,38 @@ candidate is the final tiebreak. `CompletionProvider` scores every visible row w
 prefix is typed, drops `nullopt` rows, sorts by descending score (name as stable
 tiebreak), and assigns each item a zero-padded `sortText` for clients that re-sort by
 that field. No typed prefix → unranked, unchanged behavior (every visible symbol).
-`CompletionProvider::getCompletion` now delegates both this and the dot-completion
-branch below to a shared private `buildCompletionItems(rows, prefix)` helper.
+`CompletionProvider::getCompletion` delegates to a shared private
+`buildCompletionItems(candidates, prefix)` helper operating on a source-agnostic
+`Candidate{name, kind, detail}` struct (added 2026-09-02 for keyword completion below —
+previously took `vector<SymbolRow>` directly); the dot-completion branch still calls it
+via a `vector<SymbolRow>`-taking overload.
+
+**Keyword completion** (plan.md §6.9, implemented 2026-09-02, with context-legality
+rules beyond the section's original sketch): `src/lsp/sv_keywords.h` holds a
+~254-entry `SV_KEYWORDS` table (every identifier-syntax literal token in
+`grammar/Sv.g4`, script-extracted), each tagged with a `KeywordContext` bitmask over
+the 8 scope kinds `SymbolDatabase::scopeAtPosition` already tracks (`Module`/
+`Interface`/`Program`/`Package`/`Class`/`Function`/`Task`, or `""` top level). A new
+sibling, `SymbolDatabase::scopeKindAtPosition` (`src/db/symbol_database.h/.cpp`, same
+query shape as `scopeAtPosition` but selects `kind` instead of the scope-name
+expression), resolves the cursor's own scope kind. `getCompletion`'s non-dot branch
+merges keywords whose mask matches that bit into the same `Candidate` pool as DB rows
+*before* the emptiness check — an empty-DB file (e.g. a brand-new buffer) now
+legitimately offers top-level keywords instead of returning null.
+
+**Disclosed scope limit** (see plan.md §6.9 for the full writeup): legality is
+enforced at *declaration-scope* granularity only, not statement/block granularity —
+nothing here tracks "inside an `always_ff` block" vs "directly in the module body"
+(both report scope kind `Module`, since `always`/`begin`/`if` aren't
+`ParseRecordKind`s). This exactly covers the motivating example (SV design units
+can't nest — `module` is correctly rejected once already inside any other scope) but
+not finer per-statement precision. **A subtlety that bit this feature's own tests
+during implementation, worth remembering for anyone extending the table:** an "end*"
+keyword (`endmodule`, `endclass`, `endfunction`, `endtask`, ...) is typed while still
+*inside* the body it closes, so it must be scoped to that body's own kind (`KwModule`,
+`KwClass`, ...) — not wherever its matching opener is itself legal to type. Getting
+this backwards was an actual bug caught by `tests/unit/lsp/test_completion.cpp`'s new
+context-legality cases before it shipped.
 
 **Dot/member-access completion** (plan.md §6.10, implemented 2026-09-01):
 `dotCompletionContext(text, line, character)` (`src/lsp/symbol_utils.h/.cpp`)
@@ -601,14 +636,16 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
     said "start with a fixed constant; revisit only if real usage shows one value
     doesn't suit both small and very large files," which hasn't happened yet.
     Now planned as `plan.md §6.12` — see #14 below.
-11. **Keyword completion (`plan.md §6.9`)** — not started. Reserved SV words
-    (`always_ff`, `logic`, `endmodule`, etc.) never appear as completion
-    candidates today; `CompletionProvider::getCompletion` only ranks DB rows
-    from `findSymbolsVisibleAt`. Needs a keyword list (hand-maintained from
-    LRM Annex B, or script-extracted from `grammar/Sv.g4`'s scattered string
-    literals), merged into the same fuzzy-scored candidate set, plus a fix to
-    the `rows.empty()` early return so an empty/new buffer still offers
-    keywords. See plan.md for full detail.
+11. ~~Keyword completion (`plan.md §6.9`)~~ — **implemented 2026-09-02**,
+    extended beyond the original sketch with context-legality rules (a
+    keyword is only offered where its enclosing declaration scope makes it
+    legal, per the user's explicit request — e.g. `module` rejected once
+    already inside any scope, since SV design units can't nest). See
+    "Keyword completion" under "LSP feature providers" above for the full
+    design and its disclosed declaration-scope-granularity limit, and
+    plan.md §6.9 for the complete writeup (superseding its own original
+    "not pursuing syntactic position-awareness" sketch, kept there for
+    history).
 12. ~~Dot / member-access completion (`plan.md §6.10`)~~ — **implemented
     2026-09-01**, single-segment (`foo.bar`) first cut as recommended;
     chained access (`foo.bar.baz`) and `this`/`super` still deferred. See

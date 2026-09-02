@@ -910,7 +910,65 @@ value doesn't suit both small and very large files.
 
 ### 6.9 Keyword Completion
 
-**Status:** not started.
+**Status:** implemented 2026-09-02, extended beyond this section's original
+sketch: the user explicitly asked for **context-legality**, not just a flat
+merged keyword list — illegal completions (their example: `module` offered
+while already inside a module; SV design units cannot nest) must be
+suppressed, not just ranked lower.
+
+Implementation grounds legality in the one piece of position infrastructure
+this codebase has: `SymbolDatabase::scopeAtPosition` (which
+`findSymbolsVisibleAt` already relies on) reports the innermost enclosing
+**declaration scope** at a cursor — `Module`/`Interface`/`Program`/`Package`/
+`Class`/`Function`/`Task`, or `""` (top level). A new sibling,
+`SymbolDatabase::scopeKindAtPosition` (`src/db/symbol_database.h/.cpp`), same
+query shape, returns that scope's `kind` string instead of its name path.
+`src/lsp/sv_keywords.h` holds the full ~254-entry keyword table (script-
+extracted from every identifier-syntax literal in `grammar/Sv.g4` — see that
+header's own comment for the exact extraction pattern), each tagged with a
+`KeywordContext` bitmask over those 8 scope kinds. `CompletionProvider::
+getCompletion` (`src/lsp/completion.cpp`) merges legal-for-this-scope keyword
+candidates in with `findSymbolsVisibleAt`'s DB rows *before* the
+`candidates.empty()` check (fixing this section's own flagged early-return
+gap: an empty-DB file now still offers top-level keywords) and fuzzy-scores
+both through one unified `Candidate{name, kind, detail}` pipeline. The
+dot-completion branch (§6.10) is untouched — no keywords merge after an
+explicit `.`, since there's no such thing as `foo.if`.
+
+**Disclosed scope limit, deliberate:** this is *declaration-scope*
+granularity, not statement/block granularity — nothing in this codebase
+tracks "inside an `always_ff` block" vs "directly in the module body" (both
+report scope kind `Module`, since `always`/`initial`/`begin`/`if` aren't
+`ParseRecordKind`s). Legality is enforced at exactly the grain the user's own
+example needs, not finer. A subtlety worth remembering for anyone extending
+`sv_keywords.h`: an "end*" keyword (`endmodule`, `endclass`, `endfunction`,
+`endtask`, `endinterface`, `endpackage`) is typed while the cursor is *still
+inside* the body it closes, so it must be scoped to that body's own kind
+(`KwModule`, `KwClass`, ...) — **not** to wherever the matching opener
+(`module`, `class`, ...) is itself legal to type. Getting this backwards was
+the exact bug caught by this feature's own unit tests during implementation
+(`endmodule`/`endclass`/`endfunction`/`endtask` all needed fixing after an
+initial pass bucketed openers and closers identically). Per-keyword context
+assignment is grounded in `Sv.g4`'s own rule structure plus SV domain
+knowledge, not a verified line-by-line LRM audit — same disclosed-uncertainty
+posture as §6.13's built-in method lists — with a few genuinely uncertain
+cases (`checker`/`endchecker` nesting) called out in the header's own
+comments rather than asserted with false confidence. Where real legality
+spans an unmodeled sub-context (e.g. `coverpoint`/`bins` are only legal
+*inside* a covergroup body, which isn't its own tracked scope kind), the
+keyword is bucketed with its nearest enclosing trackable context rather than
+dropped — false positives are the accepted failure mode, never false
+negatives.
+
+Tests: `tests/unit/lsp/test_sv_keywords.cpp` (table sanity + representative
+context-bucket spot-checks), new `CompletionProvider` cases in
+`tests/unit/lsp/test_completion.cpp` covering top-level/Module/Class/Function
+scope legality (including the "can't nest modules" case) plus a
+`scopeKindAtPosition` unit in `tests/unit/db/test_symbol_database.cpp`;
+functional coverage in `tests/integration/test_28_keyword_completion.sh` +
+fixture `tests/integration/fixtures/keyword_completion.sv`.
+
+Original sketch (superseded by the above, kept for history):
 
 **Why this is needed:** `CompletionProvider::getCompletion`
 (`src/lsp/completion.cpp`) only ever ranks rows from
