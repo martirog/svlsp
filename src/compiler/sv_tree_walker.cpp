@@ -60,6 +60,47 @@ static std::string userTypeName(SvParser::Data_type_or_implicitContext* dtoi)
     return "";
 }
 
+// Detail tag for a bare-literal data_type alternative that has its own
+// implicit built-in methods but no ParseRecordKind/DB scope (string, event)
+// -- see src/lsp/sv_builtin_methods.h for the method tables these tags
+// select. userTypeName() above can't see these: 'string'/'event' are bare
+// keyword alternatives of data_type (grammar/Sv.g4) with no dedicated
+// type_identifier()/class_type() accessor, unlike a real class/interface
+// reference. Checking getText() is reliable specifically because these two
+// alternatives have exactly one terminal child and no packed_dimension, so
+// it yields the bare keyword with nothing else attached. "" for every other
+// data_type alternative (built-in scalar types need no tag).
+static std::string builtinBareTypeTag(SvParser::Data_type_or_implicitContext* dtoi)
+{
+    if (!dtoi) return "";
+    auto* dt = dtoi->data_type();
+    if (!dt) return "";
+    const std::string text = dt->getText();
+    if (text == "string") return CONTAINER_STRING;
+    if (text == "event")  return CONTAINER_EVENT;
+    return "";
+}
+
+// Detail tag for a queue/associative-array/dynamic-array/fixed-size-array
+// declarator, from its own variable_dimension() list (plan.md §6.13) --
+// container-ness lives on the specific declarator, not the shared
+// data_type_or_implicit (e.g. "int a[$], b;" tags only `a`). The first
+// dimension in declaration order wins (outermost/leftmost) -- a disclosed
+// simplification for a multi-dimensional declarator like "int q[4][$]"
+// (array-of-queues): only the outermost shape's method set is offered,
+// consistent with §6.10's own "no indexing" precedent for `foo[0].bar`.
+// "" when `vda` has no container/array dimension at all.
+static std::string containerDimensionTag(SvParser::Variable_decl_assignmentContext* vda)
+{
+    for (auto* dim : vda->variable_dimension()) {
+        if (dim->queue_dimension())       return CONTAINER_QUEUE;
+        if (dim->associative_dimension()) return CONTAINER_ASSOC;
+        if (dim->unsized_dimension())     return CONTAINER_DYNAMIC_ARRAY;
+        if (dim->unpacked_dimension())    return CONTAINER_FIXED_ARRAY;
+    }
+    return "";
+}
+
 // ---------------------------------------------------------------------------
 // SvErrorListener — collects ANTLR4 syntax errors into ParseError[]
 // ---------------------------------------------------------------------------
@@ -266,12 +307,20 @@ public:
         auto* list = ctx->list_of_variable_decl_assignments();
         if (!list) return;
         const std::string typeName = userTypeName(ctx->data_type_or_implicit());
+        const std::string bareTag  = builtinBareTypeTag(ctx->data_type_or_implicit());
         for (auto* vda : list->variable_decl_assignment()) {
             auto* vi = vda->variable_identifier();
             if (!vi) continue;
             auto* id = vi->IDENTIFIER();
             if (!id) continue;
-            pushId(ParseRecordKind::Signal, id, vda, currentScope(), typeName);
+            // Per-declarator container tag takes priority over the shared
+            // bare-type tag or class/interface type name (e.g. "string
+            // s[$]" is a queue of strings -- the container's own methods
+            // matter for dot-completion, not the element type).
+            std::string detail = containerDimensionTag(vda);
+            if (detail.empty()) detail = bareTag;
+            if (detail.empty()) detail = typeName;
+            pushId(ParseRecordKind::Signal, id, vda, currentScope(), detail);
         }
     }
 

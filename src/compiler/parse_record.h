@@ -31,6 +31,23 @@ enum class ParseRecordKind {
     Program,
 };
 
+// Reserved ParseRecord::detail values for built-in container/data types with
+// implicit methods but no ParseRecordKind/DB scope of their own (queues,
+// associative arrays, dynamic/fixed-size unpacked arrays, string, event).
+// SV identifiers can never start with '$' (reserved for system tasks), so
+// these can never collide with a real userTypeName()-extracted type name.
+// Powers built-in method completion (plan.md §6.13) -- see
+// src/lsp/sv_builtin_methods.h for the method tables each tag selects.
+// mailbox/process/semaphore need no tag: they're real class_type references
+// (userTypeName() already extracts them verbatim), matched there by literal
+// name instead.
+inline constexpr const char* CONTAINER_QUEUE         = "$queue";
+inline constexpr const char* CONTAINER_ASSOC         = "$assoc_array";
+inline constexpr const char* CONTAINER_DYNAMIC_ARRAY = "$dynamic_array";
+inline constexpr const char* CONTAINER_FIXED_ARRAY   = "$fixed_array";
+inline constexpr const char* CONTAINER_STRING        = "$string";
+inline constexpr const char* CONTAINER_EVENT         = "$event";
+
 struct ParseRecord {
     ParseRecordKind kind;
     std::string     name;

@@ -254,6 +254,130 @@ TEST_CASE("built-in-typed signal leaves detail empty", "[compiler][listener][pha
 }
 
 // ---------------------------------------------------------------------------
+// Built-in container/type detail tags (plan.md §6.13 -- built-in method
+// completion). Each tag/literal type name below is looked up by
+// src/lsp/sv_builtin_methods.h's builtinMethodsFor() at the completion
+// call site.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("queue-typed signal is tagged $queue", "[compiler][listener][phase6.13]") {
+    auto [recs, errs, imps, insts] = walkSource(
+        "module m;\n"
+        "  int q[$];\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    auto* r = findRecord(recs, ParseRecordKind::Signal, "q");
+    REQUIRE(r != nullptr);
+    CHECK(r->detail == CONTAINER_QUEUE);
+}
+
+TEST_CASE("associative-array-typed signal is tagged $assoc_array", "[compiler][listener][phase6.13]") {
+    auto [recs, errs, imps, insts] = walkSource(
+        "module m;\n"
+        "  int aa[string];\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    auto* r = findRecord(recs, ParseRecordKind::Signal, "aa");
+    REQUIRE(r != nullptr);
+    CHECK(r->detail == CONTAINER_ASSOC);
+}
+
+TEST_CASE("dynamic-array-typed signal is tagged $dynamic_array", "[compiler][listener][phase6.13]") {
+    auto [recs, errs, imps, insts] = walkSource(
+        "module m;\n"
+        "  int arr[];\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    auto* r = findRecord(recs, ParseRecordKind::Signal, "arr");
+    REQUIRE(r != nullptr);
+    CHECK(r->detail == CONTAINER_DYNAMIC_ARRAY);
+}
+
+TEST_CASE("fixed-size-array-typed signal is tagged $fixed_array", "[compiler][listener][phase6.13]") {
+    auto [recs, errs, imps, insts] = walkSource(
+        "module m;\n"
+        "  int arr[8];\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    auto* r = findRecord(recs, ParseRecordKind::Signal, "arr");
+    REQUIRE(r != nullptr);
+    CHECK(r->detail == CONTAINER_FIXED_ARRAY);
+}
+
+TEST_CASE("string-typed signal is tagged $string", "[compiler][listener][phase6.13]") {
+    auto [recs, errs, imps, insts] = walkSource(
+        "module m;\n"
+        "  string s;\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    auto* r = findRecord(recs, ParseRecordKind::Signal, "s");
+    REQUIRE(r != nullptr);
+    CHECK(r->detail == CONTAINER_STRING);
+}
+
+TEST_CASE("event-typed signal is tagged $event", "[compiler][listener][phase6.13]") {
+    auto [recs, errs, imps, insts] = walkSource(
+        "module m;\n"
+        "  event e;\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    auto* r = findRecord(recs, ParseRecordKind::Signal, "e");
+    REQUIRE(r != nullptr);
+    CHECK(r->detail == CONTAINER_EVENT);
+}
+
+TEST_CASE("mailbox-typed signal records its declared type in detail (regression, no tree-walker change needed)",
+          "[compiler][listener][phase6.13]") {
+    auto [recs, errs, imps, insts] = walkSource(
+        "module m;\n"
+        "  mailbox #(int) mbx;\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    auto* r = findRecord(recs, ParseRecordKind::Signal, "mbx");
+    REQUIRE(r != nullptr);
+    CHECK(r->detail == "mailbox");
+}
+
+TEST_CASE("process-typed signal records its declared type in detail (regression, no tree-walker change needed)",
+          "[compiler][listener][phase6.13]") {
+    auto [recs, errs, imps, insts] = walkSource(
+        "module m;\n"
+        "  process p;\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    auto* r = findRecord(recs, ParseRecordKind::Signal, "p");
+    REQUIRE(r != nullptr);
+    CHECK(r->detail == "process");
+}
+
+TEST_CASE("semaphore-typed signal records its declared type in detail (regression, no tree-walker change needed)",
+          "[compiler][listener][phase6.13]") {
+    auto [recs, errs, imps, insts] = walkSource(
+        "module m;\n"
+        "  semaphore sem;\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    auto* r = findRecord(recs, ParseRecordKind::Signal, "sem");
+    REQUIRE(r != nullptr);
+    CHECK(r->detail == "semaphore");
+}
+
+TEST_CASE("queue-typed and plain declarators sharing one data_type are tagged independently",
+          "[compiler][listener][phase6.13]") {
+    auto [recs, errs, imps, insts] = walkSource(
+        "module m;\n"
+        "  int a[$], b;\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    auto* ra = findRecord(recs, ParseRecordKind::Signal, "a");
+    auto* rb = findRecord(recs, ParseRecordKind::Signal, "b");
+    REQUIRE(ra != nullptr);
+    REQUIRE(rb != nullptr);
+    CHECK(ra->detail == CONTAINER_QUEUE);
+    CHECK(rb->detail.empty());
+}
+
+// ---------------------------------------------------------------------------
 // Parent scope tracking
 // ---------------------------------------------------------------------------
 

@@ -240,6 +240,217 @@ TEST_CASE("CompletionProvider: dot-completion on an undeclared object returns no
 }
 
 // ---------------------------------------------------------------------------
+// Built-in container/type method completion (plan.md §6.13)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("CompletionProvider: dot-completion on a queue offers queue methods only",
+          "[completion][dot][builtin]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module, "top", 1, 7,  "",    "",              10, ""},
+        {ParseRecordKind::Signal, "q",   2, 10, "top", CONTAINER_QUEUE, 0,  "top"},
+    });
+
+    const std::string text = "module top;\n  q.";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 1, 4), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "push_back"));
+    CHECK(hasItem(items, "pop_front"));
+    CHECK_FALSE(hasItem(items, "exists")); // associative-array-only
+}
+
+TEST_CASE("CompletionProvider: dot-completion on an associative array offers its own methods only",
+          "[completion][dot][builtin]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module, "top", 1, 7,  "",    "",              10, ""},
+        {ParseRecordKind::Signal, "aa",  2, 10, "top", CONTAINER_ASSOC, 0,  "top"},
+    });
+
+    const std::string text = "module top;\n  aa.";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 1, 5), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "exists"));
+    CHECK(hasItem(items, "num"));
+    CHECK_FALSE(hasItem(items, "push_back")); // queue-only
+}
+
+TEST_CASE("CompletionProvider: dot-completion on a dynamic array offers delete but not push/pop",
+          "[completion][dot][builtin]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module, "top", 1, 7,  "",    "",                      10, ""},
+        {ParseRecordKind::Signal, "arr", 2, 10, "top", CONTAINER_DYNAMIC_ARRAY, 0,  "top"},
+    });
+
+    const std::string text = "module top;\n  arr.";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 1, 6), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "delete"));
+    CHECK(hasItem(items, "sort"));
+    CHECK_FALSE(hasItem(items, "push_back"));
+}
+
+TEST_CASE("CompletionProvider: dot-completion on a fixed-size array excludes delete",
+          "[completion][dot][builtin]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module, "top", 1, 7,  "",    "",                    10, ""},
+        {ParseRecordKind::Signal, "arr", 2, 10, "top", CONTAINER_FIXED_ARRAY, 0,  "top"},
+    });
+
+    const std::string text = "module top;\n  arr.";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 1, 6), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "size"));
+    CHECK(hasItem(items, "sort"));
+    CHECK_FALSE(hasItem(items, "delete"));
+}
+
+TEST_CASE("CompletionProvider: dot-completion on a string offers string methods",
+          "[completion][dot][builtin]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module, "top", 1, 7,  "",    "",               10, ""},
+        {ParseRecordKind::Signal, "s",   2, 10, "top", CONTAINER_STRING, 0,  "top"},
+    });
+
+    const std::string text = "module top;\n  s.";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 1, 4), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "toupper"));
+    CHECK(hasItem(items, "len"));
+}
+
+TEST_CASE("CompletionProvider: dot-completion on an event offers only 'triggered'",
+          "[completion][dot][builtin]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module, "top", 1, 7,  "",    "",              10, ""},
+        {ParseRecordKind::Signal, "e",   2, 10, "top", CONTAINER_EVENT, 0,  "top"},
+    });
+
+    const std::string text = "module top;\n  e.";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 1, 4), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    REQUIRE(items.size() == 1);
+    CHECK(items[0].label == "triggered");
+    CHECK(static_cast<lsp::CompletionItemKind>(items[0].kind.value()) == lsp::CompletionItemKind::Property);
+}
+
+TEST_CASE("CompletionProvider: dot-completion on a mailbox/semaphore/process offers their own methods",
+          "[completion][dot][builtin]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module, "top", 1, 7,  "",    "",          10, ""},
+        {ParseRecordKind::Signal, "mbx", 2, 10, "top", "mailbox",   0,  "top"},
+        {ParseRecordKind::Signal, "sem", 3, 10, "top", "semaphore", 0,  "top"},
+        {ParseRecordKind::Signal, "p",   4, 10, "top", "process",   0,  "top"},
+    });
+
+    auto mbxResult = CompletionProvider::getCompletion(
+        makeParams("/t.sv", 1, 6), f.sdb, "module top;\n  mbx.");
+    REQUIRE_FALSE(mbxResult.isNull());
+    auto& mbxItems = mbxResult.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(mbxItems, "put"));
+    CHECK(hasItem(mbxItems, "get"));
+    CHECK_FALSE(hasItem(mbxItems, "status")); // process-only
+
+    auto semResult = CompletionProvider::getCompletion(
+        makeParams("/t.sv", 2, 6), f.sdb, "\nmodule top;\n  sem.");
+    REQUIRE_FALSE(semResult.isNull());
+    auto& semItems = semResult.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(semItems, "try_get"));
+    CHECK_FALSE(hasItem(semItems, "put_front")); // not a real method anywhere
+
+    auto pResult = CompletionProvider::getCompletion(
+        makeParams("/t.sv", 3, 4), f.sdb, "\n\nmodule top;\n  p.");
+    REQUIRE_FALSE(pResult.isNull());
+    auto& pItems = pResult.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(pItems, "status"));
+    CHECK(hasItem(pItems, "self"));
+}
+
+TEST_CASE("CompletionProvider: dot-completion on a class instance unions implicit randomize methods",
+          "[completion][dot][builtin]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module,   "top",     1, 7,  "",        "",        10, ""},
+        {ParseRecordKind::Signal,   "obj",     2, 10, "top",     "MyClass", 0,  "top"},
+        {ParseRecordKind::Class,    "MyClass", 5, 7,  "",        "",        8,  ""},
+        {ParseRecordKind::Function, "bar",     6, 10, "MyClass", "void",    6,  "MyClass"},
+    });
+
+    const std::string text = "module top;\n  obj.";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 1, 6), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "bar"));         // real declared member, unaffected
+    CHECK(hasItem(items, "randomize"));   // synthetic, implicit on every class
+    CHECK(hasItem(items, "pre_randomize"));
+}
+
+TEST_CASE("CompletionProvider: a class's own declared randomize wins over the synthetic one",
+          "[completion][dot][builtin]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module,   "top",     1, 7,  "",        "",           10, ""},
+        {ParseRecordKind::Signal,   "obj",     2, 10, "top",     "MyClass",    0,  "top"},
+        {ParseRecordKind::Class,    "MyClass", 5, 7,  "",        "",           8,  ""},
+        {ParseRecordKind::Function, "randomize", 6, 10, "MyClass", "int",      6,  "MyClass"},
+    });
+
+    const std::string text = "module top;\n  obj.";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 1, 6), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    int count = static_cast<int>(std::count_if(items.begin(), items.end(),
+        [](const auto& i){ return i.label == "randomize"; }));
+    REQUIRE(count == 1);
+    auto it = std::find_if(items.begin(), items.end(),
+                           [](const auto& i){ return i.label == "randomize"; });
+    // The real DB row's kind (Function) wins over the synthetic Method kind.
+    CHECK(static_cast<lsp::CompletionItemKind>(it->kind.value()) == lsp::CompletionItemKind::Function);
+}
+
+TEST_CASE("CompletionProvider: dot-completion on an unresolved type still fails closed",
+          "[completion][dot][builtin]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module, "top", 1, 7,  "",    "",          10, ""},
+        {ParseRecordKind::Signal, "obj", 2, 10, "top", "NoSuchType", 0, "top"},
+    });
+
+    const std::string text = "module top;\n  obj.";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 1, 6), f.sdb, text);
+    REQUIRE(result.isNull());
+}
+
+// ---------------------------------------------------------------------------
 // Context-aware keyword completion (plan.md §6.9, extended: legality rules)
 // ---------------------------------------------------------------------------
 

@@ -2,6 +2,7 @@
 #include "lsp/symbol_utils.h"
 #include "lsp/fuzzy_match.h"
 #include "lsp/sv_keywords.h"
+#include "lsp/sv_builtin_methods.h"
 #include <algorithm>
 #include <cstdio>
 #include <vector>
@@ -36,6 +37,15 @@ std::vector<Candidate> candidatesFromKeywords(const std::string& scopeKind)
         if (kw.contexts & bit)
             out.push_back({std::string(kw.text), lsp::CompletionItemKind::Keyword, ""});
     }
+    return out;
+}
+
+std::vector<Candidate> candidatesFromMethods(std::span<const BuiltinMethod> methods)
+{
+    std::vector<Candidate> out;
+    out.reserve(methods.size());
+    for (auto& m : methods)
+        out.push_back({std::string(m.name), m.kind, std::string(m.detail)});
     return out;
 }
 
@@ -91,15 +101,6 @@ lsp::TextDocument_CompletionResult buildCompletionItems(
     return items;
 }
 
-// buildCompletionItems overload for a single DB row source (used by the
-// dot-completion branch, which never merges keywords -- there's no such
-// thing as "foo.if").
-lsp::TextDocument_CompletionResult buildCompletionItems(
-    const std::vector<SymbolRow>& rows, const std::string& prefix)
-{
-    return buildCompletionItems(candidatesFromRows(rows), prefix);
-}
-
 } // namespace
 
 lsp::TextDocument_CompletionResult CompletionProvider::getCompletion(
@@ -129,8 +130,43 @@ lsp::TextDocument_CompletionResult CompletionProvider::getCompletion(
             }
         }
         if (!objRow || objRow->detail.empty()) return nullptr;
+        const std::string& detail = objRow->detail;
 
-        return buildCompletionItems(db.findSymbolsInScope(objRow->detail), dot->prefix);
+        // Built-in container/type methods (plan.md §6.13): queues,
+        // associative/dynamic/fixed-size arrays, mailbox, semaphore,
+        // process, string, event -- none of these are ParseRecordKinds, so
+        // findSymbolsInScope would return nothing for them. Resolved from a
+        // static table alone, no DB call.
+        if (auto methods = builtinMethodsFor(detail); !methods.empty())
+            return buildCompletionItems(candidatesFromMethods(methods), dot->prefix);
+
+        // Otherwise, the existing §6.10 path, unchanged: a real DB
+        // Class/Interface/whatever scope lookup.
+        auto memberRows = db.findSymbolsInScope(detail);
+        auto candidates = candidatesFromRows(memberRows);
+
+        // Union the randomize-family methods the LRM implicitly grants
+        // every class, but only when `detail` actually names a genuine
+        // user-declared Class -- gating on that (not just "did
+        // findSymbolsInScope return anything") keeps an unresolved/bogus
+        // type failing closed instead of surfacing randomize() for a made-up
+        // name. A user class that declares its own `randomize` override
+        // keeps the real (DB) one -- skip the synthetic entry on a name
+        // collision rather than duplicating it.
+        bool isClass = false;
+        for (auto& row : db.findSymbolsByName(detail)) {
+            if (row.kind == "Class") { isClass = true; break; }
+        }
+        if (isClass) {
+            for (auto& m : RANDOMIZE_METHODS) {
+                bool collides = std::any_of(memberRows.begin(), memberRows.end(),
+                    [&](const SymbolRow& row) { return row.name == m.name; });
+                if (!collides)
+                    candidates.push_back({std::string(m.name), m.kind, std::string(m.detail)});
+            }
+        }
+
+        return buildCompletionItems(candidates, dot->prefix);
     }
 
     const std::string prefix = wordAtPosition(docText,
