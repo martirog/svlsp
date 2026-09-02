@@ -1543,7 +1543,81 @@ collision case.
 
 ### 6.14 Function-Call Return-Type Chained Dot-Completion (`func_ret_class().member`, multi-level)
 
-**Status:** not started. Extends §6.10 (dot/member-access completion) and,
+**Status:** implemented 2026-09-02. Extends §6.10/§6.13 (both shipped
+2026-09-02) and subsumes §6.10's own deliberately-deferred "chained access
+(`foo.bar.baz`)" open question, generalized to include function/method
+calls as a segment kind, exactly as originally sketched below.
+
+`dotCompletionContext` (`src/lsp/symbol_utils.h/.cpp`) was generalized in
+place — `DotCompletion{object, prefix}` became `DotCompletion{segments,
+prefix}` where `segments` is a `vector<ChainSegment>` (`{name, isCall}`) —
+rather than adding a parallel mechanism: a 1-segment chain reproduces
+today's exact single-hop behavior, so this is a strict superset, not a
+second code path. The paren-balance/string-literal-aware call-segment
+walk was verified by hand-tracing both of this section's own test
+examples (nested `a(b(c)).d` and quoted `foo("a.b").c`) during planning,
+the same "don't trust reading the grammar/parser alone, verify by trace or
+probe" discipline §6.13 established for the ANTLR grammar, applied here to
+a hand-rolled parser instead.
+
+Segment resolution (`src/lsp/completion.cpp`, `resolveFirstSegment`/
+`resolveMemberSegment`/`resolveChain`) matches this section's original
+design: segment 0 resolves against what's visible at the cursor (`this`/
+`super` special-cased via a new `SymbolDatabase::enclosingClassNameAt`,
+a call via `Function`-kind lookup, a bare identifier via `Signal`/
+`Parameter` lookup — all reusing `findSymbolsVisibleAt`'s existing
+precedence); every later segment resolves as a member of the previous
+segment's resolved class via `findSymbolsInScope`. `super` reads the
+enclosing class's own parent-class `detail` (via `findSymbolsByName` +
+`pickBestSymbol`, the same cross-file disambiguation hover/definition
+already use), not the class itself — proven by a dedicated test where the
+child class overrides the very method being chained through.
+
+**A simplification found while implementing, replacing this section's own
+recommended approach:** the hand-maintained built-in-type-keyword list
+below (option 1) turned out to be unnecessary. SV reserved words can never
+be valid identifiers, so a `Function`'s raw, unfiltered return-type text
+(`"void"`, `"int unsigned"`, ...) can *structurally never* collide with a
+real class/scope name anywhere in the DB — every lookup on that raw text
+already comes back empty on its own, with no false-positive risk, so
+every hop just feeds whatever it resolved to straight into the next
+lookup uniformly, whether it came from a `userTypeName()`-filtered
+Signal/Parameter `detail` or a Function's raw `getText()` return type. No
+keyword list, no separate single-identifier-token pre-check, no schema
+change — removing an entire piece of this section's original design (and
+a file that would otherwise need hand-maintaining and cross-checking
+against the LRM, on top of §6.13's own already-disclosed uncertainty)
+for free. This did surface one real landmine the keyword-list approach
+would have sidestepped by accident: `""` is not "unknown type" in this
+schema, it is the literal *top-level scope* value every top-level symbol
+is stored under, so `findSymbolsInScope("")` returns the whole project's
+top-level symbols rather than nothing — every hop (not just the first, as
+§6.10 alone required) must explicitly guard against an empty resolved
+type, now centralized in one place (`candidatesForResolvedType`).
+
+The §6.13 candidate-building logic (`builtinMethodsFor` dispatch, else
+`findSymbolsInScope` + the `Class`-gated `RANDOMIZE_METHODS` union) was
+extracted into that one shared `candidatesForResolvedType(db, detail)`
+function, called once after chain resolution regardless of chain length —
+there is no longer a separate "single-hop" branch in `getCompletion`.
+This is a behavior-preserving refactor: every pre-existing §6.10/§6.13
+test passed unchanged after it.
+
+Tests: `tests/unit/lsp/test_symbol_utils.cpp` (chain-parsing cases,
+including the nested-call and string-literal-argument cases traced by
+hand above); `tests/unit/db/test_symbol_database.cpp`
+(`enclosingClassNameAt`, including nested-inside-a-method); new
+`CompletionProvider` cases in `tests/unit/lsp/test_completion.cpp`
+(2-level identifier chain, 3-level call chain, a broken link failing
+closed, `this`/`super` including the override-vs-parent distinguishing
+case, and a chain ending on a §6.13 built-in container member to prove
+`candidatesForResolvedType` is genuinely shared); functional coverage in
+`tests/integration/test_30_chained_dot_completion.sh` + fixture
+`tests/integration/fixtures/chained_dot_completion.sv`.
+
+Original sketch (superseded by the above except where noted, kept for history):
+
+**Status (original):** not started. Extends §6.10 (dot/member-access completion) and,
 once landed, subsumes §6.10's own deliberately-deferred "chained access
 (`foo.bar.baz`)" open question — this section is where that gets resolved,
 generalized to include function/method calls as a segment kind.

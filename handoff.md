@@ -21,12 +21,18 @@ flagged it as under-researched — the shipped set is queues, associative
 arrays, dynamic arrays, fixed-size unpacked arrays, `mailbox`, `semaphore`,
 `process`, `string`, `event` (`.triggered`), plus randomize-family methods
 on every class — see "Built-in container/type method completion" below.
-Unit suite now at 1291 assertions / 462 test cases, all green (debug);
-Emacs integration suite gained `test_28_keyword_completion.sh` (8 cases)
-and `test_29_builtin_method_completion.sh` (9 cases), no regressions in the
-existing completion suite. Working tree has uncommitted changes for
-§6.13 as of this writing (§6.9 is committed) — not yet committed, only
-commit when asked.
+Also on 2026-09-02: §6.14 chained/function-call dot-completion implemented
+— `foo.bar.baz`, `func_ret_class().member`, and `this`/`super` chains now
+resolve, subsuming §6.10's own deferred chained-access question. Found and
+dropped an unnecessary piece of its own original design in the process
+(a hand-maintained built-in-type-keyword list) — see "Chained/function-call
+dot-completion" below. Unit suite now at 1347 assertions / 478 test cases,
+all green (debug); Emacs integration suite gained
+`test_28_keyword_completion.sh` (8 cases), `test_29_builtin_method_completion.sh`
+(9 cases), and `test_30_chained_dot_completion.sh` (5 cases), no
+regressions in the existing completion suite. Working tree has uncommitted
+changes for §6.14 as of this writing (§6.9/§6.13 are committed) — not yet
+committed, only commit when asked.
 
 ---
 
@@ -171,8 +177,10 @@ that field. No typed prefix → unranked, unchanged behavior (every visible symb
 `CompletionProvider::getCompletion` delegates to a shared private
 `buildCompletionItems(candidates, prefix)` helper operating on a source-agnostic
 `Candidate{name, kind, detail}` struct (added 2026-09-02 for keyword completion below —
-previously took `vector<SymbolRow>` directly); the dot-completion branch still calls it
-via a `vector<SymbolRow>`-taking overload.
+previously took `vector<SymbolRow>` directly). The dot-completion branch (§6.10/§6.13/§6.14
+below) builds its own `Candidate`s via `candidatesForResolvedType` rather than a
+`vector<SymbolRow>`-taking overload — there's only ever one candidate-building path now,
+regardless of chain length (see "Chained/function-call dot-completion" below).
 
 **Keyword completion** (plan.md §6.9, implemented 2026-09-02, with context-legality
 rules beyond the section's original sketch): `src/lsp/sv_keywords.h` holds a
@@ -201,24 +209,26 @@ keyword (`endmodule`, `endclass`, `endfunction`, `endtask`, ...) is typed while 
 this backwards was an actual bug caught by `tests/unit/lsp/test_completion.cpp`'s new
 context-legality cases before it shipped.
 
-**Dot/member-access completion** (plan.md §6.10, implemented 2026-09-01):
-`dotCompletionContext(text, line, character)` (`src/lsp/symbol_utils.h/.cpp`)
-detects an identifier chain immediately preceded by a `.` (e.g. `foo.b|` →
-`{object:"foo", prefix:"b"}`), sharing `wordAtPosition`'s left/right identifier-walk
-logic via a new private `findLineBounds` helper. Only the single segment before the
-*last* `.` is captured — chained access (`foo.bar.baz`) resolves `"bar"` as the
-object, which naturally fails to resolve (it isn't a declared variable) rather than
-being specially detected and rejected.
+**Dot/member-access completion** (plan.md §6.10, implemented 2026-09-01;
+chained access implemented 2026-09-02, see "Chained/function-call
+dot-completion" below): `dotCompletionContext(text, line, character)`
+(`src/lsp/symbol_utils.h/.cpp`) detects a chain of identifiers/calls
+immediately preceded by a `.` (e.g. `foo.b|` → one segment `{"foo",
+isCall:false}`, prefix `"b"`), sharing `wordAtPosition`'s left/right
+identifier-walk logic via a private `findLineBounds` helper. Originally
+(2026-09-01) only the single segment before the *last* `.` was captured;
+generalized 2026-09-02 to an arbitrary-length `vector<ChainSegment>` — a
+1-segment chain reproduces the original behavior exactly, so this was a
+strict superset, not a new mechanism (see below).
 
-When `getCompletion` sees a dot-completion context, it resolves the object's
-declared type by scanning `findSymbolsVisibleAt`'s own result for an exact-name
-`Signal`/`Parameter` match (reusing that query's existing scope-depth-sorted
-precedence for free — the first match is the innermost-scoped declaration), then
-queries `findSymbolsInScope(thatType)` for the member candidates instead of
-falling back to scope-wide completion. Any failure to resolve (undeclared object,
-built-in type, wrong kind, unknown scope) returns `nullptr` rather than the whole
-visible scope — offering unrelated symbols after an explicit `.` would be worse
-than offering nothing.
+When `getCompletion` sees a dot-completion context, it resolves the chain
+left to right (`resolveChain`/`resolveFirstSegment`/`resolveMemberSegment`
+in `src/lsp/completion.cpp`) to whatever type/scope backs the final
+segment's members, then builds candidates for that via
+`candidatesForResolvedType`. Any failure to resolve at any hop (undeclared
+object, built-in type, wrong kind, unknown scope) returns `nullptr` rather
+than the whole visible scope — offering unrelated symbols after an
+explicit `.` would be worse than offering nothing.
 
 The declared type itself comes from a new `userTypeName()` helper
 (`src/compiler/sv_tree_walker.cpp`) that reads a `data_type_or_implicit`'s
@@ -326,6 +336,59 @@ copy (this server has no access to one).
 tracked as any `ParseRecordKind` today (no `enterCovergroup_declaration`
 exists), so supporting this needs a new `ParseRecordKind` and tree-walker
 listener first — disproportionate to this pass, left as a follow-up.
+
+**Chained/function-call dot-completion** (plan.md §6.14, implemented
+2026-09-02): resolves `foo.bar.baz`, `func_ret_class().member`, and
+`this`/`super` chains — the last gap in the dot-completion family, and
+§6.10's own deliberately-deferred chained-access question.
+`dotCompletionContext`'s new `segments: vector<ChainSegment>` (see
+"Dot/member-access completion" above) is built by walking left one
+segment at a time; a segment ending in `)` is read as a call via
+paren-balance matching back to its `(` with a minimal in-string state (so
+`foo("a.b").c` isn't confused by the `.` inside the string literal, and
+`a(b(c)).d` matches the outer call, not the inner one) — verified by hand
+trace against both of those exact cases while designing this, the same
+"don't trust reading the parser alone" discipline §6.13 established for
+the ANTLR grammar, applied here to this hand-rolled one.
+
+Resolution (`src/lsp/completion.cpp`) is iterative left to right:
+`resolveFirstSegment` resolves segment 0 against what's visible at the
+cursor (`this`/`super` via a new `SymbolDatabase::enclosingClassNameAt`
+— finds the nearest enclosing `Class` even when the cursor is nested
+inside one of its *methods*, which `scopeKindAtPosition` alone can't do
+since the innermost scope kind there is `Function`; a call via
+`Function`-kind `findSymbolsVisibleAt` lookup; a bare identifier via
+`Signal`/`Parameter`, §6.10's original behavior unchanged); each later
+segment resolves the same way but as a *member* of the previous segment's
+resolved class, via `findSymbolsInScope`. `super` reads the enclosing
+class's own parent-class `detail` (`findSymbolsByName` + `pickBestSymbol`
+— the same cross-file disambiguation hover/definition already use), not
+the class itself — a dedicated test has a child class *override* the
+exact method being chained through, proving `super` resolves through the
+parent's version, not the override.
+
+**A simplification found while implementing, replacing this section's own
+original design:** a hand-maintained built-in-type-keyword list (meant to
+tell a `Function`'s raw, unfiltered return-type text like `"void"`/`"int
+unsigned"` apart from a genuine class name) turned out to be unnecessary.
+SV reserved words can never be valid identifiers, so that raw text can
+*structurally never* collide with a real class/scope name — every DB
+lookup on it already comes back empty on its own, with no false-positive
+risk. So every hop just feeds whatever it resolved to straight into the
+next lookup uniformly, whether that came from a `userTypeName()`-filtered
+Signal/Parameter `detail` or a Function's raw return-type text — no
+keyword list, no pre-check, no schema change. This did surface one real
+landmine the keyword-list approach would have sidestepped by accident:
+`""` is not "unknown type" in this schema, it's the literal *top-level
+scope* value every top-level symbol is stored under, so
+`findSymbolsInScope("")` returns the whole project's top-level symbols
+rather than nothing — every hop (not just the first, as §6.10 alone
+required) now explicitly guards against an empty resolved type, via one
+shared `candidatesForResolvedType(db, detail)` (also where §6.13's
+`builtinMethodsFor` dispatch and the `RANDOMIZE_METHODS` union now live —
+extracted from the old single-hop-only code, called once regardless of
+chain length, so a 1-segment chain reproduces §6.10/§6.13's original
+behavior exactly rather than through a separate path).
 
 ### I/O wrapper (`src/lsp/server.h/.cpp`)
 
@@ -815,26 +878,18 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
     {...}` constraint-block completion also remains out of scope (a
     distinct, harder grammar construct — completion *inside* the `with`
     block itself, not the bare `randomize` method name).
-17. **Function-call return-type chained dot-completion (`plan.md §6.14`)**
-    — not started, added 2026-09-01. Extends §6.10 and resolves its own
-    deferred "chained access" open question: `func_ret_class().member` and
-    multi-level chains (`obj.get_child().greet`) aren't completable today —
-    §6.10 only ever resolves one bare-identifier object immediately before
-    the last `.`. plan.md §6.14 has the design: a harder chain-parse than
-    §6.10's single-identifier walk (paren-balance-aware, segments split on
-    top-level `.`, each segment either a bare identifier or a call),
-    iterative per-segment scope resolution reusing `findSymbolsInScope`,
-    and a real ambiguity it surfaces — `Function::detail` stores the *raw*
-    return-type text for hover's benefit (unlike Signal/Parameter's
-    filtered §6.10 convention), so chain resolution needs its own
-    class-vs-built-in-type check (recommended: a small hand-maintained
-    built-in-type-keyword list, not a schema change). Explicitly scoped to
-    **classes only, not structs** — the LRM allows struct member access
-    chained off a function call too, but per direct real-world experience
-    the major commercial simulators don't actually implement that despite
-    the LRM permitting it, so this matches real-world behavior over the
-    letter of the spec; revisit only if that changes. `this`/`super` as a
-    chain's first segment is in scope (resolves to the enclosing class /
-    its parent class via `scopeAtPosition`, not a normal identifier
-    lookup); still out of scope: `Class::static_method()` call syntax, and
-    constraint-block completion inside `randomize() with {...}`.
+17. ~~Function-call return-type chained dot-completion (`plan.md §6.14`)~~
+    — **implemented 2026-09-02**. `foo.bar.baz`, `func_ret_class().member`,
+    multi-level chains, and `this`/`super` chains all resolve now,
+    subsuming §6.10's own deferred "chained access" question. See
+    "Chained/function-call dot-completion" under "LSP feature providers"
+    above for the full design and plan.md §6.14 for the complete writeup —
+    notably, a simplification found during implementation that dropped an
+    entire piece of the original design (a hand-maintained built-in-type-
+    keyword list, replaced by relying on SV's own reserved-word rules).
+    Remaining out of scope, per the original sketch, unchanged: struct
+    member access chained off a function call (LRM permits it, real
+    simulators don't); `Class::static_method()` call syntax as a chain's
+    first segment; constraint-block completion inside `randomize() with
+    {...}`; no depth cap on chain length (not stress-tested against a
+    pathological input).
