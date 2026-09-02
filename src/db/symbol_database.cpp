@@ -378,6 +378,25 @@ std::string SymbolDatabase::scopeAtPosition(
     return {};
 }
 
+std::string SymbolDatabase::scopeKindAtPosition(
+    const std::string& path, int line) const
+{
+    // Same shape as scopeAtPosition (including its existing kind list, which
+    // doesn't track 'Program' as a scope kind either) but selects the kind
+    // of the innermost scope-defining symbol instead of its full name path.
+    auto stmt = m_db.prepare(
+        "SELECT s.kind "
+        "FROM symbols s JOIN files f ON f.id = s.file_id "
+        "WHERE f.path = ? "
+        "  AND s.kind IN ('Module','Interface','Package','Class','Function','Task') "
+        "  AND s.line <= ? AND s.end_line >= ? "
+        "ORDER BY length(s.scope) DESC, s.line DESC "
+        "LIMIT 1");
+    stmt.bind(1, path).bind(2, line).bind(3, line);
+    if (stmt.step()) return stmt.columnText(0);
+    return {};
+}
+
 std::vector<SymbolRow> SymbolDatabase::findSymbolsVisibleAt(
     const std::string& path, int line) const
 {

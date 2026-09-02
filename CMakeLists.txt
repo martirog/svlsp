@@ -194,6 +194,7 @@ add_executable(unit_tests
     tests/unit/lsp/test_symbol_utils.cpp
     tests/unit/lsp/test_fuzzy_match.cpp
     tests/unit/lsp/test_completion.cpp
+    tests/unit/lsp/test_sv_keywords.cpp
     tests/unit/lsp/test_definition.cpp
     tests/unit/lsp/test_diagnostics.cpp
     tests/unit/lsp/test_document_symbols.cpp

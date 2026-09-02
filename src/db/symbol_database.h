@@ -95,6 +95,13 @@ public:
     // Returns "" when the position is outside all named scopes.
     std::string scopeAtPosition(const std::string& path, int line) const;
 
+    // Returns the ParseRecordKind string (e.g. "Module", "Class", "Function")
+    // of the innermost scope-defining symbol that contains `line` in `path`.
+    // Returns "" when the position is outside all named scopes (top level /
+    // compilation unit). Sibling of scopeAtPosition, same query shape, used
+    // by keyword completion's context-legality check (src/lsp/sv_keywords.h).
+    std::string scopeKindAtPosition(const std::string& path, int line) const;
+
     // All symbols visible from `(path, line)`: every symbol in the scope chain
     // at that position (local → enclosing scopes) plus all top-level symbols
     // from every file.  Ordered innermost-scope-first, then by name.

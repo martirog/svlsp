@@ -431,3 +431,30 @@ TEST_CASE("appendDiagnostics adds without deleting existing diagnostics",
     CHECK(hasExisting);
     CHECK(hasNew);
 }
+
+// ---------------------------------------------------------------------------
+// scopeKindAtPosition (keyword-completion context, plan.md §6.9)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("scopeKindAtPosition returns empty string outside any tracked scope",
+          "[db][symbol-db][scope-kind]") {
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/a.sv", "h"), {
+        {ParseRecordKind::Module, "top", 5, 0, "", "", 10, ""}
+    });
+    CHECK(f.sdb.scopeKindAtPosition("/a.sv", 1) == "");   // before the module
+    CHECK(f.sdb.scopeKindAtPosition("/a.sv", 20) == "");  // after the module
+}
+
+TEST_CASE("scopeKindAtPosition returns the innermost enclosing kind",
+          "[db][symbol-db][scope-kind]") {
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/a.sv", "h"), {
+        {ParseRecordKind::Module,   "top",  1, 0,     "",    "", 20, ""},
+        {ParseRecordKind::Class,    "Cls",  5, 0,     "top", "", 15, "top"},
+        {ParseRecordKind::Function, "meth", 8, 0,     "Cls", "", 12, "top::Cls"},
+    });
+    CHECK(f.sdb.scopeKindAtPosition("/a.sv", 3)  == "Module");
+    CHECK(f.sdb.scopeKindAtPosition("/a.sv", 6)  == "Class");
+    CHECK(f.sdb.scopeKindAtPosition("/a.sv", 10) == "Function");
+}

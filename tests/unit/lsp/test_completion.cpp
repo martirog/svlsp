@@ -29,13 +29,20 @@ bool hasItem(const lsp::Array<lsp::CompletionItem>& items, std::string_view name
 
 } // namespace
 
-TEST_CASE("CompletionProvider: null when no symbols visible", "[completion]")
+TEST_CASE("CompletionProvider: empty DB still offers top-level keywords", "[completion][keyword]")
 {
+    // Empty DB, cursor outside any tracked scope, so scopeKindAtPosition is
+    // "" (top level) -- keyword completion (plan.md §6.9) should still
+    // surface top-level-legal keywords like "module" even with zero DB
+    // symbols, fixing §6.9's flagged rows.empty() early-return gap.
     Fixture f;
-    // Empty DB — no symbols to complete
     const std::string text = "module top;\n  \nendmodule";
     auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 1, 2), f.sdb, text);
-    REQUIRE(result.isNull());
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "module"));
+    CHECK(hasItem(items, "class"));
 }
 
 TEST_CASE("CompletionProvider: returns top-level symbols from all files", "[completion]")
@@ -137,13 +144,22 @@ TEST_CASE("CompletionProvider: ranks a contiguous-prefix match above a scattered
     REQUIRE_FALSE(result.isNull());
 
     auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
-    REQUIRE(items.size() == 2);
-    CHECK(items[0].label == "report_id");
-    CHECK(items[1].label == "xxrepxx");
+    // Since keyword completion (plan.md §6.9) merges in any "rep"-matching
+    // legal keywords too (e.g. "repeat"), assert relative order rather than
+    // an exact 2-item list.
+    auto posOf = [&](std::string_view name) {
+        return std::find_if(items.begin(), items.end(),
+                            [&](const auto& i){ return i.label == name; });
+    };
+    auto itReport = posOf("report_id");
+    auto itXxrep  = posOf("xxrepxx");
+    REQUIRE(itReport != items.end());
+    REQUIRE(itXxrep != items.end());
+    CHECK(std::distance(items.begin(), itReport) < std::distance(items.begin(), itXxrep));
     // Ranking must also be encoded in sortText, for clients that re-sort by it.
-    REQUIRE(items[0].sortText.has_value());
-    REQUIRE(items[1].sortText.has_value());
-    CHECK(*items[0].sortText < *items[1].sortText);
+    REQUIRE(itReport->sortText.has_value());
+    REQUIRE(itXxrep->sortText.has_value());
+    CHECK(*itReport->sortText < *itXxrep->sortText);
 }
 
 // ---------------------------------------------------------------------------
@@ -221,4 +237,126 @@ TEST_CASE("CompletionProvider: dot-completion on an undeclared object returns no
     const std::string text = "module top;\n  bogus.";
     auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 1, 8), f.sdb, text);
     REQUIRE(result.isNull());
+}
+
+// ---------------------------------------------------------------------------
+// Context-aware keyword completion (plan.md §6.9, extended: legality rules)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("CompletionProvider: keyword items carry the Keyword kind", "[completion][keyword]")
+{
+    Fixture f;
+    const std::string text = " ";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 0, 0), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    auto it = std::find_if(items.begin(), items.end(),
+                           [](const auto& i){ return i.label == "module"; });
+    REQUIRE(it != items.end());
+    CHECK(static_cast<lsp::CompletionItemKind>(it->kind.value()) == lsp::CompletionItemKind::Keyword);
+}
+
+TEST_CASE("CompletionProvider: top-level scope offers design-unit keywords, not statement keywords",
+          "[completion][keyword]")
+{
+    Fixture f;
+    // No DB symbols at all -> scopeKindAtPosition is "" (top level).
+    const std::string text = " ";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 0, 0), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "module"));
+    CHECK(hasItem(items, "package"));
+    CHECK_FALSE(hasItem(items, "if"));
+    CHECK_FALSE(hasItem(items, "endmodule"));
+}
+
+TEST_CASE("CompletionProvider: inside a module body, design-unit keywords are illegal (can't nest modules)",
+          "[completion][keyword]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module, "top", 1, 0, "", "", 20, ""},
+    });
+
+    // Cursor at line 9 (0-based) -> 1-based line 10, inside "top"'s body.
+    const std::string text = " ";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 9, 0), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "always"));
+    CHECK(hasItem(items, "initial"));
+    CHECK(hasItem(items, "endmodule"));
+    CHECK(hasItem(items, "function"));
+    CHECK_FALSE(hasItem(items, "module"));   // modules can't nest
+    CHECK_FALSE(hasItem(items, "endclass")); // not inside a class
+}
+
+TEST_CASE("CompletionProvider: inside a class body (not a method), bare statement keywords are illegal",
+          "[completion][keyword]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module, "top", 1, 0,  "",    "", 20, ""},
+        {ParseRecordKind::Class,  "Cls", 3, 0,  "top", "", 12, "top"},
+    });
+
+    // Cursor at line 4 (0-based) -> 1-based line 5, inside Cls's body,
+    // outside any of its methods.
+    const std::string text = " ";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 4, 0), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "endclass"));
+    CHECK(hasItem(items, "function"));
+    CHECK(hasItem(items, "rand"));
+    CHECK(hasItem(items, "local"));
+    CHECK_FALSE(hasItem(items, "module"));
+    CHECK_FALSE(hasItem(items, "if"));      // bare statements aren't legal directly in a class body
+    CHECK_FALSE(hasItem(items, "begin"));
+}
+
+TEST_CASE("CompletionProvider: inside a function body, statement keywords are legal",
+          "[completion][keyword]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module,   "top",  1, 0, "",    "", 20, ""},
+        {ParseRecordKind::Function, "calc", 5, 0, "top", "", 10, "top"},
+    });
+
+    // Cursor at line 6 (0-based) -> 1-based line 7, inside calc's body.
+    const std::string text = " ";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 6, 0), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "if"));
+    CHECK(hasItem(items, "begin"));
+    CHECK(hasItem(items, "return"));
+    CHECK(hasItem(items, "endfunction"));
+    CHECK_FALSE(hasItem(items, "module"));
+    CHECK_FALSE(hasItem(items, "class"));
+}
+
+TEST_CASE("CompletionProvider: keyword fuzzy-prefix match still respects context",
+          "[completion][keyword]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module, "top", 1, 0, "", "", 20, ""},
+    });
+
+    // Typing "mod" inside top's body (line 9, 0-based -> 1-based 10) should
+    // not surface "module" -- illegal here regardless of prefix match.
+    const std::string text = "mod";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 9, 3), f.sdb, text);
+    if (!result.isNull()) {
+        auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+        CHECK_FALSE(hasItem(items, "module"));
+    }
 }
