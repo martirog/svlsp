@@ -893,3 +893,32 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
     first segment; constraint-block completion inside `randomize() with
     {...}`; no depth cap on chain length (not stress-tested against a
     pathological input).
+18. **Queue/associative-array element access completion, including
+    multi-dimensional (`plan.md §6.15`)** — not started, added
+    2026-09-02. Extends §6.13/§6.14: `list.` completes the container's
+    own methods, but indexing into it (`list[a].member`) to complete on a
+    class-typed *element* doesn't work — `containerDimensionTag()`
+    (`src/compiler/sv_tree_walker.cpp`) looks only far enough to find a
+    declarator's *first* dimension and returns one tag, discarding both
+    the element type and any further nested dimensions (`int arr[4][$]`
+    records only `$fixed_array`, losing the `[$]` entirely). plan.md
+    §6.15 has the design, with multi-dimensional access (`arr[i][j].member`)
+    explicitly in scope from the start, not a deferred follow-up:
+    `containerDimensionTag()` becomes `containerDimensionTags()` (plural,
+    walks every dimension, not just the first), encoding the *whole*
+    layered shape in `ParseRecord::detail` as an ordered, delimited list
+    outermost-first (recommended: `"$fixed_array:$queue:MyClass"`-style,
+    no schema change); a third `ChainSegment` kind for indexed access
+    that carries a *depth* (how many consecutive `[...]` groups, since
+    `arr[i][j]` is one segment, not two — reusing §6.14's bracket-balance-
+    walk technique for `[`/`]`); and resolution that peels exactly
+    `depth` layers off the front of the layered string rather than
+    requiring a full resolve — this elegantly handles *under*-indexing a
+    multi-dimensional container for free (`arr[i].` on a fixed-array-of-
+    queues correctly lands on the queue's own methods, not the element
+    class, since `arr[i]` really is a queue). Also covers dynamic/
+    fixed-size arrays for the same reason §6.13 did. Explicitly still out
+    of scope: associative-array key-type validation; indexing directly
+    off a *call's* result (`get_matrix()[i][j].member` — a distinct
+    further generalization, not requested); struct-typed elements
+    (classes only, matching §6.14's own restriction).

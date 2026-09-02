@@ -1780,6 +1780,107 @@ cases, plus a broken-link negative case.
 
 ---
 
+### 6.15 Queue/Associative-Array Element Access Completion (`list[a].member`, including multi-dimensional)
+
+**Status:** not started. Extends §6.13 (built-in container method
+completion) and §6.14 (chained dot-completion), both shipped 2026-09-02.
+Multi-dimensional access (`arr[i][j].member`) is explicitly **in scope**
+for this section, not a deferred follow-up — the design below is shaped
+around it from the start rather than bolted on later.
+
+**Why this is needed:** §6.13 gave queues/associative/dynamic/fixed-size
+arrays their own container-level method completion (`list.` →
+`push_back`/`exists`/...), but indexing into one to reach a specific
+*element* and completing on that element doesn't work — `MyClass q[$];`
+declares a queue of class-typed objects, but `q[0].` offers nothing today,
+because `containerDimensionTag()` (`src/compiler/sv_tree_walker.cpp`)
+looks at a declarator's dimensions only far enough to find the *first*
+one and returns a single tag — it discards both the element type `T` and
+any further nested dimensions (`int arr[4][$]` — an array of queues —
+records only `$fixed_array`, silently losing the `[$]` entirely).
+
+**What is missing:**
+- **Tracking the *full, ordered* dimension list plus the base type, not
+  just one tag.** `ParseRecord::detail` currently holds exactly one
+  payload per kind (§6.10's `userTypeName()` class name, §6.13's `$`-tag,
+  or a Function's raw return type) — a multi-dimensional declarator like
+  `MyClass arr[4][$]` needs *all three* facts at once: outermost shape is
+  a fixed array, of queues, of `MyClass`. Two ways through, same tradeoff
+  §6.14 already worked through for its own not-taken schema-change option:
+  1. **(Likely simplest)** Encode the whole layered shape in `detail` as
+     an ordered, delimited list, outermost first, ending in the base
+     type/tag — e.g. `"$fixed_array:$queue:MyClass"` for the example
+     above, or just `"$queue:MyClass"` for a plain `MyClass q[$]`. No
+     schema change; `":"` is a safe delimiter since every layer is either
+     a fixed `$`-tag or a bare identifier (`userTypeName()` already never
+     produces a qualified/`::`-containing name — the same
+     already-accepted simplification, not a new one).
+  2. A dedicated new `ParseRecord`/schema field for the layered shape,
+     decoupled from `detail`'s tag role — cleaner separation, real
+     schema/migration cost (`SCHEMA_VERSION` bump, `SymbolRow`, every
+     query selecting `detail`).
+  `containerDimensionTag()` becomes `containerDimensionTags()` (plural):
+  walk *every* entry in `vda->variable_dimension()`, not just the first,
+  building the ordered list.
+- **A third chain-segment kind, with a depth.** `dotCompletionContext`'s
+  `ChainSegment{name, isCall}` (`src/lsp/symbol_utils.h`) only
+  distinguishes a bare identifier from a call (`identifier(...)`);
+  indexed access needs a third shape carrying *how many* consecutive
+  bracket groups followed the identifier (`arr[i][j]` → depth 2, not two
+  separate segments — there's no `.` between the brackets). Parsing walks
+  right to left same as today: after finding `]`, bracket-balance-match
+  back to `[` (extending §6.14's `matchingOpenParen` technique to `[`/`]`
+  instead of `(`/`)`), then check whether the character immediately before
+  *that* `[` is another `]` — if so, repeat and increment the depth,
+  until hitting the identifier itself. Each index expression (`i`, `j`,
+  ...) is never resolved or type-checked, only its presence and count
+  matter — same "arguments are opaque" posture §6.14 already established
+  for call segments.
+- **Resolution: peel N layers, don't require a full resolve.** When a
+  segment carries an index depth, resolve the identifier/member exactly
+  as before to get its full layered `detail` string, then strip exactly
+  `depth` layers off the *front* of it (splitting on `:`). This naturally,
+  elegantly handles under-indexing a multi-dimensional container without
+  any special-casing: `arr[i].` on `MyClass arr[4][$]` (fixed array of
+  queues) peels only the outer `$fixed_array` layer, landing on `$queue`
+  — correctly offering the *queue's own methods* (`push_back`, ...),
+  since `arr[i]` really is a queue, not yet a `MyClass`. `arr[i][j].`
+  peels both layers, landing on `MyClass`, offering its real members.
+  Fails closed exactly as every other §6.14 hop does if `depth` exceeds
+  the number of layers available, or the layer landed on is a built-in
+  type with nothing to offer (e.g. `int q[$]; q[0].` still correctly
+  yields nothing). This slots into §6.14's existing
+  `resolveFirstSegment`/`resolveMemberSegment` iteration as a third case,
+  not a new mechanism — `candidatesForResolvedType` already handles both
+  a landed-on container tag and a landed-on class uniformly, so no change
+  needed there.
+- **Covers fixed-size and dynamic arrays too**, for the same reason §6.13
+  covered them alongside queues/associative arrays — same underlying
+  per-declarator dimension detection, same element-type-tracking gap.
+
+**Explicitly still out of scope:** associative-array key-type validation
+(any index expression is accepted, never checked against the array's
+declared index type); indexing directly off a *call's* result
+(`get_matrix()[i][j].member`) — a natural further generalization (the
+depth-carrying segment kind would need to attach to a call segment too,
+not just a bare identifier) but a distinct extension from "multi-
+dimensional array/queue," not requested here, left for a follow-up;
+struct-typed elements (same **classes only** restriction §6.14 already
+established, for the same real-world-simulator-behavior reason).
+
+**Functional/unit tests (sketch):** a queue and an associative array of a
+class type, each with a known member, exercising single-dimension
+`q[0].`/`aa[k].`; a genuinely multi-dimensional declarator (`MyClass
+arr[4][$]` or similar) exercising both *partial* indexing (`arr[i].` →
+queue methods) and *full* indexing (`arr[i][j].` → the class's members) —
+this partial-vs-full distinction is the crux of the design and needs
+direct coverage, not just the fully-indexed case; a built-in-typed
+element (`int q[$]; q[0].`) still yields no completions (regression
+guard, same fail-closed posture); a plain container method access
+(`q.`, no index at all) is unaffected by this section's own changes.
+
+---
+
 ## Appendix A — Technology Stack Summary
 
 | Concern | Choice | Rationale |
