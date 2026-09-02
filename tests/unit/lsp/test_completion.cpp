@@ -451,6 +451,145 @@ TEST_CASE("CompletionProvider: dot-completion on an unresolved type still fails 
 }
 
 // ---------------------------------------------------------------------------
+// Chained/function-call dot-completion (plan.md §6.14)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("CompletionProvider: two-level chain resolves through a Signal member",
+          "[completion][dot][chain]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module,   "top",   1, 7,  "",      "",      20, ""},
+        {ParseRecordKind::Signal,   "obj",   2, 10, "top",   "Outer", 0,  "top"},
+        {ParseRecordKind::Class,    "Outer", 5, 7,  "",      "",      8,  ""},
+        {ParseRecordKind::Signal,   "child", 6, 10, "Outer", "Inner", 0,  "Outer"},
+        {ParseRecordKind::Class,    "Inner", 12, 7, "",      "",      14, ""},
+        {ParseRecordKind::Function, "greet", 13, 10, "Inner", "void", 13, "Inner"},
+    });
+
+    const std::string text = "module top;\n  obj.child.gr";
+    auto result = CompletionProvider::getCompletion(
+        makeParams("/t.sv", 1, 14), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "greet"));
+}
+
+TEST_CASE("CompletionProvider: three-level chain resolves through two function calls",
+          "[completion][dot][chain]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Function, "make_factory", 1, 0,  "",        "Factory", 3,  ""},
+        {ParseRecordKind::Class,    "Factory",      5, 7,  "",        "",        8,  ""},
+        {ParseRecordKind::Function, "get_child",    6, 10, "Factory", "Greeter", 6,  "Factory"},
+        {ParseRecordKind::Class,    "Greeter",      12, 7, "",        "",        14, ""},
+        {ParseRecordKind::Function, "greet",        13, 10, "Greeter", "void",   13, "Greeter"},
+    });
+
+    const std::string text = "make_factory().get_child().gr";
+    auto result = CompletionProvider::getCompletion(
+        makeParams("/t.sv", 0, static_cast<unsigned>(text.size())), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "greet"));
+}
+
+TEST_CASE("CompletionProvider: a broken link mid-chain (built-in return type) fails closed",
+          "[completion][dot][chain]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Function, "get_num", 1, 0, "", "int", 3, ""},
+    });
+
+    const std::string text = "get_num().something().x";
+    auto result = CompletionProvider::getCompletion(
+        makeParams("/t.sv", 0, static_cast<unsigned>(text.size())), f.sdb, text);
+    REQUIRE(result.isNull());
+}
+
+TEST_CASE("CompletionProvider: this. resolves through the enclosing class, even nested in a method",
+          "[completion][dot][chain]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Class,    "Widget",    1, 7,  "",       "",        1, ""},
+        {ParseRecordKind::Function, "method_a",  1, 10, "Widget", "void",    1, "Widget"},
+        {ParseRecordKind::Function, "get_child", 1, 10, "Widget", "Greeter", 1, "Widget"},
+        {ParseRecordKind::Class,    "Greeter",   20, 7,  "",       "",       22, ""},
+        {ParseRecordKind::Function, "greet",     21, 10, "Greeter", "void",  21, "Greeter"},
+    });
+
+    // Cursor is nested inside method_a's own body (both share line 1 here),
+    // proving enclosingClassNameAt finds Widget even though the innermost
+    // *scope kind* at this position is Function, not Class.
+    const std::string text = "this.get_child().gr";
+    auto result = CompletionProvider::getCompletion(
+        makeParams("/t.sv", 0, static_cast<unsigned>(text.size())), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "greet"));
+}
+
+TEST_CASE("CompletionProvider: super. resolves through the parent class, not the child's own override",
+          "[completion][dot][chain]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        // Base hierarchy, deliberately placed far from line 1 so it never
+        // ambiguously overlaps the cursor position used below.
+        {ParseRecordKind::Class,    "BaseFactory",     30, 7,  "",            "",             31, ""},
+        {ParseRecordKind::Function, "get_child",       30, 10, "BaseFactory", "BaseGreeter",  31, "BaseFactory"},
+        {ParseRecordKind::Class,    "BaseGreeter",     40, 7,  "",            "",             41, ""},
+        {ParseRecordKind::Function, "greet_from_base", 40, 10, "BaseGreeter", "void",         41, "BaseGreeter"},
+
+        // Factory extends BaseFactory and overrides get_child with a
+        // *different* return type -- proves super bypasses this override.
+        {ParseRecordKind::Class,    "Factory",           1, 7,  "",        "BaseFactory",  1, ""},
+        {ParseRecordKind::Function, "get_child",         1, 10, "Factory", "ChildGreeter", 1, "Factory"},
+        {ParseRecordKind::Function, "method_in_factory", 1, 10, "Factory", "void",         1, "Factory"},
+        {ParseRecordKind::Class,    "ChildGreeter",      10, 7,  "",            "",             11, ""},
+        {ParseRecordKind::Function, "greet_from_child",  10, 10, "ChildGreeter", "void",        11, "ChildGreeter"},
+    });
+
+    // Cursor nested inside method_in_factory (line 1, same as Factory's own
+    // range here) -- enclosingClassNameAt must resolve to Factory, then
+    // `super` must resolve to BaseFactory, not stay on Factory.
+    const std::string text = "super.get_child().greet_from_b";
+    auto result = CompletionProvider::getCompletion(
+        makeParams("/t.sv", 0, static_cast<unsigned>(text.size())), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "greet_from_base"));
+    CHECK_FALSE(hasItem(items, "greet_from_child"));
+}
+
+TEST_CASE("CompletionProvider: a chain ending on a built-in container member reuses §6.13's tables",
+          "[completion][dot][chain]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module, "top",    1, 7,  "",      "",         20, ""},
+        {ParseRecordKind::Signal, "obj2",   2, 10, "top",   "Widget2",  0,  "top"},
+        {ParseRecordKind::Class,  "Widget2", 5, 7, "",      "",         8,  ""},
+        {ParseRecordKind::Signal, "mbx",    6, 10, "Widget2", "mailbox", 0, "Widget2"},
+    });
+
+    const std::string text = "module top;\n  obj2.mbx.";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 1, 11), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "put"));
+    CHECK(hasItem(items, "get"));
+}
+
+// ---------------------------------------------------------------------------
 // Context-aware keyword completion (plan.md §6.9, extended: legality rules)
 // ---------------------------------------------------------------------------
 

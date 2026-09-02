@@ -397,6 +397,25 @@ std::string SymbolDatabase::scopeKindAtPosition(
     return {};
 }
 
+std::string SymbolDatabase::enclosingClassNameAt(
+    const std::string& path, int line) const
+{
+    // Same shape as scopeAtPosition/scopeKindAtPosition, but filtered to
+    // Class specifically -- finds the nearest enclosing class even when the
+    // innermost scope at `line` is one of its Function/Task members.
+    auto stmt = m_db.prepare(
+        "SELECT s.name "
+        "FROM symbols s JOIN files f ON f.id = s.file_id "
+        "WHERE f.path = ? "
+        "  AND s.kind = 'Class' "
+        "  AND s.line <= ? AND s.end_line >= ? "
+        "ORDER BY length(s.scope) DESC, s.line DESC "
+        "LIMIT 1");
+    stmt.bind(1, path).bind(2, line).bind(3, line);
+    if (stmt.step()) return stmt.columnText(0);
+    return {};
+}
+
 std::vector<SymbolRow> SymbolDatabase::findSymbolsVisibleAt(
     const std::string& path, int line) const
 {

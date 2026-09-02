@@ -102,6 +102,15 @@ public:
     // by keyword completion's context-legality check (src/lsp/sv_keywords.h).
     std::string scopeKindAtPosition(const std::string& path, int line) const;
 
+    // Returns the bare name of the nearest enclosing `Class` scope that
+    // contains `line` in `path` -- unlike scopeAtPosition/scopeKindAtPosition
+    // (which report the innermost scope of *any* kind), this specifically
+    // finds the nearest Class ancestor even when the cursor is nested inside
+    // one of its methods (innermost scope kind there is Function, not
+    // Class). "" when no enclosing class exists. Powers `this`/`super`
+    // resolution in chained dot-completion (plan.md §6.14).
+    std::string enclosingClassNameAt(const std::string& path, int line) const;
+
     // All symbols visible from `(path, line)`: every symbol in the scope chain
     // at that position (local → enclosing scopes) plus all top-level symbols
     // from every file.  Ordered innermost-scope-first, then by name.

@@ -458,3 +458,39 @@ TEST_CASE("scopeKindAtPosition returns the innermost enclosing kind",
     CHECK(f.sdb.scopeKindAtPosition("/a.sv", 6)  == "Class");
     CHECK(f.sdb.scopeKindAtPosition("/a.sv", 10) == "Function");
 }
+
+// ---------------------------------------------------------------------------
+// enclosingClassNameAt (this/super resolution, plan.md §6.14)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("enclosingClassNameAt finds the class directly containing a position",
+          "[db][symbol-db][chain]") {
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/a.sv", "h"), {
+        {ParseRecordKind::Module, "top", 1, 0, "",    "", 20, ""},
+        {ParseRecordKind::Class,  "Cls", 5, 0, "top", "", 15, "top"},
+    });
+    CHECK(f.sdb.enclosingClassNameAt("/a.sv", 6) == "Cls");
+}
+
+TEST_CASE("enclosingClassNameAt finds the enclosing class even nested inside one of its methods",
+          "[db][symbol-db][chain]") {
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/a.sv", "h"), {
+        {ParseRecordKind::Module,   "top",  1, 0, "",    "",        20, ""},
+        {ParseRecordKind::Class,    "Cls",  5, 0, "top", "",        15, "top"},
+        {ParseRecordKind::Function, "meth", 8, 0, "Cls", "void",    12, "top::Cls"},
+    });
+    // Line 10 is inside meth's body -- scopeKindAtPosition would report
+    // "Function" there, but enclosingClassNameAt must still find "Cls".
+    CHECK(f.sdb.enclosingClassNameAt("/a.sv", 10) == "Cls");
+}
+
+TEST_CASE("enclosingClassNameAt returns empty string outside any class",
+          "[db][symbol-db][chain]") {
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/a.sv", "h"), {
+        {ParseRecordKind::Module, "top", 1, 0, "", "", 20, ""},
+    });
+    CHECK(f.sdb.enclosingClassNameAt("/a.sv", 2) == "");
+}

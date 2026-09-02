@@ -101,6 +101,124 @@ lsp::TextDocument_CompletionResult buildCompletionItems(
     return items;
 }
 
+// Builds the candidate list for whatever a dot-completion chain resolved
+// to -- shared by every chain length (a 1-segment chain reproduces
+// §6.10/§6.13's original single-hop behavior exactly; this is the only
+// place that logic lives now). Guards against `detail.empty()` internally:
+// "" is not "unknown type" in this schema, it's the literal top-level
+// scope value every top-level symbol is stored under, so
+// findSymbolsInScope("") would wrongly return the whole project's
+// top-level symbols instead of nothing (plan.md §6.14's own documented
+// landmine).
+std::vector<Candidate> candidatesForResolvedType(SymbolDatabase& db, const std::string& detail)
+{
+    if (detail.empty()) return {};
+
+    // Built-in container/type methods (plan.md §6.13): queues,
+    // associative/dynamic/fixed-size arrays, mailbox, semaphore, process,
+    // string, event -- none of these are ParseRecordKinds, so
+    // findSymbolsInScope would return nothing for them. Resolved from a
+    // static table alone, no DB call.
+    if (auto methods = builtinMethodsFor(detail); !methods.empty())
+        return candidatesFromMethods(methods);
+
+    // Otherwise, a real DB Class/Interface/whatever scope lookup.
+    auto memberRows = db.findSymbolsInScope(detail);
+    auto candidates = candidatesFromRows(memberRows);
+
+    // Union the randomize-family methods the LRM implicitly grants every
+    // class, but only when `detail` actually names a genuine user-declared
+    // Class -- gating on that (not just "did findSymbolsInScope return
+    // anything") keeps an unresolved/bogus type failing closed instead of
+    // surfacing randomize() for a made-up name. A user class that declares
+    // its own `randomize` override keeps the real (DB) one -- skip the
+    // synthetic entry on a name collision rather than duplicating it.
+    //
+    // No hand-maintained built-in-type-keyword list is needed here to tell
+    // a genuine class name apart from a function's raw, unfiltered return-
+    // type text ("void", "int unsigned", ...): SV reserved words can never
+    // be valid identifiers, so a raw built-in-type string can never
+    // collide with a real Class row -- the DB lookup below already comes
+    // back empty for those, with no false-positive risk (plan.md §6.14's
+    // own documented simplification over its original sketch).
+    bool isClass = false;
+    for (auto& row : db.findSymbolsByName(detail)) {
+        if (row.kind == "Class") { isClass = true; break; }
+    }
+    if (isClass) {
+        for (auto& m : RANDOMIZE_METHODS) {
+            bool collides = std::any_of(memberRows.begin(), memberRows.end(),
+                [&](const SymbolRow& row) { return row.name == m.name; });
+            if (!collides)
+                candidates.push_back({std::string(m.name), m.kind, std::string(m.detail)});
+        }
+    }
+
+    return candidates;
+}
+
+// Resolves a dot-completion chain's first segment against what's visible
+// at the cursor (not as a member of anything -- that's resolveMemberSegment
+// below). Returns "" on failure (fail closed).
+std::string resolveFirstSegment(SymbolDatabase& db, const std::string& path, int line1,
+                                 const ChainSegment& seg)
+{
+    if (!seg.isCall && seg.name == "this")
+        return db.enclosingClassNameAt(path, line1);
+
+    if (!seg.isCall && seg.name == "super") {
+        std::string enclosing = db.enclosingClassNameAt(path, line1);
+        if (enclosing.empty()) return "";
+        auto rows = db.findSymbolsByName(enclosing);
+        if (rows.empty()) return "";
+        if (const SymbolRow* best = pickBestSymbol(rows, path); best->kind == "Class")
+            return best->detail; // parent class name, "" if none (no extends)
+        return "";
+    }
+
+    auto visible = db.findSymbolsVisibleAt(path, line1);
+    const char* wantKind = seg.isCall ? "Function" : nullptr;
+    for (auto& row : visible) {
+        bool kindMatches = wantKind ? row.kind == wantKind
+                                     : (row.kind == "Signal" || row.kind == "Parameter");
+        if (kindMatches && row.name == seg.name) return row.detail;
+    }
+    return "";
+}
+
+// Resolves a non-first chain segment as a member of `prevClass`'s scope.
+// Returns "" on failure (fail closed).
+std::string resolveMemberSegment(SymbolDatabase& db, const std::string& prevClass,
+                                  const ChainSegment& seg)
+{
+    if (prevClass.empty()) return "";
+    auto members = db.findSymbolsInScope(prevClass);
+    const char* wantKind = seg.isCall ? "Function" : nullptr;
+    for (auto& row : members) {
+        bool kindMatches = wantKind ? row.kind == wantKind
+                                     : (row.kind == "Signal" || row.kind == "Parameter");
+        if (kindMatches && row.name == seg.name) return row.detail;
+    }
+    return "";
+}
+
+// Resolves an entire dot-completion chain left to right to the type/scope
+// name backing its final segment's members. Returns nullopt if any hop
+// fails to resolve (fail closed) -- including a hop resolving to ""; see
+// candidatesForResolvedType's own doc comment for why an empty scope name
+// can never be treated as "no type" and passed through.
+std::optional<std::string> resolveChain(SymbolDatabase& db, const std::string& path, int line1,
+                                         const std::vector<ChainSegment>& segments)
+{
+    std::string current = resolveFirstSegment(db, path, line1, segments[0]);
+    if (current.empty()) return std::nullopt;
+    for (size_t i = 1; i < segments.size(); ++i) {
+        current = resolveMemberSegment(db, current, segments[i]);
+        if (current.empty()) return std::nullopt;
+    }
+    return current;
+}
+
 } // namespace
 
 lsp::TextDocument_CompletionResult CompletionProvider::getCompletion(
@@ -111,62 +229,9 @@ lsp::TextDocument_CompletionResult CompletionProvider::getCompletion(
     const int line1 = static_cast<int>(params.position.line) + 1;
 
     if (auto dot = dotCompletionContext(docText, params.position.line, params.position.character)) {
-        // Resolve `dot->object`'s declared type through whatever's visible
-        // at this scope (respects the same scoping/precedence as ordinary
-        // completion — the first exact-name match is the innermost-scoped
-        // declaration, since findSymbolsVisibleAt is already sorted by scope
-        // depth). Only Signal/Parameter carry a declared-type `detail`
-        // (§6.10 first cut — see sv_tree_walker.cpp's userTypeName); any
-        // other kind, or a type that itself isn't a known scope, fails to
-        // resolve and returns no completions rather than falling back to
-        // scope-wide completion (offering unrelated symbols after an
-        // explicit '.' would be a worse result than offering nothing).
-        auto visible = db.findSymbolsVisibleAt(path, line1);
-        const SymbolRow* objRow = nullptr;
-        for (auto& row : visible) {
-            if ((row.kind == "Signal" || row.kind == "Parameter") && row.name == dot->object) {
-                objRow = &row;
-                break;
-            }
-        }
-        if (!objRow || objRow->detail.empty()) return nullptr;
-        const std::string& detail = objRow->detail;
-
-        // Built-in container/type methods (plan.md §6.13): queues,
-        // associative/dynamic/fixed-size arrays, mailbox, semaphore,
-        // process, string, event -- none of these are ParseRecordKinds, so
-        // findSymbolsInScope would return nothing for them. Resolved from a
-        // static table alone, no DB call.
-        if (auto methods = builtinMethodsFor(detail); !methods.empty())
-            return buildCompletionItems(candidatesFromMethods(methods), dot->prefix);
-
-        // Otherwise, the existing §6.10 path, unchanged: a real DB
-        // Class/Interface/whatever scope lookup.
-        auto memberRows = db.findSymbolsInScope(detail);
-        auto candidates = candidatesFromRows(memberRows);
-
-        // Union the randomize-family methods the LRM implicitly grants
-        // every class, but only when `detail` actually names a genuine
-        // user-declared Class -- gating on that (not just "did
-        // findSymbolsInScope return anything") keeps an unresolved/bogus
-        // type failing closed instead of surfacing randomize() for a made-up
-        // name. A user class that declares its own `randomize` override
-        // keeps the real (DB) one -- skip the synthetic entry on a name
-        // collision rather than duplicating it.
-        bool isClass = false;
-        for (auto& row : db.findSymbolsByName(detail)) {
-            if (row.kind == "Class") { isClass = true; break; }
-        }
-        if (isClass) {
-            for (auto& m : RANDOMIZE_METHODS) {
-                bool collides = std::any_of(memberRows.begin(), memberRows.end(),
-                    [&](const SymbolRow& row) { return row.name == m.name; });
-                if (!collides)
-                    candidates.push_back({std::string(m.name), m.kind, std::string(m.detail)});
-            }
-        }
-
-        return buildCompletionItems(candidates, dot->prefix);
+        auto resolved = resolveChain(db, path, line1, dot->segments);
+        if (!resolved) return nullptr;
+        return buildCompletionItems(candidatesForResolvedType(db, *resolved), dot->prefix);
     }
 
     const std::string prefix = wordAtPosition(docText,

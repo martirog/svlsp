@@ -145,19 +145,22 @@ TEST_CASE("pickBestSymbol: single row — returned regardless of kind", "[symbol
 // dotCompletionContext
 // ---------------------------------------------------------------------------
 
-TEST_CASE("dotCompletionContext: foo.b| yields object=foo, prefix=b", "[symbol_utils]")
+TEST_CASE("dotCompletionContext: foo.b| yields a single segment 'foo', prefix=b", "[symbol_utils]")
 {
     auto ctx = dotCompletionContext("foo.b", 0, 5);
     REQUIRE(ctx.has_value());
-    CHECK(ctx->object == "foo");
+    REQUIRE(ctx->segments.size() == 1);
+    CHECK(ctx->segments[0].name == "foo");
+    CHECK_FALSE(ctx->segments[0].isCall);
     CHECK(ctx->prefix == "b");
 }
 
-TEST_CASE("dotCompletionContext: foo.| yields object=foo, empty prefix", "[symbol_utils]")
+TEST_CASE("dotCompletionContext: foo.| yields a single segment 'foo', empty prefix", "[symbol_utils]")
 {
     auto ctx = dotCompletionContext("foo.", 0, 4);
     REQUIRE(ctx.has_value());
-    CHECK(ctx->object == "foo");
+    REQUIRE(ctx->segments.size() == 1);
+    CHECK(ctx->segments[0].name == "foo");
     CHECK(ctx->prefix.empty());
 }
 
@@ -176,7 +179,8 @@ TEST_CASE("dotCompletionContext: multi-line text resolves the dot on the request
     const std::string src = "module m;\n  foo.ba\nendmodule";
     auto ctx = dotCompletionContext(src, 1, 7); // "  foo.ba" -> cursor after "ba"
     REQUIRE(ctx.has_value());
-    CHECK(ctx->object == "foo");
+    REQUIRE(ctx->segments.size() == 1);
+    CHECK(ctx->segments[0].name == "foo");
     CHECK(ctx->prefix == "ba");
 }
 
@@ -184,4 +188,90 @@ TEST_CASE("dotCompletionContext: out-of-range position returns nullopt", "[symbo
 {
     CHECK_FALSE(dotCompletionContext("foo.b", 1, 0).has_value()); // no line 1
     CHECK_FALSE(dotCompletionContext("foo.b", 0, 99).has_value()); // char past EOL
+}
+
+// ---------------------------------------------------------------------------
+// dotCompletionContext -- chained/function-call segments (plan.md §6.14)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("dotCompletionContext: foo.bar.b| yields two bare-identifier segments", "[symbol_utils][chain]")
+{
+    auto ctx = dotCompletionContext("foo.bar.b", 0, 9);
+    REQUIRE(ctx.has_value());
+    REQUIRE(ctx->segments.size() == 2);
+    CHECK(ctx->segments[0].name == "foo");
+    CHECK_FALSE(ctx->segments[0].isCall);
+    CHECK(ctx->segments[1].name == "bar");
+    CHECK_FALSE(ctx->segments[1].isCall);
+    CHECK(ctx->prefix == "b");
+}
+
+TEST_CASE("dotCompletionContext: a().b().c| yields two call segments", "[symbol_utils][chain]")
+{
+    auto ctx = dotCompletionContext("a().b().c", 0, 9);
+    REQUIRE(ctx.has_value());
+    REQUIRE(ctx->segments.size() == 2);
+    CHECK(ctx->segments[0].name == "a");
+    CHECK(ctx->segments[0].isCall);
+    CHECK(ctx->segments[1].name == "b");
+    CHECK(ctx->segments[1].isCall);
+    CHECK(ctx->prefix == "c");
+}
+
+TEST_CASE("dotCompletionContext: a call argument containing '.' doesn't confuse the chain",
+          "[symbol_utils][chain]")
+{
+    // foo("a.b").c| -- the '.' inside the string must not be read as a
+    // chain separator, and the ')' inside it must not end the call early.
+    const std::string src = "foo(\"a.b\").c";
+    auto ctx = dotCompletionContext(src, 0, static_cast<unsigned>(src.size()));
+    REQUIRE(ctx.has_value());
+    REQUIRE(ctx->segments.size() == 1);
+    CHECK(ctx->segments[0].name == "foo");
+    CHECK(ctx->segments[0].isCall);
+    CHECK(ctx->prefix == "c");
+}
+
+TEST_CASE("dotCompletionContext: nested calls resolve the outer paren, not the inner one",
+          "[symbol_utils][chain]")
+{
+    // a(b(c)).d| -- the outer call is "a", not "b" or "c".
+    const std::string src = "a(b(c)).d";
+    auto ctx = dotCompletionContext(src, 0, static_cast<unsigned>(src.size()));
+    REQUIRE(ctx.has_value());
+    REQUIRE(ctx->segments.size() == 1);
+    CHECK(ctx->segments[0].name == "a");
+    CHECK(ctx->segments[0].isCall);
+    CHECK(ctx->prefix == "d");
+}
+
+TEST_CASE("dotCompletionContext: a three-level chain mixing calls and identifiers",
+          "[symbol_utils][chain]")
+{
+    // make_factory().get_child().gr| -- Factory/Greeter shape from plan.md §6.14.
+    const std::string src = "make_factory().get_child().gr";
+    auto ctx = dotCompletionContext(src, 0, static_cast<unsigned>(src.size()));
+    REQUIRE(ctx.has_value());
+    REQUIRE(ctx->segments.size() == 2);
+    CHECK(ctx->segments[0].name == "make_factory");
+    CHECK(ctx->segments[0].isCall);
+    CHECK(ctx->segments[1].name == "get_child");
+    CHECK(ctx->segments[1].isCall);
+    CHECK(ctx->prefix == "gr");
+}
+
+TEST_CASE("dotCompletionContext: whitespace before a call's own paren is tolerated",
+          "[symbol_utils][chain]")
+{
+    const std::string src = "foo ().c";
+    auto ctx = dotCompletionContext(src, 0, static_cast<unsigned>(src.size()));
+    REQUIRE(ctx.has_value());
+    REQUIRE(ctx->segments.size() == 1);
+    CHECK(ctx->segments[0].name == "foo");
+    CHECK(ctx->segments[0].isCall);
+}
+
+TEST_CASE("dotCompletionContext: an unmatched call paren fails closed", "[symbol_utils][chain]")
+{
+    CHECK_FALSE(dotCompletionContext("foo).c", 0, 6).has_value());
 }

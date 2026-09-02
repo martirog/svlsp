@@ -36,26 +36,43 @@ lsp::DocumentUri pathToUri(const std::string& path);
 // 3. Otherwise, the first row (caller's existing path,line order).
 const SymbolRow* pickBestSymbol(const std::vector<SymbolRow>& rows, const std::string& curPath);
 
-// A dot/member-access completion context: `object` is the identifier
-// immediately before the triggering '.', `prefix` is whatever partial member
-// name has been typed after it (possibly empty, e.g. right after `foo.`).
-struct DotCompletion {
-    std::string object;
-    std::string prefix;
+// One segment of a dot-completion chain: either a bare identifier
+// ("foo") or a call ("get_child(...)" -- argument text is never captured,
+// only the identifier and the fact that it was called matter for
+// resolution).
+struct ChainSegment {
+    std::string name;
+    bool        isCall;
 };
 
-// Detects a dot-completion context at (line, character) — an identifier
-// chain immediately preceded by a '.' (e.g. "foo.b|" -> {object:"foo",
-// prefix:"b"}, "foo.|" -> {object:"foo", prefix:""}). Returns std::nullopt
-// when the cursor isn't in one: no '.' immediately before the prefix
-// identifier, or nothing identifier-like before that '.' either (a bare "."
-// with no object).
+// A dot/member-access completion context: `segments` is the chain of
+// identifiers/calls before the triggering '.' (segments[0] is leftmost —
+// e.g. "foo.bar." is [{"foo",false},{"bar",false}]), `prefix` is whatever
+// partial member name has been typed after the last '.' (possibly empty,
+// e.g. right after `foo.`). A single-identifier chain like `foo.` is just
+// a 1-segment case, not a separate concept.
+struct DotCompletion {
+    std::vector<ChainSegment> segments;
+    std::string               prefix;
+};
+
+// Detects a dot-completion context at (line, character): a chain of
+// identifiers and/or calls immediately preceded by a '.' (e.g. "foo.b|" ->
+// segments=[{"foo",false}], prefix="b"; "a().b().c|" ->
+// segments=[{"a",true},{"b",true}], prefix="c"). Returns std::nullopt when
+// the cursor isn't in one: no '.' immediately before the prefix identifier,
+// or nothing identifier/call-like before some '.' in the chain either (a
+// bare "." with no object).
 //
-// Only the single segment immediately before the last '.' is captured —
-// chained access ("foo.bar.baz") resolves "bar" as the object, not "foo".
-// This is a deliberate first-cut limitation (plan.md §6.10): the caller
-// looks "bar" up as if it were a declared variable, which naturally fails to
-// resolve (it isn't one), so chained access degrades to no completions
-// rather than a wrong one.
+// Walks left one segment at a time: a segment ending in ')' is read as a
+// call by paren-balance-matching back to the '(' (nested calls and
+// string-literal arguments containing '.'/'(' /')' are handled -- the
+// balance walk tracks a minimal in-string state so `foo("a.b").c` isn't
+// confused by the dot inside the string), then reads the identifier
+// immediately before that '('; anything else reads as a plain identifier.
+// Each segment's own left edge is checked for a preceding '.' to decide
+// whether to continue the chain leftward or stop (segment 0 reached).
+// Whitespace before a call's own '(' is tolerated; whitespace around the
+// chain's '.'s is not (matches this function's pre-existing convention).
 std::optional<DotCompletion> dotCompletionContext(
     const std::string& text, unsigned line, unsigned character);

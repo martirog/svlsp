@@ -1,5 +1,6 @@
 #include "lsp/symbol_utils.h"
 #include <lsp/fileuri.h>
+#include <algorithm>
 #include <cctype>
 
 namespace {
@@ -100,6 +101,35 @@ const SymbolRow* pickBestSymbol(const std::vector<SymbolRow>& rows, const std::s
     return &rows.front();
 }
 
+namespace {
+// Finds the '(' matching the ')' at text[closeParen], walking left with a
+// paren-balance counter (seeded at 1 for the close paren already known)
+// and a minimal in-string state so a '.'/'('/')' inside a string-literal
+// argument (e.g. foo("a.b")) never perturbs the count. Returns
+// std::string::npos if no balanced match exists before lineStart.
+size_t matchingOpenParen(const std::string& text, size_t lineStart, size_t closeParen)
+{
+    size_t i = closeParen;
+    int depth = 1;
+    bool inString = false;
+    while (i > lineStart) {
+        char c = text[i - 1];
+        if (inString) {
+            if (c == '"' && (i - 1 == lineStart || text[i - 2] != '\\')) inString = false;
+        } else if (c == '"') {
+            inString = true;
+        } else if (c == ')') {
+            ++depth;
+        } else if (c == '(') {
+            --depth;
+            if (depth == 0) return i - 1;
+        }
+        --i;
+    }
+    return std::string::npos;
+}
+} // namespace
+
 std::optional<DotCompletion> dotCompletionContext(
     const std::string& text, unsigned line, unsigned character)
 {
@@ -120,11 +150,44 @@ std::optional<DotCompletion> dotCompletionContext(
     // No '.' immediately to the left of the prefix -> not a dot-completion.
     if (prefixStart == lineStart || text[prefixStart - 1] != '.') return std::nullopt;
 
-    // Walk left from the '.' to recover the object identifier before it.
-    const size_t dotPos = prefixStart - 1;
-    size_t objStart = dotPos;
-    while (objStart > lineStart && isIdChar(text[objStart - 1])) --objStart;
-    if (objStart == dotPos) return std::nullopt; // bare '.', nothing identifier-like before it
+    // Walk left extracting one chain segment at a time (rightmost first),
+    // stopping once a segment isn't immediately preceded by another '.'.
+    std::vector<ChainSegment> segments;
+    size_t dotPos = prefixStart - 1; // position of the '.' before the next segment
 
-    return DotCompletion{text.substr(objStart, dotPos - objStart), prefix};
+    while (true) {
+        if (dotPos == lineStart) return std::nullopt; // bare '.', nothing before it
+
+        const size_t segEnd = dotPos; // exclusive end of this segment's text
+        std::string name;
+        bool isCall = false;
+        size_t segStart;
+
+        if (text[segEnd - 1] == ')') {
+            const size_t openParen = matchingOpenParen(text, lineStart, segEnd - 1);
+            if (openParen == std::string::npos || openParen == lineStart) return std::nullopt;
+            size_t idEnd = openParen;
+            while (idEnd > lineStart && (text[idEnd - 1] == ' ' || text[idEnd - 1] == '\t')) --idEnd;
+            size_t idStart = idEnd;
+            while (idStart > lineStart && isIdChar(text[idStart - 1])) --idStart;
+            if (idStart == idEnd) return std::nullopt; // "(...)" with no name before it
+            name = text.substr(idStart, idEnd - idStart);
+            isCall = true;
+            segStart = idStart;
+        } else if (isIdChar(text[segEnd - 1])) {
+            segStart = segEnd;
+            while (segStart > lineStart && isIdChar(text[segStart - 1])) --segStart;
+            name = text.substr(segStart, segEnd - segStart);
+        } else {
+            return std::nullopt; // nothing identifier/call-like before the dot
+        }
+
+        segments.push_back({std::move(name), isCall});
+
+        if (segStart == lineStart || text[segStart - 1] != '.') break; // segment 0 reached
+        dotPos = segStart - 1;
+    }
+
+    std::reverse(segments.begin(), segments.end());
+    return DotCompletion{std::move(segments), prefix};
 }
