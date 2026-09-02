@@ -14,11 +14,19 @@ its original sketch with context-legality rules (a keyword is only offered
 where its enclosing declaration scope makes it legal — e.g. `module` is
 rejected once already inside any scope, since SV design units can't nest) —
 see "Dot/member-access completion" sibling section below, "Keyword
-completion" for the full design. Unit suite now at 1167 assertions / 433 test
-cases, all green (debug); Emacs integration suite gained
-`test_28_keyword_completion.sh` (8 new passing cases) with no regressions in
-the existing completion suite. Working tree has uncommitted changes for this
-feature as of this writing — not yet committed (only commit when asked).
+completion" for the full design. Also on 2026-09-02: §6.13 built-in
+container/type method completion implemented, expanded well beyond its
+original scope (queues/associative arrays/mailbox/randomize) after the user
+flagged it as under-researched — the shipped set is queues, associative
+arrays, dynamic arrays, fixed-size unpacked arrays, `mailbox`, `semaphore`,
+`process`, `string`, `event` (`.triggered`), plus randomize-family methods
+on every class — see "Built-in container/type method completion" below.
+Unit suite now at 1291 assertions / 462 test cases, all green (debug);
+Emacs integration suite gained `test_28_keyword_completion.sh` (8 cases)
+and `test_29_builtin_method_completion.sh` (9 cases), no regressions in the
+existing completion suite. Working tree has uncommitted changes for
+§6.13 as of this writing (§6.9 is committed) — not yet committed, only
+commit when asked.
 
 ---
 
@@ -236,6 +244,88 @@ user-defined nettype) — this grammar resolves that case via the latter, so
 same "identifier classification needs a symbol table" problem already documented
 for `data_type`'s own internal alternatives (see grammar quirks table) — not
 previously noticed because nothing depended on which alt fired until now.
+
+**Built-in container/type method completion** (plan.md §6.13, implemented
+2026-09-02): extends the dot-completion path above for everything with
+*implicit, language-defined* methods but no `Class`-kind `ParseRecord` of
+its own — queues, associative arrays, dynamic arrays, fixed-size unpacked
+arrays, `mailbox`, `semaphore`, `process`, `string`, `event`
+(`.triggered`), plus the randomize-family methods every class implicitly
+gains. Originally scoped narrower (queues/associative arrays/mailbox/
+randomize only); expanded after the user rejected a first-pass plan as
+under-researched, naming `process` as a concrete miss.
+
+Detection is two mechanisms, both new in `src/compiler/sv_tree_walker.cpp`'s
+`enterData_declaration`, layered by priority per declarator (container
+dimension wins over bare-type tag wins over `userTypeName()`'s ordinary
+class/interface name — e.g. `string s[$]` tags as a queue, not a string,
+since the container's own methods are what matter):
+1. `containerDimensionTag(vda)` scans a declarator's own
+   `variable_dimension()` list (not the shared `data_type_or_implicit` —
+   `int a[$], b;` must tag only `a`) for the first
+   `queue_dimension()`/`associative_dimension()`/`unsized_dimension()`/
+   `unpacked_dimension()` hit, in declaration order (outermost/leftmost
+   wins for a multi-dimensional declarator like `int q[4][$]`).
+2. `builtinBareTypeTag(dtoi)` catches `string`/`event`, which
+   `userTypeName()` structurally cannot see — both are bare literal
+   `data_type` alternatives (`grammar/Sv.g4:746-751`) with no
+   `type_identifier()`/`class_type()` accessor, detected instead via
+   `data_type()->getText() == "string"/"event"` (reliable here specifically
+   because those two alternatives have exactly one terminal child and no
+   `packed_dimension`).
+
+Both tag with new `$`-prefixed sentinel constants in
+`src/compiler/parse_record.h` (`CONTAINER_QUEUE`/`CONTAINER_ASSOC`/
+`CONTAINER_DYNAMIC_ARRAY`/`CONTAINER_FIXED_ARRAY`/`CONTAINER_STRING`/
+`CONTAINER_EVENT` — SV identifiers can never start with `$`, so these can
+never collide with a real type name). `mailbox`/`semaphore`/`process` need
+no tag at all: none are grammar keywords, so all three already parse as
+ordinary parameterized `class_type` references and `userTypeName()`
+already extracts them verbatim — confirmed live via `hover` before writing
+any code, not assumed from reading the grammar (see the empirical-
+verification note below).
+
+`src/lsp/sv_builtin_methods.h` holds the static method tables
+(`QUEUE_METHODS`, `ASSOC_ARRAY_METHODS`, `DYNAMIC_ARRAY_METHODS`,
+`FIXED_ARRAY_METHODS`, `MAILBOX_METHODS`, `SEMAPHORE_METHODS`,
+`PROCESS_METHODS`, `STRING_METHODS`, `EVENT_MEMBERS`, `RANDOMIZE_METHODS`)
+and one dispatcher, `builtinMethodsFor(detail)`, checking the five tags
+plus the three literal type names. `CompletionProvider::getCompletion`'s
+dot-completion branch (`src/lsp/completion.cpp`) tries this dispatcher
+first (no DB call at all for a built-in hit); otherwise it falls through to
+the unchanged `findSymbolsInScope(detail)` call, plus a *separate*
+`findSymbolsByName(detail)` scan gating whether to union
+`RANDOMIZE_METHODS` in — gated on an actual `Class`-kind row existing (not
+just "did `findSymbolsInScope` return anything"), so an unresolved/bogus
+type keeps failing closed instead of surfacing `randomize()` for a made-up
+name, and a class that overrides `randomize` itself keeps the real DB
+entry rather than getting a duplicate synthetic one (checked by name
+collision against the already-fetched member rows).
+
+**Empirical verification, not grammar-reading, drove every detection
+claim above**: this codebase already has one documented case
+(`data_type`/`net_declaration` ambiguity, "Sv.g4 grammar quirks" below)
+where reading the grammar text does not reliably predict which
+alternative ANTLR's default prediction actually fires. Before finalizing
+this design, every claim (dynamic arrays already recorded; `process`/
+`semaphore` already resolve via the ordinary `class_type` path; `string`/
+`event` genuinely need a new detection path) was checked by piping real
+`initialize`/`didOpen`/`documentSymbol`/`hover` requests into
+`build/debug/svlsp` directly (the smoke-test pattern under "Build and
+test" above) rather than assumed from the grammar alone — this caught a
+wrong first-pass assumption (that dynamic arrays weren't recorded as
+symbols at all) before it shipped as a false claim.
+
+**Disclosed uncertainty, unchanged from plan.md §6.13's original text:**
+every method name/signature in the tables above is reconstructed from
+training-time familiarity with IEEE 1800-2017, not verified against an LRM
+copy (this server has no access to one).
+
+**Deliberately still out of scope:** covergroup built-in methods
+(`cg.sample()`, `cg.get_coverage()`, ...) — confirmed covergroups aren't
+tracked as any `ParseRecordKind` today (no `enterCovergroup_declaration`
+exists), so supporting this needs a new `ParseRecordKind` and tree-walker
+listener first — disproportionate to this pass, left as a follow-up.
 
 ### I/O wrapper (`src/lsp/server.h/.cpp`)
 
@@ -710,24 +800,21 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
       specific: reshaping `SymbolDatabase`'s existing queries (§5.3) to query
       across an attached library DB, and the library-versioning/pinning/
       staleness story (config field, where pre-built DBs are built/shipped).
-16. **Built-in container & randomization method completion (`plan.md
-    §6.13`)** — not started, added 2026-09-01. Extends §6.10 (dot/
-    member-access completion): today `foo.` only resolves to a DB-declared
-    `Class`/`Interface` scope, so it returns nothing for a queue-typed
-    (`T q[$]`), associative-array-typed (`T aa[K]`), or `mailbox`-typed
-    variable — none of these have a `Class`-kind `ParseRecord` — and misses
-    the `randomize`/`pre_randomize`/`post_randomize`/... method family the
-    LRM implicitly grants every class regardless of what it declares.
-    plan.md §6.13 has the full native-method lists (queue/associative-array/
-    mailbox/randomize-family, researched from recollection of IEEE
-    1800-2017 — flagged there as needing cross-check against an actual LRM
-    copy before shipping), the detection design (`variable_dimension`'s
-    `queue_dimension()`/`associative_dimension()` accessors for containers,
-    a `$`-prefixed `ParseRecord::detail` tagging convention that can never
-    collide with a real user type name since SV identifiers can't start
-    with `$`), and open questions (dynamic arrays, `randomize() with
-    {...}` constraint-block completion, `semaphore`) left for whoever picks
-    it up.
+16. ~~Built-in container & type method completion (`plan.md §6.13`)~~ —
+    **implemented 2026-09-02**, expanded from its original queue/
+    associative-array/mailbox/randomize scope after the user flagged it as
+    under-researched: also covers dynamic arrays, fixed-size unpacked
+    arrays, `semaphore`, `process`, `string`, and `event` (`.triggered`).
+    See "Built-in container/type method completion" under "LSP feature
+    providers" above for the full design (including the empirical,
+    live-`svlsp`-probe verification method used to catch a wrong first-pass
+    assumption before it shipped) and plan.md §6.13 for the complete
+    writeup. Remaining open item, deliberately deferred: covergroup
+    built-in methods (`cg.sample()`, ...) — would need a new
+    `ParseRecordKind`, disproportionate to this pass. `randomize() with
+    {...}` constraint-block completion also remains out of scope (a
+    distinct, harder grammar construct — completion *inside* the `with`
+    block itself, not the bare `randomize` method name).
 17. **Function-call return-type chained dot-completion (`plan.md §6.14`)**
     — not started, added 2026-09-01. Extends §6.10 and resolves its own
     deferred "chained access" open question: `func_ret_class().member` and

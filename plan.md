@@ -1298,7 +1298,83 @@ per §6.8's own stated resolution criterion.
 
 ### 6.13 Built-in Container & Randomization Method Completion (queues, associative arrays, mailboxes, `randomize`)
 
-**Status:** not started. Extends §6.10 (dot/member-access completion,
+**Status:** implemented 2026-09-02, expanded well beyond this section's
+original scope after the user rejected a first-pass plan as
+under-researched (naming `process` as a concrete miss). The shipped set,
+closed by that re-research: queues, associative arrays, dynamic arrays,
+fixed-size unpacked arrays, `mailbox`, `semaphore`, `process`, `string`,
+`event` (`.triggered`), and the randomize-family methods every class
+implicitly gains.
+
+Every claim below was verified empirically by piping real LSP requests
+into `build/debug/svlsp` (the smoke-test pattern earlier in this doc), not
+just inferred from the grammar — reading the grammar alone was previously
+shown unreliable for this exact question (see the `data_type`/
+`net_declaration` ambiguity in "Sv.g4 grammar quirks" in `handoff.md`).
+Findings that changed the plan: (1) `int arr[];` (a dynamic array) is
+**already** recorded as a `Signal` today — the grammar's alternate
+`dynamic_array_variable_identifier` production that looked like it should
+fire does not; ANTLR resolves it via the ordinary
+`variable_identifier variable_dimension*` alternative instead, so no
+tree-walker bug existed, only a missing tag; (2) `process` and `semaphore`
+already get a correct `detail` via `userTypeName()`'s existing `class_type`
+path today (neither is a grammar keyword), so — like `mailbox` — they
+needed zero tree-walker changes, only a lookup-table entry keyed by literal
+type name; (3) `string`/`event` are bare literal `data_type` alternatives
+with no `type_identifier()`/`class_type()` accessor, so a **separate**
+detection helper (`builtinBareTypeTag`, checking `data_type()->getText()`)
+was needed rather than extending `userTypeName()`; (4) fixed-size unpacked
+arrays (`int arr[8]`) get the LRM §7.12 locator/ordering/reduction methods
+too, via the exact same per-declarator dimension scan already needed for
+queues/associative arrays — in scope now, left out of the original sketch
+only by oversight, not a deliberate cut.
+
+**Deliberately still out of scope:** covergroup built-in methods
+(`cg.sample()`, `cg.get_coverage()`, ...) — researched and confirmed that
+covergroups aren't tracked as any `ParseRecordKind` today at all (no
+`enterCovergroup_declaration` exists), so supporting this would need a new
+`ParseRecordKind` and tree-walker listener, disproportionate to a
+"dot-completion on built-ins" pass. Left as a follow-up.
+
+See `src/lsp/sv_builtin_methods.h` for the full method tables (`QUEUE_METHODS`,
+`ASSOC_ARRAY_METHODS`, `DYNAMIC_ARRAY_METHODS`, `FIXED_ARRAY_METHODS`,
+`MAILBOX_METHODS`, `SEMAPHORE_METHODS`, `PROCESS_METHODS`, `STRING_METHODS`,
+`EVENT_MEMBERS`, `RANDOMIZE_METHODS`) and `builtinMethodsFor()`'s single
+dispatch point; `src/compiler/parse_record.h` for the five `$`-prefixed
+detail-tag constants (`CONTAINER_QUEUE`/`CONTAINER_ASSOC`/
+`CONTAINER_DYNAMIC_ARRAY`/`CONTAINER_FIXED_ARRAY`/`CONTAINER_STRING`/
+`CONTAINER_EVENT`); `src/compiler/sv_tree_walker.cpp`'s
+`enterData_declaration` for the per-declarator tagging (container dimension
+wins over the bare-type tag, which wins over the ordinary class/interface
+type name — e.g. `string s[$]` is tagged as a queue, not a string, since
+the container's own methods are what matter for a queue-of-strings).
+`randomize`-family methods are unioned onto a resolved object only when a
+`Class`-kind DB row actually exists for its type name (gated separately
+from the container/literal-name dispatch, in `completion.cpp`) — an
+unresolved/bogus type keeps failing closed rather than surfacing
+`randomize()` for a made-up name, and a class overriding `randomize` itself
+keeps the real DB entry rather than duplicating it.
+
+**Disclosed uncertainty, unchanged:** every method name/signature in the
+tables above is reconstructed from training-time familiarity with IEEE
+1800-2017, not verified against an LRM copy (this server has no access to
+one) — same posture as this section's original text and §6.9's
+`checker`-nesting caveat.
+
+Tests: `tests/unit/compiler/test_sv_listener.cpp` (one tagging case per
+built-in kind, plus the shared-declarator independence case `int a[$], b;`);
+`tests/unit/lsp/test_sv_builtin_methods.cpp` (table sanity); new
+`CompletionProvider` cases in `tests/unit/lsp/test_completion.cpp` (one
+dot-completion case per kind, the randomize-union case, the
+own-`randomize`-wins collision case, an unresolved-type fail-closed
+regression); functional coverage in
+`tests/integration/test_29_builtin_method_completion.sh` + fixture
+`tests/integration/fixtures/builtin_method_completion.sv` (a representative
+subset: queue, associative array, mailbox, process, plain class).
+
+Original sketch (superseded by the above, kept for history):
+
+**Status (original):** not started. Extends §6.10 (dot/member-access completion,
 implemented 2026-09-01) — depends on it, doesn't replace any of it.
 
 **Why this is needed:** §6.10's dot-completion only ever resolves an object
