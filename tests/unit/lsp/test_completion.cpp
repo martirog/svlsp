@@ -796,6 +796,129 @@ TEST_CASE("CompletionProvider: an indexed member deep in a chain resolves throug
 }
 
 // ---------------------------------------------------------------------------
+// Dot-completion into a package-nested class's members (plan.md §6.17)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("CompletionProvider: dot-completion resolves into a class declared inside a package",
+          "[completion][dot][package]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module,   "top",    1, 7,  "",       "",
+            20, ""},
+        {ParseRecordKind::Signal,   "obj",    2, 10, "top",    "Widget",
+            0,  "top"},
+        {ParseRecordKind::Class,    "Widget", 5, 7,  "",       "",
+            8,  "pkg"},
+        {ParseRecordKind::Function, "greet",  6, 10, "Widget", "void",
+            6,  "pkg::Widget"},
+    });
+
+    const std::string text = "module top;\n  obj.gr";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 1, 8), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "greet"));
+}
+
+TEST_CASE("CompletionProvider: an intermediate chain segment resolves into a package-nested class",
+          "[completion][dot][package][chain]")
+{
+    // Not just the terminal-hop fix (previous test): resolveMemberSegment
+    // hits the exact same bug independently when a package-nested class is
+    // reached as a *non-final* segment of a longer chain.
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module,   "top",   1, 7,  "",      "",
+            20, ""},
+        {ParseRecordKind::Signal,   "obj",   2, 10, "top",   "Outer",
+            0,  "top"},
+        {ParseRecordKind::Class,    "Outer", 5, 7,  "",      "",
+            8,  ""},
+        {ParseRecordKind::Signal,   "child", 6, 10, "Outer", "Inner",
+            0,  "Outer"},
+        {ParseRecordKind::Class,    "Inner", 11, 9, "",      "",
+            14, "pkg"},
+        {ParseRecordKind::Function, "greet", 12, 12,"Inner", "void",
+            12, "pkg::Inner"},
+    });
+
+    const std::string text = "module top;\n  obj.child.gr";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 1, 14), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "greet"));
+}
+
+TEST_CASE("CompletionProvider: this. resolves through a package-nested enclosing class",
+          "[completion][dot][package][chain]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Class,    "Widget",   1, 7,  "",       "",     1, "pkg"},
+        {ParseRecordKind::Function, "method_a", 1, 10, "Widget", "void", 1, "pkg::Widget"},
+        {ParseRecordKind::Function, "greet",    1, 10, "Widget", "void", 1, "pkg::Widget"},
+    });
+
+    // Cursor nested inside method_a's own body (both share line 1 here,
+    // matching the existing "this. resolves..." test's own convention) --
+    // enclosingClassNameAt must still find Widget even though its own
+    // `scope` column is "pkg", not "".
+    const std::string text = "this.gr";
+    auto result = CompletionProvider::getCompletion(
+        makeParams("/t.sv", 0, static_cast<unsigned>(text.size())), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "greet"));
+}
+
+TEST_CASE("CompletionProvider: a top-level (non-package) class still resolves unchanged",
+          "[completion][dot][package]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module,   "top",    1, 7,  "",       "",
+            20, ""},
+        {ParseRecordKind::Signal,   "obj",    2, 10, "top",    "Widget",
+            0,  "top"},
+        {ParseRecordKind::Class,    "Widget", 5, 7,  "",       "",
+            8,  ""},
+        {ParseRecordKind::Function, "greet",  6, 10, "Widget", "void",
+            6,  "Widget"},
+    });
+
+    const std::string text = "module top;\n  obj.gr";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 1, 8), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "greet"));
+}
+
+TEST_CASE("CompletionProvider: an intermediate hop resolving to a bogus type still fails closed",
+          "[completion][dot][package][chain]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module, "top",   1, 7,  "",     "",
+            20, ""},
+        {ParseRecordKind::Signal, "obj",   2, 10, "top",  "Outer",
+            0,  "top"},
+        {ParseRecordKind::Class,  "Outer", 5, 7,  "",     "",
+            8,  ""},
+        {ParseRecordKind::Signal, "child", 6, 10, "Outer","NoSuchType",
+            0,  "Outer"},
+    });
+
+    const std::string text = "module top;\n  obj.child.gr";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 1, 14), f.sdb, text);
+    REQUIRE(result.isNull());
+}
+
+// ---------------------------------------------------------------------------
 // Context-aware keyword completion (plan.md §6.9, extended: legality rules)
 // ---------------------------------------------------------------------------
 

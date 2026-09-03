@@ -167,6 +167,34 @@ std::string peelDimensionLayers(const std::string& detail, int depth)
     return result;
 }
 
+// Resolves a bare class name (as stored in ParseRecord::detail --
+// userTypeName() deliberately never produces a qualified/"::"-containing
+// name) to the fully-qualified scope chain its own members are actually
+// stored under (plan.md §6.17) -- e.g. "PolicyImpl" -> "PolicyImpl"
+// unchanged for a top-level class, or "PolicyImpl" -> "policy_pkg::PolicyImpl"
+// for one declared inside a package (or nested inside another class, at
+// any depth -- the found row's own `scope` column already carries
+// whatever full chain applies). Resolves via the class's own DB row
+// (found by name, disambiguated with the same pickBestSymbol()
+// same-file-then-first-row logic hover/definition/super already use) --
+// not by assuming `className` is already qualified, since it never is.
+// Returns "" if `className` doesn't name any real Class row (fail closed,
+// same posture as every other resolution failure in this file) -- this
+// also naturally covers container/type tags ($queue, $queue:MyClass, ...)
+// and a Function's raw built-in return-type text ("void", ...), neither of
+// which can ever be a real symbol name, so findSymbolsByName below always
+// comes back empty for them, same as before this fix existed.
+std::string qualifiedClassScope(SymbolDatabase& db, const std::string& className,
+                                 const std::string& curPath)
+{
+    std::vector<SymbolRow> classRows;
+    for (auto& row : db.findSymbolsByName(className))
+        if (row.kind == "Class") classRows.push_back(row);
+    if (classRows.empty()) return "";
+    const SymbolRow* best = pickBestSymbol(classRows, curPath);
+    return best->scope.empty() ? best->name : best->scope + "::" + best->name;
+}
+
 // Builds the candidate list for whatever a dot-completion chain resolved
 // to -- shared by every chain length (a 1-segment chain reproduces
 // §6.10/§6.13's original single-hop behavior exactly; this is the only
@@ -176,7 +204,8 @@ std::string peelDimensionLayers(const std::string& detail, int depth)
 // findSymbolsInScope("") would wrongly return the whole project's
 // top-level symbols instead of nothing (plan.md §6.14's own documented
 // landmine).
-std::vector<Candidate> candidatesForResolvedType(SymbolDatabase& db, const std::string& detail)
+std::vector<Candidate> candidatesForResolvedType(SymbolDatabase& db, const std::string& detail,
+                                                  const std::string& curPath)
 {
     if (detail.empty()) return {};
 
@@ -191,36 +220,30 @@ std::vector<Candidate> candidatesForResolvedType(SymbolDatabase& db, const std::
     if (auto methods = builtinMethodsFor(firstLayer(detail)); !methods.empty())
         return candidatesFromMethods(methods);
 
-    // Otherwise, a real DB Class/Interface/whatever scope lookup.
-    auto memberRows = db.findSymbolsInScope(detail);
+    // Otherwise, a real DB Class/Interface/whatever scope lookup --
+    // qualified via qualifiedClassScope() (plan.md §6.17) so a class
+    // declared inside a package (or nested inside another class) resolves
+    // correctly, not just a top-level one. A non-empty result here already
+    // proves `detail` names a genuine Class, so it doubles as the gate for
+    // unioning in the randomize-family methods below -- no separate
+    // findSymbolsByName scan needed for that anymore (this used to be two
+    // independent lookups; qualifiedClassScope's own already does the one
+    // that matters).
+    const std::string qualified = qualifiedClassScope(db, detail, curPath);
+    if (qualified.empty()) return {};
+
+    auto memberRows = db.findSymbolsInScope(qualified);
     auto candidates = candidatesFromRows(memberRows);
 
     // Union the randomize-family methods the LRM implicitly grants every
-    // class, but only when `detail` actually names a genuine user-declared
-    // Class -- gating on that (not just "did findSymbolsInScope return
-    // anything") keeps an unresolved/bogus type failing closed instead of
-    // surfacing randomize() for a made-up name. A user class that declares
-    // its own `randomize` override keeps the real (DB) one -- skip the
-    // synthetic entry on a name collision rather than duplicating it.
-    //
-    // No hand-maintained built-in-type-keyword list is needed here to tell
-    // a genuine class name apart from a function's raw, unfiltered return-
-    // type text ("void", "int unsigned", ...): SV reserved words can never
-    // be valid identifiers, so a raw built-in-type string can never
-    // collide with a real Class row -- the DB lookup below already comes
-    // back empty for those, with no false-positive risk (plan.md §6.14's
-    // own documented simplification over its original sketch).
-    bool isClass = false;
-    for (auto& row : db.findSymbolsByName(detail)) {
-        if (row.kind == "Class") { isClass = true; break; }
-    }
-    if (isClass) {
-        for (auto& m : RANDOMIZE_METHODS) {
-            bool collides = std::any_of(memberRows.begin(), memberRows.end(),
-                [&](const SymbolRow& row) { return row.name == m.name; });
-            if (!collides)
-                candidates.push_back({std::string(m.name), m.kind, std::string(m.detail)});
-        }
+    // class. A user class that declares its own `randomize` override
+    // keeps the real (DB) one -- skip the synthetic entry on a name
+    // collision rather than duplicating it.
+    for (auto& m : RANDOMIZE_METHODS) {
+        bool collides = std::any_of(memberRows.begin(), memberRows.end(),
+            [&](const SymbolRow& row) { return row.name == m.name; });
+        if (!collides)
+            candidates.push_back({std::string(m.name), m.kind, std::string(m.detail)});
     }
 
     return candidates;
@@ -257,12 +280,19 @@ std::string resolveFirstSegment(SymbolDatabase& db, const std::string& path, int
 }
 
 // Resolves a non-first chain segment as a member of `prevClass`'s scope.
-// Returns "" on failure (fail closed).
-std::string resolveMemberSegment(SymbolDatabase& db, const std::string& prevClass,
-                                  const ChainSegment& seg)
+// Returns "" on failure (fail closed). Qualifies `prevClass` via
+// qualifiedClassScope() (plan.md §6.17) the same way candidatesForResolvedType
+// does -- an *intermediate* chain segment (e.g. the "child" in
+// "obj.child.greet") can resolve to a package-nested class exactly as
+// easily as the terminal one, and has the same bug independently if left
+// unqualified.
+std::string resolveMemberSegment(SymbolDatabase& db, const std::string& curPath,
+                                  const std::string& prevClass, const ChainSegment& seg)
 {
     if (prevClass.empty()) return "";
-    auto members = db.findSymbolsInScope(prevClass);
+    const std::string qualified = qualifiedClassScope(db, prevClass, curPath);
+    if (qualified.empty()) return "";
+    auto members = db.findSymbolsInScope(qualified);
     const char* wantKind = seg.isCall ? "Function" : nullptr;
     for (auto& row : members) {
         bool kindMatches = wantKind ? row.kind == wantKind
@@ -284,7 +314,7 @@ std::optional<std::string> resolveChain(SymbolDatabase& db, const std::string& p
     std::string current = resolveFirstSegment(db, path, line1, segments[0]);
     if (current.empty()) return std::nullopt;
     for (size_t i = 1; i < segments.size(); ++i) {
-        current = resolveMemberSegment(db, current, segments[i]);
+        current = resolveMemberSegment(db, path, current, segments[i]);
         if (current.empty()) return std::nullopt;
     }
     return current;
@@ -302,7 +332,7 @@ lsp::TextDocument_CompletionResult CompletionProvider::getCompletion(
     if (auto dot = dotCompletionContext(docText, params.position.line, params.position.character)) {
         auto resolved = resolveChain(db, path, line1, dot->segments);
         if (!resolved) return nullptr;
-        return buildCompletionItems(candidatesForResolvedType(db, *resolved), dot->prefix);
+        return buildCompletionItems(candidatesForResolvedType(db, *resolved, path), dot->prefix);
     }
 
     const std::string prefix = wordAtPosition(docText,
