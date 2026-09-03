@@ -463,6 +463,143 @@ TEST_CASE("associative array of a class is tagged $assoc_array:ClassName",
 }
 
 // ---------------------------------------------------------------------------
+// Function/task prototypes -- pure virtual, extern, interface-class methods,
+// DPI import (plan.md §6.16). None of these have a body (function_prototype/
+// task_prototype, not function_body_declaration/task_body_declaration), so
+// they need their own listeners -- previously entirely unrecorded.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("pure virtual function is recorded as a Function symbol with its return type",
+          "[compiler][listener][phase6.16]") {
+    auto [recs, errs, imps, insts] = walkSource(
+        "virtual class Base;\n"
+        "  pure virtual function int get_val(int x);\n"
+        "endclass\n");
+    REQUIRE(errs.empty());
+    auto* r = findRecord(recs, ParseRecordKind::Function, "get_val");
+    REQUIRE(r != nullptr);
+    CHECK(r->detail == "int");
+    CHECK(r->endLine == 0);
+}
+
+TEST_CASE("pure virtual task is recorded as a Task symbol",
+          "[compiler][listener][phase6.16]") {
+    auto [recs, errs, imps, insts] = walkSource(
+        "virtual class Base;\n"
+        "  pure virtual task do_it(int x);\n"
+        "endclass\n");
+    REQUIRE(errs.empty());
+    auto* r = findRecord(recs, ParseRecordKind::Task, "do_it");
+    REQUIRE(r != nullptr);
+    CHECK(r->endLine == 0);
+}
+
+TEST_CASE("extern function/task prototypes are recorded even with no body anywhere in the source",
+          "[compiler][listener][phase6.16]") {
+    auto [recs, errs, imps, insts] = walkSource(
+        "class Base;\n"
+        "  extern function int get_val(int x);\n"
+        "  extern task do_it(int x);\n"
+        "endclass\n");
+    REQUIRE(errs.empty());
+    auto* fn = findRecord(recs, ParseRecordKind::Function, "get_val");
+    auto* tk = findRecord(recs, ParseRecordKind::Task, "do_it");
+    REQUIRE(fn != nullptr);
+    REQUIRE(tk != nullptr);
+    CHECK(fn->detail == "int");
+}
+
+TEST_CASE("a pure-virtual method does not leak its scope onto declarations that follow it",
+          "[compiler][listener][phase6.16]") {
+    // Regression guard: pushId() unconditionally pushes a scope frame for
+    // Function/Task records, normally popped by the body-form's own exit
+    // listener. A prototype has no body -- if its own exit listener didn't
+    // pop that frame, "y" below would be wrongly recorded as nested inside
+    // get_val's scope instead of directly inside Base.
+    auto [recs, errs, imps, insts] = walkSource(
+        "class Base;\n"
+        "  pure virtual function int get_val(int x);\n"
+        "  int y;\n"
+        "endclass\n");
+    REQUIRE(errs.empty());
+    auto* y = findRecord(recs, ParseRecordKind::Signal, "y");
+    REQUIRE(y != nullptr);
+    CHECK(y->parent == "Base");
+    CHECK(y->scope == "Base");
+}
+
+TEST_CASE("interface class parses cleanly and records itself plus its pure-virtual methods",
+          "[compiler][listener][phase6.16]") {
+    // Regression test for a separate, related bug found while investigating
+    // this: interface_class_declaration was defined in the grammar but never
+    // referenced from any reachable parent rule, so this construct always
+    // produced spurious parse errors before this fix.
+    auto [recs, errs, imps, insts] = walkSource(
+        "package p;\n"
+        "  interface class Foo;\n"
+        "    pure virtual function int get_val(int x);\n"
+        "    pure virtual task do_it(int x);\n"
+        "  endclass\n"
+        "endpackage\n");
+    REQUIRE(errs.empty());
+    auto* cls = findRecord(recs, ParseRecordKind::Class, "Foo");
+    REQUIRE(cls != nullptr);
+    auto* fn = findRecord(recs, ParseRecordKind::Function, "get_val");
+    auto* tk = findRecord(recs, ParseRecordKind::Task, "do_it");
+    REQUIRE(fn != nullptr);
+    REQUIRE(tk != nullptr);
+    CHECK(fn->parent == "Foo");
+    CHECK(tk->parent == "Foo");
+}
+
+TEST_CASE("interface class with multiple inheritance records only the first parent in detail",
+          "[compiler][listener][phase6.16]") {
+    auto [recs, errs, imps, insts] = walkSource(
+        "package p;\n"
+        "  interface class A;\n"
+        "    pure virtual function int a_fn();\n"
+        "  endclass\n"
+        "  interface class B;\n"
+        "    pure virtual function int b_fn();\n"
+        "  endclass\n"
+        "  interface class C extends A, B;\n"
+        "    pure virtual function int c_fn();\n"
+        "  endclass\n"
+        "endpackage\n");
+    REQUIRE(errs.empty());
+    auto* c = findRecord(recs, ParseRecordKind::Class, "C");
+    REQUIRE(c != nullptr);
+    CHECK(c->detail == "A");
+}
+
+TEST_CASE("a pure-virtual method still resolves cleanly when the class extends an unresolved external base",
+          "[compiler][listener][phase6.16]") {
+    // Models the real-world shape that motivated this fix: a class
+    // extending an unresolved base (e.g. UVM's uvm_object, never declared
+    // in this same file) with a pure-virtual method of its own.
+    auto [recs, errs, imps, insts] = walkSource(
+        "virtual class Base extends uvm_object;\n"
+        "  pure virtual function Base get_policy(int par);\n"
+        "endclass\n");
+    REQUIRE(errs.empty());
+    auto* r = findRecord(recs, ParseRecordKind::Function, "get_policy");
+    REQUIRE(r != nullptr);
+    CHECK(r->detail == "Base");
+}
+
+TEST_CASE("a DPI-imported function is recorded as a Function symbol",
+          "[compiler][listener][phase6.16]") {
+    // Falls out for free: dpi_function_proto/dpi_task_proto reduce to the
+    // same function_prototype/task_prototype rules pure-virtual/extern
+    // methods use, so no separate handling is needed for DPI imports.
+    auto [recs, errs, imps, insts] = walkSource(
+        "import \"DPI-C\" function int foo(int x);\n");
+    REQUIRE(errs.empty());
+    auto* r = findRecord(recs, ParseRecordKind::Function, "foo");
+    REQUIRE(r != nullptr);
+}
+
+// ---------------------------------------------------------------------------
 // Parent scope tracking
 // ---------------------------------------------------------------------------
 

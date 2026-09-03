@@ -255,6 +255,33 @@ public:
         popScope();
     }
 
+    // ---- Interface classes (plan.md §6.16) ----
+    // Reuses ParseRecordKind::Class -- no new enum value, no dispatch
+    // changes anywhere else (hover/completion/etc. already treat every
+    // Class uniformly). An interface class can `extends` more than one
+    // other interface class; only the first listed parent is recorded in
+    // `detail`, matching the single-inheritance assumption `super.`
+    // resolution already makes for ordinary classes project-wide.
+
+    void enterInterface_class_declaration(
+        SvParser::Interface_class_declarationContext* ctx) override {
+        if (ctx->class_identifier().empty()) return;
+        auto* id = ctx->class_identifier(0)->IDENTIFIER();
+        std::string parentClass;
+        if (!ctx->interface_class_type().empty())
+            if (auto* pci = ctx->interface_class_type(0)->ps_class_identifier())
+                if (auto* ci = pci->class_identifier())
+                    if (auto* pid = ci->IDENTIFIER())
+                        parentClass = pid->getText();
+        pushId(ParseRecordKind::Class, id, ctx, currentScope(), parentClass);
+    }
+
+    void exitInterface_class_declaration(
+        SvParser::Interface_class_declarationContext* ctx) override {
+        backpatchEndLine(currentScope(), translatedEndLine(ctx->stop));
+        popScope();
+    }
+
     // ---- Functions ----
 
     void enterFunction_body_declaration(
@@ -272,6 +299,34 @@ public:
         popScope();
     }
 
+    // ---- Function/task prototypes -- no body (plan.md §6.16) ----
+    // Covers pure virtual, extern, and interface-class methods (all reach
+    // function_prototype/task_prototype via method_prototype), plus DPI
+    // imports (dpi_function_proto/dpi_task_proto reduce to the same two
+    // rules) -- one listener pair for all four shapes, no per-context
+    // dispatch needed. pushId() unconditionally pushes a scope frame for a
+    // Function/Task record on the assumption a body will eventually pop it
+    // (exitFunction_body_declaration/exitTask_body_declaration); a
+    // prototype has no body, so its own exit listener must pop that frame
+    // immediately here instead, or every symbol declared afterward in the
+    // file would be wrongly nested under it. No backpatchEndLine call is
+    // needed (unlike the body-form exits): a leaf/no-body record correctly
+    // keeps endLine == 0, already ParseRecord::endLine's convention for
+    // Port/Signal/Parameter/Macro.
+
+    void enterFunction_prototype(SvParser::Function_prototypeContext* ctx) override {
+        auto* fid = ctx->function_identifier();
+        if (!fid) return;
+        std::string retType;
+        if (auto* dtv = ctx->data_type_or_void())
+            retType = dtv->getText();
+        pushId(ParseRecordKind::Function, fid->IDENTIFIER(), ctx, currentScope(), retType);
+    }
+
+    void exitFunction_prototype(SvParser::Function_prototypeContext*) override {
+        popScope();
+    }
+
     // ---- Tasks ----
 
     void enterTask_body_declaration(
@@ -283,6 +338,16 @@ public:
 
     void exitTask_body_declaration(SvParser::Task_body_declarationContext* ctx) override {
         backpatchEndLine(currentScope(), translatedEndLine(ctx->stop));
+        popScope();
+    }
+
+    void enterTask_prototype(SvParser::Task_prototypeContext* ctx) override {
+        auto* tid = ctx->task_identifier();
+        if (!tid) return;
+        pushId(ParseRecordKind::Task, tid->IDENTIFIER(), ctx, currentScope());
+    }
+
+    void exitTask_prototype(SvParser::Task_prototypeContext*) override {
         popScope();
     }
 

@@ -613,6 +613,7 @@ package_or_generate_item_declaration :
     | dpi_import_export
     | extern_constraint_declaration
     | class_declaration
+    | interface_class_declaration
     | class_constructor_declaration
     | local_parameter_declaration ';'
     | parameter_declaration ';'

@@ -191,6 +191,30 @@ TEST_CASE("CompletionProvider: dot-completion narrows to the object's class memb
     CHECK_FALSE(hasItem(items, "MyClass"));
 }
 
+TEST_CASE("CompletionProvider: dot-completion offers a prototype-only (endLine==0) method",
+          "[completion][dot]")
+{
+    // Confirms the completion pipeline needs no changes of its own for
+    // plan.md §6.16 (pure virtual/extern/interface-class method
+    // prototypes, src/compiler/sv_tree_walker.cpp) -- a Function row with
+    // no body (endLine == 0, same leaf-symbol convention Port/Signal/
+    // Parameter/Macro already use) flows through exactly like any other.
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module,   "top",       1, 7,  "",        "",        10, ""},
+        {ParseRecordKind::Signal,   "foo",       2, 10, "top",     "MyClass", 0,  "top"},
+        {ParseRecordKind::Class,    "MyClass",   5, 7,  "",        "",        8,  ""},
+        {ParseRecordKind::Function, "get_val",   6, 10, "MyClass", "int",     0,  "MyClass"},
+    });
+
+    const std::string text = "module top;\n  foo.";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 1, 6), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "get_val"));
+}
+
 TEST_CASE("CompletionProvider: dot-completion filters class members by typed prefix", "[completion][dot]")
 {
     Fixture f;
