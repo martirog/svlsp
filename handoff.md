@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-09-02 (compressed from full session history — see git log for
+**Last updated:** 2026-09-03 (compressed from full session history — see git log for
 narrative detail if ever needed; this file now documents current-state-and-next-steps
 only).
 
@@ -26,13 +26,20 @@ Also on 2026-09-02: §6.14 chained/function-call dot-completion implemented
 resolve, subsuming §6.10's own deferred chained-access question. Found and
 dropped an unnecessary piece of its own original design in the process
 (a hand-maintained built-in-type-keyword list) — see "Chained/function-call
-dot-completion" below. Unit suite now at 1347 assertions / 478 test cases,
-all green (debug); Emacs integration suite gained
-`test_28_keyword_completion.sh` (8 cases), `test_29_builtin_method_completion.sh`
-(9 cases), and `test_30_chained_dot_completion.sh` (5 cases), no
-regressions in the existing completion suite. Working tree has uncommitted
-changes for §6.14 as of this writing (§6.9/§6.13 are committed) — not yet
-committed, only commit when asked.
+dot-completion" below. On 2026-09-03: §6.15 queue/associative-array element access completion
+implemented — indexing into a container (`list[a].member`) to complete on
+a class-typed *element*, including multi-dimensional partial-vs-full
+indexing (`arr[i].` on a fixed-array-of-queues lands on the queue's own
+methods; `arr[i][j].` reaches the element class) — see "Queue/
+associative-array element access completion" below. Unit suite now at
+1414 assertions / 500 test cases, all green (debug); Emacs integration
+suite gained `test_28_keyword_completion.sh` (8 cases),
+`test_29_builtin_method_completion.sh` (9 cases),
+`test_30_chained_dot_completion.sh` (5 cases), and
+`test_31_queue_element_completion.sh` (7 cases), no regressions anywhere
+(186/186 total). Working tree has uncommitted changes for §6.15 as of this
+writing (everything through §6.14 is committed) — not yet committed, only
+commit when asked.
 
 ---
 
@@ -62,8 +69,8 @@ src/compiler/      compiler_directive_stripper, sv_preprocessor, sv_tree_walker,
 src/db/            database, symbol_database, compilation_controller,
                    library_resolver, project_compiler, schema — SQLite persistence (schema v5)
 src/main.cpp       entry point (supports `--log-files <path>`, see below)
-tests/unit/        Catch2 unit tests (391 cases, 963 assertions)
-tests/integration/ Emacs functional test scripts (146 test cases across ~25 files)
+tests/unit/        Catch2 unit tests (500 cases, 1414 assertions)
+tests/integration/ Emacs functional test scripts (186 test cases across 32 files)
 tests/uvm_corpus/  opt-in test suite against a real, external UVM corpus (NOT in
                    ctest/make test — see "UVM corpus testing" below)
 tools/             emacs-test-daemon.sh, emacs-test-init.el, emacs-test-lib.sh
@@ -396,6 +403,76 @@ shared `candidatesForResolvedType(db, detail)` (also where §6.13's
 extracted from the old single-hop-only code, called once regardless of
 chain length, so a 1-segment chain reproduces §6.10/§6.13's original
 behavior exactly rather than through a separate path).
+
+**Queue/associative-array element access completion** (plan.md §6.15,
+implemented 2026-09-03): extends §6.13/§6.14 to *indexing into* a
+container (`list[a].member`) to complete on a class-typed element, not
+just the container's own methods — including multi-dimensional
+declarators like `MyClass arr[4][$]` (a fixed array of queues), where
+partial indexing (`arr[i].`) must land on the queue's own methods and
+full indexing (`arr[i][j].`) must land on `MyClass`'s own members.
+
+`containerDimensionTag()` (§6.13, singular — first dimension only) became
+`containerDimensionTags()` (plural, `src/compiler/sv_tree_walker.cpp`):
+walks every `variable_dimension()` entry on a declarator, not just the
+first. `enterData_declaration` now joins those tags with the element
+type/tag (`userTypeName()`/`builtinBareTypeTag()`) into one `:`-delimited
+`ParseRecord::detail` string, outermost layer first — e.g.
+`"$fixed_array:$queue:MyClass"` for `MyClass arr[4][$]`, or just `"$queue"`
+for `int q[$]` (no element layer: a built-in scalar has no tag). No schema
+change; `SV_KEYWORDS`-style reserved-word reasoning doesn't apply here, but
+the same "no collision risk" logic does: `:` is safe because every layer
+is either a `$`-prefixed tag or a bare identifier, never itself containing
+`:`.
+
+`ChainSegment` (`src/lsp/symbol_utils.h`) gained an `indexDepth` field
+(default 0, meaning "not indexed" — every pre-§6.15 segment).
+`dotCompletionContext` detects a segment ending in `]` and
+bracket-balance-matches left via a new `matchingOpenDelim` helper — a
+generalization of §6.14's `matchingOpenParen` to an arbitrary open/close
+delimiter pair, now shared by both — repeating for each further
+consecutive `]` immediately to its left so `arr[i][j]` is parsed as *one*
+segment with `indexDepth=2`, not two chain segments (there's no `.`
+between the brackets). Same in-string tracking as §6.14's call-paren
+matching, so an index key like `aa["a.b"]` isn't confused by the `.`
+inside the string.
+
+Resolution (`src/lsp/completion.cpp`) adds
+`peelDimensionLayers(detail, depth)`: splits `detail` on `:`, counts the
+*leading run* of recognized container-dimension tags
+(`isContainerDimensionTag` — only `$queue`/`$assoc_array`/
+`$dynamic_array`/`$fixed_array` count; `$string`/`$event`/a bare class
+name are element layers, never themselves indexable), fails closed (`""`)
+if `depth` exceeds that count — over-indexing, or indexing a detail with
+no container dimensions at all — otherwise returns the remaining layers
+rejoined. `resolveFirstSegment`/`resolveMemberSegment` both pipe their
+resolved row's `detail` through this before returning it, so a
+1-segment-deep, `indexDepth=0` chain reproduces §6.10/§6.13/§6.14's
+original behavior exactly — this is a strict superset, not a new
+mechanism, matching every earlier phase's own precedent in this feature
+area.
+
+**One addition beyond the original plan.md sketch, found while
+implementing:** `candidatesForResolvedType`'s builtin-method dispatch
+(`builtinMethodsFor`) now keys off a new `firstLayer(detail)` helper (the
+substring before the first `:`) instead of the full `detail` string. This
+turned out to be *required*, not optional: once `detail` could carry
+trailing element-type layers, even *unindexed* container access broke —
+`"q."` on `MyClass q[$]` now has `detail="$queue:MyClass"` rather than
+the old bare `"$queue"`, so exact-string dispatch would have silently
+regressed every existing §6.13 test. Caught by the unit suite before
+shipping, not by inspection. A useful side effect of the same fix: partial
+indexing that lands back on a container (not yet the element) correctly
+offers that container's own methods through this same path, and — not
+separately tested, but falls out for free from the same general
+mechanism — a queue of `string`/`event`/`mailbox`-family elements now
+also offers *those* types' own methods one level of indexing in.
+
+Explicitly still out of scope, per plan.md §6.15's own original text:
+associative-array key-type validation (any index expression is accepted,
+never checked against the declared index type); indexing directly off a
+*call's* result (`get_matrix()[i][j].member`); struct-typed elements
+(classes only, matching §6.14's own restriction).
 
 ### I/O wrapper (`src/lsp/server.h/.cpp`)
 
@@ -900,32 +977,15 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
     first segment; constraint-block completion inside `randomize() with
     {...}`; no depth cap on chain length (not stress-tested against a
     pathological input).
-18. **Queue/associative-array element access completion, including
-    multi-dimensional (`plan.md §6.15`)** — not started, added
-    2026-09-02. Extends §6.13/§6.14: `list.` completes the container's
-    own methods, but indexing into it (`list[a].member`) to complete on a
-    class-typed *element* doesn't work — `containerDimensionTag()`
-    (`src/compiler/sv_tree_walker.cpp`) looks only far enough to find a
-    declarator's *first* dimension and returns one tag, discarding both
-    the element type and any further nested dimensions (`int arr[4][$]`
-    records only `$fixed_array`, losing the `[$]` entirely). plan.md
-    §6.15 has the design, with multi-dimensional access (`arr[i][j].member`)
-    explicitly in scope from the start, not a deferred follow-up:
-    `containerDimensionTag()` becomes `containerDimensionTags()` (plural,
-    walks every dimension, not just the first), encoding the *whole*
-    layered shape in `ParseRecord::detail` as an ordered, delimited list
-    outermost-first (recommended: `"$fixed_array:$queue:MyClass"`-style,
-    no schema change); a third `ChainSegment` kind for indexed access
-    that carries a *depth* (how many consecutive `[...]` groups, since
-    `arr[i][j]` is one segment, not two — reusing §6.14's bracket-balance-
-    walk technique for `[`/`]`); and resolution that peels exactly
-    `depth` layers off the front of the layered string rather than
-    requiring a full resolve — this elegantly handles *under*-indexing a
-    multi-dimensional container for free (`arr[i].` on a fixed-array-of-
-    queues correctly lands on the queue's own methods, not the element
-    class, since `arr[i]` really is a queue). Also covers dynamic/
-    fixed-size arrays for the same reason §6.13 did. Explicitly still out
-    of scope: associative-array key-type validation; indexing directly
-    off a *call's* result (`get_matrix()[i][j].member` — a distinct
-    further generalization, not requested); struct-typed elements
-    (classes only, matching §6.14's own restriction).
+18. ~~Queue/associative-array element access completion, including
+    multi-dimensional (`plan.md §6.15`)~~ — **implemented 2026-09-03**,
+    following the sketch essentially as designed. See "Queue/
+    associative-array element access completion" under "LSP feature
+    providers" above for the full design (including one real addition
+    found while implementing — `firstLayer()`-based builtin-method
+    dispatch, required to keep unindexed container access from silently
+    regressing once `detail` could carry element-type layers) and
+    plan.md §6.15 for the complete writeup. Remaining out of scope, per
+    the original sketch, unchanged: associative-array key-type
+    validation; indexing directly off a *call's* result
+    (`get_matrix()[i][j].member`); struct-typed elements (classes only).

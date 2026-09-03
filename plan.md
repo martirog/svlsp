@@ -1782,11 +1782,66 @@ cases, plus a broken-link negative case.
 
 ### 6.15 Queue/Associative-Array Element Access Completion (`list[a].member`, including multi-dimensional)
 
-**Status:** not started. Extends §6.13 (built-in container method
-completion) and §6.14 (chained dot-completion), both shipped 2026-09-02.
-Multi-dimensional access (`arr[i][j].member`) is explicitly **in scope**
-for this section, not a deferred follow-up — the design below is shaped
-around it from the start rather than bolted on later.
+**Status:** implemented 2026-09-03, following the design below essentially
+as sketched (option 1 — layered `detail` string, no schema change).
+Extends §6.13 (built-in container method completion) and §6.14 (chained
+dot-completion), both shipped 2026-09-02. Multi-dimensional access
+(`arr[i][j].member`) was in scope from the start and is covered, including
+the partial-indexing case (`arr[i].` on a fixed-array-of-queues correctly
+lands on the queue's own methods).
+
+**As implemented:** `containerDimensionTag()` (singular) became
+`containerDimensionTags()` (plural, `src/compiler/sv_tree_walker.cpp`),
+walking every `variable_dimension()` entry instead of stopping at the
+first; `enterData_declaration` joins those tags with the element
+type/tag (`userTypeName()`/`builtinBareTypeTag()`, whichever is non-empty)
+into one `:`-delimited `ParseRecord::detail` string, outermost layer
+first — exactly the `"$fixed_array:$queue:MyClass"` shape the design
+sketched. `ChainSegment` (`src/lsp/symbol_utils.h`) gained an `indexDepth`
+field (default 0); `dotCompletionContext` (`src/lsp/symbol_utils.cpp`)
+detects a segment ending in `]` by bracket-balance-matching left with a
+new `matchingOpenDelim` helper (a generalization of §6.14's
+`matchingOpenParen` to an arbitrary open/close delimiter pair, now shared
+by both), repeating for each further consecutive `]` to accumulate the
+depth — `arr[i][j]` is one segment with `indexDepth=2`, not two segments,
+matching the design. Resolution (`src/lsp/completion.cpp`) adds
+`peelDimensionLayers(detail, depth)`: splits `detail` on `:`, counts the
+*leading run* of recognized container-dimension tags (`isContainerDimensionTag`),
+fails closed (`""`) if `depth` exceeds that count (over-indexing, or
+indexing a non-container detail at all), otherwise returns the remaining
+layers rejoined. `resolveFirstSegment`/`resolveMemberSegment` both pipe
+their resolved row's `detail` through this before returning it —
+`indexDepth=0` (every pre-§6.15 segment) is a no-op, so this is a strict
+superset of §6.14's resolution exactly as intended.
+
+**One addition beyond the original sketch, found while implementing:**
+`candidatesForResolvedType`'s builtin-method dispatch (`builtinMethodsFor`)
+now keys off a new `firstLayer(detail)` helper (the substring before the
+first `:`) rather than the full `detail` string. This was required to keep
+*unindexed* container access working at all once `detail` could carry
+extra element-type layers — `"q."` on `MyClass q[$]` now has
+`detail="$queue:MyClass"` (previously just `"$queue"`), so exact-string
+dispatch would have silently broken every existing §6.13 test without
+this. A useful side effect, not separately requested: this also makes
+partial-indexing "land on a container, not yet the element" (e.g.
+`arr[i].` on a fixed-array-of-queues) correctly offer that container's own
+methods via the same mechanism, and (untested but falls out for free from
+the same general mechanism) a queue of `string`/`event`/`mailbox`-family
+elements now also offers *those* types' own methods one level of
+indexing in, not just class elements.
+
+**Confirmed via both layers of testing**, per this project's working
+rule: `tests/unit/compiler/test_sv_listener.cpp` (layered-detail
+construction, multi-dim and single-dim, class/string/int elements),
+`tests/unit/lsp/test_symbol_utils.cpp` (indexed-segment parsing incl. a
+`.` inside a string-literal index key, mixed indexed/non-indexed chains,
+unmatched-bracket/no-identifier-before-bracket fail-closed cases), and
+`tests/unit/lsp/test_completion.cpp` (full resolution incl. partial vs.
+full multi-dimensional indexing, over-indexing, indexed access deep in a
+longer chain) at the unit level; `tests/integration/test_31_queue_element_completion.sh`
++ `fixtures/queue_element_completion.sv` at the real JSON-RPC/Emacs level.
+Unit suite: 1414 assertions / 500 cases, all green (debug). Emacs
+integration suite: 186/186, no regressions.
 
 **Why this is needed:** §6.13 gave queues/associative/dynamic/fixed-size
 arrays their own container-level method completion (`list.` →
