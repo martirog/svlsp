@@ -40,20 +40,23 @@ since only body-form functions/tasks had listeners), plus a companion
 grammar fix for `interface_class_declaration` (defined but never wired
 into any reachable parent rule — dead grammar, found while narrowing the
 repro) — see "Function/task prototype recording" below. A related, real,
-*separate* bug was found in the same investigation but deliberately not
-fixed here (out of scope for §6.16): dot-completion can never resolve into
-a class declared inside a package — see "Known gaps" below, candidate
-`plan.md §6.17`. Unit suite now at 1445 assertions / 509 test cases, all
-green (debug); Emacs integration suite gained
-`test_28_keyword_completion.sh` (8 cases),
+*separate* bug found in the same investigation (dot-completion can never
+resolve into a class declared inside a package) was fixed same-day as
+§6.17 — see "Dot-completion into a package-nested class's members" below.
+Together, §6.16+§6.17 fully fix the user's original bug report end-to-end
+(re-verified directly against their real files), even before they've
+fixed an unrelated `` `import ``-typo still present in one of them. Unit
+suite now at 1454 assertions / 514 test cases, all green (debug); Emacs
+integration suite gained `test_28_keyword_completion.sh` (8 cases),
 `test_29_builtin_method_completion.sh` (9 cases),
 `test_30_chained_dot_completion.sh` (5 cases),
 `test_31_queue_element_completion.sh` (7 cases),
-`test_32_live_edit_completion.sh` (3 cases), and
-`test_33_prototype_methods.sh` (3 cases), no regressions anywhere
-(192/192 total). Working tree has uncommitted changes for §6.16 as of this
-writing (everything through §6.15 is committed) — not yet committed, only
-commit when asked.
+`test_32_live_edit_completion.sh` (3 cases),
+`test_33_prototype_methods.sh` (3 cases), and
+`test_34_package_scoped_dot_completion.sh` (2 cases), no regressions
+anywhere (194/194 total). Working tree has uncommitted changes for §6.17
+as of this writing (everything through §6.16 is committed) — not yet
+committed, only commit when asked.
 
 ---
 
@@ -83,8 +86,8 @@ src/compiler/      compiler_directive_stripper, sv_preprocessor, sv_tree_walker,
 src/db/            database, symbol_database, compilation_controller,
                    library_resolver, project_compiler, schema — SQLite persistence (schema v5)
 src/main.cpp       entry point (supports `--log-files <path>`, see below)
-tests/unit/        Catch2 unit tests (509 cases, 1445 assertions)
-tests/integration/ Emacs functional test scripts (192 test cases across 34 files)
+tests/unit/        Catch2 unit tests (514 cases, 1454 assertions)
+tests/integration/ Emacs functional test scripts (194 test cases across 35 files)
 tests/uvm_corpus/  opt-in test suite against a real, external UVM corpus (NOT in
                    ctest/make test — see "UVM corpus testing" below)
 tools/             emacs-test-daemon.sh, emacs-test-init.el, emacs-test-lib.sh
@@ -556,10 +559,59 @@ including every dot-completion path above) already handles them uniformly
 regardless of body-vs-prototype. Purely additive in the compiler
 front-end. Verified end-to-end against the real, motivating project files
 (zero diagnostics, both previously-missing methods now recorded) — see
-"Known gaps" below for a *separate*, pre-existing bug found in the same
-investigation (dot-completion can't resolve into a package-nested class's
-members at all) that would still block that exact real-world case, not
-fixed here.
+"Dot-completion into a package-nested class's members" directly below for
+a *separate*, pre-existing bug found in the same investigation that also
+needed fixing before the user's exact real-world case worked end-to-end.
+
+**Dot-completion into a package-nested class's members** (plan.md §6.17,
+implemented 2026-09-03, same day found): a real, separate bug uncovered
+while building §6.16's functional test. `findSymbolsInScope(scope)`
+(`src/db/symbol_database.cpp`) does an exact `s.scope = ?` match against
+the fully-qualified scope chain (e.g. `"policy_pkg::PolicyImpl"`), but a
+class-typed `Signal`/`Parameter`'s own `detail` — what dot-completion
+resolution feeds into it — comes from `userTypeName()`
+(`src/compiler/sv_tree_walker.cpp`), which by design "already never
+produces a qualified/`::`-containing name" (a §6.10-era simplification,
+previously harmless). For any class declared inside a `package`, that
+bare `detail` could therefore never match, so resolution always fell
+through to "not a real class" — real class members were silently
+invisible to `.` completion. Confirmed directly on a real project file
+before fixing: a class extending `uvm_object`, declared inside a package,
+offered only the synthetic `randomize`-family methods, never its own real
+method. Every dot-completion fixture in this repo happened to declare its
+classes at top level (bare name and scope chain trivially coincide
+there), which is why this went uncaught despite essentially every real
+UVM/verification class living inside a package.
+
+Fixed with one new helper, `qualifiedClassScope(db, className, curPath)`
+(`src/lsp/completion.cpp`): finds the class's own DB row by name
+(`findSymbolsByName`, filtered to `kind == "Class"`), disambiguates with
+`pickBestSymbol` (the same same-file-then-first-row logic hover/
+definition/`super.` already use), then returns `row.scope.empty() ?
+row.name : row.scope + "::" + row.name` — a top-level class reproduces
+its bare name unchanged, so every pre-existing test kept passing with
+zero fixture changes. Applied at **both** places that previously fed an
+unqualified name straight into `findSymbolsInScope`: `candidatesForResolvedType`
+(the terminal hop of a chain) and `resolveMemberSegment` (every
+*intermediate* hop — easy to miss, since a package-nested class can be
+reached either way, e.g. the `child` in `obj.child.greet`). `this.`/
+`super.` needed no separate fix: `enclosingClassNameAt`'s own query is
+`SELECT s.name` (never qualified), so whatever bare name it hands back
+flows into one of the two now-fixed call sites like any other segment.
+
+**A real simplification fell out of the fix, not just the fix itself:**
+`candidatesForResolvedType` used to run a *second*, independent
+`findSymbolsByName(detail)` scan purely to gate the randomize-family
+union on "does this name a real Class". `qualifiedClassScope` returning
+non-empty already proves exactly that, so the separate scan was deleted.
+
+Re-verified against the user's real, original bug report
+(`all_queue[i].get_policy`, `/home/martin/src/policy/policy_mixin.sv`):
+now completes to `get_policy` correctly — combined with §6.16, this fixes
+the user's exact original repro completely, even before they've fixed the
+unrelated `` `import `` typo still present in that file (its parse-error
+cascade turned out not to disrupt `all_queue`'s own scope tracking after
+all).
 
 ### I/O wrapper (`src/lsp/server.h/.cpp`)
 
@@ -888,29 +940,11 @@ access) vs. `expectedUriPath` (output comparison — runs the expected value thr
   `uvm_component.svh` at 3780 lines) has an inherent, roughly-linear-but-high-constant
   per-line cost independent of any preprocessor gap — Phase 6.5 territory, not
   attempted (would need profiling, possibly grammar restructuring).
-- **Dot-completion can never resolve into a class declared inside a package**
-  (found 2026-09-03 while building §6.16's functional test — a real, separate,
-  pre-existing gap, not part of §6.16 itself). `findSymbolsInScope(scope)`
-  (`src/db/symbol_database.cpp`) does an exact `s.scope = ?` match, but a
-  class-typed `Signal`/`Parameter`'s own `detail` comes from `userTypeName()`
-  (`src/compiler/sv_tree_walker.cpp`), which "already never produces a
-  qualified/`::`-containing name" — a deliberate simplification going back to
-  §6.10. For a class declared inside a `package` (its members' own `scope`
-  column is the fully-qualified chain, e.g. `"policy_pkg::PolicyImpl"`), that
-  bare, unqualified `detail` (`"PolicyImpl"`) can never match, so
-  `candidatesForResolvedType` always falls through to the empty-scope,
-  randomize-union-only path — real class members are silently invisible to
-  `.` completion. Confirmed directly against a real UVM-style file (a class
-  extending `uvm_object`, declared inside a package): dot-completion offered
-  only the synthetic `randomize`-family methods, never the class's own real
-  members. Every dot-completion fixture in this repo happens to declare its
-  classes at top level (where the bare name and the scope chain coincide),
-  which is why this was never caught before — real-world verification code
-  (essentially all real UVM classes) almost always lives inside a package.
-  Not fixed here — likely needs `userTypeName()`/`findSymbolsInScope` (or a
-  new qualified-lookup variant) to carry/match the full scope chain instead
-  of a bare name; a real, standalone piece of work, candidate for `plan.md
-  §6.17`.
+- ~~Dot-completion can never resolve into a class declared inside a
+  package~~ — **fixed 2026-09-03 (§6.17)**, same day it was found while
+  building §6.16's functional test. See "Dot-completion into a
+  package-nested class's members" under "LSP feature providers" below for
+  the full design.
 - ~~`didChange` recompiles synchronously on the message-read thread, every time,
   with no debouncing~~ — **fixed 2026-08-28**, see "Debounced `didChange`" under
   "I/O wrapper" above (`plan.md §6.8`). One deliberate deviation from that
@@ -1125,14 +1159,13 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
     wrongly nested under it (a regression test guards this specifically).
     No LSP-layer code changed at all — every consumer already handles
     `Function`/`Task`/`Class` uniformly regardless of body-vs-prototype.
-20. **Dot-completion into a package-nested class's members
-    (`plan.md §6.17`, candidate)** — not started, found 2026-09-03 while
-    building §6.16's functional test (see "Known gaps" above for the full
-    writeup). `findSymbolsInScope`'s exact-match `scope` lookup can never
-    match `userTypeName()`'s deliberately-unqualified `detail`, so `.`
-    completion on any class declared inside a `package` — i.e. essentially
-    every real UVM/verification class — silently falls through to
-    offering only the synthetic randomize-family methods, never the
-    class's real members. A real, standalone gap, not part of §6.16;
-    every existing dot-completion fixture happens to use top-level classes,
-    which is why it was never caught before.
+20. ~~Dot-completion into a package-nested class's members
+    (`plan.md §6.17`)~~ — **implemented 2026-09-03**, same day it was
+    found while building §6.16's functional test. See "Dot-completion into
+    a package-nested class's members" under "LSP feature providers" above
+    for the full design (a new `qualifiedClassScope()` helper in
+    `src/lsp/completion.cpp`, applied at both the terminal- and
+    intermediate-chain-hop resolution call sites) and plan.md §6.17 for
+    the complete writeup. Re-verified directly against the user's
+    original bug report end to end: `all_queue[i].get_policy` now
+    completes correctly.

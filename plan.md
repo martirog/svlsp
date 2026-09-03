@@ -2058,12 +2058,16 @@ package at all (`findSymbolsInScope`'s exact-match `scope` lookup can
 never match `userTypeName()`'s deliberately-unqualified `detail`) — see
 §6.17 below.
 
-### 6.17 Dot-Completion Into a Package-Nested Class's Members (candidate, not started)
+### 6.17 Dot-Completion Into a Package-Nested Class's Members
 
-**Status:** not started, found 2026-09-03 while building §6.16's
-functional test. Not part of §6.16 — a real, separate, pre-existing bug.
+**Status:** implemented 2026-09-03, same day it was found while building
+§6.16's functional test. Chose option (b) from this section's own
+original sketch (a qualified-lookup fallback at the completion-resolution
+call sites) over (a) (making `detail` itself carry a qualified name
+everywhere) — narrower, and doesn't touch what every other `detail`
+consumer (hover formatting included) already assumes it means.
 
-**Why this is needed:** `findSymbolsInScope(scope)`
+**Why this was needed:** `findSymbolsInScope(scope)`
 (`src/db/symbol_database.cpp`) does an exact `s.scope = ?` match against
 the fully-qualified scope chain (e.g. `"policy_pkg::PolicyImpl"` for a
 class declared inside a package). But a class-typed `Signal`/`Parameter`'s
@@ -2072,33 +2076,79 @@ own `detail` — what dot-completion resolution feeds into
 (`src/compiler/sv_tree_walker.cpp`), which by design "already never
 produces a qualified/`::`-containing name" (a simplification going back to
 §6.10, previously harmless). For any class declared inside a `package`,
-that bare, unqualified `detail` can therefore never match the member
-rows' fully-qualified `scope`, so `candidatesForResolvedType` always falls
-through to the empty-scope, randomize-union-only path — a class's real
-members are silently invisible to `.` completion, offering only the
-synthetic `randomize`-family methods instead.
+that bare, unqualified `detail` could therefore never match the member
+rows' fully-qualified `scope`, so resolution always fell through to
+"not a real class" — a class's real members were silently invisible to
+`.` completion, offering only the synthetic `randomize`-family methods at
+best. Confirmed directly on a real project file before fixing: a class
+extending `uvm_object`, declared inside a package, with its own
+pure-virtual method, offered only `get_randstate` via dot-completion,
+never the real method. Every dot-completion fixture in this repo happened
+to declare its classes at top level (bare name and scope chain trivially
+coincide there), which is why this went uncaught despite essentially
+every real UVM/verification class living inside a package.
 
-Confirmed directly: a class extending `uvm_object` and declared inside a
-package, with its own pure-virtual method, offered only `get_randstate`
-(matching a `"get"` prefix) via dot-completion — never the real method.
-Every dot-completion fixture in this repo happens to declare its classes
-at top level (where the bare name and the scope chain trivially coincide,
-so this was never caught), but essentially every real UVM/verification
-class lives inside a package — this is a high-impact gap for real-world
-code despite zero existing test coverage ever exercising it.
+**As implemented:** one new helper, `qualifiedClassScope(db, className,
+curPath)` (`src/lsp/completion.cpp`), resolves a bare class name to the
+fully-qualified scope chain its members are actually stored under: finds
+the class's own DB row by name (`findSymbolsByName`, filtered to
+`kind == "Class"`), disambiguates with `pickBestSymbol` — the exact same
+same-file-then-first-row logic hover/definition/`super.` resolution
+already use — then returns `row.scope.empty() ? row.name : row.scope +
+"::" + row.name`. For a top-level class this reproduces the bare name
+unchanged (`scope` is `""`), so every pre-existing test kept passing with
+zero fixture changes. Called at both places that previously fed an
+unqualified `detail`/`prevClass` straight into `findSymbolsInScope`:
+`candidatesForResolvedType` (the terminal hop of a chain) and
+`resolveMemberSegment` (every *intermediate* hop) — both needed the fix
+independently, since a package-nested class can be reached either way
+(`obj.child.greet` hits `resolveMemberSegment` for `child` before ever
+reaching the terminal `greet` lookup). `resolveChain`/`getCompletion` were
+updated only to thread the current file path (`curPath`) through to both
+call sites — no behavioral change of their own. `resolveFirstSegment`'s
+`this`/`super` branches needed no change at all: they already return a
+bare class name (`enclosingClassNameAt`'s own query is `SELECT s.name`,
+never qualified), so whatever they hand back flows into one of the two
+now-fixed call sites like any other segment, fixing `this.`/`super.` on a
+package-nested class for free.
 
-**Not designed yet.** Likely direction: either (a) have `userTypeName()`
-(or a sibling) capture the full scope chain at the point of use, not just
-the bare name, so `detail` itself becomes qualified — a bigger change,
-touching every existing `detail` consumer's assumption that it's a bare
-name; or (b) add a qualified-lookup variant/fallback to
-`findSymbolsInScope` (or the completion-resolution call site) that, given
-a bare class name with no scope match, searches `findSymbolsByName` for a
-same-named `Class` row and uses *its own* `scope` column to build the
-qualified lookup instead — reuses `pickBestSymbol`-style disambiguation
-already established for hover/definition rather than changing what
-`detail` means everywhere. Needs a decision before implementation;
-revisit this section once one is made.
+**A real simplification fell out of the fix, not just the fix itself:**
+`candidatesForResolvedType` used to run a *second*, independent
+`findSymbolsByName(detail)` scan purely to gate whether `detail` named a
+real `Class` (for the randomize-family union). `qualifiedClassScope`
+returning non-empty already proves exactly that, so that separate scan
+was deleted — the randomize union now runs unconditionally once past the
+`qualified.empty()` guard.
+
+Container/type tags (`$queue`, `$queue:MyClass`, mailbox/semaphore/
+process/string/event literal names, ...) and a Function's raw built-in
+return-type text (`"void"`, ...) are unaffected at both fixed call sites:
+`qualifiedClassScope` calls `findSymbolsByName` on the literal text, which
+can never match a real symbol name for any of these (SV identifiers can't
+start with `$` or contain `:`; reserved words can never be identifiers —
+the same non-collision reasoning §6.14 already established), so it
+correctly returns `""` and preserves the exact same fail-closed behavior
+they already had — confirmed by every existing §6.13/§6.15 test
+continuing to pass unmodified, not just by reasoning about it.
+
+**Verification:** 5 new unit tests
+(`tests/unit/lsp/test_completion.cpp`) — the core single-hop regression,
+an intermediate-hop regression (`obj.child.greet` with `child`'s class
+package-nested, proving `resolveMemberSegment`'s own fix independently of
+`candidatesForResolvedType`'s), `this.` through a package-nested enclosing
+class, a top-level-class backward-compatibility guard, and an
+intermediate hop resolving to a genuinely bogus type still failing closed
+(exercising `resolveMemberSegment`'s new guard specifically, which the
+pre-existing single-hop-only fail-closed test never touched). Functional
+test `tests/integration/test_34_package_scoped_dot_completion.sh` +
+`fixtures/package_scoped_dot_completion.sv` re-creates the real
+motivating shape end-to-end. Also re-verified directly against the user's
+real, original bug report (`all_queue[i].get_policy`,
+`/home/martin/src/policy/policy_mixin.sv`): now completes to `get_policy`
+correctly — combined with §6.16, this fixes the user's *exact* original
+repro completely, even before they've fixed the unrelated `` `import ``
+typo still present in that file (its parse-error cascade turned out not
+to disrupt `all_queue`'s own scope tracking after all).
 
 ---
 
