@@ -1936,6 +1936,172 @@ guard, same fail-closed posture); a plain container method access
 
 ---
 
+### 6.16 Function/Task Prototype Recording (pure virtual, extern, interface-class methods, DPI import)
+
+**Status:** implemented 2026-09-03, following a real user bug report.
+
+**Why this was needed:** a user reported that `all_queue[i].get_policy`
+offered no completions, where `all_queue` was a queue of `policy_base` and
+`get_policy` was declared `pure virtual function policy_base
+get_policy(uvm_object par);`. Investigation (direct JSON-RPC probes
+against the real binary, both on the user's real files and on minimal
+from-scratch repros — this project's own established "verify empirically,
+don't just read the grammar" discipline, see §6.13) found that
+`src/compiler/sv_tree_walker.cpp` never recorded a symbol for *any*
+function/task declaration without a body. Only
+`enterFunction_body_declaration`/`enterTask_body_declaration` existed,
+both requiring `function_data_type_or_implicit ... 'endfunction'`/`...
+'endtask'` — the grammar's separate `function_prototype`/`task_prototype`
+rules (no body, terminated by `;`) had no listener at all. This silently
+broke hover/definition/completion/references for any `pure virtual`
+method, `extern`-declared method, or interface-class method (interface
+classes are *always* prototype-only) — a common pattern in UVM-style
+verification code (17 files in a real UVM checkout use `pure virtual
+function`/`task`).
+
+A second, related bug was found while narrowing the repro:
+`interface_class_declaration` (`grammar/Sv.g4`, `// ROOT node` comment)
+was defined but never referenced from any reachable parent rule —
+completely dead grammar. Confirmed against the user's own real project
+file (`interface class policy_api; ... endclass;` inside a package):
+produced spurious "extraneous input 'interface'..." parse errors. ANTLR's
+error recovery discarded the unexpected `interface` token and happened to
+reparse the remainder as an ordinary `class_declaration`, which is why it
+silently "mostly worked" (misclassified, alongside false-positive
+diagnostics) rather than failing loudly.
+
+**What was implemented:**
+- `grammar/Sv.g4`: added `| interface_class_declaration` to
+  `package_or_generate_item_declaration` — the reported failure shape (an
+  interface class declared inside a `package`, matching LRM Annex A.2.1.3
+  and the user's own file). Deliberately not wired into
+  `module_or_generate_item`/`anonymous_program_item`/top-level
+  `description` — not the reported failure shape, and expanding reach
+  without a concrete failing case risks unintended ambiguity for no
+  demonstrated benefit.
+- `src/compiler/sv_tree_walker.cpp`: one new listener pair,
+  `enterFunction_prototype`/`exitFunction_prototype` and
+  `enterTask_prototype`/`exitTask_prototype`, modeled directly on the
+  existing body-form listeners. **Covers pure-virtual, `extern`,
+  interface-class-method, and DPI-import shapes uniformly, with no
+  per-context dispatch** — ANTLR generates one listener callback per
+  *grammar rule*, firing regardless of which parent alternative reached
+  it, and all four shapes reduce to the same `function_prototype`/
+  `task_prototype` rules (confirmed via the generated `SvParser.h`'s exact
+  accessor shapes — `function_identifier()`/`data_type_or_void()`/
+  `tf_port_list()` — before writing any listener code, not assumed).
+  Mirrors §6.14's own found simplification: reuse what the grammar's
+  structure already gives you rather than dispatching per parent context.
+  A DPI-imported function picking up a symbol too is a harmless,
+  arguably-correct bonus, not scope creep.
+- `src/compiler/sv_tree_walker.cpp`: `enterInterface_class_declaration`/
+  `exitInterface_class_declaration`, modeled directly on
+  `enterClass_declaration`/`exitClass_declaration`, reusing
+  `ParseRecordKind::Class` — no new enum value, no schema change, no
+  dispatch changes anywhere else (`symbol_utils.cpp`'s
+  `symbolKindFor`/`completionKindFor`, `pickBestSymbol`'s
+  `isDeclarationLikeKind`, and every dot-completion resolution path
+  already treat `Class` uniformly). An interface class can `extends`
+  multiple other interface classes; only the *first* listed parent is
+  recorded in `detail` (and thus reachable via `super.`), matching the
+  single-inheritance assumption `super.` resolution already makes for
+  ordinary classes project-wide — a disclosed, tested limitation, not an
+  oversight.
+
+**The one non-obvious pitfall, found by reading `pushId()` closely (not by
+inspection alone):** `pushId` unconditionally pushes a new scope frame for
+`ParseRecordKind::Function`/`Task`, on the premise a body will eventually
+pop it via the existing body-form exit listeners. A prototype has no body
+— without a matching `exitFunction_prototype`/`exitTask_prototype` popping
+that frame immediately, every scope pushed for a pure-virtual/extern/
+interface-class method would leak forever, silently corrupting scope
+attribution for every symbol declared afterward in the file (structurally
+the *same* corruption symptom the user's own unrelated `` `import ``-typo
+bug independently demonstrated is possible here). No `backpatchEndLine`
+call is needed in the new exit listeners (unlike the body-form exits): a
+leaf/no-body record correctly keeps `endLine == 0`, already
+`ParseRecord::endLine`'s convention for Port/Signal/Parameter/Macro. A
+dedicated regression test (a pure-virtual method followed by an ordinary
+declaration, asserting the second one's `scope`/`parent` didn't leak)
+guards this specifically — it would have caught the leak before shipping.
+
+**No LSP-layer code changed at all:** because both new record kinds reuse
+existing `ParseRecordKind::Function`/`Task`/`Class`, every consumer
+(`hover.cpp`, `definition.cpp`, `document_symbols.cpp`, `completion.cpp`
+including every §6.10–§6.15 dot-completion path) needed zero changes —
+purely additive in the compiler front-end.
+
+**Verification:** unit tests (`tests/unit/compiler/test_sv_listener.cpp`)
+cover pure-virtual function/task recording, `extern` prototypes, the
+scope-leak regression, a full interface-class declaration (zero
+diagnostics), multiple interface inheritance's first-parent-only
+`detail`, a class extending an unresolved external base (`uvm_object`,
+modeling the real bug shape), and DPI import; one confirmatory test in
+`tests/unit/lsp/test_completion.cpp` proves the completion pipeline needs
+no changes for an `endLine == 0` `Function` row. Functional test
+`tests/integration/test_33_prototype_methods.sh` +
+`fixtures/prototype_methods.sv` cover the same shapes end-to-end (zero
+diagnostics, indexed dot-completion onto a pure-virtual method, hover on a
+prototype's own declaration). Also re-verified directly against the
+user's real, motivating project files: both previously-invisible methods
+(`get_policy`, `check_parent_type` on `policy_base`; all three methods on
+the real `policy_api` interface class) now show up correctly, with zero
+diagnostics.
+
+**Explicitly still out of scope:** `class_constructor_prototype` (`extern
+function new(...)`, a distinct grammar rule from `function_prototype`) —
+constructors aren't recorded as symbols at all today, a separate,
+pre-existing gap unrelated to this fix, not attempted here. A **real,
+separate bug found in the same investigation, deliberately not fixed
+here** — dot-completion can never resolve into a class declared inside a
+package at all (`findSymbolsInScope`'s exact-match `scope` lookup can
+never match `userTypeName()`'s deliberately-unqualified `detail`) — see
+§6.17 below.
+
+### 6.17 Dot-Completion Into a Package-Nested Class's Members (candidate, not started)
+
+**Status:** not started, found 2026-09-03 while building §6.16's
+functional test. Not part of §6.16 — a real, separate, pre-existing bug.
+
+**Why this is needed:** `findSymbolsInScope(scope)`
+(`src/db/symbol_database.cpp`) does an exact `s.scope = ?` match against
+the fully-qualified scope chain (e.g. `"policy_pkg::PolicyImpl"` for a
+class declared inside a package). But a class-typed `Signal`/`Parameter`'s
+own `detail` — what dot-completion resolution feeds into
+`findSymbolsInScope` — comes from `userTypeName()`
+(`src/compiler/sv_tree_walker.cpp`), which by design "already never
+produces a qualified/`::`-containing name" (a simplification going back to
+§6.10, previously harmless). For any class declared inside a `package`,
+that bare, unqualified `detail` can therefore never match the member
+rows' fully-qualified `scope`, so `candidatesForResolvedType` always falls
+through to the empty-scope, randomize-union-only path — a class's real
+members are silently invisible to `.` completion, offering only the
+synthetic `randomize`-family methods instead.
+
+Confirmed directly: a class extending `uvm_object` and declared inside a
+package, with its own pure-virtual method, offered only `get_randstate`
+(matching a `"get"` prefix) via dot-completion — never the real method.
+Every dot-completion fixture in this repo happens to declare its classes
+at top level (where the bare name and the scope chain trivially coincide,
+so this was never caught), but essentially every real UVM/verification
+class lives inside a package — this is a high-impact gap for real-world
+code despite zero existing test coverage ever exercising it.
+
+**Not designed yet.** Likely direction: either (a) have `userTypeName()`
+(or a sibling) capture the full scope chain at the point of use, not just
+the bare name, so `detail` itself becomes qualified — a bigger change,
+touching every existing `detail` consumer's assumption that it's a bare
+name; or (b) add a qualified-lookup variant/fallback to
+`findSymbolsInScope` (or the completion-resolution call site) that, given
+a bare class name with no scope match, searches `findSymbolsByName` for a
+same-named `Class` row and uses *its own* `scope` column to build the
+qualified lookup instead — reuses `pickBestSymbol`-style disambiguation
+already established for hover/definition rather than changing what
+`detail` means everywhere. Needs a decision before implementation;
+revisit this section once one is made.
+
+---
+
 ## Appendix A — Technology Stack Summary
 
 | Concern | Choice | Rationale |

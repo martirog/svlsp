@@ -31,14 +31,28 @@ implemented — indexing into a container (`list[a].member`) to complete on
 a class-typed *element*, including multi-dimensional partial-vs-full
 indexing (`arr[i].` on a fixed-array-of-queues lands on the queue's own
 methods; `arr[i][j].` reaches the element class) — see "Queue/
-associative-array element access completion" below. Unit suite now at
-1414 assertions / 500 test cases, all green (debug); Emacs integration
-suite gained `test_28_keyword_completion.sh` (8 cases),
+associative-array element access completion" below. Also on 2026-09-03,
+following a real user bug report (`all_queue[i].get_policy` offered no
+completions): §6.16 function/task prototype recording implemented — `pure
+virtual`/`extern`/interface-class methods and DPI imports are now recorded
+as symbols (previously invisible to every symbol-based feature entirely,
+since only body-form functions/tasks had listeners), plus a companion
+grammar fix for `interface_class_declaration` (defined but never wired
+into any reachable parent rule — dead grammar, found while narrowing the
+repro) — see "Function/task prototype recording" below. A related, real,
+*separate* bug was found in the same investigation but deliberately not
+fixed here (out of scope for §6.16): dot-completion can never resolve into
+a class declared inside a package — see "Known gaps" below, candidate
+`plan.md §6.17`. Unit suite now at 1445 assertions / 509 test cases, all
+green (debug); Emacs integration suite gained
+`test_28_keyword_completion.sh` (8 cases),
 `test_29_builtin_method_completion.sh` (9 cases),
-`test_30_chained_dot_completion.sh` (5 cases), and
-`test_31_queue_element_completion.sh` (7 cases), no regressions anywhere
-(186/186 total). Working tree has uncommitted changes for §6.15 as of this
-writing (everything through §6.14 is committed) — not yet committed, only
+`test_30_chained_dot_completion.sh` (5 cases),
+`test_31_queue_element_completion.sh` (7 cases),
+`test_32_live_edit_completion.sh` (3 cases), and
+`test_33_prototype_methods.sh` (3 cases), no regressions anywhere
+(192/192 total). Working tree has uncommitted changes for §6.16 as of this
+writing (everything through §6.15 is committed) — not yet committed, only
 commit when asked.
 
 ---
@@ -69,8 +83,8 @@ src/compiler/      compiler_directive_stripper, sv_preprocessor, sv_tree_walker,
 src/db/            database, symbol_database, compilation_controller,
                    library_resolver, project_compiler, schema — SQLite persistence (schema v5)
 src/main.cpp       entry point (supports `--log-files <path>`, see below)
-tests/unit/        Catch2 unit tests (500 cases, 1414 assertions)
-tests/integration/ Emacs functional test scripts (186 test cases across 32 files)
+tests/unit/        Catch2 unit tests (509 cases, 1445 assertions)
+tests/integration/ Emacs functional test scripts (192 test cases across 34 files)
 tests/uvm_corpus/  opt-in test suite against a real, external UVM corpus (NOT in
                    ctest/make test — see "UVM corpus testing" below)
 tools/             emacs-test-daemon.sh, emacs-test-init.el, emacs-test-lib.sh
@@ -474,6 +488,79 @@ never checked against the declared index type); indexing directly off a
 *call's* result (`get_matrix()[i][j].member`); struct-typed elements
 (classes only, matching §6.14's own restriction).
 
+**Function/task prototype recording** (plan.md §6.16, implemented
+2026-09-03): a real user bug report — `all_queue[i].get_policy` offered no
+completions, where `get_policy` was declared `pure virtual function
+policy_base get_policy(uvm_object par);` — traced to
+`src/compiler/sv_tree_walker.cpp` never recording a symbol for *any*
+function/task declaration without a body. Only
+`enterFunction_body_declaration`/`enterTask_body_declaration` existed,
+both requiring `function_data_type_or_implicit ... 'endfunction'`/`...
+'endtask'`; the grammar's separate, body-less `function_prototype`/
+`task_prototype` rules (`grammar/Sv.g4`) had no listener at all — silently
+breaking hover/definition/completion/references for any `pure virtual`
+method, `extern`-declared method, or interface-class method (interface
+classes are *always* prototype-only). Confirmed with a clean,
+zero-diagnostic minimal repro before touching any code (this project's own
+"empirical verification, not grammar-reading" discipline, per §6.13) —
+17 files in a real UVM checkout use `pure virtual function`/`task`.
+
+Fixed with one new listener pair,
+`enterFunction_prototype`/`enterTask_prototype`
+(`src/compiler/sv_tree_walker.cpp`), covering `pure virtual`, `extern`,
+interface-class-method, *and* DPI-import shapes uniformly — no per-context
+dispatch needed, since ANTLR fires one callback per *grammar rule*
+regardless of which parent alternative reached it, and all four shapes
+reduce to the same `function_prototype`/`task_prototype` rules (confirmed
+via the generated `SvParser.h`'s exact accessor shapes before writing any
+listener code). A DPI-imported function picking up a symbol too is a
+harmless, arguably-correct bonus, not scope creep. **The one non-obvious
+pitfall, found by reading `pushId()` closely:** it unconditionally pushes a
+new scope frame for `Function`/`Task` kinds, on the premise a body will
+eventually pop it via the existing body-form exit listeners. A prototype
+has no body — without a matching `exitFunction_prototype`/
+`exitTask_prototype` popping that frame immediately, every symbol declared
+afterward in the file would be silently nested under the leaked scope
+(structurally the same corruption class the user's own unrelated
+`` `import ``-typo bug independently demonstrated is possible here). A
+dedicated regression test (a pure-virtual method followed by an ordinary
+declaration, asserting the second one's `scope`/`parent` didn't leak)
+guards this specifically.
+
+A **second, related bug** was found while narrowing the repro:
+`interface_class_declaration` (`grammar/Sv.g4:120`, `// ROOT node`
+comment) was defined but never referenced from any reachable parent rule
+— completely dead grammar. Every real-world use (confirmed against the
+user's own project) produced spurious "extraneous input 'interface'..."
+parse errors; ANTLR's error recovery discarded the `interface` token and
+happened to reparse the remainder as an ordinary `class_declaration`,
+which is why it silently "mostly worked" (misclassified as a plain Class,
+alongside false-positive diagnostics) rather than failing loudly. Fixed by
+adding `interface_class_declaration` to `package_or_generate_item_declaration`
+— the reported failure shape (an interface class declared inside a
+`package`). Its own methods (`interface_class_method`) reduce to the exact
+same `method_prototype` rule pure-virtual/extern class methods already
+use, so no separate listener was needed for them either — one fix
+serves both. Interface classes are recorded via
+`enterInterface_class_declaration`, reusing `ParseRecordKind::Class` (no
+schema change, no dispatch changes anywhere else); their `detail` records
+only the *first* listed parent when `extends`ing multiple other interface
+classes, matching the single-inheritance assumption `super.` resolution
+already makes for ordinary classes project-wide (a disclosed, tested
+limitation, not an oversight).
+
+**No LSP-layer code changed at all** — because both new record kinds
+reuse existing `ParseRecordKind::Function`/`Task`/`Class`, every consumer
+(`hover.cpp`, `definition.cpp`, `document_symbols.cpp`, `completion.cpp`
+including every dot-completion path above) already handles them uniformly
+regardless of body-vs-prototype. Purely additive in the compiler
+front-end. Verified end-to-end against the real, motivating project files
+(zero diagnostics, both previously-missing methods now recorded) — see
+"Known gaps" below for a *separate*, pre-existing bug found in the same
+investigation (dot-completion can't resolve into a package-nested class's
+members at all) that would still block that exact real-world case, not
+fixed here.
+
 ### I/O wrapper (`src/lsp/server.h/.cpp`)
 
 `LanguageServer` owns (construction order): `m_db`, `m_symbolDb`, `m_compiler`,
@@ -762,6 +849,7 @@ access) vs. `expectedUriPath` (output comparison — runs the expected value thr
 | Stringification (`` `"..."`" ``) | **Fixed** — see preprocessor section above | — |
 | **`data_type`/`variable_decl_assignment` ambiguity** (`grammar/Sv.g4:740-753`, alts 9/10/12 all reduce to a bare `IDENTIFIER` — SV's classic "identifier classification needs a symbol table" problem, LRM Annex A acknowledges this) | **Confirmed, not fixed.** Under default (SLL) prediction this is silently resolved correctly almost everywhere; fails specifically for `const local`/`const protected` (or any 2+ qualifiers) + `new(...)` initializer combos. Real fix needs semantic predicates (symbol table) or risky restructuring of some of the grammar's most heavily-used rules — not attempted; two cheap structural experiments (reordering alts, removing a redundant one) had no effect. Real-world impact: **1 diagnostic in the entire 140-file UVM corpus** (`base/uvm_transaction.svh`). | Open — revisit only if it starts showing up more broadly |
 | A bare `MyClass foo;` at `module_common_item` level is ALSO ambiguous between `data_declaration` (`MyClass` as a `data_type`) and `net_declaration` alt 2 (`MyClass` as a `net_type_identifier`, i.e. a user-defined nettype) — a second, distinct manifestation of the same underlying problem, discovered 2026-09-01 building §6.10 dot-completion's type-detail population (`enterData_declaration` alone never saw plain class-typed signals; this grammar resolves them via `enterNet_declaration` instead) | **Not a diagnostic-producing bug** — both alts still record a `Signal` with the right name, so hover/definition/completion were unaffected before 2026-09-01. Only became visible because `userTypeName()` needed wiring into the alt that actually fires. Now handled in both listener methods (see "Dot/member-access completion" above). | Resolved for the one dependent (§6.10); the underlying grammar ambiguity itself is unchanged |
+| `interface class Foo; ... endclass` (LRM's true interface-class construct — always prototype-only methods, common in UVM-style code) | **Fixed 2026-09-03 (§6.16).** `interface_class_declaration` was defined in the grammar (`// ROOT node` comment) but never referenced from any reachable parent rule — completely dead grammar. Every use produced spurious "extraneous input 'interface'..." parse errors; ANTLR's error recovery discarded the `interface` token and happened to reparse the remainder as an ordinary `class_declaration`, which is why it silently "mostly worked" (misclassified, alongside false-positive diagnostics) rather than failing loudly. Found while investigating a real user bug report, confirmed against a real project file before fixing. | **Fixed** — added `| interface_class_declaration` to `package_or_generate_item_declaration` (the reported failure shape: an interface class declared inside a `package`). Deliberately not wired into `module_or_generate_item`/top-level `description` — no demonstrated failing case for those placements; revisit if one surfaces. |
 
 ---
 
@@ -800,6 +888,29 @@ access) vs. `expectedUriPath` (output comparison — runs the expected value thr
   `uvm_component.svh` at 3780 lines) has an inherent, roughly-linear-but-high-constant
   per-line cost independent of any preprocessor gap — Phase 6.5 territory, not
   attempted (would need profiling, possibly grammar restructuring).
+- **Dot-completion can never resolve into a class declared inside a package**
+  (found 2026-09-03 while building §6.16's functional test — a real, separate,
+  pre-existing gap, not part of §6.16 itself). `findSymbolsInScope(scope)`
+  (`src/db/symbol_database.cpp`) does an exact `s.scope = ?` match, but a
+  class-typed `Signal`/`Parameter`'s own `detail` comes from `userTypeName()`
+  (`src/compiler/sv_tree_walker.cpp`), which "already never produces a
+  qualified/`::`-containing name" — a deliberate simplification going back to
+  §6.10. For a class declared inside a `package` (its members' own `scope`
+  column is the fully-qualified chain, e.g. `"policy_pkg::PolicyImpl"`), that
+  bare, unqualified `detail` (`"PolicyImpl"`) can never match, so
+  `candidatesForResolvedType` always falls through to the empty-scope,
+  randomize-union-only path — real class members are silently invisible to
+  `.` completion. Confirmed directly against a real UVM-style file (a class
+  extending `uvm_object`, declared inside a package): dot-completion offered
+  only the synthetic `randomize`-family methods, never the class's own real
+  members. Every dot-completion fixture in this repo happens to declare its
+  classes at top level (where the bare name and the scope chain coincide),
+  which is why this was never caught before — real-world verification code
+  (essentially all real UVM classes) almost always lives inside a package.
+  Not fixed here — likely needs `userTypeName()`/`findSymbolsInScope` (or a
+  new qualified-lookup variant) to carry/match the full scope chain instead
+  of a bare name; a real, standalone piece of work, candidate for `plan.md
+  §6.17`.
 - ~~`didChange` recompiles synchronously on the message-read thread, every time,
   with no debouncing~~ — **fixed 2026-08-28**, see "Debounced `didChange`" under
   "I/O wrapper" above (`plan.md §6.8`). One deliberate deviation from that
@@ -989,3 +1100,39 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
     the original sketch, unchanged: associative-array key-type
     validation; indexing directly off a *call's* result
     (`get_matrix()[i][j].member`); struct-typed elements (classes only).
+19. ~~Record function/task prototypes as symbols — pure virtual, extern,
+    interface-class methods, DPI import (`plan.md §6.16`)~~ —
+    **implemented 2026-09-03**, following a real user bug report
+    (`all_queue[i].get_policy` offered no completions; `get_policy` was
+    `pure virtual`, never recorded as a symbol at all since only
+    `enterFunction_body_declaration`/`enterTask_body_declaration` existed,
+    both requiring a body). Two new listener pairs in
+    `src/compiler/sv_tree_walker.cpp` — `enterFunction_prototype`/
+    `enterTask_prototype` (covering pure-virtual, `extern`,
+    interface-class-method, and DPI-import shapes uniformly, since all
+    four reduce to the same two grammar rules) and
+    `enterInterface_class_declaration` (reusing `ParseRecordKind::Class`,
+    no schema change) — plus a companion grammar fix: `grammar/Sv.g4`'s
+    `interface_class_declaration` rule was defined but never referenced
+    from any reachable parent rule (dead grammar, found while narrowing
+    the repro; see "Sv.g4 grammar quirks" above), now wired into
+    `package_or_generate_item_declaration`. See plan.md §6.16 for the full
+    writeup, including a documented pitfall found while implementing:
+    `pushId()` unconditionally pushes a scope frame for `Function`/`Task`
+    kinds on the assumption a body will eventually pop it — a prototype
+    has no body, so its own `exit...` listener must pop that frame
+    immediately or every symbol declared afterward in the file would be
+    wrongly nested under it (a regression test guards this specifically).
+    No LSP-layer code changed at all — every consumer already handles
+    `Function`/`Task`/`Class` uniformly regardless of body-vs-prototype.
+20. **Dot-completion into a package-nested class's members
+    (`plan.md §6.17`, candidate)** — not started, found 2026-09-03 while
+    building §6.16's functional test (see "Known gaps" above for the full
+    writeup). `findSymbolsInScope`'s exact-match `scope` lookup can never
+    match `userTypeName()`'s deliberately-unqualified `detail`, so `.`
+    completion on any class declared inside a `package` — i.e. essentially
+    every real UVM/verification class — silently falls through to
+    offering only the synthetic randomize-family methods, never the
+    class's real members. A real, standalone gap, not part of §6.16;
+    every existing dot-completion fixture happens to use top-level classes,
+    which is why it was never caught before.
