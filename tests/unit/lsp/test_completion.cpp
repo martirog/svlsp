@@ -590,6 +590,188 @@ TEST_CASE("CompletionProvider: a chain ending on a built-in container member reu
 }
 
 // ---------------------------------------------------------------------------
+// Queue/associative-array element access completion (plan.md §6.15)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("CompletionProvider: indexing a queue of a class resolves to the class's own members",
+          "[completion][dot][index]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module,   "top",     1, 7,  "",        "",
+            10, ""},
+        {ParseRecordKind::Signal,   "q",       2, 10, "top",     std::string(CONTAINER_QUEUE) + ":MyClass",
+            0,  "top"},
+        {ParseRecordKind::Class,    "MyClass", 5, 7,  "",        "",
+            8,  ""},
+        {ParseRecordKind::Function, "bar",     6, 10, "MyClass", "void",
+            6,  "MyClass"},
+    });
+
+    const std::string text = "module top;\n  q[0].";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 1, 7), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "bar"));
+    CHECK_FALSE(hasItem(items, "push_back")); // indexed past the queue, onto the element itself
+}
+
+TEST_CASE("CompletionProvider: indexing an associative array of a class resolves to the class's own members",
+          "[completion][dot][index]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module,   "top",     1, 7,  "",        "",
+            10, ""},
+        {ParseRecordKind::Signal,   "aa",      2, 10, "top",     std::string(CONTAINER_ASSOC) + ":MyClass",
+            0,  "top"},
+        {ParseRecordKind::Class,    "MyClass", 5, 7,  "",        "",
+            8,  ""},
+        {ParseRecordKind::Function, "bar",     6, 10, "MyClass", "void",
+            6,  "MyClass"},
+    });
+
+    const std::string text = "module top;\n  aa[\"k\"].";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 1, 10), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "bar"));
+}
+
+TEST_CASE("CompletionProvider: partially indexing a fixed-array-of-queues lands on the queue's own methods",
+          "[completion][dot][index]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module, "top", 1, 7,  "",    "",
+            10, ""},
+        {ParseRecordKind::Signal, "arr", 2, 10, "top", std::string(CONTAINER_FIXED_ARRAY) + ":" + CONTAINER_QUEUE + ":MyClass",
+            0,  "top"},
+        {ParseRecordKind::Class,  "MyClass", 5, 7, "", "", 8, ""},
+        {ParseRecordKind::Function, "bar", 6, 10, "MyClass", "void", 6, "MyClass"},
+    });
+
+    // Only one index -- arr[i] is still a queue, not yet a MyClass.
+    const std::string text = "module top;\n  arr[i].";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 1, 9), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "push_back"));
+    CHECK(hasItem(items, "pop_front"));
+    CHECK_FALSE(hasItem(items, "bar")); // not yet indexed into the element
+}
+
+TEST_CASE("CompletionProvider: fully indexing a fixed-array-of-queues lands on the class's own members",
+          "[completion][dot][index]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module, "top", 1, 7,  "",    "",
+            10, ""},
+        {ParseRecordKind::Signal, "arr", 2, 10, "top", std::string(CONTAINER_FIXED_ARRAY) + ":" + CONTAINER_QUEUE + ":MyClass",
+            0,  "top"},
+        {ParseRecordKind::Class,  "MyClass", 5, 7, "", "", 8, ""},
+        {ParseRecordKind::Function, "bar", 6, 10, "MyClass", "void", 6, "MyClass"},
+    });
+
+    // Both indices -- arr[i][j] reaches the MyClass element itself.
+    const std::string text = "module top;\n  arr[i][j].";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 1, 12), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "bar"));
+    CHECK_FALSE(hasItem(items, "push_back"));
+}
+
+TEST_CASE("CompletionProvider: over-indexing past the available dimensions fails closed",
+          "[completion][dot][index]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module, "top", 1, 7,  "",    "",
+            10, ""},
+        {ParseRecordKind::Signal, "q",   2, 10, "top", std::string(CONTAINER_QUEUE) + ":MyClass",
+            0,  "top"},
+        {ParseRecordKind::Class,  "MyClass", 5, 7, "", "", 8, ""},
+    });
+
+    // q only has one dimension (queue) -- a second index goes past it.
+    const std::string text = "module top;\n  q[0][1].";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 1, 10), f.sdb, text);
+    REQUIRE(result.isNull());
+}
+
+TEST_CASE("CompletionProvider: indexing a queue of a built-in type still yields no completions",
+          "[completion][dot][index]")
+{
+    // Regression guard, same fail-closed posture as the unindexed §6.13 case.
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module, "top", 1, 7,  "",    "",
+            10, ""},
+        {ParseRecordKind::Signal, "q",   2, 10, "top", CONTAINER_QUEUE, 0, "top"},
+    });
+
+    const std::string text = "module top;\n  q[0].";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 1, 7), f.sdb, text);
+    REQUIRE(result.isNull());
+}
+
+TEST_CASE("CompletionProvider: a plain (non-indexed) container access is unaffected by indexing support",
+          "[completion][dot][index]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module, "top", 1, 7,  "",    "",
+            10, ""},
+        {ParseRecordKind::Signal, "q",   2, 10, "top", std::string(CONTAINER_QUEUE) + ":MyClass",
+            0,  "top"},
+        {ParseRecordKind::Class,  "MyClass", 5, 7, "", "", 8, ""},
+        {ParseRecordKind::Function, "bar", 6, 10, "MyClass", "void", 6, "MyClass"},
+    });
+
+    const std::string text = "module top;\n  q.";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 1, 4), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "push_back")); // the container's own methods, not MyClass's
+    CHECK_FALSE(hasItem(items, "bar"));
+}
+
+TEST_CASE("CompletionProvider: an indexed member deep in a chain resolves through the element class",
+          "[completion][dot][index]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module, "top",   1, 7,  "",      "",
+            20, ""},
+        {ParseRecordKind::Signal, "obj",   2, 10, "top",   "Outer",
+            0,  "top"},
+        {ParseRecordKind::Class,  "Outer", 5, 7,  "",      "",
+            8,  ""},
+        {ParseRecordKind::Signal, "kids",  6, 10, "Outer", std::string(CONTAINER_QUEUE) + ":Inner",
+            0,  "Outer"},
+        {ParseRecordKind::Class,  "Inner", 12, 7, "",      "",
+            14, ""},
+        {ParseRecordKind::Function, "greet", 13, 10, "Inner", "void",
+            13, "Inner"},
+    });
+
+    const std::string text = "module top;\n  obj.kids[0].gr";
+    auto result = CompletionProvider::getCompletion(
+        makeParams("/t.sv", 1, 16), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "greet"));
+}
+
+// ---------------------------------------------------------------------------
 // Context-aware keyword completion (plan.md §6.9, extended: legality rules)
 // ---------------------------------------------------------------------------
 

@@ -275,3 +275,89 @@ TEST_CASE("dotCompletionContext: an unmatched call paren fails closed", "[symbol
 {
     CHECK_FALSE(dotCompletionContext("foo).c", 0, 6).has_value());
 }
+
+// ---------------------------------------------------------------------------
+// dotCompletionContext -- indexed access segments (plan.md §6.15)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("dotCompletionContext: arr[i].m| yields one segment with indexDepth=1",
+          "[symbol_utils][chain][index]")
+{
+    const std::string src = "arr[i].m";
+    auto ctx = dotCompletionContext(src, 0, static_cast<unsigned>(src.size()));
+    REQUIRE(ctx.has_value());
+    REQUIRE(ctx->segments.size() == 1);
+    CHECK(ctx->segments[0].name == "arr");
+    CHECK_FALSE(ctx->segments[0].isCall);
+    CHECK(ctx->segments[0].indexDepth == 1);
+    CHECK(ctx->prefix == "m");
+}
+
+TEST_CASE("dotCompletionContext: arr[i][j].m| yields one segment with indexDepth=2 (not two segments)",
+          "[symbol_utils][chain][index]")
+{
+    const std::string src = "arr[i][j].m";
+    auto ctx = dotCompletionContext(src, 0, static_cast<unsigned>(src.size()));
+    REQUIRE(ctx.has_value());
+    REQUIRE(ctx->segments.size() == 1);
+    CHECK(ctx->segments[0].name == "arr");
+    CHECK(ctx->segments[0].indexDepth == 2);
+}
+
+TEST_CASE("dotCompletionContext: a bare identifier segment has indexDepth=0",
+          "[symbol_utils][chain][index]")
+{
+    auto ctx = dotCompletionContext("foo.b", 0, 5);
+    REQUIRE(ctx.has_value());
+    REQUIRE(ctx->segments.size() == 1);
+    CHECK(ctx->segments[0].indexDepth == 0);
+}
+
+TEST_CASE("dotCompletionContext: a call segment has indexDepth=0",
+          "[symbol_utils][chain][index]")
+{
+    auto ctx = dotCompletionContext("a().b", 0, 5);
+    REQUIRE(ctx.has_value());
+    REQUIRE(ctx->segments.size() == 1);
+    CHECK(ctx->segments[0].isCall);
+    CHECK(ctx->segments[0].indexDepth == 0);
+}
+
+TEST_CASE("dotCompletionContext: foo.arr[i].m| mixes a plain segment and an indexed one",
+          "[symbol_utils][chain][index]")
+{
+    const std::string src = "foo.arr[i].m";
+    auto ctx = dotCompletionContext(src, 0, static_cast<unsigned>(src.size()));
+    REQUIRE(ctx.has_value());
+    REQUIRE(ctx->segments.size() == 2);
+    CHECK(ctx->segments[0].name == "foo");
+    CHECK(ctx->segments[0].indexDepth == 0);
+    CHECK(ctx->segments[1].name == "arr");
+    CHECK(ctx->segments[1].indexDepth == 1);
+}
+
+TEST_CASE("dotCompletionContext: an index expression containing '.' doesn't confuse the chain",
+          "[symbol_utils][chain][index]")
+{
+    // aa["a.b"].m| -- the '.' inside the string literal key must not be
+    // read as a chain separator.
+    const std::string src = "aa[\"a.b\"].m";
+    auto ctx = dotCompletionContext(src, 0, static_cast<unsigned>(src.size()));
+    REQUIRE(ctx.has_value());
+    REQUIRE(ctx->segments.size() == 1);
+    CHECK(ctx->segments[0].name == "aa");
+    CHECK(ctx->segments[0].indexDepth == 1);
+    CHECK(ctx->prefix == "m");
+}
+
+TEST_CASE("dotCompletionContext: an unmatched index bracket fails closed",
+          "[symbol_utils][chain][index]")
+{
+    CHECK_FALSE(dotCompletionContext("arr].c", 0, 6).has_value());
+}
+
+TEST_CASE("dotCompletionContext: '[...]' with no identifier before it fails closed",
+          "[symbol_utils][chain][index]")
+{
+    CHECK_FALSE(dotCompletionContext("[i].c", 0, 5).has_value());
+}

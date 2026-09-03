@@ -378,6 +378,91 @@ TEST_CASE("queue-typed and plain declarators sharing one data_type are tagged in
 }
 
 // ---------------------------------------------------------------------------
+// Layered container/element detail (plan.md §6.15 -- queue/associative-array
+// element access completion). A container-typed declarator's detail now
+// encodes the *whole* dimension shape, outermost first, ending in the
+// element's own type/tag -- not just the outermost container's tag alone.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("class-typed queue is tagged $queue:ClassName (element type appended)",
+          "[compiler][listener][phase6.15]") {
+    auto [recs, errs, imps, insts] = walkSource(
+        "class MyClass; endclass\n"
+        "module m;\n"
+        "  MyClass q[$];\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    auto* r = findRecord(recs, ParseRecordKind::Signal, "q");
+    REQUIRE(r != nullptr);
+    CHECK(r->detail == std::string(CONTAINER_QUEUE) + ":MyClass");
+}
+
+TEST_CASE("string-element queue is tagged $queue:$string (container wins, element still recorded)",
+          "[compiler][listener][phase6.15]") {
+    auto [recs, errs, imps, insts] = walkSource(
+        "module m;\n"
+        "  string s[$];\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    auto* r = findRecord(recs, ParseRecordKind::Signal, "s");
+    REQUIRE(r != nullptr);
+    CHECK(r->detail == std::string(CONTAINER_QUEUE) + ":" + CONTAINER_STRING);
+}
+
+TEST_CASE("int-element queue has no trailing element layer (unchanged from §6.13)",
+          "[compiler][listener][phase6.15]") {
+    // Regression: a built-in scalar element type has no tag, so the detail
+    // stays exactly the single container tag, matching §6.13's original
+    // (pre-§6.15) behavior for this case.
+    auto [recs, errs, imps, insts] = walkSource(
+        "module m;\n"
+        "  int q[$];\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    auto* r = findRecord(recs, ParseRecordKind::Signal, "q");
+    REQUIRE(r != nullptr);
+    CHECK(r->detail == CONTAINER_QUEUE);
+}
+
+TEST_CASE("a fixed array of queues of a class records all three layers, outermost first",
+          "[compiler][listener][phase6.15]") {
+    auto [recs, errs, imps, insts] = walkSource(
+        "class MyClass; endclass\n"
+        "module m;\n"
+        "  MyClass arr[4][$];\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    auto* r = findRecord(recs, ParseRecordKind::Signal, "arr");
+    REQUIRE(r != nullptr);
+    CHECK(r->detail == std::string(CONTAINER_FIXED_ARRAY) + ":" + CONTAINER_QUEUE + ":MyClass");
+}
+
+TEST_CASE("a fixed array of queues of int has only the two dimension layers, no element layer",
+          "[compiler][listener][phase6.15]") {
+    auto [recs, errs, imps, insts] = walkSource(
+        "module m;\n"
+        "  int arr[4][$];\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    auto* r = findRecord(recs, ParseRecordKind::Signal, "arr");
+    REQUIRE(r != nullptr);
+    CHECK(r->detail == std::string(CONTAINER_FIXED_ARRAY) + ":" + CONTAINER_QUEUE);
+}
+
+TEST_CASE("associative array of a class is tagged $assoc_array:ClassName",
+          "[compiler][listener][phase6.15]") {
+    auto [recs, errs, imps, insts] = walkSource(
+        "class MyClass; endclass\n"
+        "module m;\n"
+        "  MyClass aa[string];\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    auto* r = findRecord(recs, ParseRecordKind::Signal, "aa");
+    REQUIRE(r != nullptr);
+    CHECK(r->detail == std::string(CONTAINER_ASSOC) + ":MyClass");
+}
+
+// ---------------------------------------------------------------------------
 // Parent scope tracking
 // ---------------------------------------------------------------------------
 

@@ -36,13 +36,18 @@ lsp::DocumentUri pathToUri(const std::string& path);
 // 3. Otherwise, the first row (caller's existing path,line order).
 const SymbolRow* pickBestSymbol(const std::vector<SymbolRow>& rows, const std::string& curPath);
 
-// One segment of a dot-completion chain: either a bare identifier
-// ("foo") or a call ("get_child(...)" -- argument text is never captured,
-// only the identifier and the fact that it was called matter for
-// resolution).
+// One segment of a dot-completion chain: a bare identifier ("foo"), a call
+// ("get_child(...)" -- argument text is never captured, only the identifier
+// and the fact that it was called matter for resolution), or an indexed
+// access ("arr[i][j]" -- indexDepth counts the consecutive bracket groups,
+// 2 here; index expression text is never captured either, only how many
+// there are, plan.md §6.15). isCall and indexDepth > 0 never both apply to
+// the same segment (indexing directly off a call's result is out of scope
+// for §6.15 -- see dotCompletionContext's own doc comment).
 struct ChainSegment {
     std::string name;
     bool        isCall;
+    int         indexDepth = 0;
 };
 
 // A dot/member-access completion context: `segments` is the chain of
@@ -57,11 +62,13 @@ struct DotCompletion {
 };
 
 // Detects a dot-completion context at (line, character): a chain of
-// identifiers and/or calls immediately preceded by a '.' (e.g. "foo.b|" ->
-// segments=[{"foo",false}], prefix="b"; "a().b().c|" ->
-// segments=[{"a",true},{"b",true}], prefix="c"). Returns std::nullopt when
-// the cursor isn't in one: no '.' immediately before the prefix identifier,
-// or nothing identifier/call-like before some '.' in the chain either (a
+// identifiers, calls, and/or indexed accesses immediately preceded by a '.'
+// (e.g. "foo.b|" -> segments=[{"foo",false,0}], prefix="b"; "a().b().c|" ->
+// segments=[{"a",true,0},{"b",true,0}], prefix="c"; "arr[i][j].m|" ->
+// segments=[{"arr",false,2}], prefix="m" -- one segment, not two, since
+// there's no '.' between the bracket groups). Returns std::nullopt when the
+// cursor isn't in one: no '.' immediately before the prefix identifier, or
+// nothing identifier/call/index-like before some '.' in the chain either (a
 // bare "." with no object).
 //
 // Walks left one segment at a time: a segment ending in ')' is read as a
@@ -69,10 +76,18 @@ struct DotCompletion {
 // string-literal arguments containing '.'/'(' /')' are handled -- the
 // balance walk tracks a minimal in-string state so `foo("a.b").c` isn't
 // confused by the dot inside the string), then reads the identifier
-// immediately before that '('; anything else reads as a plain identifier.
-// Each segment's own left edge is checked for a preceding '.' to decide
-// whether to continue the chain leftward or stop (segment 0 reached).
-// Whitespace before a call's own '(' is tolerated; whitespace around the
-// chain's '.'s is not (matches this function's pre-existing convention).
+// immediately before that '('; a segment ending in ']' is read as an
+// indexed access the same way, bracket-matching back to '[' and repeating
+// for each further consecutive ']' immediately to its left (same in-string
+// tracking, so `aa["a.b"].c` isn't confused either), then reads the
+// identifier immediately before the leftmost '['; anything else reads as a
+// plain identifier. A segment ending in ')' preceded by a further ']', or
+// vice versa (indexing a call's own result), is not supported -- fails
+// closed the same as any other unrecognized shape, plan.md §6.15 leaves
+// this as a distinct follow-up. Each segment's own left edge is checked for
+// a preceding '.' to decide whether to continue the chain leftward or stop
+// (segment 0 reached). Whitespace before a call's own '(' is tolerated;
+// whitespace around the chain's '.'s is not (matches this function's
+// pre-existing convention).
 std::optional<DotCompletion> dotCompletionContext(
     const std::string& text, unsigned line, unsigned character);

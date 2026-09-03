@@ -102,14 +102,17 @@ const SymbolRow* pickBestSymbol(const std::vector<SymbolRow>& rows, const std::s
 }
 
 namespace {
-// Finds the '(' matching the ')' at text[closeParen], walking left with a
-// paren-balance counter (seeded at 1 for the close paren already known)
-// and a minimal in-string state so a '.'/'('/')' inside a string-literal
-// argument (e.g. foo("a.b")) never perturbs the count. Returns
-// std::string::npos if no balanced match exists before lineStart.
-size_t matchingOpenParen(const std::string& text, size_t lineStart, size_t closeParen)
+// Finds the `openCh` matching the `closeCh` at text[closePos], walking left
+// with a balance counter (seeded at 1 for the close delimiter already
+// known) and a minimal in-string state so a '.'/openCh/closeCh inside a
+// string-literal argument (e.g. foo("a.b"), aa["a.b"]) never perturbs the
+// count. Returns std::string::npos if no balanced match exists before
+// lineStart. Shared by call-paren matching (§6.14) and index-bracket
+// matching (§6.15) -- same technique, different delimiter pair.
+size_t matchingOpenDelim(const std::string& text, size_t lineStart, size_t closePos,
+                          char openCh, char closeCh)
 {
-    size_t i = closeParen;
+    size_t i = closePos;
     int depth = 1;
     bool inString = false;
     while (i > lineStart) {
@@ -118,9 +121,9 @@ size_t matchingOpenParen(const std::string& text, size_t lineStart, size_t close
             if (c == '"' && (i - 1 == lineStart || text[i - 2] != '\\')) inString = false;
         } else if (c == '"') {
             inString = true;
-        } else if (c == ')') {
+        } else if (c == closeCh) {
             ++depth;
-        } else if (c == '(') {
+        } else if (c == openCh) {
             --depth;
             if (depth == 0) return i - 1;
         }
@@ -161,10 +164,11 @@ std::optional<DotCompletion> dotCompletionContext(
         const size_t segEnd = dotPos; // exclusive end of this segment's text
         std::string name;
         bool isCall = false;
+        int indexDepth = 0;
         size_t segStart;
 
         if (text[segEnd - 1] == ')') {
-            const size_t openParen = matchingOpenParen(text, lineStart, segEnd - 1);
+            const size_t openParen = matchingOpenDelim(text, lineStart, segEnd - 1, '(', ')');
             if (openParen == std::string::npos || openParen == lineStart) return std::nullopt;
             size_t idEnd = openParen;
             while (idEnd > lineStart && (text[idEnd - 1] == ' ' || text[idEnd - 1] == '\t')) --idEnd;
@@ -174,15 +178,32 @@ std::optional<DotCompletion> dotCompletionContext(
             name = text.substr(idStart, idEnd - idStart);
             isCall = true;
             segStart = idStart;
+        } else if (text[segEnd - 1] == ']') {
+            // Walk left over one or more consecutive "[...]" groups
+            // (arr[i][j] is one segment with indexDepth=2, not two segments
+            // -- there's no '.' between the brackets).
+            size_t cursor = segEnd;
+            while (cursor > lineStart && text[cursor - 1] == ']') {
+                const size_t openBracket = matchingOpenDelim(text, lineStart, cursor - 1, '[', ']');
+                if (openBracket == std::string::npos || openBracket == lineStart) return std::nullopt;
+                ++indexDepth;
+                cursor = openBracket;
+            }
+            size_t idEnd = cursor;
+            size_t idStart = idEnd;
+            while (idStart > lineStart && isIdChar(text[idStart - 1])) --idStart;
+            if (idStart == idEnd) return std::nullopt; // "[...]" with no name before it
+            name = text.substr(idStart, idEnd - idStart);
+            segStart = idStart;
         } else if (isIdChar(text[segEnd - 1])) {
             segStart = segEnd;
             while (segStart > lineStart && isIdChar(text[segStart - 1])) --segStart;
             name = text.substr(segStart, segEnd - segStart);
         } else {
-            return std::nullopt; // nothing identifier/call-like before the dot
+            return std::nullopt; // nothing identifier/call/index-like before the dot
         }
 
-        segments.push_back({std::move(name), isCall});
+        segments.push_back({std::move(name), isCall, indexDepth});
 
         if (segStart == lineStart || text[segStart - 1] != '.') break; // segment 0 reached
         dotPos = segStart - 1;

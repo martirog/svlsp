@@ -81,24 +81,27 @@ static std::string builtinBareTypeTag(SvParser::Data_type_or_implicitContext* dt
     return "";
 }
 
-// Detail tag for a queue/associative-array/dynamic-array/fixed-size-array
-// declarator, from its own variable_dimension() list (plan.md §6.13) --
-// container-ness lives on the specific declarator, not the shared
-// data_type_or_implicit (e.g. "int a[$], b;" tags only `a`). The first
-// dimension in declaration order wins (outermost/leftmost) -- a disclosed
-// simplification for a multi-dimensional declarator like "int q[4][$]"
-// (array-of-queues): only the outermost shape's method set is offered,
-// consistent with §6.10's own "no indexing" precedent for `foo[0].bar`.
-// "" when `vda` has no container/array dimension at all.
-static std::string containerDimensionTag(SvParser::Variable_decl_assignmentContext* vda)
+// Ordered list of container-dimension tags for a queue/associative-array/
+// dynamic-array/fixed-size-array declarator, from its own
+// variable_dimension() list (plan.md §6.13, extended to the full list by
+// §6.15) -- container-ness lives on the specific declarator, not the
+// shared data_type_or_implicit (e.g. "int a[$], b;" tags only `a`).
+// Outermost/leftmost dimension first, matching declaration order (e.g.
+// "arr[4][$]" -- a fixed array of queues -- yields
+// [CONTAINER_FIXED_ARRAY, CONTAINER_QUEUE]): §6.15's whole-chain indexed-
+// access resolution peels these off the front one at a time as each `[...]`
+// in `arr[i][j]` is consumed. Empty when `vda` has no container/array
+// dimension at all.
+static std::vector<std::string> containerDimensionTags(SvParser::Variable_decl_assignmentContext* vda)
 {
+    std::vector<std::string> tags;
     for (auto* dim : vda->variable_dimension()) {
-        if (dim->queue_dimension())       return CONTAINER_QUEUE;
-        if (dim->associative_dimension()) return CONTAINER_ASSOC;
-        if (dim->unsized_dimension())     return CONTAINER_DYNAMIC_ARRAY;
-        if (dim->unpacked_dimension())    return CONTAINER_FIXED_ARRAY;
+        if (dim->queue_dimension())            tags.push_back(CONTAINER_QUEUE);
+        else if (dim->associative_dimension()) tags.push_back(CONTAINER_ASSOC);
+        else if (dim->unsized_dimension())     tags.push_back(CONTAINER_DYNAMIC_ARRAY);
+        else if (dim->unpacked_dimension())    tags.push_back(CONTAINER_FIXED_ARRAY);
     }
-    return "";
+    return tags;
 }
 
 // ---------------------------------------------------------------------------
@@ -308,18 +311,33 @@ public:
         if (!list) return;
         const std::string typeName = userTypeName(ctx->data_type_or_implicit());
         const std::string bareTag  = builtinBareTypeTag(ctx->data_type_or_implicit());
+        // Element tag/type text to append after any container-dimension
+        // tags below -- bareTag ($string/$event) wins over a genuine
+        // class/interface typeName the same way it always has (a built-in
+        // bare-literal data_type alternative can never also carry a
+        // type_identifier()/class_type() accessor, so at most one of these
+        // is ever non-empty).
+        const std::string elementTag = !bareTag.empty() ? bareTag : typeName;
         for (auto* vda : list->variable_decl_assignment()) {
             auto* vi = vda->variable_identifier();
             if (!vi) continue;
             auto* id = vi->IDENTIFIER();
             if (!id) continue;
-            // Per-declarator container tag takes priority over the shared
-            // bare-type tag or class/interface type name (e.g. "string
-            // s[$]" is a queue of strings -- the container's own methods
-            // matter for dot-completion, not the element type).
-            std::string detail = containerDimensionTag(vda);
-            if (detail.empty()) detail = bareTag;
-            if (detail.empty()) detail = typeName;
+            // Layered detail (plan.md §6.15): every container-dimension tag
+            // on this declarator, outermost first, followed by the element
+            // type/tag if known -- e.g. "$fixed_array:$queue:MyClass" for
+            // "MyClass arr[4][$]", or just "$queue" for "int q[$]" (no
+            // element tag: a built-in scalar has none). A declarator with
+            // no container dimensions at all falls back to elementTag alone
+            // (single layer), unchanged from §6.10/§6.13's original
+            // behavior.
+            std::vector<std::string> layers = containerDimensionTags(vda);
+            if (!elementTag.empty()) layers.push_back(elementTag);
+            std::string detail;
+            for (size_t i = 0; i < layers.size(); ++i) {
+                if (i) detail += ':';
+                detail += layers[i];
+            }
             pushId(ParseRecordKind::Signal, id, vda, currentScope(), detail);
         }
     }

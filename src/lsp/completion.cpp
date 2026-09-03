@@ -101,6 +101,72 @@ lsp::TextDocument_CompletionResult buildCompletionItems(
     return items;
 }
 
+// A container/element detail string is a ':'-delimited list of layers,
+// outermost first (plan.md §6.15 -- see containerDimensionTags() in
+// src/compiler/sv_tree_walker.cpp for how it's built). Splits on ':'.
+std::vector<std::string> splitLayers(const std::string& detail)
+{
+    std::vector<std::string> layers;
+    size_t start = 0;
+    while (start <= detail.size()) {
+        size_t colon = detail.find(':', start);
+        if (colon == std::string::npos) {
+            layers.push_back(detail.substr(start));
+            break;
+        }
+        layers.push_back(detail.substr(start, colon - start));
+        start = colon + 1;
+    }
+    return layers;
+}
+
+// The outermost layer of a (possibly layered) detail string -- what
+// container/element-tag dispatch (builtinMethodsFor) always keys off,
+// regardless of how many further layers describe the element type. A
+// single-layer detail (a bare class name, or any pre-§6.15 detail) is
+// unaffected: its "first layer" is just itself.
+std::string firstLayer(const std::string& detail)
+{
+    const size_t colon = detail.find(':');
+    return colon == std::string::npos ? detail : detail.substr(0, colon);
+}
+
+bool isContainerDimensionTag(const std::string& layer)
+{
+    return layer == CONTAINER_QUEUE || layer == CONTAINER_ASSOC ||
+           layer == CONTAINER_DYNAMIC_ARRAY || layer == CONTAINER_FIXED_ARRAY;
+}
+
+// Peels `depth` container-dimension layers off the front of a layered
+// `detail` string (plan.md §6.15), returning what's left rejoined with
+// ':' -- e.g. peeling 1 layer off "$fixed_array:$queue:MyClass" yields
+// "$queue:MyClass" (arr[i] is still a queue, not yet a MyClass); peeling 2
+// yields "MyClass" (arr[i][j] reaches the element). Only the *leading run*
+// of recognized container-dimension tags counts as indexable -- an element
+// layer (a bare class name, or $string/$event) is never itself peelable,
+// so over-indexing (depth exceeding that leading run) fails closed by
+// returning "", same posture as every other §6.14 resolution failure (see
+// candidatesForResolvedType's own doc comment for why "" specifically means
+// "nothing to offer" in this schema, never "the whole top-level scope").
+// depth <= 0 is a no-op (returns `detail` unchanged) -- every non-indexed
+// segment goes through this path too, at depth 0.
+std::string peelDimensionLayers(const std::string& detail, int depth)
+{
+    if (depth <= 0) return detail;
+    std::vector<std::string> layers = splitLayers(detail);
+    int dimCount = 0;
+    while (dimCount < static_cast<int>(layers.size()) && isContainerDimensionTag(layers[dimCount]))
+        ++dimCount;
+    if (depth > dimCount) return "";
+
+    std::string result;
+    for (size_t i = static_cast<size_t>(depth); i < layers.size(); ++i) {
+        if (i > static_cast<size_t>(depth)) result += ':';
+        result += layers[i];
+    }
+    return result;
+}
+
 // Builds the candidate list for whatever a dot-completion chain resolved
 // to -- shared by every chain length (a 1-segment chain reproduces
 // §6.10/§6.13's original single-hop behavior exactly; this is the only
@@ -114,12 +180,15 @@ std::vector<Candidate> candidatesForResolvedType(SymbolDatabase& db, const std::
 {
     if (detail.empty()) return {};
 
-    // Built-in container/type methods (plan.md §6.13): queues,
+    // Built-in container/type methods (plan.md §6.13, §6.15): queues,
     // associative/dynamic/fixed-size arrays, mailbox, semaphore, process,
     // string, event -- none of these are ParseRecordKinds, so
     // findSymbolsInScope would return nothing for them. Resolved from a
-    // static table alone, no DB call.
-    if (auto methods = builtinMethodsFor(detail); !methods.empty())
+    // static table alone, no DB call. Dispatches on the outermost layer
+    // only -- a container's own method set doesn't depend on its element
+    // type (§6.15's "q." on "MyClass q[$]" still means the queue's own
+    // methods, not MyClass's).
+    if (auto methods = builtinMethodsFor(firstLayer(detail)); !methods.empty())
         return candidatesFromMethods(methods);
 
     // Otherwise, a real DB Class/Interface/whatever scope lookup.
@@ -181,7 +250,8 @@ std::string resolveFirstSegment(SymbolDatabase& db, const std::string& path, int
     for (auto& row : visible) {
         bool kindMatches = wantKind ? row.kind == wantKind
                                      : (row.kind == "Signal" || row.kind == "Parameter");
-        if (kindMatches && row.name == seg.name) return row.detail;
+        if (kindMatches && row.name == seg.name)
+            return peelDimensionLayers(row.detail, seg.indexDepth);
     }
     return "";
 }
@@ -197,7 +267,8 @@ std::string resolveMemberSegment(SymbolDatabase& db, const std::string& prevClas
     for (auto& row : members) {
         bool kindMatches = wantKind ? row.kind == wantKind
                                      : (row.kind == "Signal" || row.kind == "Parameter");
-        if (kindMatches && row.name == seg.name) return row.detail;
+        if (kindMatches && row.name == seg.name)
+            return peelDimensionLayers(row.detail, seg.indexDepth);
     }
     return "";
 }
