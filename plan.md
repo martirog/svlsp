@@ -1142,7 +1142,90 @@ it.
 
 ### 6.11 Configurable Fuzzy-Matching Toggle
 
-**Status:** not started.
+**Status:** implemented 2026-09-04, following this section's own original
+sketch essentially as designed (the parameter-threading option was taken
+over the non-static-class alternative, exactly as recommended below).
+
+**As implemented:** `ServerState` (`src/lsp/server_state.h/.cpp`) gained
+`fuzzyCompletionEnabled()`, mirroring `explicitProjectConfigPath()` exactly:
+a private `extractFuzzyCompletionEnabled(params)` static helper reads
+`initializationOptions.svlsp.fuzzyCompletion`, defaulting to `true` (fuzzy
+matching stays on, today's behavior unchanged) whenever
+`initializationOptions` is absent, isn't an object, the nested `svlsp` key is
+missing/not an object, or `fuzzyCompletion` is missing/not a JSON boolean —
+resolved once in `handleInitialize` and fixed for the server's lifetime, the
+same "no live reconfiguration" posture `explicitProjectConfigPath` already
+has. `CompletionProvider::getCompletion` (`src/lsp/completion.h/.cpp`) gained
+a `bool fuzzyEnabled = true` parameter (default preserves every pre-existing
+call site and unit test unchanged); the server's own
+`textDocument/completion` handler (`src/lsp/server.cpp`) passes
+`m_state.fuzzyCompletionEnabled()` through explicitly.
+
+The disabled path lives entirely inside the shared `buildCompletionItems`
+helper (`src/lsp/completion.cpp`) — both the dot-completion branch and the
+plain-scope branch call through the same function, so neither needed its own
+copy of this logic. With `fuzzyEnabled=false` and a non-empty prefix, a
+candidate is kept only via a strict, case-sensitive
+`compare(0, prefix.size(), prefix) != 0` prefix rejection (matching §3.6's
+own documented description of the pre-fuzzy state) instead of `fuzzyScore`;
+the `std::sort` re-rank is skipped entirely (candidate/DB order preserved,
+not re-derived); no `sortText` is assigned. An empty prefix is unaffected
+either way (every candidate stays in, unranked, matching current behavior
+regardless of the flag) — this was already true before this section and
+needed no change.
+
+**A subtlety the original sketch didn't anticipate, found while writing the
+disabled-mode unit tests:** for any candidate set that actually *survives* a
+strict-prefix filter, fuzzy-enabled ranking degenerates to the exact same
+relative order strict/disabled mode already preserves. A full literal-prefix
+match scores identically for every surviving candidate (same word-boundary
+and contiguous-run bonuses, since the matched span is identical), so
+`buildCompletionItems`'s own score-tie tie-break (candidate name, ascending)
+is the only thing distinguishing them when fuzzy is on — and that happens to
+coincide with plain alphabetical order for candidates sharing the same scope
+depth. Proving disabled mode truly preserves *DB* order (not just "an order
+indistinguishable from fuzzy's tie-break") therefore needed a candidate pair
+at two different scope depths, since `findSymbolsVisibleAt`'s own SQL-side
+sort (deepest scope first, name second) and fuzzy's flat
+score-then-name-only sort genuinely disagree once scope depth is allowed to
+differ — see `tests/unit/lsp/test_completion.cpp`'s
+"fuzzyEnabled=false preserves DB order, not fuzzy tie-break order" test for
+the worked example.
+
+**Verification:** unit tests extend both `tests/unit/lsp/test_server_state.cpp`
+(the same present/absent/wrong-type/non-object matrix `explicitProjectConfigPath`
+already has, for `true`/`false`/default) and `tests/unit/lsp/test_completion.cpp`
+(a typo'd/skip-tolerant prefix that fuzzy-matches WIDTH is rejected outright
+when disabled; a strict-prefix match still succeeds with no `sortText`
+attached; the DB-vs-tie-break order distinction above; and that omitting the
+parameter is byte-for-byte identical to passing `true` explicitly).
+Functional test `tests/integration/test_35_fuzzy_completion_toggle.sh`
+reuses the `fuzzy_completion.sv` fixture test_25 already established, proving
+the flag reaches `CompletionProvider` through a real `initialize` handshake,
+not just at the unit level — the one real complication: every fixture in
+this repo shares one lsp-mode workspace/server process (see test_21's own
+header comment on this), so observing the flag's effect requires actually
+tearing that shared workspace down and reconnecting with new
+`initializationOptions`. `lsp-workspace-restart` was tried first and found
+unreliable here (its respawn is driven asynchronously off the *dying*
+workspace's own buffer list via the process sentinel, and a
+`textDocument/completion` request sent immediately after intermittently
+raced a not-yet-fully-reattached buffer, timing out); the test instead does
+an explicit `lsp-workspace-shutdown` (`lsp-restart` is set to `ignore` in
+`emacs-test-init.el`, so nothing auto-respawns it), polls for the killed
+process to actually die before proceeding (`lsp-workspace-shutdown` only
+kills the process — the session's `folder->servers` table isn't cleaned up
+until the process sentinel fires asynchronously on process death, so
+skipping this wait let a fresh buffer open race that cleanup and reattach to
+the dying workspace instead of spawning a new one), then opens a *fresh*
+buffer of the same fixture — the same "no workspace yet for this root"
+connect path every other test in this suite already relies on. The test
+file's own last step unconditionally resets the option to absent and
+reconnects again, restoring the shared workspace to its default (fuzzy-on)
+state for every test that runs after it, regardless of whether the earlier
+assertions in the same file passed.
+
+**Original sketch, kept below for history:**
 
 **Why this is needed:** `CompletionProvider::getCompletion`
 (`src/lsp/completion.cpp`) unconditionally fuzzy-scores every candidate via
@@ -2158,8 +2241,10 @@ to disrupt `all_queue`'s own scope tracking after all).
 
 **Why this is needed:** `registerHandlers()` (`src/lsp/server.cpp:62-...`) wires
 `didOpen`/`didChange`/`didClose` but has no `TextDocument_DidSave` handler at
-all, and the advertised `textDocumentSync` capability doesn't declare a `save`
-option — the server never learns a save happened. Today, freshness relies
+all -- the server advertises `save = true` in its `textDocumentSync`
+capability (`src/lsp/server_state.cpp`, part of the `handleInitialize`
+response) but silently drops every `didSave` notification a client sends as a
+result, since no handler is registered for it. Today, freshness relies
 entirely on §6.8's debounced `didChange` compile (a 300ms quiet period after
 the last edit). In the common case this already leaves the file compiled
 *before* the user saves, so this is not fixing a correctness bug — but two
@@ -2175,12 +2260,6 @@ file is actually saved" matches how every mainstream language server (clangd,
 rust-analyzer) scopes that propagation.
 
 **What is missing:**
-- Advertise `save` in the `textDocumentSync` capability sent from
-  `handleInitialize` (`src/lsp/server_state.cpp` / wherever
-  `ServerCapabilities` is built) — `TextDocumentSyncOptions::save = true` (or
-  `SaveOptions{includeText: false}`; `includeText` isn't needed since the
-  handler re-reads `DocumentStore`'s own buffer, not the notification's own
-  text field, matching how `didChange` already works).
 - A new `lsp::notifications::TextDocument_DidSave` handler in
   `registerHandlers()`, mirroring the existing `didOpen` pattern
   (`server.cpp:83-91`): cancel any pending debounce entry for that URI
@@ -2199,10 +2278,11 @@ immediately and reflect the latest (post-edit) text; then let the original
 debounce deadline pass and assert no second, stale publish follows (proving
 `didSave` actually cancelled it, not just raced it).
 
-**Functional test:** `tests/integration/test_35_recompile_on_save.sh` — edit
-an open buffer to introduce a diagnostic and save immediately (well inside
-the 300ms window), confirm the diagnostic appears without waiting out the
-debounce period.
+**Functional test:** `tests/integration/test_36_recompile_on_save.sh` (next
+free integration test number as of this writing -- §6.11 claimed
+`test_35_fuzzy_completion_toggle.sh` first) — edit an open buffer to
+introduce a diagnostic and save immediately (well inside the 300ms window),
+confirm the diagnostic appears without waiting out the debounce period.
 
 **Open question, deliberately unresolved:** whether `didSave` should also
 force a *bypass* of the file's own hash-cache check in

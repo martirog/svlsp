@@ -1,8 +1,15 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-09-03 (compressed from full session history — see git log for
+**Last updated:** 2026-09-04 (compressed from full session history — see git log for
 narrative detail if ever needed; this file now documents current-state-and-next-steps
 only).
+
+On 2026-09-04: plan.md gained §6.18 (recompile on `textDocument/didSave` — not yet
+implemented, just planned) and §6.11 (configurable fuzzy-matching toggle) was
+implemented — see "Configurable fuzzy-matching toggle" under "LSP feature providers"
+below and "Not yet done" #13. Unit suite now at 1477 assertions / 524 test cases;
+Emacs integration suite gained `test_35_fuzzy_completion_toggle.sh` (3 cases, 197/197
+total), no regressions anywhere.
 
 **Status:** Phases 3, 4, 5, 6.1, 6.2, 6.3 complete, plus §6.8 (debounced `didChange`
 compilation) implemented 2026-08-28. On 2026-09-01: a `pickBestSymbol()`
@@ -86,8 +93,8 @@ src/compiler/      compiler_directive_stripper, sv_preprocessor, sv_tree_walker,
 src/db/            database, symbol_database, compilation_controller,
                    library_resolver, project_compiler, schema — SQLite persistence (schema v5)
 src/main.cpp       entry point (supports `--log-files <path>`, see below)
-tests/unit/        Catch2 unit tests (514 cases, 1454 assertions)
-tests/integration/ Emacs functional test scripts (194 test cases across 35 files)
+tests/unit/        Catch2 unit tests (524 cases, 1477 assertions)
+tests/integration/ Emacs functional test scripts (197 test cases across 36 files)
 tests/uvm_corpus/  opt-in test suite against a real, external UVM corpus (NOT in
                    ctest/make test — see "UVM corpus testing" below)
 tools/             emacs-test-daemon.sh, emacs-test-init.el, emacs-test-lib.sh
@@ -206,12 +213,47 @@ prefix is typed, drops `nullopt` rows, sorts by descending score (name as stable
 tiebreak), and assigns each item a zero-padded `sortText` for clients that re-sort by
 that field. No typed prefix → unranked, unchanged behavior (every visible symbol).
 `CompletionProvider::getCompletion` delegates to a shared private
-`buildCompletionItems(candidates, prefix)` helper operating on a source-agnostic
+`buildCompletionItems(candidates, prefix, fuzzyEnabled)` helper operating on a source-agnostic
 `Candidate{name, kind, detail}` struct (added 2026-09-02 for keyword completion below —
 previously took `vector<SymbolRow>` directly). The dot-completion branch (§6.10/§6.13/§6.14
 below) builds its own `Candidate`s via `candidatesForResolvedType` rather than a
 `vector<SymbolRow>`-taking overload — there's only ever one candidate-building path now,
 regardless of chain length (see "Chained/function-call dot-completion" below).
+
+**Configurable fuzzy-matching toggle** (plan.md §6.11, implemented
+2026-09-04): `ServerState::fuzzyCompletionEnabled()`
+(`src/lsp/server_state.h/.cpp`) reads
+`initializationOptions.svlsp.fuzzyCompletion`, defaulting to `true`
+whenever it's absent/not-an-object/not-a-boolean — same
+absent/wrong-type-means-default shape as `explicitProjectConfigPath`,
+resolved once in `handleInitialize` and fixed for the server's lifetime
+(no `workspace/didChangeConfiguration` handling exists in this codebase).
+`CompletionProvider::getCompletion` gained a `bool fuzzyEnabled = true`
+parameter (default preserves every pre-existing call site/test); the
+server's own `textDocument/completion` handler (`src/lsp/server.cpp`)
+passes `m_state.fuzzyCompletionEnabled()` through.
+
+The disabled path lives inside `buildCompletionItems` itself, not a
+separate function: with `fuzzyEnabled=false` and a non-empty prefix, a
+candidate survives only a strict, case-sensitive
+`compare(0, prefix.size(), prefix) != 0` rejection (not `fuzzyScore`), the
+`std::sort` re-rank is skipped entirely (candidate/DB order preserved),
+and no `sortText` is assigned — matching §3.6's own documented description
+of the pre-fuzzy-matching behavior. An empty prefix is unaffected either
+way (every candidate stays in, unranked, regardless of the flag).
+
+**A non-obvious subtlety found while writing the disabled-mode unit
+tests:** for any candidate set that actually survives a strict-prefix
+filter, fuzzy-enabled ranking degenerates to the *same* relative order
+disabled mode already preserves — a full literal-prefix match scores
+identically for every survivor, so fuzzy's own score-tie tie-break (name,
+ascending) is all that's left distinguishing them, which coincides with
+plain alphabetical order for same-scope-depth candidates. Proving disabled
+mode truly preserves *DB* order (not just an order indistinguishable from
+fuzzy's tie-break) needed a candidate pair at two different scope depths,
+since `findSymbolsVisibleAt`'s own SQL-side sort (deepest scope first,
+name second) and fuzzy's flat score-then-name sort only genuinely disagree
+once scope depth differs.
 
 **Keyword completion** (plan.md §6.9, implemented 2026-09-02, with context-legality
 rules beyond the section's original sketch): `src/lsp/sv_keywords.h` holds a
@@ -1036,16 +1078,32 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
     its original sketch (Port excluded from `detail`-population; a real
     `data_declaration`/`net_declaration` grammar ambiguity surfaced along
     the way).
-13. **Configurable fuzzy-matching toggle (`plan.md §6.11`)** — not started.
-    `CompletionProvider::getCompletion` always fuzzy-scores when a prefix is
-    typed, with no way to opt out. Needs an `initializationOptions.svlsp.
-    fuzzyCompletion` boolean (default true, absent/wrong-type = default —
-    same pattern as `svlsp.projectConfig` in `ServerState::
-    extractProjectConfigPath`), threaded through as a new `getCompletion`
-    parameter; disabled mode restores the pre-fuzzy strict-prefix, DB-order,
-    unranked behavior. Fixed at `initialize`, not live-reconfigurable — no
-    `workspace/didChangeConfiguration` handling exists in this codebase.
-    See plan.md for full detail.
+13. ~~Configurable fuzzy-matching toggle (`plan.md §6.11`)~~ — **implemented
+    2026-09-04**, following the original sketch essentially as designed.
+    `ServerState::fuzzyCompletionEnabled()` reads
+    `initializationOptions.svlsp.fuzzyCompletion` (default `true`, same
+    absent/non-object/wrong-type-means-default pattern as
+    `explicitProjectConfigPath`), resolved once at `initialize`.
+    `CompletionProvider::getCompletion` gained a `bool fuzzyEnabled = true`
+    parameter (default preserves every pre-existing call site), threaded
+    through by `server.cpp`'s completion handler. Disabled mode lives in the
+    shared `buildCompletionItems` helper: a strict, case-sensitive prefix
+    filter replaces `fuzzyScore`, the re-sort is skipped entirely (DB order
+    preserved), and no `sortText` is assigned. See "Configurable
+    fuzzy-matching toggle" under "LSP feature providers" above and plan.md
+    §6.11 for the full design, including a subtlety found while writing the
+    disabled-mode unit tests: for candidates that survive a strict-prefix
+    filter, fuzzy-enabled ranking degenerates to the exact same order
+    disabled mode already preserves *unless* the candidates differ in scope
+    depth (proving the two modes genuinely differ needed a same-file,
+    different-scope-depth candidate pair, not just different names).
+    Functional test `tests/integration/test_35_fuzzy_completion_toggle.sh`
+    proves the flag reaches `CompletionProvider` through a real `initialize`
+    handshake by explicitly tearing down and reconnecting the suite's shared
+    workspace (`lsp-workspace-shutdown`, not `lsp-workspace-restart` — the
+    latter's respawn raced a `textDocument/completion` request sent
+    immediately after and intermittently timed out), restoring the default
+    (fuzzy-on) state again before the file ends.
 14. **Configurable debounce interval (`plan.md §6.12`)** — not started.
     Resolves §6.8's own open question. `ChangeDebouncer`'s 300ms delay
     (`src/lsp/change_debouncer.h:26-27`) is a hardcoded default, never
@@ -1171,15 +1229,17 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
     completes correctly.
 21. **Recompile on save (`plan.md §6.18`)** — not started. No
     `textDocument/didSave` handler exists at all today (`registerHandlers()`,
-    `src/lsp/server.cpp`, wires `didOpen`/`didChange`/`didClose` only), and
-    `textDocumentSync` doesn't advertise a `save` capability. Freshness
-    currently relies entirely on §6.8's 300ms debounced `didChange` compile,
-    which is usually already settled by the time a save happens, but a save
-    landing inside that window can briefly show pre-edit diagnostics. Fix:
-    advertise `save` in `textDocumentSync`, add a `didSave` handler that
-    cancels any pending debounce entry (`m_debouncer.cancel`, same call
-    `didClose` already makes) and calls `compileAndPublish(uri)` immediately.
-    Also flagged as the natural future trigger point for recompiling
+    `src/lsp/server.cpp`, wires `didOpen`/`didChange`/`didClose` only) —
+    `textDocumentSync` already advertises `save = true`
+    (`src/lsp/server_state.cpp`), so every `didSave` notification a client
+    sends is silently dropped for lack of a handler. Freshness currently
+    relies entirely on §6.8's 300ms debounced `didChange` compile, which is
+    usually already settled by the time a save happens, but a save landing
+    inside that window can briefly show pre-edit diagnostics. Fix: add a
+    `didSave` handler that cancels any pending debounce entry
+    (`m_debouncer.cancel`, same call `didClose` already makes) and calls
+    `compileAndPublish(uri)` immediately. Also flagged as the natural future
+    trigger point for recompiling
     *dependent* files once §6.4 (cross-file invalidation) exists, rather than
     propagating on every debounced keystroke — see plan.md §6.18 for the full
     writeup.
