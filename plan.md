@@ -575,7 +575,10 @@ field, editing `a.sv` must eventually flag `b.sv` as stale and re-check it.
   meaningfully compounds with the daemon-plus-port question above versus being
   a simpler independent win.
 - **Open question, needs investigation — pre-built/shared DBs for rarely-changing
-  library code (UVM, verification IP):** a large fraction of a real verification
+  library code (UVM, verification IP).** **See §6.19 for a concrete design
+  (drafted 2026-09-04), choosing the attach-and-query shape below over a true
+  merge, per this bullet's own "Recommended default" conclusion.** A large
+  fraction of a real verification
   project's total file count (per `handoff.md`'s UVM-corpus work, ~140 files) is
   third-party or internal library code that changes rarely — new UVM/VIP
   releases, not every edit — but gets fully recompiled from scratch by every
@@ -2293,6 +2296,140 @@ implementer doesn't "fix" it into an unconditional recompile by accident.
 Recompiling *dependent* files on save (gap #2 above) is intentionally left to
 §6.4's own design once that section is planned in file-level detail; this
 section only adds the `didSave` hook and the file's own immediate recompile.
+
+---
+
+### 6.19 Pre-Built Library Database (attach-and-query, no physical merge)
+
+**Status:** design drafted 2026-09-04, per explicit user direction; not started
+/ not implemented. Fleshes out §6.5's own "pre-built/shared DBs for
+rarely-changing library code" open question into a concrete design, choosing
+the **attach-and-query** shape (§6.5's own "Recommended default," modeled on
+clangd's per-shard `MergedIndex`) over a true physical merge with
+moniker-style keys (LSIF/SCIP) — the true-merge shape is explicitly out of
+scope for this pass.
+
+**Why this is needed:** unchanged from §6.5's own rationale — a large
+fraction of a real verification project's files (per `handoff.md`'s
+UVM-corpus work, ~140 files) is third-party/internal library code (UVM,
+VIP) that changes rarely but gets fully recompiled from scratch by every
+project that includes it, and again on every server restart, since the live
+project DB is `:memory:` (§6.5's DB-persistence open question, directly
+above this one, is about that same file staying warm across restarts for
+*one* project — this section is about *sharing* one already-compiled result
+across many projects/restarts).
+
+**Three new pieces, in dependency order:**
+
+1. **A standalone "build a library DB" mode on the `svlsp` binary**
+   (`src/main.cpp`), so a library DB can be produced ahead of time,
+   independent of any editor session — e.g.
+   `svlsp --build-db <config-path> --output <db-path>`, where `<config-path>`
+   is either a `.svlsp.json` manifest or a `.f`/`.svlsp.f` filelist (parsed
+   via the existing `ProjectManifestParser`/`FilelistParser`, the same
+   dispatch-by-filename `ProjectRegistry::configFor` already does). Opens a
+   `Database` against `<db-path>` (a real file — the constructor already
+   supports this, `src/db/database.cpp:11`; nothing new at the `Database`
+   layer) and calls the existing `ProjectCompiler::loadProject(config,
+   controller, sdb)`, then exits (a one-line file-count/diagnostic-count
+   summary to stderr, matching `--log-files`'s existing
+   stderr-for-diagnostics convention) instead of entering the
+   `initialize`/stdio message loop. Mutually exclusive with normal server
+   mode on the same invocation. No `LanguageServer`/`ServerState` changes
+   needed — purely a `main.cpp`-level alternate entry path reusing the
+   compiler/DB layers `svlsp` already has.
+
+2. **Referencing an already-built library DB directly** — the "the DB
+   already exists, just use it" case — in both project-config formats:
+   - `ProjectConfig` (`src/compiler/project_config.h`) gains
+     `std::vector<std::string> libraryDbs;` (absolute paths to prebuilt DB
+     files) alongside the existing `libraryDirs`/`libraryFiles`.
+   - `.svlsp.json`: a new `"libraryDbs": ["/path/to/uvm-1.2.db", ...]` array
+     key (`ProjectManifestParser`), resolved against the manifest's own
+     directory the same way `includeDirs`/`libraryDirs` already are.
+   - `.f`: a new switch, **deliberately not spelled `+libdb+`** despite
+     matching `+libext+`'s naming convention — `.f` is nominally a real
+     VCS/Questa/Xcelium-portable format, and an unprefixed `+switch+`
+     risks silently colliding with a real vendor switch of the same
+     spelling introduced later. Use an `svlsp`-namespaced spelling instead,
+     e.g. `-svlsp_library_db <path>` (chainable, one path per occurrence,
+     mirroring `-v`) — `FilelistParser` already hard-errors on any switch it
+     doesn't recognize, so this is purely additive with no ambiguity risk
+     for existing `.f` files.
+   - At project-load time, each `libraryDbs` entry is `ATTACH DATABASE`'d
+     read-only onto the project's own (usually `:memory:`) connection, and
+     `SymbolDatabase`'s queries (§5.3 — `findSymbolsByName`,
+     `findSymbolsVisibleAt`, `findSymbolsInScope`, ...) are extended to
+     `UNION` across the attached schema(s). This is exactly the integration
+     work §6.5's own prior-art note already flagged as "the still-open,
+     no-prior-art part" — unchanged and not further detailed here.
+     `SQLITE_MAX_ATTACHED`'s default 10-per-connection limit (already noted
+     in §6.5) bounds how many `libraryDbs` entries can be attached at once.
+
+3. **Lazy build-and-cache, given a library's own *source* config instead of
+   a prebuilt DB** — the "build me one on demand and remember it" case,
+   distinct from (2):
+   - `ProjectConfig` gains a second, parallel list:
+     `std::vector<LibraryDbSource> libraryDbSources;` where
+     `struct LibraryDbSource { std::string configPath; std::string cachePath; };`
+     — `configPath` is another `.svlsp.json`/`.f` describing the library's
+     own files (exactly what `--build-db` in (1) would consume);
+     `cachePath` is where the resulting DB should be looked for / written.
+   - `.svlsp.json`: `"libraryDbSources": [{"config": "/vip/uvm/uvm.f",
+     "cache": "/var/cache/svlsp/uvm-1.2.db"}]`.
+   - `.f`: `-svlsp_library_db_source <config-path> <cache-path>` (two
+     arguments; same `svlsp_`-prefixed reasoning as (2)).
+   - At project-load time, for each `libraryDbSources` entry: **if
+     `cachePath` already exists on disk, attach it exactly as in (2)**
+     (skip recompiling the library entirely — this is the whole point);
+     **if it doesn't, parse `configPath` and run the same build-a-DB path
+     as (1) to produce it at `cachePath` first, then attach it.** The first
+     project load pays the library's compile cost once; every later load —
+     this project or any other project pointing at the same `cachePath` —
+     reuses it for free.
+   - Subsumes (2): a `libraryDbSources` entry whose `cachePath` is
+     pre-populated out-of-band (e.g. by someone else's earlier
+     `--build-db` run, or a CI job) behaves identically to a `libraryDbs`
+     entry. (2) stays as its own, simpler option for "I was handed a
+     prebuilt DB and have no source config for it at all" (e.g. a vendor
+     ships only the compiled DB, never the source filelist).
+
+**Deliberately out of scope for this design**, per explicit direction to
+start with attach-and-query rather than the real merge: any id-remapping or
+moniker-key merge machinery. This is entirely the "keep DBs separate,
+`UNION` at query time" shape, modeled on clangd's `MergedIndex` — not LSIF/
+SCIP's moniker-linked physical merge.
+
+**Open question, deliberately unresolved (per explicit direction):** how —
+or whether — to detect that a prebuilt/cached library DB has gone stale
+relative to its own source files (the library upgraded in place without
+rebuilding the DB; a `cachePath` populated once and never revisited even
+though `configPath`'s file list changed underneath it). Candidate shapes,
+none chosen:
+- Per-file content-hash comparison (reusing
+  `CompilationController::hashContent`, already used for per-file
+  incremental recompilation) between the attached DB's own recorded file
+  hashes and the library's current on-disk files — accurate, but requires
+  re-resolving and re-reading every library file just to *check*
+  staleness, partly defeating the point of skipping the compile.
+- A single fingerprint stored as metadata in the DB itself at build time
+  (e.g. a hash of the resolved file list plus each file's mtime, or of
+  `configPath`'s own content) — cheaper to check, but coarser (a
+  metadata-only staleness check, not per-symbol).
+- Trust an explicit version/pin the user manages themselves (e.g.
+  `cachePath` already encodes a library version in its filename, as in the
+  examples above — `uvm-1.2.db`) and never auto-detect staleness at all —
+  simplest, matches how most vendored-dependency/lockfile workflows
+  already work, but silently serves stale data if someone overwrites a
+  library in place without renaming it.
+- Some combination — e.g. trust by default, but offer an explicit
+  `svlsp --build-db ... --force` (or a separate `--check-stale` mode) for
+  whoever owns the cache to run deliberately, rather than `svlsp` ever
+  doing this automatically on the hot path.
+
+**Functional/unit tests:** not designed yet — deferred until an
+implementation approach is chosen, per this section's own "design only, not
+started" status.
 
 ---
 

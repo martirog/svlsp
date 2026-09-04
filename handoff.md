@@ -1150,6 +1150,21 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
       specific: reshaping `SymbolDatabase`'s existing queries (§5.3) to query
       across an attached library DB, and the library-versioning/pinning/
       staleness story (config field, where pre-built DBs are built/shipped).
+      **A concrete design for this was drafted 2026-09-04 (plan.md §6.19,
+      not yet implemented):** a new `svlsp --build-db <config> --output
+      <db-path>` standalone CLI mode reusing `ProjectCompiler::loadProject`
+      against a file-backed `Database` instead of `:memory:`; two new
+      `ProjectConfig` fields — `libraryDbs` (paths to already-built DBs,
+      attached read-only and unioned into `SymbolDatabase`'s queries) and
+      `libraryDbSources` (a source config + a cache path — build-and-cache
+      on first use if the cache path doesn't exist yet, reuse it
+      unconditionally if it does); both configurable from `.svlsp.json` and
+      a new `svlsp_`-prefixed `.f` switch (deliberately not an unprefixed
+      `+libdb+`-style spelling, to avoid ever colliding with a real vendor
+      switch in this nominally simulator-portable format). Staleness
+      detection (has the library's own source changed since its DB was
+      built/cached) is explicitly left as an open question with candidate
+      shapes listed, none chosen — see plan.md §6.19 for the full writeup.
 16. ~~Built-in container & type method completion (`plan.md §6.13`)~~ —
     **implemented 2026-09-02**, expanded from its original queue/
     associative-array/mailbox/randomize scope after the user flagged it as
