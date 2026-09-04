@@ -52,7 +52,9 @@ make docs        # Both
 - [Phase 4 — ANTLR4 Compiler Front-End](phase4-antlr4-compiler.md)
 - [Phase 5 — SQLite Database Layer](phase5-sqlite-database.md)
 - [Phase 6 — End-to-End Integration and Polishing](phase6-lsp-providers.md)
-- `usage.md` — end-user guide *(added in Phase 6.6)*
+- [Usage Guide](usage.md) — configuring `initializationOptions` and `--log-files`
+  *(started ahead of Phase 6.6; will grow into the full end-user guide as more of
+  that phase lands)*
 
 ## Project Phases
 
