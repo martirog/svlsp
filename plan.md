@@ -2152,6 +2152,70 @@ to disrupt `all_queue`'s own scope tracking after all).
 
 ---
 
+### 6.18 Recompile on Save (`textDocument/didSave`)
+
+**Status:** not started.
+
+**Why this is needed:** `registerHandlers()` (`src/lsp/server.cpp:62-...`) wires
+`didOpen`/`didChange`/`didClose` but has no `TextDocument_DidSave` handler at
+all, and the advertised `textDocumentSync` capability doesn't declare a `save`
+option — the server never learns a save happened. Today, freshness relies
+entirely on §6.8's debounced `didChange` compile (a 300ms quiet period after
+the last edit). In the common case this already leaves the file compiled
+*before* the user saves, so this is not fixing a correctness bug — but two
+real gaps exist: (1) a save that follows closely on the heels of an edit (e.g.
+paste-then-immediately-save, or an editor/keybinding that saves on every
+buffer-focus-loss) can land inside the still-pending 300ms window, so the
+diagnostics visible immediately after save briefly reflect the *pre*-edit
+state; (2) `didSave` is the natural, infrequent trigger point for eventually
+recompiling *dependent* files once §6.4 (Cross-File Invalidation) lands —
+propagating on every debounced keystroke would be wasteful and fights §6.8's
+own "wait for typing to pause" intent, whereas "recompile dependents when the
+file is actually saved" matches how every mainstream language server (clangd,
+rust-analyzer) scopes that propagation.
+
+**What is missing:**
+- Advertise `save` in the `textDocumentSync` capability sent from
+  `handleInitialize` (`src/lsp/server_state.cpp` / wherever
+  `ServerCapabilities` is built) — `TextDocumentSyncOptions::save = true` (or
+  `SaveOptions{includeText: false}`; `includeText` isn't needed since the
+  handler re-reads `DocumentStore`'s own buffer, not the notification's own
+  text field, matching how `didChange` already works).
+- A new `lsp::notifications::TextDocument_DidSave` handler in
+  `registerHandlers()`, mirroring the existing `didOpen` pattern
+  (`server.cpp:83-91`): cancel any pending debounce entry for that URI
+  (`m_debouncer.cancel(uri.toString())`, the same call `didClose` already
+  makes) so a stale, already-superseded timer can't fire a redundant publish
+  right after, then call `compileAndPublish(uri)` synchronously/immediately —
+  giving an unconditional fresh compile at the moment of save regardless of
+  where in the debounce window it lands.
+- No `CompilationController`/DB changes needed — this only changes *when*
+  `compileAndPublish` runs, not what it does.
+
+**Unit tests:** extend `tests/unit/lsp/test_server_debounce.cpp`: schedule a
+`didChange` (debounced, not yet fired) introducing an error, send `didSave`
+before the debounce deadline elapses, assert the diagnostics publish
+immediately and reflect the latest (post-edit) text; then let the original
+debounce deadline pass and assert no second, stale publish follows (proving
+`didSave` actually cancelled it, not just raced it).
+
+**Functional test:** `tests/integration/test_35_recompile_on_save.sh` — edit
+an open buffer to introduce a diagnostic and save immediately (well inside
+the 300ms window), confirm the diagnostic appears without waiting out the
+debounce period.
+
+**Open question, deliberately unresolved:** whether `didSave` should also
+force a *bypass* of the file's own hash-cache check in
+`CompilationController::compile` (today, saving with no net text change since
+the last compile is already a hash-cache no-op, which is correct and should
+stay that way) — no known reason to change this, noted only so a future
+implementer doesn't "fix" it into an unconditional recompile by accident.
+Recompiling *dependent* files on save (gap #2 above) is intentionally left to
+§6.4's own design once that section is planned in file-level detail; this
+section only adds the `didSave` hook and the file's own immediate recompile.
+
+---
+
 ## Appendix A — Technology Stack Summary
 
 | Concern | Choice | Rationale |

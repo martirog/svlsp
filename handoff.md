@@ -1169,3 +1169,17 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
     the complete writeup. Re-verified directly against the user's
     original bug report end to end: `all_queue[i].get_policy` now
     completes correctly.
+21. **Recompile on save (`plan.md §6.18`)** — not started. No
+    `textDocument/didSave` handler exists at all today (`registerHandlers()`,
+    `src/lsp/server.cpp`, wires `didOpen`/`didChange`/`didClose` only), and
+    `textDocumentSync` doesn't advertise a `save` capability. Freshness
+    currently relies entirely on §6.8's 300ms debounced `didChange` compile,
+    which is usually already settled by the time a save happens, but a save
+    landing inside that window can briefly show pre-edit diagnostics. Fix:
+    advertise `save` in `textDocumentSync`, add a `didSave` handler that
+    cancels any pending debounce entry (`m_debouncer.cancel`, same call
+    `didClose` already makes) and calls `compileAndPublish(uri)` immediately.
+    Also flagged as the natural future trigger point for recompiling
+    *dependent* files once §6.4 (cross-file invalidation) exists, rather than
+    propagating on every debounced keystroke — see plan.md §6.18 for the full
+    writeup.
