@@ -28,7 +28,8 @@ TEST_CASE("full manifest populates every field", "[lsp][project-manifest]") {
         "mode": "sv",
         "libraryDirs": ["rtl/lib"],
         "libraryFiles": ["vendor/ip.v"],
-        "libExtensions": [".sv", ".v"]
+        "libExtensions": [".sv", ".v"],
+        "libraryDbs": ["/shared/uvm-1.2.db", "relative.db"]
     })");
 
     auto config = ProjectManifestParser::parse(path);
@@ -51,6 +52,9 @@ TEST_CASE("full manifest populates every field", "[lsp][project-manifest]") {
     REQUIRE(config.libExtensions.size() == 2);
     CHECK(config.libExtensions[0] == ".sv");
     CHECK(config.libExtensions[1] == ".v");
+    REQUIRE(config.libraryDbs.size() == 2);
+    CHECK(config.libraryDbs[0] == "/shared/uvm-1.2.db"); // already absolute, unchanged
+    CHECK(config.libraryDbs[1] == kRoot + "/relative.db"); // resolved against manifest dir
 }
 
 TEST_CASE("partial manifest leaves unspecified fields at defaults", "[lsp][project-manifest]") {
@@ -67,6 +71,7 @@ TEST_CASE("partial manifest leaves unspecified fields at defaults", "[lsp][proje
     CHECK(config.libraryDirs.empty());
     CHECK(config.libraryFiles.empty());
     CHECK(config.libExtensions.empty());
+    CHECK(config.libraryDbs.empty());
 }
 
 TEST_CASE("mode v95 round-trips", "[lsp][project-manifest]") {

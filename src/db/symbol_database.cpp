@@ -22,9 +22,62 @@ static std::string kindStr(ParseRecordKind k)
     return "Unknown";
 }
 
+// Shared column projection used by all symbol queries below.
+// Columns: 0=id 1=kind 2=name 3=line 4=col 5=parent 6=detail 7=end_line 8=scope 9=path
+static SymbolRow rowFromStmt(const Database::Statement& s)
+{
+    return {s.columnInt(0),
+            s.columnText(1),
+            s.columnText(2),
+            static_cast<int>(s.columnInt(3)),
+            static_cast<int>(s.columnInt(4)),
+            s.columnText(5),
+            s.columnText(6),
+            s.columnText(9),
+            static_cast<int>(s.columnInt(7)),
+            s.columnText(8)};
+}
+
 SymbolDatabase::SymbolDatabase(Database& db)
     : m_db{db}
 {}
+
+void SymbolDatabase::attachLibraryDbs(const std::vector<std::string>& paths)
+{
+    for (const auto& path : paths) {
+        if (std::find(m_attachedLibraryPaths.begin(), m_attachedLibraryPaths.end(), path)
+            != m_attachedLibraryPaths.end())
+            continue;
+        std::string alias = "lib" + std::to_string(m_attachedLibraryPaths.size());
+        m_db.prepare("ATTACH DATABASE ? AS " + alias).bind(1, path).step();
+        m_attachedLibraryPaths.push_back(path);
+    }
+}
+
+std::vector<SymbolRow> SymbolDatabase::queryAcrossAttachedDbs(
+    const std::string& cond, const std::string& bindValue) const
+{
+    static constexpr const char* kCols =
+        "s.id,s.kind,s.name,s.line,s.col,s.parent,s.detail,s.end_line,s.scope,f.path";
+
+    std::string sql =
+        std::string("SELECT ") + kCols + " FROM symbols s JOIN files f ON f.id = s.file_id "
+        "WHERE " + cond;
+    for (size_t i = 0; i < m_attachedLibraryPaths.size(); ++i) {
+        std::string alias = "lib" + std::to_string(i);
+        sql += " UNION ALL SELECT " + std::string(kCols) + " FROM " + alias + ".symbols s "
+               "JOIN " + alias + ".files f ON f.id = s.file_id WHERE " + cond;
+    }
+
+    auto stmt = m_db.prepare(sql);
+    int idx = 1;
+    for (size_t i = 0; i <= m_attachedLibraryPaths.size(); ++i)
+        stmt.bind(idx++, bindValue);
+
+    std::vector<SymbolRow> rows;
+    while (stmt.step()) rows.push_back(rowFromStmt(stmt));
+    return rows;
+}
 
 int64_t SymbolDatabase::fileIdFor(const std::string& path) const
 {
@@ -272,25 +325,11 @@ std::vector<SymbolRow> SymbolDatabase::symbolsForFile(
 std::vector<SymbolRow> SymbolDatabase::findSymbolsByName(
     const std::string& name) const
 {
-    auto stmt = m_db.prepare(
-        "SELECT s.id,s.kind,s.name,s.line,s.col,s.parent,s.detail,s.end_line,s.scope,f.path "
-        "FROM symbols s JOIN files f ON f.id = s.file_id "
-        "WHERE s.name = ? ORDER BY f.path, s.line");
-    stmt.bind(1, name);
-
-    std::vector<SymbolRow> rows;
-    while (stmt.step()) {
-        rows.push_back({stmt.columnInt(0),
-                        stmt.columnText(1),
-                        stmt.columnText(2),
-                        static_cast<int>(stmt.columnInt(3)),
-                        static_cast<int>(stmt.columnInt(4)),
-                        stmt.columnText(5),
-                        stmt.columnText(6),
-                        stmt.columnText(9),
-                        static_cast<int>(stmt.columnInt(7)),
-                        stmt.columnText(8)});
-    }
+    auto rows = queryAcrossAttachedDbs("s.name = ?", name);
+    std::stable_sort(rows.begin(), rows.end(), [](const SymbolRow& a, const SymbolRow& b) {
+        if (a.filePath != b.filePath) return a.filePath < b.filePath;
+        return a.line < b.line;
+    });
     return rows;
 }
 
@@ -317,45 +356,24 @@ std::vector<DiagnosticRow> SymbolDatabase::diagnosticsForFile(
 // Context-aware query helpers
 // ---------------------------------------------------------------------------
 
-// Shared column projection used by all symbol queries below.
-// Columns: 0=id 1=kind 2=name 3=line 4=col 5=parent 6=detail 7=end_line 8=scope 9=path
-static SymbolRow rowFromStmt(const Database::Statement& s)
-{
-    return {s.columnInt(0),
-            s.columnText(1),
-            s.columnText(2),
-            static_cast<int>(s.columnInt(3)),
-            static_cast<int>(s.columnInt(4)),
-            s.columnText(5),
-            s.columnText(6),
-            s.columnText(9),
-            static_cast<int>(s.columnInt(7)),
-            s.columnText(8)};
-}
-
 std::vector<SymbolRow> SymbolDatabase::findSymbolsInScope(
     const std::string& scope) const
 {
-    auto stmt = m_db.prepare(
-        "SELECT s.id,s.kind,s.name,s.line,s.col,s.parent,s.detail,s.end_line,s.scope,f.path "
-        "FROM symbols s JOIN files f ON f.id = s.file_id "
-        "WHERE s.scope = ? ORDER BY s.name");
-    stmt.bind(1, scope);
-    std::vector<SymbolRow> rows;
-    while (stmt.step()) rows.push_back(rowFromStmt(stmt));
+    auto rows = queryAcrossAttachedDbs("s.scope = ?", scope);
+    std::stable_sort(rows.begin(), rows.end(), [](const SymbolRow& a, const SymbolRow& b) {
+        return a.name < b.name;
+    });
     return rows;
 }
 
 std::vector<SymbolRow> SymbolDatabase::findSymbolsByNamePrefix(
     const std::string& prefix) const
 {
-    auto stmt = m_db.prepare(
-        "SELECT s.id,s.kind,s.name,s.line,s.col,s.parent,s.detail,s.end_line,s.scope,f.path "
-        "FROM symbols s JOIN files f ON f.id = s.file_id "
-        "WHERE s.name LIKE ? ESCAPE '\\' ORDER BY s.name, f.path");
-    stmt.bind(1, prefix + "%");
-    std::vector<SymbolRow> rows;
-    while (stmt.step()) rows.push_back(rowFromStmt(stmt));
+    auto rows = queryAcrossAttachedDbs("s.name LIKE ? ESCAPE '\\'", prefix + "%");
+    std::stable_sort(rows.begin(), rows.end(), [](const SymbolRow& a, const SymbolRow& b) {
+        if (a.name != b.name) return a.name < b.name;
+        return a.filePath < b.filePath;
+    });
     return rows;
 }
 
@@ -472,31 +490,48 @@ std::vector<SymbolRow> SymbolDatabase::findSymbolsVisibleAt(
     for (size_t i = 0; i < crossScopes.size(); ++i) { if (i) crossPh += ','; crossPh += '?'; }
 
     // SQLite does not allow expressions in ORDER BY after UNION ALL; sort in C++.
+    // Part 2 (cross-file top-level+wildcard scopes) and Part 3 (specific
+    // imports) also search every attached library schema (plan.md §6.19) --
+    // one arm per schema, "" (main, unqualified table names) first, then
+    // "lib0.", "lib1.", ... Part 1 (the local scope chain) never does: the
+    // cursor's own file is always in this connection's main schema, never a
+    // read-only attached one.
+    std::vector<std::string> schemas = {""};
+    for (size_t i = 0; i < m_attachedLibraryPaths.size(); ++i)
+        schemas.push_back("lib" + std::to_string(i) + ".");
+
     std::string sql =
         "SELECT s.id,s.kind,s.name,s.line,s.col,s.parent,s.detail,s.end_line,s.scope,f.path "
         "FROM symbols s JOIN files f ON f.id = s.file_id "
-        "WHERE f.path = ? AND s.scope IN (" + localPh + ") "
-        "UNION ALL "
-        "SELECT s.id,s.kind,s.name,s.line,s.col,s.parent,s.detail,s.end_line,s.scope,f.path "
-        "FROM symbols s JOIN files f ON f.id = s.file_id "
-        "WHERE f.path != ? AND s.scope IN (" + crossPh + ")";
+        "WHERE f.path = ? AND s.scope IN (" + localPh + ")";
 
-    // Part 3: one UNION ALL per specific import, filtered by scope + name.
-    for (size_t i = 0; i < specificImports.size(); ++i)
+    for (const auto& schema : schemas)
         sql += " UNION ALL "
                "SELECT s.id,s.kind,s.name,s.line,s.col,s.parent,s.detail,s.end_line,s.scope,f.path "
-               "FROM symbols s JOIN files f ON f.id = s.file_id "
-               "WHERE s.scope = ? AND s.name = ?";
+               "FROM " + schema + "symbols s JOIN " + schema + "files f ON f.id = s.file_id "
+               "WHERE f.path != ? AND s.scope IN (" + crossPh + ")";
+
+    // Part 3: one UNION ALL per specific import, per schema, filtered by scope + name.
+    for (const auto& schema : schemas)
+        for (size_t i = 0; i < specificImports.size(); ++i)
+            sql += " UNION ALL "
+                   "SELECT s.id,s.kind,s.name,s.line,s.col,s.parent,s.detail,s.end_line,s.scope,f.path "
+                   "FROM " + schema + "symbols s JOIN " + schema + "files f ON f.id = s.file_id "
+                   "WHERE s.scope = ? AND s.name = ?";
 
     auto stmt = m_db.prepare(sql);
     int idx = 1;
     stmt.bind(idx++, path);
-    for (const auto& sc : scopes)      stmt.bind(idx++, sc);
-    stmt.bind(idx++, path);
-    for (const auto& sc : crossScopes) stmt.bind(idx++, sc);
-    for (auto& [pkg, name] : specificImports) {
-        stmt.bind(idx++, pkg);
-        stmt.bind(idx++, name);
+    for (const auto& sc : scopes) stmt.bind(idx++, sc);
+    for (size_t i = 0; i < schemas.size(); ++i) {
+        stmt.bind(idx++, path);
+        for (const auto& sc : crossScopes) stmt.bind(idx++, sc);
+    }
+    for (size_t i = 0; i < schemas.size(); ++i) {
+        for (auto& [pkg, name] : specificImports) {
+            stmt.bind(idx++, pkg);
+            stmt.bind(idx++, name);
+        }
     }
 
     std::vector<SymbolRow> rows;

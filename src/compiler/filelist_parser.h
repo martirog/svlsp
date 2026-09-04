@@ -18,6 +18,10 @@
 //   -sv / -sverilog        SystemVerilog mode (the default; explicit no-op)
 //   -y DIR                 library directory (searched by module name + ext)
 //   -v FILE                library file (only compiled if referenced)
+//   -svlsp_library_db FILE prebuilt library DB to ATTACH read-only (plan.md
+//                          §6.19); chainable (one path per occurrence, like
+//                          -v). svlsp-specific, deliberately not a `+switch+`
+//                          spelling -- see plan.md §6.19 for why.
 //   -top MODULE            top module name
 //   // ...                 line comment (rest of line ignored)
 //   "quoted path"           a single token, spaces allowed inside

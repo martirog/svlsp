@@ -127,6 +127,8 @@ void parseFile(const std::string& path, const std::string& baseDir,
                     config.libraryDirs.push_back(resolvePath(baseDir, needArg(tok)));
                 } else if (tok == "-v") {
                     config.libraryFiles.push_back(resolvePath(baseDir, needArg(tok)));
+                } else if (tok == "-svlsp_library_db") {
+                    config.libraryDbs.push_back(resolvePath(baseDir, needArg(tok)));
                 } else if (tok == "-top") {
                     config.topModule = needArg(tok);
                 } else {

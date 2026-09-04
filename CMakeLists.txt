@@ -217,6 +217,7 @@ add_executable(unit_tests
     tests/unit/compiler/test_filelist_parser.cpp
     tests/unit/db/test_database.cpp
     tests/unit/db/test_symbol_database.cpp
+    tests/unit/db/test_symbol_database_library_attach.cpp
     tests/unit/db/test_compilation_controller.cpp
     tests/unit/db/test_library_resolver.cpp
     tests/unit/db/test_project_compiler.cpp

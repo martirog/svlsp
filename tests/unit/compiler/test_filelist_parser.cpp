@@ -133,6 +133,28 @@ TEST_CASE("-y, -v, -top are captured", "[compiler][filelist]") {
 }
 
 // ---------------------------------------------------------------------------
+// -svlsp_library_db (plan.md §6.19)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("-svlsp_library_db is captured and resolved against baseDir",
+          "[compiler][filelist]") {
+    std::string path = writeFilelist("libdb.f",
+        "-svlsp_library_db " + kRoot + "/uvm-1.2.db\n"
+        "-svlsp_library_db relative.db\n");
+
+    auto config = FilelistParser::parse(path, kRoot);
+
+    REQUIRE(config.libraryDbs.size() == 2);
+    CHECK(config.libraryDbs[0] == kRoot + "/uvm-1.2.db");
+    CHECK(config.libraryDbs[1] == kRoot + "/relative.db");
+}
+
+TEST_CASE("-svlsp_library_db with no argument is an error", "[compiler][filelist]") {
+    std::string path = writeFilelist("libdb_noarg.f", "-svlsp_library_db\n");
+    CHECK_THROWS_AS(FilelistParser::parse(path), std::runtime_error);
+}
+
+// ---------------------------------------------------------------------------
 // -f (CWD-relative) vs -F (filelist-relative) nested inclusion
 // ---------------------------------------------------------------------------
 

@@ -9,9 +9,10 @@ class SymbolDatabase;
 // instantiations.
 class ProjectCompiler {
 public:
-    // Reads and compiles every path in config.files (missing files are
-    // skipped, not an error), then runs LibraryResolver::resolve. Returns
-    // the total number of files compiled (explicit + library-resolved).
+    // ATTACHes config.libraryDbs read-only onto sdb (plan.md §6.19; a no-op
+    // if empty), reads and compiles every path in config.files (missing
+    // files are skipped, not an error), then runs LibraryResolver::resolve.
+    // Returns the total number of files compiled (explicit + library-resolved).
     static int loadProject(const ProjectConfig& config, CompilationController& controller,
                            SymbolDatabase& sdb);
 };

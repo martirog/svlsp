@@ -17,4 +17,7 @@ struct ProjectConfig {
     std::vector<std::string> libraryDirs;          // -y
     std::vector<std::string> libraryFiles;         // -v
     std::vector<std::string> libExtensions;        // +libext+ search order
+    std::vector<std::string> libraryDbs;           // -svlsp_library_db / "libraryDbs" --
+                                                    // prebuilt library DBs to ATTACH
+                                                    // read-only (plan.md §6.19)
 };

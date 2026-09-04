@@ -44,6 +44,31 @@ class SymbolDatabase {
 public:
     explicit SymbolDatabase(Database& db);
 
+    // ATTACHes each path in `paths` read-only onto this connection under a
+    // generated alias ("lib0", "lib1", ...) so the cross-file symbol
+    // queries below (findSymbolsByName, findSymbolsByNamePrefix,
+    // findSymbolsInScope, findSymbolsVisibleAt) also search it -- the
+    // "attach-and-query" shape for pre-built/shared library DBs (plan.md
+    // §6.19), modeled on clangd's query-time MergedIndex rather than a
+    // physical merge. A path already attached (by an earlier call, e.g. a
+    // second discovered project sharing the same library) is skipped, not
+    // re-attached under a second alias. Throws (via Database::prepare/
+    // Statement::step) if `path` can't be opened, or if attaching would
+    // exceed SQLite's default 10-attached-databases-per-connection limit.
+    //
+    // Deliberately NOT extended to: scopeAtPosition/scopeKindAtPosition/
+    // enclosingClassNameAt (a (path, line) cursor position is always inside
+    // a project's own edited file, never a read-only attached library
+    // file); unresolvedInstantiatedTypeNames/instantiationsOfType (module/
+    // interface instantiation resolution against an attached DB -- library
+    // content reused this way is expected to be import'd, not
+    // instantiated); or export-chain traversal inside findSymbolsVisibleAt
+    // (collectExportedImports/fileIdForPackage only ever look in this
+    // connection's own main schema, so `export pkg::*` re-exporting a
+    // package that itself lives in an attached DB isn't followed) -- all
+    // disclosed limitations for this first cut, not oversights.
+    void attachLibraryDbs(const std::vector<std::string>& paths);
+
     // Insert or update the file record for `path`, recording `contentHash`.
     // Returns the file_id (stable across calls for the same path).
     int64_t upsertFile(const std::string& path, const std::string& contentHash);
@@ -118,6 +143,17 @@ public:
 
 private:
     Database& m_db;
+    std::vector<std::string> m_attachedLibraryPaths; // dedup guard for attachLibraryDbs
+
+    // Runs "SELECT <symbol cols> FROM symbols s JOIN files f ON f.id=s.file_id
+    // WHERE <cond>" (cond must reference only s/f and exactly one `?`)
+    // against this connection's main schema, UNION ALL'd with the same
+    // shape against every attached library schema (plan.md §6.19),
+    // `bindValue` bound identically in each arm. No ORDER BY -- like
+    // findSymbolsVisibleAt's own established precedent, callers sort the
+    // result in C++ rather than relying on ORDER BY across a UNION ALL.
+    std::vector<SymbolRow> queryAcrossAttachedDbs(
+        const std::string& cond, const std::string& bindValue) const;
 
     int64_t fileIdFor(const std::string& path) const;
     std::vector<ImportRow> importsForFileId(int64_t fileId) const;

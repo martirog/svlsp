@@ -5,6 +5,8 @@
 
 int ProjectCompiler::loadProject(const ProjectConfig& config, CompilationController& controller,
                                  SymbolDatabase& sdb) {
+    sdb.attachLibraryDbs(config.libraryDbs);
+
     int compiledCount = 0;
     for (const auto& path : config.files) {
         if (auto text = readFile(path)) {
