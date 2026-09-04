@@ -194,3 +194,79 @@ TEST_CASE("ServerState: explicitProjectConfigPath extracts a nested string path"
     s.handleInitialize(params);
     CHECK(s.explicitProjectConfigPath() == "/proj/.svlsp.json");
 }
+
+// ---------------------------------------------------------------------------
+// fuzzyCompletionEnabled (plan.md §6.11)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("ServerState: fuzzyCompletionEnabled defaults to true with no initializationOptions",
+          "[lsp][server-state][completion]")
+{
+    ServerState s;
+    s.handleInitialize(makeParams());
+    CHECK(s.fuzzyCompletionEnabled());
+}
+
+TEST_CASE("ServerState: fuzzyCompletionEnabled defaults to true when initializationOptions "
+          "isn't an object", "[lsp][server-state][completion]")
+{
+    ServerState s;
+    auto params = makeParams();
+    params.initializationOptions = lsp::json::Value(lsp::json::String("not an object"));
+    REQUIRE_NOTHROW(s.handleInitialize(params));
+    CHECK(s.fuzzyCompletionEnabled());
+}
+
+TEST_CASE("ServerState: fuzzyCompletionEnabled defaults to true when \"svlsp\" key is missing",
+          "[lsp][server-state][completion]")
+{
+    ServerState s;
+    auto params = makeParams();
+    lsp::json::Object root;
+    root["somethingElse"] = lsp::json::Value(lsp::json::String("x"));
+    params.initializationOptions = lsp::json::Value(std::move(root));
+    REQUIRE_NOTHROW(s.handleInitialize(params));
+    CHECK(s.fuzzyCompletionEnabled());
+}
+
+TEST_CASE("ServerState: fuzzyCompletionEnabled defaults to true when fuzzyCompletion isn't "
+          "a boolean", "[lsp][server-state][completion]")
+{
+    ServerState s;
+    auto params = makeParams();
+    lsp::json::Object svlsp;
+    svlsp["fuzzyCompletion"] = lsp::json::Value(lsp::json::String("nope"));
+    lsp::json::Object root;
+    root["svlsp"] = lsp::json::Value(std::move(svlsp));
+    params.initializationOptions = lsp::json::Value(std::move(root));
+    REQUIRE_NOTHROW(s.handleInitialize(params));
+    CHECK(s.fuzzyCompletionEnabled());
+}
+
+TEST_CASE("ServerState: fuzzyCompletionEnabled is true when explicitly set true",
+          "[lsp][server-state][completion]")
+{
+    ServerState s;
+    auto params = makeParams();
+    lsp::json::Object svlsp;
+    svlsp["fuzzyCompletion"] = lsp::json::Value(lsp::json::Boolean(true));
+    lsp::json::Object root;
+    root["svlsp"] = lsp::json::Value(std::move(svlsp));
+    params.initializationOptions = lsp::json::Value(std::move(root));
+    s.handleInitialize(params);
+    CHECK(s.fuzzyCompletionEnabled());
+}
+
+TEST_CASE("ServerState: fuzzyCompletionEnabled is false when explicitly set false",
+          "[lsp][server-state][completion]")
+{
+    ServerState s;
+    auto params = makeParams();
+    lsp::json::Object svlsp;
+    svlsp["fuzzyCompletion"] = lsp::json::Value(lsp::json::Boolean(false));
+    lsp::json::Object root;
+    root["svlsp"] = lsp::json::Value(std::move(svlsp));
+    params.initializationOptions = lsp::json::Value(std::move(root));
+    s.handleInitialize(params);
+    CHECK_FALSE(s.fuzzyCompletionEnabled());
+}

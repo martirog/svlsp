@@ -163,6 +163,111 @@ TEST_CASE("CompletionProvider: ranks a contiguous-prefix match above a scattered
 }
 
 // ---------------------------------------------------------------------------
+// Configurable fuzzy-matching toggle (plan.md §6.11)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("CompletionProvider: fuzzyEnabled=false rejects a non-contiguous/typo'd prefix",
+          "[completion][fuzzy-toggle]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module,    "adder",   1, 7, "", "", 10, ""},
+        {ParseRecordKind::Parameter, "WIDTH",   5, 4, "adder", "", 0, "adder"},
+    });
+
+    // Same "wdth" skip-tolerant prefix the fuzzy-matching test above proves
+    // matches WIDTH -- with fuzzy matching off, this must fail strict-prefix
+    // and drop out entirely (not just rank lower).
+    const std::string text =
+        "module adder #(\n    parameter int WIDTH = 8\n) (\n    wdth";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 3, 8), f.sdb, text,
+                                                     /*fuzzyEnabled=*/false);
+    CHECK(result.isNull());
+}
+
+TEST_CASE("CompletionProvider: fuzzyEnabled=false still matches a strict prefix",
+          "[completion][fuzzy-toggle]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module,    "adder",   1, 7, "", "", 10, ""},
+        {ParseRecordKind::Parameter, "WIDTH",   5, 4, "adder", "", 0, "adder"},
+        {ParseRecordKind::Port,      "clk",     7, 4, "adder", "input", 0, "adder"},
+    });
+
+    const std::string text = "module adder #(\n    parameter int WIDTH = 8\n) (\n    input clk\n    W";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 4, 5), f.sdb, text,
+                                                     /*fuzzyEnabled=*/false);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "WIDTH"));
+    CHECK_FALSE(hasItem(items, "clk"));
+    CHECK_FALSE(hasItem(items, "adder"));
+    // No ranking applied when fuzzy matching is off.
+    for (auto& item : items)
+        CHECK_FALSE(item.sortText.has_value());
+}
+
+TEST_CASE("CompletionProvider: fuzzyEnabled=false preserves DB order, not fuzzy tie-break order",
+          "[completion][fuzzy-toggle]")
+{
+    Fixture f;
+    // findSymbolsVisibleAt's own DB order sorts by scope depth first (a
+    // deeper-scoped match wins ties over a top-level one), only falling
+    // back to name within equal scope depth -- so "abZ" (scoped inside
+    // "adder") sorts *before* "abA" (top-level), even though "abA" < "abZ"
+    // alphabetically. Both fuzzy-score identically against prefix "ab" (an
+    // identical two-char contiguous word-start match on each), so with
+    // fuzzy matching *enabled* the tie is broken purely by name -- "abA"
+    // first, reversed from DB order. Disabling fuzzy matching must keep DB
+    // order, not fall back to this alphabetical tie-break.
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module,    "adder", 1, 7, "", "", 20, ""},
+        {ParseRecordKind::Module,    "abA",   2, 7, "", "", 2, ""},
+        {ParseRecordKind::Parameter, "abZ",   6, 4, "adder", "", 0, "adder"},
+    });
+
+    const std::string text = "module abA;\nmodule adder;\n\n\n\n    ab";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 5, 6), f.sdb, text,
+                                                     /*fuzzyEnabled=*/false);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    auto posOf = [&](std::string_view name) {
+        return std::find_if(items.begin(), items.end(),
+                            [&](const auto& i){ return i.label == name; });
+    };
+    auto itAbZ = posOf("abZ");
+    auto itAbA = posOf("abA");
+    REQUIRE(itAbZ != items.end());
+    REQUIRE(itAbA != items.end());
+    CHECK(std::distance(items.begin(), itAbZ) < std::distance(items.begin(), itAbA));
+}
+
+TEST_CASE("CompletionProvider: fuzzyEnabled=true (default) is unchanged from omitting the flag",
+          "[completion][fuzzy-toggle]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module,    "adder", 1, 7, "", "", 10, ""},
+        {ParseRecordKind::Parameter, "WIDTH", 5, 4, "adder", "", 0, "adder"},
+    });
+
+    // Same "wdth" skip-tolerant prefix/position the fuzzy-matching test
+    // above proves matches WIDTH.
+    const std::string text =
+        "module adder #(\n    parameter int WIDTH = 8\n) (\n    input clk\n    wdth";
+    auto withDefault = CompletionProvider::getCompletion(makeParams("/t.sv", 4, 8), f.sdb, text);
+    auto withExplicitTrue = CompletionProvider::getCompletion(makeParams("/t.sv", 4, 8), f.sdb,
+                                                               text, /*fuzzyEnabled=*/true);
+    REQUIRE_FALSE(withDefault.isNull());
+    REQUIRE_FALSE(withExplicitTrue.isNull());
+    CHECK(hasItem(withDefault.get<lsp::Array<lsp::CompletionItem>>(), "WIDTH"));
+    CHECK(hasItem(withExplicitTrue.get<lsp::Array<lsp::CompletionItem>>(), "WIDTH"));
+}
+
+// ---------------------------------------------------------------------------
 // Dot / member-access completion (plan.md §6.10)
 // ---------------------------------------------------------------------------
 

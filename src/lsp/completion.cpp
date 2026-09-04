@@ -49,13 +49,22 @@ std::vector<Candidate> candidatesFromMethods(std::span<const BuiltinMethod> meth
     return out;
 }
 
-// Fuzzy-filters (subsequence match, typo/skip tolerant) and ranks
-// `candidates` against `prefix`, then builds the LSP item list. With no
-// prefix every candidate stays in, unranked. Returns nullptr if
-// `candidates` is empty, or if every candidate fails to match a non-empty
-// prefix.
+// Filters and (when `fuzzyEnabled`) ranks `candidates` against `prefix`,
+// then builds the LSP item list. With no prefix every candidate stays in,
+// unranked, regardless of `fuzzyEnabled`. Returns nullptr if `candidates`
+// is empty, or if every candidate fails to match a non-empty prefix.
+//
+// `fuzzyEnabled` (plan.md §6.11): true (default, today's unchanged
+// behavior) fuzzy-filters via `fuzzyScore` (subsequence match, typo/skip
+// tolerant) and sorts by descending score. false restores the pre-fuzzy
+// semantics §3.6 documents as the prior state: a strict, case-sensitive
+// prefix filter (`compare(0, prefix.size(), prefix) != 0` to reject), no
+// re-sort (candidate/DB order preserved), no `sortText` assigned -- a real
+// fuzzy match can legitimately score low, which isn't the same thing as
+// "no ranking should apply", so this is a distinct code path rather than a
+// special-cased score threshold.
 lsp::TextDocument_CompletionResult buildCompletionItems(
-    const std::vector<Candidate>& candidates, const std::string& prefix)
+    const std::vector<Candidate>& candidates, const std::string& prefix, bool fuzzyEnabled)
 {
     if (candidates.empty()) return nullptr;
 
@@ -65,18 +74,24 @@ lsp::TextDocument_CompletionResult buildCompletionItems(
     for (auto& c : candidates) {
         int score = 0;
         if (!prefix.empty()) {
-            auto s = fuzzyScore(c.name, prefix);
-            if (!s) continue;
-            score = *s;
+            if (fuzzyEnabled) {
+                auto s = fuzzyScore(c.name, prefix);
+                if (!s) continue;
+                score = *s;
+            } else if (c.name.compare(0, prefix.size(), prefix) != 0) {
+                continue;
+            }
         }
         scored.push_back({&c, score});
     }
     if (scored.empty()) return nullptr;
 
-    std::sort(scored.begin(), scored.end(), [](const Scored& a, const Scored& b) {
-        if (a.score != b.score) return a.score > b.score;
-        return a.candidate->name < b.candidate->name;
-    });
+    if (fuzzyEnabled) {
+        std::sort(scored.begin(), scored.end(), [](const Scored& a, const Scored& b) {
+            if (a.score != b.score) return a.score > b.score;
+            return a.candidate->name < b.candidate->name;
+        });
+    }
 
     lsp::Array<lsp::CompletionItem> items;
     items.reserve(scored.size());
@@ -88,7 +103,7 @@ lsp::TextDocument_CompletionResult buildCompletionItems(
         item.kind  = c.kind;
         if (!c.detail.empty())
             item.detail = c.detail;
-        if (!prefix.empty()) {
+        if (fuzzyEnabled && !prefix.empty()) {
             // Zero-padded rank so clients that re-sort by sortText (rather
             // than trusting response order) preserve our fuzzy ranking.
             char buf[24];
@@ -323,7 +338,8 @@ std::optional<std::string> resolveChain(SymbolDatabase& db, const std::string& p
 } // namespace
 
 lsp::TextDocument_CompletionResult CompletionProvider::getCompletion(
-    const lsp::CompletionParams& params, SymbolDatabase& db, const std::string& docText)
+    const lsp::CompletionParams& params, SymbolDatabase& db, const std::string& docText,
+    bool fuzzyEnabled)
 {
     const std::string path{params.textDocument.uri.path()};
     // LSP position is 0-based; scopeAtPosition uses 1-based lines.
@@ -332,7 +348,8 @@ lsp::TextDocument_CompletionResult CompletionProvider::getCompletion(
     if (auto dot = dotCompletionContext(docText, params.position.line, params.position.character)) {
         auto resolved = resolveChain(db, path, line1, dot->segments);
         if (!resolved) return nullptr;
-        return buildCompletionItems(candidatesForResolvedType(db, *resolved, path), dot->prefix);
+        return buildCompletionItems(candidatesForResolvedType(db, *resolved, path), dot->prefix,
+                                     fuzzyEnabled);
     }
 
     const std::string prefix = wordAtPosition(docText,
@@ -348,5 +365,5 @@ lsp::TextDocument_CompletionResult CompletionProvider::getCompletion(
     candidates.insert(candidates.end(),
                        std::make_move_iterator(keywords.begin()),
                        std::make_move_iterator(keywords.end()));
-    return buildCompletionItems(candidates, prefix);
+    return buildCompletionItems(candidates, prefix, fuzzyEnabled);
 }

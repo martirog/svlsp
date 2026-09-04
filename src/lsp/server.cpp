@@ -134,7 +134,8 @@ void LanguageServer::registerHandlers()
                 if (!m_store.contains(params.textDocument.uri))
                     return lsp::TextDocument_CompletionResult{nullptr};
                 return CompletionProvider::getCompletion(
-                    params, m_symbolDb, m_store.get(params.textDocument.uri).text);
+                    params, m_symbolDb, m_store.get(params.textDocument.uri).text,
+                    m_state.fuzzyCompletionEnabled());
             })
         .add<lsp::requests::TextDocument_DocumentSymbol>(
             [this](lsp::DocumentSymbolParams&& params) {

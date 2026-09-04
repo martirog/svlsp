@@ -11,6 +11,7 @@ auto ServerState::handleInitialize(lsp::InitializeParams params)
     m_parentProcessId = params.processId;
     m_rootUri = params.rootUri;
     m_explicitProjectConfigPath = extractProjectConfigPath(params);
+    m_fuzzyCompletionEnabled = extractFuzzyCompletionEnabled(params);
     m_phase.store(Phase::Active);
 
     return {
@@ -71,6 +72,21 @@ std::string ServerState::extractProjectConfigPath(const lsp::InitializeParams& p
     if (!projectConfig || !projectConfig->isString()) return "";
 
     return projectConfig->string();
+}
+
+bool ServerState::extractFuzzyCompletionEnabled(const lsp::InitializeParams& params)
+{
+    if (!params.initializationOptions) return true;
+    const lsp::json::Value& opts = *params.initializationOptions;
+    if (!opts.isObject()) return true;
+
+    const lsp::json::Value* svlsp = opts.object().find("svlsp");
+    if (!svlsp || !svlsp->isObject()) return true;
+
+    const lsp::json::Value* fuzzyCompletion = svlsp->object().find("fuzzyCompletion");
+    if (!fuzzyCompletion || !fuzzyCompletion->isBoolean()) return true;
+
+    return fuzzyCompletion->boolean();
 }
 
 void ServerState::requireActive(const char* method) const

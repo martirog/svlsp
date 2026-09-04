@@ -49,14 +49,23 @@ public:
     // over ProjectRegistry's upward-search discovery.
     const std::string& explicitProjectConfigPath() const { return m_explicitProjectConfigPath; }
 
+    // `initializationOptions.svlsp.fuzzyCompletion`, if present and a
+    // boolean; true (fuzzy matching stays on, today's unchanged behavior) if
+    // initializationOptions is absent, isn't an object, or the nested value
+    // isn't there / isn't a boolean. Resolved once here at `initialize` and
+    // fixed for the server's lifetime -- see plan.md §6.11.
+    bool fuzzyCompletionEnabled() const { return m_fuzzyCompletionEnabled; }
+
 private:
     std::atomic<Phase> m_phase{Phase::Uninitialized};
     lsp::NullOr<int>   m_parentProcessId;  // for parent-process exit monitoring
     lsp::NullOr<lsp::DocumentUri> m_rootUri;
     std::string        m_explicitProjectConfigPath;
+    bool               m_fuzzyCompletionEnabled{true};
 
     // Throws lsp::RequestError if the server is not in Active state.
     void requireActive(const char* method) const;
 
     static std::string extractProjectConfigPath(const lsp::InitializeParams& params);
+    static bool extractFuzzyCompletionEnabled(const lsp::InitializeParams& params);
 };
