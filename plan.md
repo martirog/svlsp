@@ -2307,10 +2307,11 @@ question into a concrete design, choosing the **attach-and-query** shape
 (§6.5's own "Recommended default," modeled on clangd's per-shard
 `MergedIndex`) over a true physical merge with moniker-style keys
 (LSIF/SCIP) — the true-merge shape is explicitly out of scope for this pass.
-**Pieces 1 (the standalone `--build-db` CLI mode) and 2 (referencing an
-already-built library DB directly, `libraryDbs`) implemented 2026-09-04**;
-piece 3 (lazy build-and-cache from a library's own source config,
-`libraryDbSources`) not started.
+**All three pieces implemented 2026-09-04**: the standalone `--build-db`
+CLI mode; referencing an already-built library DB directly (`libraryDbs`);
+and lazy build-and-cache from a library's own source config
+(`libraryDbSources`). This section's own true-merge alternative remains
+explicitly out of scope throughout.
 
 **Why this is needed:** unchanged from §6.5's own rationale — a large
 fraction of a real verification project's files (per `handoff.md`'s
@@ -2474,32 +2475,116 @@ across many projects/restarts).
    tests already exercise structurally).
 
 3. **Lazy build-and-cache, given a library's own *source* config instead of
-   a prebuilt DB** — the "build me one on demand and remember it" case,
-   distinct from (2):
-   - `ProjectConfig` gains a second, parallel list:
-     `std::vector<LibraryDbSource> libraryDbSources;` where
-     `struct LibraryDbSource { std::string configPath; std::string cachePath; };`
+   a prebuilt DB — implemented 2026-09-04, essentially as designed** — the
+   "build me one on demand and remember it" case, distinct from (2):
+   - `ProjectConfig` gained a second, parallel list:
+     `std::vector<LibraryDbSource> libraryDbSources;` (`src/compiler/project_config.h`)
+     where `struct LibraryDbSource { std::string configPath; std::string cachePath; };`
      — `configPath` is another `.svlsp.json`/`.f` describing the library's
-     own files (exactly what `--build-db` in (1) would consume);
-     `cachePath` is where the resulting DB should be looked for / written.
+     own files (exactly what `--build-db`/`LibraryDbBuilder::build` in (1)
+     consumes); `cachePath` is where the resulting DB should be looked for
+     / written.
    - `.svlsp.json`: `"libraryDbSources": [{"config": "/vip/uvm/uvm.f",
-     "cache": "/var/cache/svlsp/uvm-1.2.db"}]`.
-   - `.f`: `-svlsp_library_db_source <config-path> <cache-path>` (two
-     arguments; same `svlsp_`-prefixed reasoning as (2)).
-   - At project-load time, for each `libraryDbSources` entry: **if
-     `cachePath` already exists on disk, attach it exactly as in (2)**
-     (skip recompiling the library entirely — this is the whole point);
-     **if it doesn't, parse `configPath` and run the same build-a-DB path
-     as (1) to produce it at `cachePath` first, then attach it.** The first
-     project load pays the library's compile cost once; every later load —
-     this project or any other project pointing at the same `cachePath` —
-     reuses it for free.
-   - Subsumes (2): a `libraryDbSources` entry whose `cachePath` is
-     pre-populated out-of-band (e.g. by someone else's earlier
-     `--build-db` run, or a CI job) behaves identically to a `libraryDbs`
-     entry. (2) stays as its own, simpler option for "I was handed a
-     prebuilt DB and have no source config for it at all" (e.g. a vendor
-     ships only the compiled DB, never the source filelist).
+     "cache": "/var/cache/svlsp/uvm-1.2.db"}]` — a new `readLibraryDbSources`
+     helper in `ProjectManifestParser` (an array of `{config, cache}`
+     objects, unlike every other field here which is a plain string array),
+     resolving both paths against the manifest's own directory.
+   - `.f`: `-svlsp_library_db_source <config-path> <cache-path>` — two
+     arguments (`FilelistParser`'s existing single-arg `needArg` lambda
+     called twice in a row), both resolved against `baseDir`, same
+     `svlsp_`-prefixed reasoning as (2).
+   - `LibraryDbBuilder` (`src/lsp/library_db_builder.h/.cpp`, already home
+     to piece 1's `build()`) gained `resolveLibraryDbSources(config,
+     progressLog)`: for each `libraryDbSources` entry, **if `cachePath`
+     already exists on disk, leave it alone** (skip recompiling the library
+     entirely — the whole point); **if it doesn't, call `build(configPath,
+     cachePath, progressLog)` to produce it first** — then, either way,
+     append `cachePath` to `config.libraryDbs`, so the ordinary
+     attach-and-query machinery from (2) (`SymbolDatabase::attachLibraryDbs`,
+     wired in via `ProjectCompiler::loadProject`) picks it up with zero
+     changes of its own — literally subsuming (2) exactly as this
+     section's own original text predicted, not just conceptually.
+   - Called from two places: inside `build()` itself, right after parsing
+     `configPath`'s own config and before compiling it (so a library being
+     built can itself transitively depend on further lazily-cached
+     libraries — mutual recursion between `build()` and
+     `resolveLibraryDbSources`, each calling the other, terminates as long
+     as the dependency graph has no cycle); and from
+     `ProjectRegistry::loadAndCache` (`src/lsp/project_registry.cpp`), right
+     after parsing a live project's own config and before
+     `ProjectCompiler::loadProject` — the one place that actually serves
+     the live server.
+   - **Deliberately not fixed, disclosed on `resolveLibraryDbSources`
+     itself:** no cycle detection between `libraryDbSources` chains (config
+     A's source building config B, whose own source points back at A) —
+     would recurse until the stack overflows. A real gap, but a
+     contrived one to hit by accident (needs two or more separately
+     authored configs coordinated into a cycle), unlike `FilelistParser`'s
+     existing `-f`/`-F` cycle guard (trivial to hit by accident with a
+     single self-referencing file) which earned its own explicit
+     active-recursion-stack check for exactly that reason.
+
+   **Verification:** `tests/unit/compiler/test_filelist_parser.cpp` and
+   `tests/unit/lsp/test_project_manifest_parser.cpp` cover the new
+   two-argument switch / object-array config-parsing surface (including
+   malformed-shape errors: one argument short, not an object, missing
+   `config`/`cache`); `tests/unit/lsp/test_library_db_builder.cpp` covers
+   `resolveLibraryDbSources` directly — building a missing cache and
+   appending it to `libraryDbs`, **reusing an already-existing cache
+   without rebuilding it** (proven by pre-populating the cache with a
+   *different* symbol than what an actual rebuild would produce, then
+   confirming it's untouched — the sharpest test of "skip the rebuild,
+   don't silently overwrite"), a failing nested build propagating as a
+   thrown `std::runtime_error`, and `build()`'s own transitive resolution
+   (a "top" library's config depends on a lazily-cached "nested" library,
+   proving the nested cache gets built as a side effect of building top —
+   checked via nested-cache.db's own fresh connection, *not* by querying
+   top.db for the nested symbol, since `ATTACH` is a live, per-connection
+   relationship that never persists into the output file itself; an
+   earlier draft of this test asserted the opposite and correctly failed,
+   catching its own wrong expectation before it shipped). A new
+   `tests/unit/lsp/test_project_registry.cpp` case exercises the real
+   live-server entry point end to end: `configFor` on a project whose
+   manifest has a `libraryDbSources` entry with no cache yet lazily builds
+   it, and the library's symbols are visible afterward via the registry's
+   own `SymbolDatabase`. No Emacs functional test, same reasoning as pieces
+   1/2.
+
+   **A real bug found only by live-testing against an actual running
+   server** (this project's own "empirical verification, not
+   grammar/code-reading" discipline, per §6.13 — every unit test above
+   passed throughout): `sqlite3_open` (inside `Database`'s constructor)
+   does not create missing parent directories, and `build()`'s try/catch
+   originally wrapped only config parsing, not the `Database db(outputPath)`
+   call right after. Every unit test's `cachePath` happened to sit in a
+   directory already created by writing some other fixture file there
+   first, so this never surfaced in dozens of passing test cases — it only
+   showed up hand-driving a real server session against a `cachePath` whose
+   own directory (deliberately modeled on `docs/usage.md`'s own
+   `"/var/cache/svlsp/uvm-1.2.db"` example) didn't exist yet. Worse than a
+   normal crash: `resolveLibraryDbSources` is reached from
+   `ProjectRegistry::loadAndCache`, itself reached from a plain
+   `textDocument/didOpen` — a *notification*, not a request — and
+   lsp-framework's own dispatcher (`messagehandler.cpp`) silently drops any
+   exception escaping a notification handler (there's no response to
+   attach an error to), so the failure produced no error, no log line, no
+   crash — just a file that silently never got its diagnostics/symbols
+   published, and (per the same missing try/catch) would have made
+   `--build-db` itself `std::terminate()` the whole process outright for
+   the same not-yet-existing-directory case, since `main.cpp`'s own
+   `buildDb()` wrapper has no try/catch of its own either and assumes
+   `build()` never throws. Fixed by widening `build()`'s try/catch to its
+   entire body (restoring its documented "never throws" contract for every
+   failure mode, not just config parsing) and calling
+   `std::filesystem::create_directories` on `outputPath`'s parent directory
+   first (guarded against an empty parent path — a bare `"out.db"` with no
+   directory component at all — which `create_directories` throws on
+   rather than treating as a no-op). Two new regression tests added:
+   `outputPath` in a not-yet-existing directory succeeds, and a
+   *different* still-failing case (a directory sitting where the output
+   file needs to go) still fails closed via `Result{ok=false}` rather than
+   an escaping exception, proving the widened try/catch actually works and
+   isn't just testing the one specific bug found.
 
 **Deliberately out of scope for this design**, per explicit direction to
 start with attach-and-query rather than the real merge: any id-remapping or
@@ -2556,8 +2641,8 @@ reach-through, dedup, multiple attached DBs, and an end-to-end
 `ProjectCompiler::loadProject` test) in the new
 `tests/unit/db/test_symbol_database_library_attach.cpp`.
 
-**Functional/unit tests for piece 3:** not designed yet — deferred until
-piece 3 itself is implemented.
+**Functional/unit tests for piece 3 (implemented):** see the
+"Verification" paragraph under piece 3's own writeup above.
 
 ---
 

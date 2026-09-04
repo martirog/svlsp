@@ -162,7 +162,41 @@ checks whether an attached database is stale relative to whatever built
 it — see `plan.md` §6.19's own open question on this; for now, rebuild with
 `--build-db` and overwrite the file yourself when the library changes.
 
-A lazily-built, self-caching alternative (point at the library's own source
-config instead of a prebuilt database, and let `svlsp` build-and-cache it
-on first use) is designed in `plan.md` §6.19 (`libraryDbSources`) but not
-yet implemented.
+## Lazily building and caching a library database: `libraryDbSources`
+
+If you'd rather not run `--build-db` yourself ahead of time, point at the
+library's own source config instead of a prebuilt database, and let
+`svlsp` build-and-cache it automatically the first time it's needed:
+
+```json
+{
+  "files": ["top.sv"],
+  "libraryDbSources": [
+    { "config": "/vip/uvm/uvm.f", "cache": "/var/cache/svlsp/uvm-1.2.db" }
+  ]
+}
+```
+
+Or in a `.f`/`.svlsp.f` filelist:
+
+```
+top.sv
+-svlsp_library_db_source /vip/uvm/uvm.f /var/cache/svlsp/uvm-1.2.db
+```
+
+`config` is another `.svlsp.json`/`.f` describing the library's own files —
+exactly what you'd hand to `--build-db` directly. At load time: if `cache`
+already exists on disk, it's used as-is (no recompiling); if it doesn't,
+`svlsp` builds it from `config` first (the same work `--build-db` does),
+writes it to `cache`, and then uses it — so the first project to load pays
+the library's compile cost once, and every later load (this project or any
+other pointing at the same `cache` path) reuses it for free. From this
+point on it behaves exactly like a `libraryDbs` entry pointing at `cache`.
+
+**Additional limitation on top of `libraryDbs`'s own above:** `svlsp` never
+checks whether `cache` has gone stale relative to `config`'s own files —
+if the library is upgraded in place without also changing (or deleting)
+`cache`, the old, cached DB keeps being used. Delete the cache file
+yourself to force a rebuild. There's also no cycle detection between
+`libraryDbSources` chains (library A's source depending on library B, whose
+own source points back at A) — keep dependency configs acyclic.

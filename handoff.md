@@ -8,18 +8,24 @@ On 2026-09-04: plan.md gained §6.18 (recompile on `textDocument/didSave` — no
 implemented, just planned) and §6.11 (configurable fuzzy-matching toggle) was
 implemented — see "Configurable fuzzy-matching toggle" under "LSP feature providers"
 below and "Not yet done" #13. Also on 2026-09-04: plan.md gained §6.19 (pre-built
-library database, attach-and-query shape); pieces 1 (the standalone
-`svlsp --build-db`/`LibraryDbBuilder` CLI mode) and 2 (referencing an already-built
-library DB directly via `libraryDbs`, attached read-only and unioned into
-`findSymbolsByName`/`findSymbolsByNamePrefix`/`findSymbolsInScope`/
-`findSymbolsVisibleAt`) were both implemented same-day — see "Database layer"
-below; piece 3 (lazy build-and-cache) remains design-only. `docs/usage.md` (new)
-documents `fuzzyCompletion`, `--log-files`, and `--build-db` for end users. Unit
-suite now at 1520 assertions / 538 test cases; Emacs integration suite unchanged at
-197 cases / 36 files (neither `--build-db` nor library-DB attachment changes the
-LSP-protocol surface a client observes beyond symbols simply being present, already
-exercised structurally by existing hover/definition/completion tests — see plan.md
-§6.19's own note on this). No regressions anywhere.
+library database, attach-and-query shape), and all three of its pieces were
+implemented same-day: the standalone `svlsp --build-db`/`LibraryDbBuilder` CLI mode;
+referencing an already-built library DB directly via `libraryDbs` (attached
+read-only and unioned into `findSymbolsByName`/`findSymbolsByNamePrefix`/
+`findSymbolsInScope`/`findSymbolsVisibleAt`); and `libraryDbSources`
+(build-and-cache a library DB on first use, from another project's own
+config) — see "Database layer" below. `docs/usage.md` (new) documents
+`fuzzyCompletion`, `--log-files`, `--build-db`, `libraryDbs`, and `libraryDbSources`
+for end users. Piece 3's implementation also surfaced and fixed a real bug in piece 1
+(`LibraryDbBuilder::build` didn't create a not-yet-existing output directory, and its
+try/catch didn't cover that failure — silently dropped when reached via a
+`didOpen` notification; see "Lazy build-and-cache library DBs" below). Unit suite
+now at 1562 assertions / 551 test cases; Emacs integration suite unchanged at 197
+cases / 36 files (none of
+§6.19's three pieces change the LSP-protocol surface a client observes beyond
+symbols simply being present, already exercised structurally by existing
+hover/definition/completion tests — see plan.md §6.19's own note on this). No
+regressions anywhere.
 
 **Status:** Phases 3, 4, 5, 6.1, 6.2, 6.3 complete, plus §6.8 (debounced `didChange`
 compilation) implemented 2026-08-28. On 2026-09-01: a `pickBestSymbol()`
@@ -103,7 +109,7 @@ src/compiler/      compiler_directive_stripper, sv_preprocessor, sv_tree_walker,
 src/db/            database, symbol_database, compilation_controller,
                    library_resolver, project_compiler, schema — SQLite persistence (schema v5)
 src/main.cpp       entry point (supports `--log-files <path>`, see below)
-tests/unit/        Catch2 unit tests (538 cases, 1520 assertions)
+tests/unit/        Catch2 unit tests (551 cases, 1562 assertions)
 tests/integration/ Emacs functional test scripts (197 test cases across 36 files)
 tests/uvm_corpus/  opt-in test suite against a real, external UVM corpus (NOT in
                    ctest/make test — see "UVM corpus testing" below)
@@ -852,6 +858,72 @@ config-parsing side. No new Emacs functional test (same reasoning as piece
 being present, already exercised structurally by existing hover/definition/
 completion tests).
 
+### Lazy build-and-cache library DBs (plan.md §6.19 piece 3 — implemented 2026-09-04)
+
+`ProjectConfig` gained a second, parallel list to `libraryDbs`:
+`libraryDbSources` (`std::vector<LibraryDbSource>`, `{configPath,
+cachePath}`), populated from `"libraryDbSources": [{"config": ..., "cache":
+...}]` in `.svlsp.json` (`ProjectManifestParser`, a new
+`readLibraryDbSources` helper — an array of objects, unlike every other
+field here) or a new two-argument `-svlsp_library_db_source <config>
+<cache>` switch in `.f` (`FilelistParser`, `needArg` called twice).
+
+`LibraryDbBuilder::resolveLibraryDbSources(config, progressLog)`
+(`src/lsp/library_db_builder.h/.cpp`, alongside piece 1's `build()`): for
+each entry, builds `cachePath` from `configPath` via `build()` only if
+`cachePath` doesn't already exist, then appends `cachePath` to
+`config.libraryDbs` either way — reusing piece 2's attach-and-query
+machinery with zero changes of its own, literally subsuming it as
+designed. Called from two places: inside `build()` itself (so a library
+being built can transitively depend on further lazily-cached libraries —
+`build()` and `resolveLibraryDbSources` call each other, terminating as
+long as the dependency graph has no cycle), and from
+`ProjectRegistry::loadAndCache` (the live server's own entry point).
+
+**Disclosed, not fixed:** no cycle detection between `libraryDbSources`
+chains (unlike `FilelistParser`'s own `-f`/`-F` active-recursion-stack
+guard) — a real but contrived gap, needing two or more separately authored
+configs coordinated into a cycle to hit.
+
+Verified via new cases in `test_filelist_parser.cpp`/
+`test_project_manifest_parser.cpp` (config parsing, including malformed
+shapes) and `test_library_db_builder.cpp` (build-on-miss, reuse-on-hit —
+proven by pre-populating the cache with a symbol a real rebuild would never
+produce and confirming it survives untouched — a failing nested build
+propagating as an exception, and `build()`'s own transitive resolution);
+plus a `test_project_registry.cpp` case exercising the real live-server
+path (`configFor` on a project with an uncached `libraryDbSources` entry
+lazily builds it and its symbols become visible). One test-writing mistake
+worth remembering for anyone touching this area again: an early draft of
+the transitive-resolution test asserted the *built* top-level DB itself
+would contain the nested library's symbols when reopened fresh — wrong,
+since `ATTACH` is a live, per-connection relationship that's never
+persisted into the output file (that's the entire point of attach-and-query
+over a physical merge); the correct check is against the nested cache
+file's own fresh connection, not the top-level output. No Emacs functional
+test, same reasoning as pieces 1/2.
+
+**A real bug found only by hand-driving a live server session, after every
+unit test above already passed:** `Database`'s constructor
+(`sqlite3_open`) doesn't create missing parent directories, and `build()`'s
+try/catch originally covered only config parsing, not the `Database
+db(outputPath)` call itself. Every unit test's `cachePath` happened to sit
+in a directory some other fixture file already created — this only
+surfaced against a `cachePath` whose own directory (modeled on
+`docs/usage.md`'s own `/var/cache/svlsp/...` example) didn't exist yet.
+Because `resolveLibraryDbSources` is reached from a plain
+`textDocument/didOpen` *notification*, lsp-framework's dispatcher silently
+drops any exception escaping a notification handler (no response exists to
+attach an error to) — the failure produced no error, no log line, nothing,
+just a file whose symbols/diagnostics silently never got compiled. The same
+missing try/catch would also have made `--build-db` itself crash the whole
+process outright for the same case (`main.cpp`'s wrapper has no try/catch
+of its own). Fixed by widening `build()`'s try/catch to its whole body and
+calling `create_directories` on `outputPath`'s parent first (guarded
+against an empty parent — a bare `"out.db"` with no directory component,
+which `create_directories` throws on rather than no-op'ing). Two new
+regression tests in `test_library_db_builder.cpp`.
+
 ---
 
 ## Multi-file project support (Phase 6.2/6.3 — complete)
@@ -1242,18 +1314,20 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
       specific: reshaping `SymbolDatabase`'s existing queries (§5.3) to query
       across an attached library DB, and the library-versioning/pinning/
       staleness story (config field, where pre-built DBs are built/shipped).
-      **A concrete design for this was drafted 2026-09-04 (plan.md §6.19).
-      Pieces 1 (the standalone `--build-db` CLI mode) and 2 (referencing an
-      already-built library DB directly via `libraryDbs`) are implemented
-      (2026-09-04, see `LibraryDbBuilder` and "Attaching a prebuilt library
-      DB" under "Database layer" above); piece 3 below is not:** a
-      `libraryDbSources` config field (a source config + a cache path —
-      build-and-cache on first use if the cache path doesn't exist yet,
-      reuse it unconditionally if it does), configurable the same way as
-      `libraryDbs`. Staleness
-      detection (has the library's own source changed since its DB was
-      built/cached) is explicitly left as an open question with candidate
-      shapes listed, none chosen — see plan.md §6.19 for the full writeup.
+      **A concrete design for this was drafted 2026-09-04 (plan.md §6.19),
+      and all three pieces are now implemented (2026-09-04) — see
+      `LibraryDbBuilder`, "Attaching a prebuilt library DB", and "Lazy
+      build-and-cache library DBs" under "Database layer" above:** the
+      standalone `--build-db` CLI mode; referencing an already-built
+      library DB directly via `libraryDbs`; and `libraryDbSources`
+      (a source config + a cache path — build-and-cache on first use if the
+      cache path doesn't exist yet, reuse it unconditionally if it does).
+      Staleness detection (has the library's own source changed since its
+      DB was built/cached) remains an explicitly open question with
+      candidate shapes listed, none chosen — see plan.md §6.19 for the full
+      writeup, including this pass's other disclosed limitations (no
+      `libraryDbSources` cycle detection; several `SymbolDatabase` queries
+      deliberately left main-schema-only).
 16. ~~Built-in container & type method completion (`plan.md §6.13`)~~ —
     **implemented 2026-09-02**, expanded from its original queue/
     associative-array/mailbox/randomize scope after the user flagged it as
