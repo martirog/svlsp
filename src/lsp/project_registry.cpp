@@ -1,5 +1,6 @@
 #include "lsp/project_registry.h"
 #include "lsp/project_manifest_parser.h"
+#include "lsp/library_db_builder.h"
 #include "compiler/filelist_parser.h"
 #include "db/project_compiler.h"
 #include <filesystem>
@@ -53,6 +54,12 @@ const ProjectConfig* ProjectRegistry::loadAndCache(const std::string& configPath
     ProjectConfig config = endsWith(configPath, ".json")
         ? ProjectManifestParser::parse(configPath)
         : FilelistParser::parse(configPath, fs::path(configPath).parent_path().string());
+
+    // Build-and-cache any lazily-referenced library DBs (plan.md §6.19
+    // piece 3) before compiling -- turns each libraryDbSources entry into
+    // an ordinary libraryDbs one, building it first only if its cachePath
+    // doesn't already exist.
+    LibraryDbBuilder::resolveLibraryDbSources(config);
 
     ProjectCompiler::loadProject(config, m_controller, m_sdb);
 

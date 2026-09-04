@@ -22,6 +22,13 @@
 //                          §6.19); chainable (one path per occurrence, like
 //                          -v). svlsp-specific, deliberately not a `+switch+`
 //                          spelling -- see plan.md §6.19 for why.
+//   -svlsp_library_db_source CONFIG CACHE
+//                          build-and-cache a library DB on demand (plan.md
+//                          §6.19 piece 3): CONFIG is another .svlsp.json/.f
+//                          describing the library's own files; CACHE is
+//                          where the built DB should be looked for/written.
+//                          Chainable, same svlsp-specific reasoning as
+//                          -svlsp_library_db.
 //   -top MODULE            top module name
 //   // ...                 line comment (rest of line ignored)
 //   "quoted path"           a single token, spaces allowed inside

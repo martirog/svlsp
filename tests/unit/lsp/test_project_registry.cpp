@@ -126,3 +126,29 @@ TEST_CASE("an explicit config path overrides upward search for every file",
     REQUIRE(config != nullptr);
     CHECK(config->topModule == "explicit_override");
 }
+
+TEST_CASE("configFor lazily builds a libraryDbSources cache and its symbols become visible",
+          "[lsp][project-registry][library-attach]") {
+    // plan.md §6.19 piece 3, exercised through the real live-server entry
+    // point (configFor -> ProjectCompiler::loadProject), not just
+    // LibraryDbBuilder::resolveLibraryDbSources directly.
+    std::string root = kRoot + "/library_db_source";
+    writeFile(root + "/uvm_like.sv", "class uvm_object; endclass\n");
+    writeFile(root + "/uvm.f", "uvm_like.sv\n");
+    std::string cachePath = root + "/uvm-cache.db";
+    fs::remove(cachePath);
+    writeFile(root + "/top.sv", "module top; endmodule\n");
+    writeFile(root + "/.svlsp.json",
+        "{\"files\": [\"top.sv\"], \"libraryDbSources\": "
+        "[{\"config\": \"" + root + "/uvm.f\", \"cache\": \"" + cachePath + "\"}]}");
+
+    Fixture f;
+    const ProjectConfig* config = f.registry.configFor(root + "/top.sv");
+
+    REQUIRE(config != nullptr);
+    CHECK(fs::exists(cachePath)); // built as a side effect of configFor
+    REQUIRE(config->libraryDbs.size() == 1);
+    CHECK(config->libraryDbs[0] == cachePath);
+    CHECK(f.sdb.findSymbolsByName("uvm_object").size() == 1); // visible via attach
+    CHECK(f.sdb.findSymbolsByName("top").size() == 1);        // the project's own file too
+}

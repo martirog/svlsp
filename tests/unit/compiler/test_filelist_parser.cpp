@@ -155,6 +155,37 @@ TEST_CASE("-svlsp_library_db with no argument is an error", "[compiler][filelist
 }
 
 // ---------------------------------------------------------------------------
+// -svlsp_library_db_source (plan.md §6.19 piece 3)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("-svlsp_library_db_source is captured and both paths resolved against baseDir",
+          "[compiler][filelist]") {
+    std::string path = writeFilelist("libdbsrc.f",
+        "-svlsp_library_db_source " + kRoot + "/uvm.f uvm-cache.db\n"
+        "-svlsp_library_db_source other.f " + kRoot + "/cache/other.db\n");
+
+    auto config = FilelistParser::parse(path, kRoot);
+
+    REQUIRE(config.libraryDbSources.size() == 2);
+    CHECK(config.libraryDbSources[0].configPath == kRoot + "/uvm.f");
+    CHECK(config.libraryDbSources[0].cachePath == kRoot + "/uvm-cache.db");
+    CHECK(config.libraryDbSources[1].configPath == kRoot + "/other.f");
+    CHECK(config.libraryDbSources[1].cachePath == kRoot + "/cache/other.db");
+}
+
+TEST_CASE("-svlsp_library_db_source with only one argument is an error",
+          "[compiler][filelist]") {
+    std::string path = writeFilelist("libdbsrc_onearg.f",
+        "-svlsp_library_db_source " + kRoot + "/uvm.f\n");
+    CHECK_THROWS_AS(FilelistParser::parse(path), std::runtime_error);
+}
+
+TEST_CASE("-svlsp_library_db_source with no arguments is an error", "[compiler][filelist]") {
+    std::string path = writeFilelist("libdbsrc_noarg.f", "-svlsp_library_db_source\n");
+    CHECK_THROWS_AS(FilelistParser::parse(path), std::runtime_error);
+}
+
+// ---------------------------------------------------------------------------
 // -f (CWD-relative) vs -F (filelist-relative) nested inclusion
 // ---------------------------------------------------------------------------
 

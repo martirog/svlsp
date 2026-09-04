@@ -14,11 +14,15 @@
 //     "libraryDirs":   ["rtl/lib"],
 //     "libraryFiles":  ["vendor/ip.v"],
 //     "libExtensions": [".sv", ".v"],
-//     "libraryDbs":    ["/shared/uvm-1.2.db"]
+//     "libraryDbs":    ["/shared/uvm-1.2.db"],
+//     "libraryDbSources": [
+//       {"config": "/vip/uvm/uvm.f", "cache": "/var/cache/svlsp/uvm-1.2.db"}
+//     ]
 //   }
 //
 // Relative paths ("files", "includeDirs", "libraryDirs", "libraryFiles",
-// "libraryDbs") resolve against the manifest's own directory. Unknown top-level keys are
+// "libraryDbs", and each "config"/"cache" pair in "libraryDbSources")
+// resolve against the manifest's own directory. Unknown top-level keys are
 // silently ignored (forward-compatible — unlike the filelist parser's
 // hard-error policy, a typo'd JSON key can't misparse an unrelated field).
 class ProjectManifestParser {

@@ -7,33 +7,68 @@
 #include "db/project_compiler.h"
 #include "db/symbol_database.h"
 #include <filesystem>
+#include <stdexcept>
 
 LibraryDbBuilder::Result LibraryDbBuilder::build(
     const std::string& configPath, const std::string& outputPath, std::ostream* progressLog)
 {
     Result result;
 
-    ProjectConfig config;
+    // Wraps the whole build, not just config parsing: build() must never
+    // throw (its documented contract), since a caller reached through a
+    // notification handler -- resolveLibraryDbSources from
+    // ProjectRegistry::loadAndCache, itself from a plain textDocument/
+    // didOpen -- would have an escaping exception silently dropped by
+    // lsp-framework's own dispatch (notifications get no error response to
+    // report it on), not surfaced anywhere at all. Found exactly this way:
+    // a live server session with a not-yet-existing cache directory (a
+    // *very* real shape -- e.g. cache under a fresh "/var/cache/svlsp/")
+    // threw from sqlite3_open below and vanished without a trace until
+    // main.cpp's own --build-db path (which also has no try/catch of its
+    // own) was checked against the same scenario.
     try {
-        config = configPath.ends_with(".json")
+        ProjectConfig config = configPath.ends_with(".json")
             ? ProjectManifestParser::parse(configPath)
             : FilelistParser::parse(configPath,
                   std::filesystem::path(configPath).parent_path().string());
+        resolveLibraryDbSources(config, progressLog);
+
+        // sqlite3_open (inside the Database constructor) does not create
+        // missing parent directories -- the exact bug found live above.
+        // create_directories() on an *empty* path (a bare "out.db" with no
+        // directory component at all) throws rather than no-op'ing, so
+        // guard for that plain-relative-path case explicitly.
+        if (auto parent = std::filesystem::path(outputPath).parent_path(); !parent.empty())
+            std::filesystem::create_directories(parent);
+
+        Database db(outputPath);
+        db.initSchema();
+        SymbolDatabase sdb(db);
+        CompilationController controller(sdb, progressLog);
+
+        result.fileCount = ProjectCompiler::loadProject(config, controller, sdb);
+
+        if (auto stmt = db.prepare("SELECT COUNT(*) FROM diagnostics"); stmt.step())
+            result.diagnosticCount = stmt.columnInt(0);
+
+        result.ok = true;
     } catch (const std::exception& e) {
+        result = Result{};
         result.error = e.what();
-        return result;
     }
-
-    Database db(outputPath);
-    db.initSchema();
-    SymbolDatabase sdb(db);
-    CompilationController controller(sdb, progressLog);
-
-    result.fileCount = ProjectCompiler::loadProject(config, controller, sdb);
-
-    if (auto stmt = db.prepare("SELECT COUNT(*) FROM diagnostics"); stmt.step())
-        result.diagnosticCount = stmt.columnInt(0);
-
-    result.ok = true;
     return result;
+}
+
+void LibraryDbBuilder::resolveLibraryDbSources(ProjectConfig& config, std::ostream* progressLog)
+{
+    for (const auto& src : config.libraryDbSources) {
+        if (!std::filesystem::exists(src.cachePath)) {
+            Result built = build(src.configPath, src.cachePath, progressLog);
+            if (!built.ok)
+                throw std::runtime_error(
+                    "failed to build cached library DB '" + src.cachePath + "' from '" +
+                    src.configPath + "': " + built.error);
+        }
+        config.libraryDbs.push_back(src.cachePath);
+    }
 }

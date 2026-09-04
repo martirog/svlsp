@@ -34,6 +34,36 @@ std::vector<std::string> readStringArray(const lsp::json::Object& obj, const std
     return result;
 }
 
+// Reads "libraryDbSources": [ {"config": "...", "cache": "..."}, ... ].
+// Throws if the field is present but isn't an array of {config, cache}
+// string-valued objects.
+std::vector<LibraryDbSource> readLibraryDbSources(
+    const lsp::json::Object& obj, const std::string& baseDir, const std::string& path) {
+    std::vector<LibraryDbSource> result;
+    const lsp::json::Value* v = obj.find("libraryDbSources");
+    if (!v) return result;
+    if (!v->isArray()) {
+        throw std::runtime_error(path + ": \"libraryDbSources\" must be an array");
+    }
+    for (const auto& item : v->array()) {
+        if (!item.isObject()) {
+            throw std::runtime_error(
+                path + ": \"libraryDbSources\" entries must be objects");
+        }
+        const lsp::json::Object& entry = item.object();
+        const lsp::json::Value* config = entry.find("config");
+        const lsp::json::Value* cache  = entry.find("cache");
+        if (!config || !config->isString() || !cache || !cache->isString()) {
+            throw std::runtime_error(
+                path + ": each \"libraryDbSources\" entry must have string "
+                       "\"config\" and \"cache\" fields");
+        }
+        result.push_back({resolvePath(baseDir, config->string()),
+                          resolvePath(baseDir, cache->string())});
+    }
+    return result;
+}
+
 } // namespace
 
 ProjectConfig ProjectManifestParser::parse(const std::string& path) {
@@ -72,6 +102,7 @@ ProjectConfig ProjectManifestParser::parse(const std::string& path) {
         config.libExtensions.push_back(raw);
     for (const auto& raw : readStringArray(obj, "libraryDbs", path))
         config.libraryDbs.push_back(resolvePath(baseDir, raw));
+    config.libraryDbSources = readLibraryDbSources(obj, baseDir, path);
 
     if (const lsp::json::Value* v = obj.find("defines")) {
         if (!v->isObject()) {

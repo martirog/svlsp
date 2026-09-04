@@ -29,7 +29,11 @@ TEST_CASE("full manifest populates every field", "[lsp][project-manifest]") {
         "libraryDirs": ["rtl/lib"],
         "libraryFiles": ["vendor/ip.v"],
         "libExtensions": [".sv", ".v"],
-        "libraryDbs": ["/shared/uvm-1.2.db", "relative.db"]
+        "libraryDbs": ["/shared/uvm-1.2.db", "relative.db"],
+        "libraryDbSources": [
+            {"config": "/vip/uvm.f", "cache": "/cache/uvm-1.2.db"},
+            {"config": "other.f", "cache": "relative-cache.db"}
+        ]
     })");
 
     auto config = ProjectManifestParser::parse(path);
@@ -55,6 +59,11 @@ TEST_CASE("full manifest populates every field", "[lsp][project-manifest]") {
     REQUIRE(config.libraryDbs.size() == 2);
     CHECK(config.libraryDbs[0] == "/shared/uvm-1.2.db"); // already absolute, unchanged
     CHECK(config.libraryDbs[1] == kRoot + "/relative.db"); // resolved against manifest dir
+    REQUIRE(config.libraryDbSources.size() == 2);
+    CHECK(config.libraryDbSources[0].configPath == "/vip/uvm.f");
+    CHECK(config.libraryDbSources[0].cachePath == "/cache/uvm-1.2.db");
+    CHECK(config.libraryDbSources[1].configPath == kRoot + "/other.f");
+    CHECK(config.libraryDbSources[1].cachePath == kRoot + "/relative-cache.db");
 }
 
 TEST_CASE("partial manifest leaves unspecified fields at defaults", "[lsp][project-manifest]") {
@@ -72,6 +81,25 @@ TEST_CASE("partial manifest leaves unspecified fields at defaults", "[lsp][proje
     CHECK(config.libraryFiles.empty());
     CHECK(config.libExtensions.empty());
     CHECK(config.libraryDbs.empty());
+    CHECK(config.libraryDbSources.empty());
+}
+
+TEST_CASE("libraryDbSources entry missing \"cache\" throws", "[lsp][project-manifest]") {
+    std::string path = writeManifest("libdbsrc_missing_cache.svlsp.json",
+        R"({"libraryDbSources": [{"config": "a.f"}]})");
+    CHECK_THROWS_AS(ProjectManifestParser::parse(path), std::runtime_error);
+}
+
+TEST_CASE("libraryDbSources entry that isn't an object throws", "[lsp][project-manifest]") {
+    std::string path = writeManifest("libdbsrc_not_object.svlsp.json",
+        R"({"libraryDbSources": ["not-an-object"]})");
+    CHECK_THROWS_AS(ProjectManifestParser::parse(path), std::runtime_error);
+}
+
+TEST_CASE("libraryDbSources that isn't an array throws", "[lsp][project-manifest]") {
+    std::string path = writeManifest("libdbsrc_not_array.svlsp.json",
+        R"({"libraryDbSources": "nope"})");
+    CHECK_THROWS_AS(ProjectManifestParser::parse(path), std::runtime_error);
 }
 
 TEST_CASE("mode v95 round-trips", "[lsp][project-manifest]") {
