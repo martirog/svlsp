@@ -124,8 +124,45 @@ svlsp: built '/path/to/uvm.db' -- 143 files compiled, 0 diagnostics
 unreadable `<config-path>` exits with status 1 and an error on stderr,
 without creating `<db-path>` at all.
 
-This only produces the database file for now — a live project referencing
-it (via `libraryDbs`/`libraryDbSources` config fields) and a lazy
-build-and-cache mode are designed in `plan.md` §6.19 but not yet
-implemented, so a pre-built database from this flag isn't attached to any
-project's own queries yet.
+## Using a pre-built library database: `libraryDbs`
+
+Once you have a database built with `--build-db`, point your own project's
+config at it so its symbols become part of your project's hover/definition/
+completion results, without recompiling the library yourself. In
+`.svlsp.json`:
+
+```json
+{ "files": ["top.sv"], "libraryDbs": ["/path/to/uvm.db"] }
+```
+
+Or in a `.f`/`.svlsp.f` filelist, one path per `-svlsp_library_db` (repeat
+the switch for more than one library DB):
+
+```
+top.sv
+-svlsp_library_db /path/to/uvm.db
+```
+
+Each path is attached read-only to the project's own database at load time.
+Library symbols become visible the same way any other file's top-level
+symbols already are — including through a wildcard import
+(`import uvm_pkg::*;`) that reaches a package declared entirely inside the
+attached database. There's nothing further to configure; hover, go-to-definition,
+and completion all pick this up automatically once `libraryDbs` is set.
+
+**Current limitations:** this makes library symbols visible for
+name/scope-based lookups (hover, definition, completion), but a module or
+interface defined *only* inside an attached library database still won't
+resolve if you *instantiate* it directly (library content reused this way
+is expected to be `import`'d, not instantiated) — this is a workflow for
+sharing packages/classes (UVM-style verification code), not RTL modules.
+Opening a library file directly (e.g. by following a definition link into
+one) also won't show its own outline or diagnostics yet. `svlsp` never
+checks whether an attached database is stale relative to whatever built
+it — see `plan.md` §6.19's own open question on this; for now, rebuild with
+`--build-db` and overwrite the file yourself when the library changes.
+
+A lazily-built, self-caching alternative (point at the library's own source
+config instead of a prebuilt database, and let `svlsp` build-and-cache it
+on first use) is designed in `plan.md` §6.19 (`libraryDbSources`) but not
+yet implemented.

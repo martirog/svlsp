@@ -2307,9 +2307,10 @@ question into a concrete design, choosing the **attach-and-query** shape
 (§6.5's own "Recommended default," modeled on clangd's per-shard
 `MergedIndex`) over a true physical merge with moniker-style keys
 (LSIF/SCIP) — the true-merge shape is explicitly out of scope for this pass.
-**Piece 1 (the standalone `--build-db` CLI mode) implemented 2026-09-04**;
-pieces 2 and 3 (attaching a prebuilt/cached DB to a live project) not
-started.
+**Pieces 1 (the standalone `--build-db` CLI mode) and 2 (referencing an
+already-built library DB directly, `libraryDbs`) implemented 2026-09-04**;
+piece 3 (lazy build-and-cache from a library's own source config,
+`libraryDbSources`) not started.
 
 **Why this is needed:** unchanged from §6.5's own rationale — a large
 fraction of a real verification project's files (per `handoff.md`'s
@@ -2361,32 +2362,116 @@ across many projects/restarts).
    open question at the end of this section, once pieces 2/3 below give
    them something to act on.
 
-2. **Referencing an already-built library DB directly** — the "the DB
-   already exists, just use it" case — in both project-config formats:
-   - `ProjectConfig` (`src/compiler/project_config.h`) gains
-     `std::vector<std::string> libraryDbs;` (absolute paths to prebuilt DB
-     files) alongside the existing `libraryDirs`/`libraryFiles`.
+2. **Referencing an already-built library DB directly — implemented
+   2026-09-04, essentially as designed** — the "the DB already exists, just
+   use it" case, in both project-config formats:
+   - `ProjectConfig` (`src/compiler/project_config.h`) gained
+     `std::vector<std::string> libraryDbs;` alongside the existing
+     `libraryDirs`/`libraryFiles`.
    - `.svlsp.json`: a new `"libraryDbs": ["/path/to/uvm-1.2.db", ...]` array
      key (`ProjectManifestParser`), resolved against the manifest's own
      directory the same way `includeDirs`/`libraryDirs` already are.
-   - `.f`: a new switch, **deliberately not spelled `+libdb+`** despite
-     matching `+libext+`'s naming convention — `.f` is nominally a real
-     VCS/Questa/Xcelium-portable format, and an unprefixed `+switch+`
-     risks silently colliding with a real vendor switch of the same
-     spelling introduced later. Use an `svlsp`-namespaced spelling instead,
-     e.g. `-svlsp_library_db <path>` (chainable, one path per occurrence,
-     mirroring `-v`) — `FilelistParser` already hard-errors on any switch it
-     doesn't recognize, so this is purely additive with no ambiguity risk
-     for existing `.f` files.
-   - At project-load time, each `libraryDbs` entry is `ATTACH DATABASE`'d
-     read-only onto the project's own (usually `:memory:`) connection, and
-     `SymbolDatabase`'s queries (§5.3 — `findSymbolsByName`,
-     `findSymbolsVisibleAt`, `findSymbolsInScope`, ...) are extended to
-     `UNION` across the attached schema(s). This is exactly the integration
-     work §6.5's own prior-art note already flagged as "the still-open,
-     no-prior-art part" — unchanged and not further detailed here.
+   - `.f`: a new switch, `-svlsp_library_db <path>` (chainable, one path per
+     occurrence, mirroring `-v`) — **deliberately not spelled `+libdb+`**
+     despite matching `+libext+`'s naming convention, since `.f` is
+     nominally a real VCS/Questa/Xcelium-portable format and an unprefixed
+     `+switch+` risks silently colliding with a real vendor switch of the
+     same spelling introduced later. `FilelistParser` already hard-errors on
+     any switch it doesn't recognize, so this was purely additive.
+   - `SymbolDatabase::attachLibraryDbs(paths)` (`src/db/symbol_database.h/.cpp`)
+     does the actual `ATTACH DATABASE ? AS lib<N>` (bound parameter for the
+     path — the alias itself can't be parameterized, but it's
+     `svlsp`-generated from an array index, never user input, so that's not
+     a concern) for each not-already-attached path (a path already attached
+     — e.g. a second discovered project sharing the same library — is
+     silently skipped, not re-attached under a second alias, which would
+     otherwise double-count its rows in every query below). Called from
+     `ProjectCompiler::loadProject` (once per project load, before compiling
+     any files), so both the live server (via `ProjectRegistry`) and
+     `--build-db` (piece 1, which can itself depend on other prebuilt DBs
+     while building a new one) get this for free.
+   - Four `SymbolDatabase` queries (§5.3) were extended to `UNION ALL`
+     across every attached schema — this was exactly the integration work
+     §6.5's own prior-art note flagged as "the still-open, no-prior-art
+     part": `findSymbolsByName`, `findSymbolsByNamePrefix`, and
+     `findSymbolsInScope` now share one new private helper,
+     `queryAcrossAttachedDbs(cond, bindValue)`, that runs the same
+     single-`?`-placeholder `WHERE` clause against the main schema plus
+     `lib0`, `lib1`, ... (schema-qualified `FROM lib0.symbols s JOIN
+     lib0.files f ...`), with each caller re-sorting the combined result in
+     C++ afterward to reproduce its original `ORDER BY` exactly —
+     `findSymbolsVisibleAt`'s existing "SQLite doesn't allow expressions in
+     `ORDER BY` after `UNION ALL`; sort in C++" precedent generalized to
+     every query here, not just that one. `findSymbolsVisibleAt` itself
+     needed its own change (not the shared helper, since its shape has
+     multiple *different* `WHERE` clauses per part): its Part 2 (cross-file
+     top-level + wildcard-imported-package scopes) and Part 3 (specific
+     imports) arms are now generated once per schema (main first, then each
+     attached library), while Part 1 (the local scope chain at the cursor's
+     own position) stays main-schema-only — a cursor is always inside a
+     project's own edited file, never a read-only attached library file, so
+     extending Part 1 would add SQL with no possible matches.
      `SQLITE_MAX_ATTACHED`'s default 10-per-connection limit (already noted
-     in §6.5) bounds how many `libraryDbs` entries can be attached at once.
+     in §6.5) bounds how many distinct `libraryDbs` paths can be attached
+     across the whole server session (not just one project — see the
+     disclosed limitation below on this being session-wide).
+
+   **Disclosed limitations, not oversights (documented on
+   `attachLibraryDbs` itself):** `scopeAtPosition`/`scopeKindAtPosition`/
+   `enclosingClassNameAt` (all keyed on a specific `(path, line)`) were
+   deliberately left main-schema-only, for the same "cursor is never inside
+   a read-only library file" reason as `findSymbolsVisibleAt`'s Part 1.
+   `unresolvedInstantiatedTypeNames`/`instantiationsOfType` (drives
+   `LibraryResolver`'s `-y`/`-v` module/interface instantiation resolution)
+   were **not** extended to search attached DBs — library content reused
+   this way is expected to be `import`'d (packages/classes), not
+   *instantiated* (design-unit modules/interfaces), matching the plan's own
+   motivating UVM/verification-IP use case; a module defined only in an
+   attached DB would still be reported unresolved today. `export pkg::*`
+   re-export-chain traversal (`collectExportedImports`/`fileIdForPackage`,
+   used inside `findSymbolsVisibleAt`) also only ever looks in the main
+   schema, so a package declared *inside* an attached DB re-exporting
+   another package's contents isn't followed (the attached package's own
+   direct top-level/wildcard-imported contents are still fully visible —
+   only the *re-export chain starting from inside the attached DB itself*
+   isn't). `symbolsForFile`/`diagnosticsForFile` (keyed by exact file path,
+   backing `documentSymbol`/diagnostics) are also main-schema-only, so
+   opening a library file directly (e.g. by following a definition link
+   into one) won't show its own outline/diagnostics — a materially
+   different, larger piece of work than the four completion/hover-facing
+   queries this pass targeted, deferred.
+
+   **A pre-existing architectural characteristic this inherits, not a new
+   one this introduces:** `SymbolDatabase`/`Database` is one connection
+   shared across the server's *entire* session (already true before this
+   section — e.g. `findSymbolsByName` already searches every compiled
+   file's symbols regardless of which discovered project loaded it, and the
+   Emacs test harness's own documented caveat about one shared, growing DB
+   across every test file already describes exactly this). Attached library
+   DBs are visible the same way: once any project in the session attaches
+   one, its symbols are visible to every file/project in that same session,
+   not scoped to the specific project that requested it. Consistent with
+   the existing architecture, not a regression.
+
+   **Verification:** `tests/unit/compiler/test_filelist_parser.cpp` and
+   `tests/unit/lsp/test_project_manifest_parser.cpp` cover the new
+   config-parsing surface (both formats, including relative-path resolution
+   and a missing-argument error for the `.f` switch);
+   `tests/unit/db/test_symbol_database_library_attach.cpp` covers the
+   attach-and-query behavior directly — each of the four extended queries
+   seeing a symbol that exists *only* in a real, file-backed attached DB
+   (built via a separate `Database`/`SymbolDatabase` instance, proving this
+   isn't just an in-process cache hit), the wildcard-import case reaching
+   into an attached package, the dedup guard (attaching the same path twice
+   doesn't double-count), two distinct attached DBs both being visible at
+   once, and an end-to-end `ProjectCompiler::loadProject` test proving the
+   config field actually reaches the attach call. Full unit
+   (1520 assertions/538 cases) and Emacs integration (197/197) suites both
+   green with no regressions — no new integration test was added
+   specifically for this (matching piece 1's own reasoning: nothing here
+   changes the LSP-protocol surface a client observes beyond symbols simply
+   being present, which the existing hover/definition/completion functional
+   tests already exercise structurally).
 
 3. **Lazy build-and-cache, given a library's own *source* config instead of
    a prebuilt DB** — the "build me one on demand and remember it" case,
@@ -2463,9 +2548,16 @@ project's usual "unit + Emacs" pairing (matching how `FilelistParser` itself
 is unit-tested only); instead verified directly by hand against the real
 `multifile_project` integration fixture (see piece 1's own writeup above).
 
-**Functional/unit tests for pieces 2/3:** not designed yet — deferred until
-an implementation approach for the `SymbolDatabase` query-side `ATTACH`
-integration is chosen.
+**Functional/unit tests for piece 2 (implemented):** see the "Verification"
+paragraph under piece 2's own writeup above — config-parsing coverage in
+`test_filelist_parser.cpp`/`test_project_manifest_parser.cpp`, and
+attach-and-query coverage (all four extended queries, wildcard-import
+reach-through, dedup, multiple attached DBs, and an end-to-end
+`ProjectCompiler::loadProject` test) in the new
+`tests/unit/db/test_symbol_database_library_attach.cpp`.
+
+**Functional/unit tests for piece 3:** not designed yet — deferred until
+piece 3 itself is implemented.
 
 ---
 

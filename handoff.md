@@ -8,12 +8,17 @@ On 2026-09-04: plan.md gained §6.18 (recompile on `textDocument/didSave` — no
 implemented, just planned) and §6.11 (configurable fuzzy-matching toggle) was
 implemented — see "Configurable fuzzy-matching toggle" under "LSP feature providers"
 below and "Not yet done" #13. Also on 2026-09-04: plan.md gained §6.19 (pre-built
-library database, attach-and-query shape) and its piece 1 — the standalone
-`svlsp --build-db`/`LibraryDbBuilder` CLI mode — was implemented; see "Database
-layer" below. `docs/usage.md` (new) documents `fuzzyCompletion`, `--log-files`, and
-`--build-db` for end users. Unit suite now at 1495 assertions / 528 test cases;
-Emacs integration suite unchanged at 197 cases / 36 files (`--build-db` is a
-CLI-only mode with no LSP-protocol surface, so it has no Emacs test — see plan.md
+library database, attach-and-query shape); pieces 1 (the standalone
+`svlsp --build-db`/`LibraryDbBuilder` CLI mode) and 2 (referencing an already-built
+library DB directly via `libraryDbs`, attached read-only and unioned into
+`findSymbolsByName`/`findSymbolsByNamePrefix`/`findSymbolsInScope`/
+`findSymbolsVisibleAt`) were both implemented same-day — see "Database layer"
+below; piece 3 (lazy build-and-cache) remains design-only. `docs/usage.md` (new)
+documents `fuzzyCompletion`, `--log-files`, and `--build-db` for end users. Unit
+suite now at 1520 assertions / 538 test cases; Emacs integration suite unchanged at
+197 cases / 36 files (neither `--build-db` nor library-DB attachment changes the
+LSP-protocol surface a client observes beyond symbols simply being present, already
+exercised structurally by existing hover/definition/completion tests — see plan.md
 §6.19's own note on this). No regressions anywhere.
 
 **Status:** Phases 3, 4, 5, 6.1, 6.2, 6.3 complete, plus §6.8 (debounced `didChange`
@@ -98,7 +103,7 @@ src/compiler/      compiler_directive_stripper, sv_preprocessor, sv_tree_walker,
 src/db/            database, symbol_database, compilation_controller,
                    library_resolver, project_compiler, schema — SQLite persistence (schema v5)
 src/main.cpp       entry point (supports `--log-files <path>`, see below)
-tests/unit/        Catch2 unit tests (528 cases, 1495 assertions)
+tests/unit/        Catch2 unit tests (538 cases, 1520 assertions)
 tests/integration/ Emacs functional test scripts (197 test cases across 36 files)
 tests/uvm_corpus/  opt-in test suite against a real, external UVM corpus (NOT in
                    ctest/make test — see "UVM corpus testing" below)
@@ -788,10 +793,64 @@ argument parsing plus printing that summary (or the error) to stderr.
 Factored out of `main.cpp` specifically so it's unit-testable
 (`main.cpp` isn't part of any linkable library) — `main.cpp` no longer
 touches `ProjectManifestParser`/`FilelistParser`/`ProjectCompiler` directly
-at all. **Not yet wired to anything that *attaches* the resulting DB to a
-live project** — plan.md §6.19 pieces 2/3 (`libraryDbs`/`libraryDbSources`
-config fields, the `SymbolDatabase` `ATTACH`/`UNION` query-side work) remain
-unimplemented; this only produces the DB file.
+at all.
+
+### Attaching a prebuilt library DB (plan.md §6.19 piece 2 — implemented 2026-09-04)
+
+`ProjectConfig` gained `libraryDbs` (`std::vector<std::string>`), populated
+from a new `"libraryDbs"` array key in `.svlsp.json`
+(`ProjectManifestParser`) or a new chainable `-svlsp_library_db <path>`
+switch in `.f` (`FilelistParser` — deliberately not a `+libdb+`-style
+spelling, since `.f` is nominally simulator-portable and an unprefixed
+`+switch+` risks colliding with a real vendor switch later). Both resolve
+relative paths the same way `libraryFiles`/`includeDirs` already do.
+
+`SymbolDatabase::attachLibraryDbs(paths)` (`src/db/symbol_database.h/.cpp`)
+`ATTACH DATABASE`s each not-already-attached path read-only under a
+generated `lib0`/`lib1`/... alias (a path attached twice — e.g. two
+discovered projects sharing one library — is skipped the second time, not
+re-attached, which would otherwise double-count its rows). Called from
+`ProjectCompiler::loadProject` before compiling any files, so both the live
+server and `--build-db` get this uniformly.
+
+Four `SymbolDatabase` queries now `UNION ALL` across every attached schema:
+`findSymbolsByName`, `findSymbolsByNamePrefix`, and `findSymbolsInScope`
+share a new private `queryAcrossAttachedDbs(cond, bindValue)` helper (one
+`WHERE` clause, run against the main schema plus each `lib<N>` schema,
+combined results re-sorted in C++ afterward — generalizing
+`findSymbolsVisibleAt`'s own pre-existing "SQLite doesn't allow expression
+`ORDER BY` after `UNION ALL`" precedent to every query here, not just that
+one); `findSymbolsVisibleAt` itself grew its own per-schema arm generation
+for Part 2 (cross-file top-level + wildcard-imported scopes) and Part 3
+(specific imports), since its shape has multiple distinct `WHERE` clauses
+per part rather than one shared one. Its Part 1 (the local scope chain at
+the cursor's own position) deliberately stays main-schema-only, since a
+cursor is never inside a read-only attached library file.
+
+**Disclosed limitations (see `attachLibraryDbs`'s own doc comment):**
+`scopeAtPosition`/`scopeKindAtPosition`/`enclosingClassNameAt` (same
+"cursor never in a library file" reasoning), `unresolvedInstantiatedTypeNames`/
+`instantiationsOfType` (library content reused this way is expected to be
+`import`'d, not instantiated as a design unit), `export pkg::*` re-export
+chains starting *inside* an attached DB, and `symbolsForFile`/
+`diagnosticsForFile` (opening a library file directly via a followed
+definition link won't show its own outline/diagnostics) are all
+main-schema-only, not extended in this pass. Also inherits (not introduces)
+this codebase's existing session-wide symbol visibility: once any project
+attaches a library DB, its symbols are visible to every file/project in
+that server session, matching how the main schema already has no
+per-project isolation.
+
+Verified via `tests/unit/db/test_symbol_database_library_attach.cpp` (8
+cases: each extended query against a real, separately-built, file-backed
+library DB; a wildcard-import reaching into an attached package; the dedup
+guard; two distinct attached DBs both visible; and an end-to-end
+`ProjectCompiler::loadProject` test) plus new cases in
+`test_filelist_parser.cpp`/`test_project_manifest_parser.cpp` for the
+config-parsing side. No new Emacs functional test (same reasoning as piece
+1 — nothing here changes the LSP-protocol surface beyond symbols simply
+being present, already exercised structurally by existing hover/definition/
+completion tests).
 
 ---
 
@@ -1184,19 +1243,14 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
       across an attached library DB, and the library-versioning/pinning/
       staleness story (config field, where pre-built DBs are built/shipped).
       **A concrete design for this was drafted 2026-09-04 (plan.md §6.19).
-      Piece 1 — the standalone `--build-db` CLI mode — is implemented
-      (2026-09-04, see `LibraryDbBuilder` under "Database layer" above);
-      pieces 2/3 below are not:** a new `svlsp --build-db <config> --output
-      <db-path>` standalone CLI mode reusing `ProjectCompiler::loadProject`
-      against a file-backed `Database` instead of `:memory:`; two new
-      `ProjectConfig` fields — `libraryDbs` (paths to already-built DBs,
-      attached read-only and unioned into `SymbolDatabase`'s queries) and
-      `libraryDbSources` (a source config + a cache path — build-and-cache
-      on first use if the cache path doesn't exist yet, reuse it
-      unconditionally if it does); both configurable from `.svlsp.json` and
-      a new `svlsp_`-prefixed `.f` switch (deliberately not an unprefixed
-      `+libdb+`-style spelling, to avoid ever colliding with a real vendor
-      switch in this nominally simulator-portable format). Staleness
+      Pieces 1 (the standalone `--build-db` CLI mode) and 2 (referencing an
+      already-built library DB directly via `libraryDbs`) are implemented
+      (2026-09-04, see `LibraryDbBuilder` and "Attaching a prebuilt library
+      DB" under "Database layer" above); piece 3 below is not:** a
+      `libraryDbSources` config field (a source config + a cache path —
+      build-and-cache on first use if the cache path doesn't exist yet,
+      reuse it unconditionally if it does), configurable the same way as
+      `libraryDbs`. Staleness
       detection (has the library's own source changed since its DB was
       built/cached) is explicitly left as an open question with candidate
       shapes listed, none chosen — see plan.md §6.19 for the full writeup.
