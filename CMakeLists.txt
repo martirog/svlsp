@@ -171,6 +171,7 @@ add_library(svlsp_lib STATIC
     src/lsp/workspace_symbols.cpp
     src/lsp/project_manifest_parser.cpp
     src/lsp/project_registry.cpp
+    src/lsp/library_db_builder.cpp
     src/lsp/server.cpp
 )
 target_include_directories(svlsp_lib PUBLIC src)
@@ -206,6 +207,7 @@ add_executable(unit_tests
     tests/unit/lsp/test_workspace_symbols.cpp
     tests/unit/lsp/test_project_manifest_parser.cpp
     tests/unit/lsp/test_project_registry.cpp
+    tests/unit/lsp/test_library_db_builder.cpp
     tests/unit/compiler/test_sv_parser.cpp
     tests/unit/compiler/test_compiler_directive_stripper.cpp
     tests/unit/compiler/test_sv_preprocessor.cpp
