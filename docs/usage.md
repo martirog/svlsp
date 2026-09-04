@@ -1,11 +1,12 @@
 # svlsp Usage Guide
 
-This is a quick reference for the two user-facing configuration knobs
-`svlsp` currently has: the completion fuzzy-matching toggle (set by your
-editor/client at connect time) and the `--log-files` command-line flag (set
-when you launch the binary). It will grow into the full end-user guide
-tracked by `plan.md` Phase 6.6 as more of that phase lands; for now it only
-covers what's actually implemented.
+This is a quick reference for the user-facing configuration knobs `svlsp`
+currently has: the completion fuzzy-matching toggle (set by your
+editor/client at connect time), the `--log-files` command-line flag, and the
+`--build-db` standalone pre-build mode (both set when you launch the
+binary). It will grow into the full end-user guide tracked by `plan.md`
+Phase 6.6 as more of that phase lands; for now it only covers what's
+actually implemented.
 
 ## Configuring the server: `initializationOptions`
 
@@ -93,3 +94,38 @@ compile, so it was skipped rather than reparsed. This is mainly useful for
 confirming a multi-file project's full expected file set is actually being
 parsed — e.g. spotting a misconfigured include path that silently leaves a
 file out.
+
+## Pre-building a library database: `--build-db`
+
+For a large, rarely-changing dependency (UVM, verification IP) that's
+reused unmodified across many projects, you can compile it once into a
+standalone database file instead of paying that compile cost inside every
+project's own server session:
+
+```bash
+svlsp --build-db /path/to/uvm.f --output /path/to/uvm.db
+```
+
+`<config-path>` is either a `.svlsp.json` manifest or a `.f`/`.svlsp.f`
+filelist — the same two formats a live project already uses, dispatched by
+extension. `svlsp` compiles every file it resolves (including anything
+pulled in via `-y`/`-v` library resolution) into a fresh SQLite database at
+`<db-path>`, prints a one-line summary, and exits — it never enters the
+normal `initialize`/stdio server loop in this mode:
+
+```
+[parsed] /path/to/uvm/uvm_pkg.sv
+[parsed]   included: /path/to/uvm/uvm_macros.svh
+svlsp: built '/path/to/uvm.db' -- 143 files compiled, 0 diagnostics
+```
+
+`--build-db` requires `--output`; the reverse (`--output` with no
+`--build-db`) is ignored and the server starts normally. A bad or
+unreadable `<config-path>` exits with status 1 and an error on stderr,
+without creating `<db-path>` at all.
+
+This only produces the database file for now — a live project referencing
+it (via `libraryDbs`/`libraryDbSources` config fields) and a lazy
+build-and-cache mode are designed in `plan.md` §6.19 but not yet
+implemented, so a pre-built database from this flag isn't attached to any
+project's own queries yet.

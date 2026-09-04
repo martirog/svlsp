@@ -7,9 +7,14 @@ only).
 On 2026-09-04: plan.md gained §6.18 (recompile on `textDocument/didSave` — not yet
 implemented, just planned) and §6.11 (configurable fuzzy-matching toggle) was
 implemented — see "Configurable fuzzy-matching toggle" under "LSP feature providers"
-below and "Not yet done" #13. Unit suite now at 1477 assertions / 524 test cases;
-Emacs integration suite gained `test_35_fuzzy_completion_toggle.sh` (3 cases, 197/197
-total), no regressions anywhere.
+below and "Not yet done" #13. Also on 2026-09-04: plan.md gained §6.19 (pre-built
+library database, attach-and-query shape) and its piece 1 — the standalone
+`svlsp --build-db`/`LibraryDbBuilder` CLI mode — was implemented; see "Database
+layer" below. `docs/usage.md` (new) documents `fuzzyCompletion`, `--log-files`, and
+`--build-db` for end users. Unit suite now at 1495 assertions / 528 test cases;
+Emacs integration suite unchanged at 197 cases / 36 files (`--build-db` is a
+CLI-only mode with no LSP-protocol surface, so it has no Emacs test — see plan.md
+§6.19's own note on this). No regressions anywhere.
 
 **Status:** Phases 3, 4, 5, 6.1, 6.2, 6.3 complete, plus §6.8 (debounced `didChange`
 compilation) implemented 2026-08-28. On 2026-09-01: a `pickBestSymbol()`
@@ -93,7 +98,7 @@ src/compiler/      compiler_directive_stripper, sv_preprocessor, sv_tree_walker,
 src/db/            database, symbol_database, compilation_controller,
                    library_resolver, project_compiler, schema — SQLite persistence (schema v5)
 src/main.cpp       entry point (supports `--log-files <path>`, see below)
-tests/unit/        Catch2 unit tests (524 cases, 1477 assertions)
+tests/unit/        Catch2 unit tests (528 cases, 1495 assertions)
 tests/integration/ Emacs functional test scripts (197 test cases across 36 files)
 tests/uvm_corpus/  opt-in test suite against a real, external UVM corpus (NOT in
                    ctest/make test — see "UVM corpus testing" below)
@@ -139,6 +144,9 @@ printf 'Content-Length: 152\r\n\r\n{"jsonrpc":"2.0","id":1,"method":"initialize"
 
 # Log every file parsed/persisted (primary + every discovered include) to a file
 build/release/svlsp --log-files /path/to/log.txt
+
+# Pre-build a library DB from a .svlsp.json/.f config, then exit (plan.md §6.19 piece 1)
+build/release/svlsp --build-db /path/to/uvm.f --output /path/to/uvm.db
 ```
 
 Compiler: **g++-13** (system g++ 7.5 does not support C++20 — pinned in `CMakePresets.json`).
@@ -755,10 +763,35 @@ svlsp_compiler (compiler_directive_stripper, sv_preprocessor, sv_tree_walker,
 svlsp_db (database, symbol_database, compilation_controller, library_resolver, project_compiler)
     → svlsp_sqlite3 → svlsp_compiler
 
-svlsp_lib (lsp/*, incl. project_manifest_parser, project_registry — needs lsp::json,
-           not available to svlsp_compiler)
+svlsp_lib (lsp/*, incl. project_manifest_parser, project_registry, library_db_builder
+           — needs lsp::json, not available to svlsp_compiler)
     → lsp → svlsp_compiler → svlsp_db
 ```
+
+### `LibraryDbBuilder` (`src/lsp/library_db_builder.h/.cpp`, plan.md §6.19 piece 1 — implemented 2026-09-04)
+
+Backs `svlsp --build-db <config-path> --output <db-path>` (`src/main.cpp`):
+compiles a `.svlsp.json`/`.f` config into a persistent, file-backed
+`Database` and exits, instead of entering the normal `initialize`/stdio
+server loop — lets a large, rarely-changing library (UVM, VIP) be
+pre-compiled once, independent of any editor session. Dispatches
+`configPath` to `ProjectManifestParser`/`FilelistParser` by extension
+(`.ends_with(".json")`, C++20's own method — not a duplicate of
+`ProjectRegistry`'s private `endsWith` helper), then calls the existing
+`ProjectCompiler::loadProject` against a `Database` opened on a real path
+(the constructor already supported this; nothing new at that layer).
+Returns `Result{ok, fileCount, diagnosticCount, error}` — `diagnosticCount`
+via one ad hoc `SELECT COUNT(*) FROM diagnostics` through `Database::prepare`
+(already public; no new `SymbolDatabase` query method needed for a
+CLI-only summary count) — so `main.cpp`'s own `buildDb()` wrapper is just
+argument parsing plus printing that summary (or the error) to stderr.
+Factored out of `main.cpp` specifically so it's unit-testable
+(`main.cpp` isn't part of any linkable library) — `main.cpp` no longer
+touches `ProjectManifestParser`/`FilelistParser`/`ProjectCompiler` directly
+at all. **Not yet wired to anything that *attaches* the resulting DB to a
+live project** — plan.md §6.19 pieces 2/3 (`libraryDbs`/`libraryDbSources`
+config fields, the `SymbolDatabase` `ATTACH`/`UNION` query-side work) remain
+unimplemented; this only produces the DB file.
 
 ---
 
@@ -1150,8 +1183,10 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
       specific: reshaping `SymbolDatabase`'s existing queries (§5.3) to query
       across an attached library DB, and the library-versioning/pinning/
       staleness story (config field, where pre-built DBs are built/shipped).
-      **A concrete design for this was drafted 2026-09-04 (plan.md §6.19,
-      not yet implemented):** a new `svlsp --build-db <config> --output
+      **A concrete design for this was drafted 2026-09-04 (plan.md §6.19).
+      Piece 1 — the standalone `--build-db` CLI mode — is implemented
+      (2026-09-04, see `LibraryDbBuilder` under "Database layer" above);
+      pieces 2/3 below are not:** a new `svlsp --build-db <config> --output
       <db-path>` standalone CLI mode reusing `ProjectCompiler::loadProject`
       against a file-backed `Database` instead of `:memory:`; two new
       `ProjectConfig` fields — `libraryDbs` (paths to already-built DBs,

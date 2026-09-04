@@ -2301,13 +2301,15 @@ section only adds the `didSave` hook and the file's own immediate recompile.
 
 ### 6.19 Pre-Built Library Database (attach-and-query, no physical merge)
 
-**Status:** design drafted 2026-09-04, per explicit user direction; not started
-/ not implemented. Fleshes out §6.5's own "pre-built/shared DBs for
-rarely-changing library code" open question into a concrete design, choosing
-the **attach-and-query** shape (§6.5's own "Recommended default," modeled on
-clangd's per-shard `MergedIndex`) over a true physical merge with
-moniker-style keys (LSIF/SCIP) — the true-merge shape is explicitly out of
-scope for this pass.
+**Status:** design drafted 2026-09-04, per explicit user direction. Fleshes
+out §6.5's own "pre-built/shared DBs for rarely-changing library code" open
+question into a concrete design, choosing the **attach-and-query** shape
+(§6.5's own "Recommended default," modeled on clangd's per-shard
+`MergedIndex`) over a true physical merge with moniker-style keys
+(LSIF/SCIP) — the true-merge shape is explicitly out of scope for this pass.
+**Piece 1 (the standalone `--build-db` CLI mode) implemented 2026-09-04**;
+pieces 2 and 3 (attaching a prebuilt/cached DB to a live project) not
+started.
 
 **Why this is needed:** unchanged from §6.5's own rationale — a large
 fraction of a real verification project's files (per `handoff.md`'s
@@ -2321,23 +2323,43 @@ across many projects/restarts).
 
 **Three new pieces, in dependency order:**
 
-1. **A standalone "build a library DB" mode on the `svlsp` binary**
-   (`src/main.cpp`), so a library DB can be produced ahead of time,
-   independent of any editor session — e.g.
-   `svlsp --build-db <config-path> --output <db-path>`, where `<config-path>`
-   is either a `.svlsp.json` manifest or a `.f`/`.svlsp.f` filelist (parsed
-   via the existing `ProjectManifestParser`/`FilelistParser`, the same
-   dispatch-by-filename `ProjectRegistry::configFor` already does). Opens a
-   `Database` against `<db-path>` (a real file — the constructor already
-   supports this, `src/db/database.cpp:11`; nothing new at the `Database`
-   layer) and calls the existing `ProjectCompiler::loadProject(config,
-   controller, sdb)`, then exits (a one-line file-count/diagnostic-count
-   summary to stderr, matching `--log-files`'s existing
-   stderr-for-diagnostics convention) instead of entering the
-   `initialize`/stdio message loop. Mutually exclusive with normal server
-   mode on the same invocation. No `LanguageServer`/`ServerState` changes
-   needed — purely a `main.cpp`-level alternate entry path reusing the
-   compiler/DB layers `svlsp` already has.
+1. **A standalone "build a library DB" mode on the `svlsp` binary — implemented
+   2026-09-04, essentially as designed.** `svlsp --build-db <config-path>
+   --output <db-path>` produces a library DB ahead of time, independent of
+   any editor session. `<config-path>` is either a `.svlsp.json` manifest or
+   a `.f`/`.svlsp.f` filelist, dispatched by extension
+   (`configPath.ends_with(".json")` — the same rule `ProjectRegistry`
+   already uses, just inlined via C++20's `std::string::ends_with` rather
+   than duplicating `ProjectRegistry`'s own private `endsWith` helper).
+
+   The actual compile logic was factored into a new
+   `LibraryDbBuilder::build(configPath, outputPath, progressLog)`
+   (`src/lsp/library_db_builder.h/.cpp`) rather than living in `main.cpp`
+   directly — `main.cpp` isn't part of any linkable library, so keeping the
+   logic there would leave it unit-untestable, violating this project's own
+   "every function has a unit test" working rule. `LibraryDbBuilder` opens a
+   `Database` against `outputPath` (a real file — the constructor already
+   supported this, `src/db/database.cpp:11`; nothing new at the `Database`
+   layer), calls the existing `ProjectCompiler::loadProject(config,
+   controller, sdb)`, and returns a `Result{ok, fileCount,
+   diagnosticCount, error}` — `diagnosticCount` via one ad hoc `SELECT
+   COUNT(*) FROM diagnostics` through `Database::prepare` (already public;
+   no new `SymbolDatabase` query method needed for a single CLI-only
+   summary count). `main.cpp`'s `buildDb()` is now a thin wrapper: call
+   `LibraryDbBuilder::build`, print the one-line summary or error to
+   stderr, and exit — never entering the `initialize`/stdio message loop.
+   Mutually exclusive with normal server mode on the same invocation
+   (`--build-db` requires `--output`; `--output` alone is silently ignored
+   and the server starts normally). No `LanguageServer`/`ServerState`
+   changes needed. Verified directly against the real
+   `multifile_project` integration fixture (`-y`-resolved library file
+   included in the compiled count) and a throwaway `.svlsp.json` manifest,
+   in addition to the unit tests below.
+
+   Note this deliberately doesn't yet build a *whole* CI-friendly wrapper
+   (progress bars, `--force`, `--check-stale`, etc.) — those belong to the
+   open question at the end of this section, once pieces 2/3 below give
+   them something to act on.
 
 2. **Referencing an already-built library DB directly** — the "the DB
    already exists, just use it" case — in both project-config formats:
@@ -2427,9 +2449,23 @@ none chosen:
   whoever owns the cache to run deliberately, rather than `svlsp` ever
   doing this automatically on the hot path.
 
-**Functional/unit tests:** not designed yet — deferred until an
-implementation approach is chosen, per this section's own "design only, not
-started" status.
+**Functional/unit tests for piece 1 (implemented):**
+`tests/unit/lsp/test_library_db_builder.cpp` — builds from a real `.f`
+filelist and reopens the resulting DB file with a *fresh* `Database`/
+`SymbolDatabase` connection (not the same in-process objects that built it)
+to prove it's a genuinely persistent, independently-readable file, not just
+an in-memory result; the same from a `.svlsp.json` manifest; a project with
+a real unresolved-instantiation diagnostic to prove `diagnosticCount` counts
+project-wide, not just per-file; and a bad config path failing closed
+without creating the output DB file at all. No Emacs functional test — this
+is a CLI-only mode with no LSP-protocol surface, so it doesn't fit this
+project's usual "unit + Emacs" pairing (matching how `FilelistParser` itself
+is unit-tested only); instead verified directly by hand against the real
+`multifile_project` integration fixture (see piece 1's own writeup above).
+
+**Functional/unit tests for pieces 2/3:** not designed yet — deferred until
+an implementation approach for the `SymbolDatabase` query-side `ATTACH`
+integration is chosen.
 
 ---
 
