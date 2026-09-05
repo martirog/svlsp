@@ -4,23 +4,34 @@
 # Wraps the cmake --preset workflow documented in handoff.md's "Build and
 # test" section.
 #
-# Usage: tools/build.sh [debug|release] [--target NAME]
-#   debug|release   CMake preset to use (default: debug -- matches this
-#                   project's Makefile `build` target and most of
-#                   handoff.md's documented workflow).
-#   --target NAME   Build only this CMake target (default: everything
-#                   registered under the preset, including svlsp and
-#                   unit_tests).
+# Usage: tools/build.sh [debug|release] [--target NAME] [--output-dir DIR]
+#   debug|release    CMake preset to use (default: debug -- matches this
+#                    project's Makefile `build` target and most of
+#                    handoff.md's documented workflow).
+#   --target NAME    Build only this CMake target (default: everything
+#                    registered under the preset, including svlsp and
+#                    unit_tests).
+#   --output-dir DIR After building, copy the svlsp binary into DIR (created
+#                    if missing) -- useful since a preset's own build
+#                    directory is fixed (build/debug or build/release,
+#                    CMakePresets.json's binaryDir) and can't be
+#                    redirected on the command line. Implies --target
+#                    svlsp when --target wasn't also given explicitly,
+#                    since there's normally no reason to build anything
+#                    else just to copy the binary elsewhere.
 #
 # Examples:
-#   tools/build.sh                          # from-scratch debug build, everything
-#   tools/build.sh release                  # from-scratch release build, everything
-#   tools/build.sh debug --target svlsp     # from-scratch debug build, svlsp only
+#   tools/build.sh                                   # from-scratch debug build, everything
+#   tools/build.sh release                           # from-scratch release build, everything
+#   tools/build.sh debug --target svlsp              # from-scratch debug build, svlsp only
+#   tools/build.sh release --output-dir ~/bin        # svlsp only, copied to ~/bin/svlsp
 
 set -euo pipefail
 
 PRESET="debug"
 TARGET=""
+TARGET_EXPLICIT=""
+OUTPUT_DIR=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -30,10 +41,15 @@ while [[ $# -gt 0 ]]; do
             ;;
         --target)
             TARGET="${2:?--target requires a name}"
+            TARGET_EXPLICIT="1"
+            shift 2
+            ;;
+        --output-dir)
+            OUTPUT_DIR="${2:?--output-dir requires a path}"
             shift 2
             ;;
         -h|--help)
-            sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *)
@@ -42,6 +58,10 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [ -n "$OUTPUT_DIR" ] && [ -z "$TARGET_EXPLICIT" ]; then
+    TARGET="svlsp"
+fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="${ROOT_DIR}/build/${PRESET}"
@@ -71,4 +91,14 @@ fi
 echo "==> Done."
 if [ -x "${BUILD_DIR}/svlsp" ]; then
     echo "    Binary: ${BUILD_DIR}/svlsp"
+fi
+
+if [ -n "$OUTPUT_DIR" ]; then
+    if [ ! -x "${BUILD_DIR}/svlsp" ]; then
+        echo "error: --output-dir given but ${BUILD_DIR}/svlsp wasn't built" >&2
+        exit 1
+    fi
+    mkdir -p "$OUTPUT_DIR"
+    cp "${BUILD_DIR}/svlsp" "$OUTPUT_DIR/"
+    echo "    Copied to: ${OUTPUT_DIR}/svlsp"
 fi
