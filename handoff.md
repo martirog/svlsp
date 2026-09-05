@@ -1,8 +1,27 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-09-04 (compressed from full session history — see git log for
+**Last updated:** 2026-09-05 (compressed from full session history — see git log for
 narrative detail if ever needed; this file now documents current-state-and-next-steps
 only).
+
+On 2026-09-05: added `tests/unit/lsp/test_completion_library_attach.cpp` (2 new test
+cases, 16 assertions), closing the one gap §6.19's original three pieces deliberately
+left open — every prior library-DB test either checked `SymbolDatabase` queries
+directly (`test_symbol_database_library_attach.cpp`) or `LibraryDbBuilder`/
+`ProjectRegistry` plumbing with a single attached DB; none drove
+`CompletionProvider::getCompletion` itself against **two** independently built and
+attached library DBs at once. New coverage: two real, separately-built `.db` files
+(via `LibraryDbBuilder::build`, not hand-inserted rows) each defining one class with
+one distinctly-named method, both attached via `config.libraryDbs`; dot-completion on
+an object of each class resolves to that library's own method and not the other's
+(proving no cross-DB leakage); a fuzzy top-level prefix reaches each library's class
+name directly. Every case compiles the project's own file **twice** — an initial,
+no-usage compile (the `didOpen` equivalent), then a second, edited compile (the
+`didChange`/live-edit equivalent, following `live_edit_completion.sv`'s own
+"// probe: ..." convention) — and only ever calls `getCompletion` after the second
+compile, never the first, since the first compile's content has no library-class
+usage for completion to resolve against. Unit suite now at 1578 assertions / 553 test
+cases. No regressions.
 
 On 2026-09-04: plan.md gained §6.18 (recompile on `textDocument/didSave` — not yet
 implemented, just planned) and §6.11 (configurable fuzzy-matching toggle) was
@@ -20,8 +39,8 @@ for end users. Piece 3's implementation also surfaced and fixed a real bug in pi
 (`LibraryDbBuilder::build` didn't create a not-yet-existing output directory, and its
 try/catch didn't cover that failure — silently dropped when reached via a
 `didOpen` notification; see "Lazy build-and-cache library DBs" below). Unit suite
-now at 1562 assertions / 551 test cases; Emacs integration suite unchanged at 197
-cases / 36 files (none of
+was at 1562 assertions / 551 test cases as of that date; Emacs integration suite
+unchanged at 197 cases / 36 files (none of
 §6.19's three pieces change the LSP-protocol surface a client observes beyond
 symbols simply being present, already exercised structurally by existing
 hover/definition/completion tests — see plan.md §6.19's own note on this). No
