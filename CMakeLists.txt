@@ -196,6 +196,7 @@ add_executable(unit_tests
     tests/unit/lsp/test_fuzzy_match.cpp
     tests/unit/lsp/test_completion.cpp
     tests/unit/lsp/test_completion_library_attach.cpp
+    tests/unit/lsp/test_completion_latency.cpp
     tests/unit/lsp/test_sv_keywords.cpp
     tests/unit/lsp/test_sv_builtin_methods.cpp
     tests/unit/lsp/test_definition.cpp
