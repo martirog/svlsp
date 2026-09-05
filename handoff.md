@@ -4,6 +4,25 @@
 narrative detail if ever needed; this file now documents current-state-and-next-steps
 only).
 
+Also on 2026-09-05: added `tests/unit/lsp/test_completion_latency.cpp` — a
+timing-only comparison of `CompletionProvider::getCompletion` with fuzzy matching
+(plan.md §6.11) enabled vs. disabled, over 5000 top-level symbols sharing a common
+"sig_" prefix (so both modes keep the whole candidate set — the timing difference is
+purely each mode's own scoring/sorting overhead, not how many survive). Tagged
+`[.]` (Catch2's "hidden" convention) so it's excluded from the default `unit_tests`
+run and can't flake normal CI on a noisy machine; run explicitly via
+`unit_tests "[completion-latency]"`. Not a correctness test — `test_completion.cpp`'s
+own fuzzy-toggle cases already cover that both paths return the right items — and
+not a strict fuzzy-vs-strict regression gate either, since the fuzzy path doing
+strictly more per-candidate work than the disabled path is expected, not a bug; it
+only asserts a generous per-call upper bound (2s) to catch a genuine pathological
+blowup (e.g. an accidental O(n²) sort comparator). Measured once for reference:
+release build ~11.7ms/call fuzzy-enabled vs. ~9.9ms/call fuzzy-disabled (~18%
+overhead, consistent with fuzzy scoring+sorting every candidate vs. a plain
+strict-prefix filter with no re-sort); debug/ASan build ~15x slower for both
+(~170ms vs. ~147ms), consistent with this project's own documented 10-100x
+ASan/UBSan slowdown on real workloads.
+
 On 2026-09-05: added `tests/unit/lsp/test_completion_library_attach.cpp` (2 new test
 cases, 16 assertions), closing the one gap §6.19's original three pieces deliberately
 left open — every prior library-DB test either checked `SymbolDatabase` queries
@@ -151,11 +170,17 @@ cmake --preset debug && cmake --build --preset debug
 # or: make configure build
 
 # From-scratch build (wipes build/<preset> first, then configure + build) —
-# tools/build.sh [debug|release] [--target NAME], defaults to debug/everything
-tools/build.sh                        # from-scratch debug build, everything
-tools/build.sh release                # from-scratch release build, everything
-tools/build.sh debug --target svlsp   # from-scratch debug build, svlsp only
-tools/build.sh --help                 # full usage
+# tools/build.sh [debug|release] [--target NAME] [--output-dir DIR], defaults
+# to debug/everything
+tools/build.sh                             # from-scratch debug build, everything
+tools/build.sh release                     # from-scratch release build, everything
+tools/build.sh debug --target svlsp        # from-scratch debug build, svlsp only
+tools/build.sh release --output-dir ~/bin  # svlsp only, copied to ~/bin/svlsp --
+                                            # a preset's own binaryDir (build/<preset>,
+                                            # CMakePresets.json) is fixed and can't be
+                                            # redirected on the command line, so this
+                                            # builds normally and copies the binary out
+tools/build.sh --help                      # full usage
 
 # Unit tests
 build/debug/unit_tests
