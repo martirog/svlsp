@@ -111,11 +111,17 @@ filelist — the same two formats a live project already uses, dispatched by
 extension. `svlsp` compiles every file it resolves (including anything
 pulled in via `-y`/`-v` library resolution) into a fresh SQLite database at
 `<db-path>`, prints a one-line summary, and exits — it never enters the
-normal `initialize`/stdio server loop in this mode:
+normal `initialize`/stdio server loop in this mode.
+
+While it works, a single in-place counter on stderr tracks progress —
+`compiled/total` files seen so far. The total file count isn't known
+upfront (transitive `` `include ``s and -v/-y library resolution both
+discover more files as compilation proceeds), so it starts at the
+project's own explicit file count and grows to match once that's
+exceeded:
 
 ```
-[parsed] /path/to/uvm/uvm_pkg.sv
-[parsed]   included: /path/to/uvm/uvm_macros.svh
+svlsp: compiling... 87/143 files
 svlsp: built '/path/to/uvm.db' -- 143 files compiled, 0 diagnostics
 ```
 
