@@ -130,6 +130,15 @@ svlsp: built '/path/to/uvm.db' -- 143 files compiled, 0 diagnostics
 unreadable `<config-path>` exits with status 1 and an error on stderr,
 without creating `<db-path>` at all.
 
+**Each flag's value must be the literal argument immediately following
+it** — `--build-db` and `--output` can appear in either order relative to
+*each other* (`--build-db <config> --output <db>` and `--output <db>
+--build-db <config>` both work), but a flag's own value can't be pushed
+past another flag. `--build-db --output <db> <config>` (both flags grouped
+before their values) is rejected with a usage error rather than silently
+misparsed — it would otherwise consume the literal string `--output` as
+`<config-path>`.
+
 ## Using a pre-built library database: `libraryDbs`
 
 Once you have a database built with `--build-db`, point your own project's
