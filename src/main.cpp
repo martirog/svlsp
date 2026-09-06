@@ -151,8 +151,12 @@ int buildDb(const std::string& configPath, const std::string& outputPath)
 //
 // --build-db <config-path> --output <db-path>: an alternate, one-shot mode
 // (see buildDb() above) that compiles a project into a persistent DB file
-// and exits, instead of starting the normal server loop. See plan.md §6.19
-// and docs/usage.md.
+// and exits, instead of starting the normal server loop. `<config-path>`/
+// `<db-path>`/`--log-files`'s own `<path>` must each be the literal next
+// argument after their flag -- `--build-db --output db.f config.f` (flags
+// grouped before their values) is NOT accepted, only `--build-db config.f
+// --output db.f` (each flag immediately followed by its own value); see
+// plan.md §6.19 and docs/usage.md.
 int main(int argc, char** argv)
 {
     std::ofstream logFile;
@@ -160,7 +164,23 @@ int main(int argc, char** argv)
     std::string buildDbConfigPath;
     std::string buildDbOutputPath;
     for (int i = 1; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--log-files") == 0 && i + 1 < argc) {
+        // A flag's value is required to be the very next argv entry; if
+        // that's missing, or looks like another flag (starts with "--"),
+        // don't silently swallow it as the value (the original bug this
+        // guards against: `--build-db --output out.db config.f` used to
+        // consume the literal string "--output" as the config path, leave
+        // `--output`'s own real value/`config.f` unparsed, and fail later
+        // with a confusing "--build-db requires --output" even though
+        // --output was right there).
+        const bool nextIsMissingOrFlag =
+            i + 1 >= argc || (argv[i + 1][0] == '-' && argv[i + 1][1] == '-');
+
+        if (std::strcmp(argv[i], "--log-files") == 0) {
+            if (nextIsMissingOrFlag) {
+                std::cerr << "svlsp: --log-files requires a <path> argument "
+                             "immediately after it\n";
+                return 1;
+            }
             const char* logPath = argv[++i];
             logFile.open(logPath, std::ios::out | std::ios::app);
             if (logFile)
@@ -168,9 +188,20 @@ int main(int argc, char** argv)
             else
                 std::cerr << "svlsp: warning: could not open --log-files path '"
                           << logPath << "'\n";
-        } else if (std::strcmp(argv[i], "--build-db") == 0 && i + 1 < argc) {
+        } else if (std::strcmp(argv[i], "--build-db") == 0) {
+            if (nextIsMissingOrFlag) {
+                std::cerr << "svlsp: --build-db requires a <config-path> argument "
+                             "immediately after it (put --output after that, not "
+                             "before it)\n";
+                return 1;
+            }
             buildDbConfigPath = argv[++i];
-        } else if (std::strcmp(argv[i], "--output") == 0 && i + 1 < argc) {
+        } else if (std::strcmp(argv[i], "--output") == 0) {
+            if (nextIsMissingOrFlag) {
+                std::cerr << "svlsp: --output requires a <db-path> argument "
+                             "immediately after it\n";
+                return 1;
+            }
             buildDbOutputPath = argv[++i];
         }
     }
