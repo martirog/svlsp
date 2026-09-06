@@ -1,8 +1,44 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-09-05 (compressed from full session history — see git log for
+**Last updated:** 2026-09-06 (compressed from full session history — see git log for
 narrative detail if ever needed; this file now documents current-state-and-next-steps
 only).
+
+Also on 2026-09-06: `--build-db` gained a growing progress counter — a single
+in-place `svlsp: compiling... N/total files` line on stderr (via a new
+`ProgressCounterBuf : std::streambuf` in `src/main.cpp` that intercepts the
+existing per-file `[parsed] ...` log lines rather than requiring any change to
+`LibraryDbBuilder`/`CompilationController`/`ProjectCompiler`), replacing the old
+scrolling per-file log for that mode only — `--log-files` (the live server's own
+logging) is untouched. `total` seeds from the project's explicit file count and
+grows as `` `include ``s/`-v`/`-y` library resolution discover more files, so it
+can legitimately hit "100%" more than once before the real total settles. Same
+session, a real CLI-parsing bug was found and fixed: `--build-db`/`--output`/
+`--log-files` each now require their value to be the literal next `argv` entry —
+previously `--build-db --output <db> <config>` (flags grouped before their own
+values) silently consumed the literal string `"--output"` as `<config-path>`,
+leaving the real db path/config unparsed and failing later with a misleading
+"`--build-db` requires `--output`" error even though `--output` was right there;
+a bare trailing `--build-db` with nothing after it was also silently ignored,
+falling through to the normal stdio server loop instead of erroring. Commits:
+`9916094`/`5c613f1` (progress counter + docs), `7494f32`/`49d4279` (CLI-parsing
+fix + docs).
+
+**Open, not yet debugged — reported by the user same day, right after the above
+shipped:** built a release binary via `tools/build.sh release --output-dir
+<dir>`, then ran that binary's own `--build-db <config> --output <db>` to
+produce an external library DB — the progress counter did not appear at all (no
+`svlsp: compiling... N/M files` line), unlike the debug build exercised directly
+while implementing the feature above (`./build/debug/svlsp --build-db ...`,
+verified working). Not yet investigated. Candidates to check first: whether the
+binary under `--output-dir` actually postdates commit `7494f32` (stale-copy
+mistake, not a code bug); whether stderr not being a TTY in however the user ran
+it suppresses something (`\r`-based output should still write regardless, but
+worth confirming what's actually different about that invocation); or a real
+release-build-specific bug (`-O2`, no ASan/UBSan — see "Compiler" under "Build
+and test" below for the debug/release split). **Debug this next session,
+reproducing with the user's own exact `tools/build.sh --output-dir` +
+`--build-db` sequence.**
 
 Also on 2026-09-05: added `tests/unit/lsp/test_completion_latency.cpp` — a
 timing-only comparison of `CompletionProvider::getCompletion` with fuzzy matching
