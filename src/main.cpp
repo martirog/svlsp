@@ -1,11 +1,112 @@
 #include <lsp/io/standardio.h>
 #include "lsp/server.h"
 #include "lsp/library_db_builder.h"
+#include "lsp/project_manifest_parser.h"
+#include "compiler/filelist_parser.h"
+#include "compiler/project_config.h"
+#include <algorithm>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <sstream>
+#include <streambuf>
+#include <unordered_set>
 
 namespace {
+
+// Renders `LibraryDbBuilder`/`CompilationController`'s per-file progress
+// lines ("[parsed] <path>", "[parsed] <path> (cached)", "[parsed]
+// included: <path>") as a single, growing, in-place counter on stderr
+// instead of a scrolling log -- the total file count isn't known upfront
+// (transitive `include`s and -v/-y library resolution both discover more
+// files as compilation proceeds), so `total` starts at `floorTotal` (the
+// project's own explicit file list -- a known lower bound) and grows to
+// match however many distinct files have actually been seen once that
+// bound is exceeded. A `std::streambuf` (not a wrapper function) so it can
+// be handed anywhere an `std::ostream*` progress log is accepted, with zero
+// changes to LibraryDbBuilder/CompilationController/ProjectCompiler.
+class ProgressCounterBuf : public std::streambuf {
+public:
+    explicit ProgressCounterBuf(int floorTotal) : m_floorTotal(floorTotal) {}
+
+    // Call after the compile finishes to erase the last in-place line.
+    void finish()
+    {
+        if (m_rendered) std::cerr << '\r' << std::string(m_lastWidth, ' ') << '\r';
+    }
+
+protected:
+    int_type overflow(int_type ch) override
+    {
+        if (traits_type::eq_int_type(ch, traits_type::eof())) return ch;
+        char c = traits_type::to_char_type(ch);
+        if (c == '\n') {
+            handleLine(m_line);
+            m_line.clear();
+        } else {
+            m_line.push_back(c);
+        }
+        return ch;
+    }
+
+private:
+    void handleLine(const std::string& line)
+    {
+        static const std::string kIncludedPrefix = "[parsed]   included: ";
+        static const std::string kParsedPrefix   = "[parsed] ";
+        static const std::string kCachedSuffix   = " (cached)";
+
+        std::string path;
+        if (line.compare(0, kIncludedPrefix.size(), kIncludedPrefix) == 0) {
+            path = line.substr(kIncludedPrefix.size());
+        } else if (line.compare(0, kParsedPrefix.size(), kParsedPrefix) == 0) {
+            path = line.substr(kParsedPrefix.size());
+            if (path.size() >= kCachedSuffix.size() &&
+                path.compare(path.size() - kCachedSuffix.size(), kCachedSuffix.size(),
+                             kCachedSuffix) == 0)
+                path.resize(path.size() - kCachedSuffix.size());
+        } else {
+            return; // not a per-file progress line -- ignore
+        }
+
+        m_seen.insert(std::move(path));
+        int total = std::max<int>(m_floorTotal, static_cast<int>(m_seen.size()));
+
+        std::ostringstream rendered;
+        rendered << "svlsp: compiling... " << m_seen.size() << "/" << total << " files";
+        std::string text = rendered.str();
+        std::cerr << '\r' << text;
+        if (text.size() < m_lastWidth) std::cerr << std::string(m_lastWidth - text.size(), ' ');
+        std::cerr.flush();
+        m_lastWidth = text.size();
+        m_rendered  = true;
+    }
+
+    int m_floorTotal;
+    std::string m_line;
+    std::unordered_set<std::string> m_seen;
+    std::size_t m_lastWidth{0};
+    bool m_rendered{false};
+};
+
+// The explicit top-level file count from `configPath` (the same dispatch
+// LibraryDbBuilder::build uses), or 0 if it can't be parsed -- used only as
+// ProgressCounterBuf's starting floor, so a parse failure here just means
+// the counter starts at 0 rather than a real error; LibraryDbBuilder::build
+// itself reports the actual parse error below.
+int explicitFileCount(const std::string& configPath)
+{
+    try {
+        ProjectConfig config = configPath.ends_with(".json")
+            ? ProjectManifestParser::parse(configPath)
+            : FilelistParser::parse(configPath,
+                  std::filesystem::path(configPath).parent_path().string());
+        return static_cast<int>(config.files.size());
+    } catch (const std::exception&) {
+        return 0;
+    }
+}
 
 // svlsp --build-db <config-path> --output <db-path>: compiles a
 // .svlsp.json manifest or .f/.svlsp.f filelist into a persistent SQLite DB
@@ -17,11 +118,16 @@ namespace {
 // Returns the process exit code.
 int buildDb(const std::string& configPath, const std::string& outputPath)
 {
-    // Logs every file parsed to stderr -- unlike the server's --log-files
-    // (which targets a file, since stdout/stderr are reserved for the LSP
-    // client), this is a one-shot CLI invocation with no client to disturb,
-    // so progress feedback goes straight to stderr.
-    auto result = LibraryDbBuilder::build(configPath, outputPath, &std::cerr);
+    // Progress feedback goes to stderr as a single growing counter (see
+    // ProgressCounterBuf above) -- unlike the server's --log-files (which
+    // targets a file and keeps every line, since stdout/stderr are reserved
+    // for the LSP client there), this is a one-shot CLI invocation with a
+    // real terminal to update in place.
+    ProgressCounterBuf progressBuf(explicitFileCount(configPath));
+    std::ostream progressStream(&progressBuf);
+
+    auto result = LibraryDbBuilder::build(configPath, outputPath, &progressStream);
+    progressBuf.finish();
     if (!result.ok) {
         std::cerr << "svlsp: error parsing '" << configPath << "': " << result.error << '\n';
         return 1;
