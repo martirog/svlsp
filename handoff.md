@@ -24,21 +24,80 @@ falling through to the normal stdio server loop instead of erroring. Commits:
 `9916094`/`5c613f1` (progress counter + docs), `7494f32`/`49d4279` (CLI-parsing
 fix + docs).
 
-**Open, not yet debugged — reported by the user same day, right after the above
-shipped:** built a release binary via `tools/build.sh release --output-dir
-<dir>`, then ran that binary's own `--build-db <config> --output <db>` to
-produce an external library DB — the progress counter did not appear at all (no
-`svlsp: compiling... N/M files` line), unlike the debug build exercised directly
-while implementing the feature above (`./build/debug/svlsp --build-db ...`,
-verified working). Not yet investigated. Candidates to check first: whether the
-binary under `--output-dir` actually postdates commit `7494f32` (stale-copy
-mistake, not a code bug); whether stderr not being a TTY in however the user ran
-it suppresses something (`\r`-based output should still write regardless, but
-worth confirming what's actually different about that invocation); or a real
-release-build-specific bug (`-O2`, no ASan/UBSan — see "Compiler" under "Build
-and test" below for the debug/release split). **Debug this next session,
-reproducing with the user's own exact `tools/build.sh --output-dir` +
-`--build-db` sequence.**
+**Root-caused and fixed 2026-09-07** — the user's own question ("if everything
+is `` `include ``d from one file, does the counter only appear once the whole
+build is done?") named the actual bug directly, after an initial investigation
+pass (below, kept for the record) failed to reproduce it with the wrong-shaped
+test project.
+
+*Investigation, could not reproduce with the wrong project shape:* a release
+binary built via `tools/build.sh release --output-dir <dir>`, run as
+`<dir>/svlsp --build-db <config> --output <db>`, reportedly showed no
+`svlsp: compiling... N/M files` line at all. Tried against `tests/integration/
+fixtures/full_project/.svlsp.f` (4 separate top-level files, only one with a
+single `` `include ``) in both release and debug `--output-dir` builds, stderr
+alone and merged with stdout, and a synthetic `-y`-library-heavy `.f` — the
+counter appeared correctly in every case. Also confirmed no `isatty` check
+exists anywhere (`grep isatty src/` — no hits) and no `--version`/build-
+identifying flag exists (worth adding some day, so "is this binary stale"
+can be answered in seconds instead of by rebuilding and comparing timestamps).
+
+*Actual root cause, found via `strace -tt -e trace=write`:* `CompilationController::
+compile()` (`src/db/compilation_controller.cpp`) logs the primary file's own
+`"[parsed] <path>"` line immediately, but its `"[parsed]   included: <path>"`
+lines were only logged in a loop *after* `SvPreprocessor::process` +
+`SvTreeWalker::walk` had already fully recursively expanded and parsed the
+entire `` `include `` tree in one synchronous call — i.e. only once the whole
+top-level compile unit was already done. For a project like the fixture above
+(several separate top-level files in `config.files`), this is barely
+noticeable: each top-level file still gives a visible tick. But the user's
+real UVM `--build-db` config has exactly one top-level file (`uvm_pkg.sv`)
+that `` `include ``s everything else — so the *entire* build was one single
+`compile()` call: the counter showed `1/1` almost instantly, then **froze
+solid for the whole parse** (proven via `strace`: a 424ms gap between the
+first and second progress `write()` on even the tiny 2-file fixture, scaling
+to however long the real ~140-file parse takes), then every included file's
+line fired in a microsecond-scale burst right before the final `svlsp: built
+...` summary erased the counter. Watching in real time, that looks exactly
+like "the counter never appeared" — nothing to do with release vs. debug or a
+stale binary at all.
+
+*Fix:* moved the `"[parsed]   included: <path>"` logging out of
+`CompilationController`'s post-hoc `recsByFile` loop and into
+`SvPreprocessor::processInclude` (`src/compiler/sv_preprocessor.cpp`) itself —
+logged the moment each `` `include `` is actually resolved and opened, before
+recursing into it, not after the whole top-level file finishes.
+`SvPreprocessor::process` gained an optional `std::ostream* progressLog =
+nullptr` parameter (`src/compiler/sv_preprocessor.h`); `CompilationController::
+compile` now passes its own `m_log` straight through
+(`preprocessor.process(stripped.source, path, m_log)`), so `--build-db`'s
+counter and `--log-files` both get the exact same real-time signal for free,
+with zero format change to the log lines themselves — `ProgressCounterBuf`
+(`src/main.cpp`) needed **no changes at all**, since it already just counts
+distinct `"[parsed]"`/`"included:"`-prefixed lines as they arrive. A cache hit
+on the primary file is unaffected (that path never calls the preprocessor at
+all, same as before); a raw `-v`-file index scan
+(`LibraryResolver::declaredTypeNames`) also unaffected (still calls
+`process()` with no `progressLog`, matching its pre-existing silent
+behavior). One incidental improvement: an included file that declares nothing
+(e.g. a macros-only `.svh`, previously invisible to `--log-files` since the
+old logging was keyed off `recsByFile`, which only has entries for files with
+at least one parse record) is now logged too, since the new logging point
+doesn't depend on what the file declares.
+
+Verified end-to-end against a synthetic worst-case shape (one top-level file
+`` `include ``ing 30 leaf files) with `strace -tt`: the counter now ticks
+`1/1 → 2/2 → ... → 30/30` incrementally as each include is resolved, instead
+of sitting at `1/1` until a final burst. 4 new `SvPreprocessor` unit tests
+(real-time logging on include resolution; nested-include ordering; no line on
+a missing/failed include; unchanged behavior when `progressLog` is omitted)
+plus 1 new `CompilationController` regression test (its own `logStream` still
+sees both the primary and included lines after the relocation). Unit suite
+now at 1587 assertions / 558 test cases, no regressions. No Emacs functional
+test needed — this only affects `--build-db`/`--log-files`' own stderr/file
+logging, not any LSP-protocol-visible behavior. `docs/usage.md`'s `--build-db`
+section gained one clarifying sentence about per-`` `include ``, real-time
+counting. Not yet committed — only commit when asked.
 
 Also on 2026-09-05: added `tests/unit/lsp/test_completion_latency.cpp` — a
 timing-only comparison of `CompletionProvider::getCompletion` with fuzzy matching

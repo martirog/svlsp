@@ -125,6 +125,13 @@ svlsp: compiling... 87/143 files
 svlsp: built '/path/to/uvm.db' -- 143 files compiled, 0 diagnostics
 ```
 
+Each `` `include ``d file counts the moment it's actually resolved, not only
+once its enclosing top-level file finishes compiling — this matters for a
+library like UVM whose whole source tree is reached through one top-level
+file (`uvm_pkg.sv`) that `` `include ``s everything else: the counter still
+ticks up file by file as each one is discovered, rather than sitting at
+`1/1` for the entire build and then jumping straight to the final count.
+
 `--build-db` requires `--output`; the reverse (`--output` with no
 `--build-db`) is ignored and the server starts normally. A bad or
 unreadable `<config-path>` exits with status 1 and an error on stderr,
