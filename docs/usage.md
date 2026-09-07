@@ -2,11 +2,11 @@
 
 This is a quick reference for the user-facing configuration knobs `svlsp`
 currently has: the completion fuzzy-matching toggle (set by your
-editor/client at connect time), the `--log-files` command-line flag, and the
-`--build-db` standalone pre-build mode (both set when you launch the
-binary). It will grow into the full end-user guide tracked by `plan.md`
-Phase 6.6 as more of that phase lands; for now it only covers what's
-actually implemented.
+editor/client at connect time), and the `--version`, `--log-files`, and
+`--build-db` command-line flags (all set when you launch the binary). It
+will grow into the full end-user guide tracked by `plan.md` Phase 6.6 as
+more of that phase lands; for now it only covers what's actually
+implemented.
 
 ## Configuring the server: `initializationOptions`
 
@@ -69,6 +69,21 @@ unranked (no reordering by match quality).
 Any value other than a JSON boolean `false` (missing, wrong type, or
 `initializationOptions` absent entirely) leaves fuzzy matching on — you only
 need to set this if you want to turn it *off*.
+
+## Checking what you actually built: `--version`
+
+```bash
+$ svlsp --version
+svlsp 0.1.0 (git 307740b, Release build)
+```
+
+Prints the project version, the abbreviated commit `tools/build.sh` (or any
+`cmake --build`) actually built from, and the build type, then exits
+immediately — takes priority over every other flag if combined with any.
+`-dirty` is appended to the commit if the source tree had uncommitted changes
+to tracked files at configure time. Answers "is this `--output-dir` copy
+actually the binary I think it is" in one command, instead of having to
+rebuild from scratch and compare timestamps to rule out a stale copy.
 
 ## Logging parsed files: `--log-files`
 

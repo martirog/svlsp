@@ -38,9 +38,9 @@ fixtures/full_project/.svlsp.f` (4 separate top-level files, only one with a
 single `` `include ``) in both release and debug `--output-dir` builds, stderr
 alone and merged with stdout, and a synthetic `-y`-library-heavy `.f` — the
 counter appeared correctly in every case. Also confirmed no `isatty` check
-exists anywhere (`grep isatty src/` — no hits) and no `--version`/build-
-identifying flag exists (worth adding some day, so "is this binary stale"
-can be answered in seconds instead of by rebuilding and comparing timestamps).
+exists anywhere (`grep isatty src/` — no hits) and, at the time, no
+`--version`/build-identifying flag existed — since fixed, see "`--version`
+flag" below.
 
 *Actual root cause, found via `strace -tt -e trace=write`:* `CompilationController::
 compile()` (`src/db/compilation_controller.cpp`) logs the primary file's own
@@ -97,7 +97,27 @@ now at 1587 assertions / 558 test cases, no regressions. No Emacs functional
 test needed — this only affects `--build-db`/`--log-files`' own stderr/file
 logging, not any LSP-protocol-visible behavior. `docs/usage.md`'s `--build-db`
 section gained one clarifying sentence about per-`` `include ``, real-time
-counting. Not yet committed — only commit when asked.
+counting. Commits: `0cd53c3` (fix + unit tests), `307740b` (docs).
+
+**`--version` flag, added 2026-09-07** (`CMakeLists.txt`, `src/main.cpp`):
+closes the gap the investigation above flagged — no way to confirm which
+commit a given `--output-dir` copy was actually built from. `CMakeLists.txt`
+resolves `git describe --always --dirty --abbrev=7` once at configure time
+(this repo has no tags, so it's always just the abbreviated commit hash, with
+a `-dirty` suffix if tracked files had uncommitted changes) into
+`SVLSP_GIT_VERSION`, baked into the `svlsp` target only (not the whole
+`svlsp_lib`, so a commit change doesn't force a full relink of anything else)
+alongside `SVLSP_VERSION` (`PROJECT_VERSION`, currently `0.1.0`) and
+`SVLSP_BUILD_TYPE` (`$<CONFIG>` generator expression — resolves to
+`Debug`/`Release` regardless of preset). `main()` checks for `--version` in
+its own pass ahead of every other flag, so it short-circuits unconditionally
+even if combined with other flags: `svlsp --version` → `svlsp 0.1.0 (git
+307740b, Release build)`. Since `tools/build.sh` always reconfigures from
+scratch, this is never stale relative to what it's reporting on. Not unit
+tested (CLI-only glue in `main.cpp`, same "not part of any linkable library"
+reasoning as `ProgressCounterBuf` and `buildDb()` above) — verified manually
+against both debug and release builds instead. `docs/usage.md` gained a new
+`--version` section. Not yet committed — only commit when asked.
 
 Also on 2026-09-05: added `tests/unit/lsp/test_completion_latency.cpp` — a
 timing-only comparison of `CompletionProvider::getCompletion` with fuzzy matching
