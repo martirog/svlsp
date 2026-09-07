@@ -44,7 +44,7 @@ std::vector<ParseError> CompilationController::compile(const std::string& path,
     if (config) {
         for (const auto& [name, value] : config->defines) preprocessor.define(name, value);
     }
-    auto preprocessed = preprocessor.process(stripped.source, path);
+    auto preprocessed = preprocessor.process(stripped.source, path, m_log);
     auto walked       = SvTreeWalker::walk(preprocessed.source, preprocessed.sourceMap);
 
     // Partition records, errors, imports, and instantiations by their
@@ -68,6 +68,11 @@ std::vector<ParseError> CompilationController::compile(const std::string& path,
     m_sdb.replaceInstantiations(fid, instsByFile[""]  );
 
     // Persist records/errors/imports/instantiations attributed to included files.
+    // (The "[parsed]   included: <path>" progress line for each of these is
+    // no longer logged here -- `preprocessor.process` above now logs it
+    // itself, in real time as each `` `include `` is actually resolved,
+    // rather than only once this entire pipeline finishes; see
+    // SvPreprocessor::process's own doc comment for why that matters.)
     for (const auto& [filePath, recs] : recsByFile) {
         if (filePath.empty()) continue;
         int64_t incFid = m_sdb.upsertFile(filePath, "");
@@ -75,7 +80,6 @@ std::vector<ParseError> CompilationController::compile(const std::string& path,
         m_sdb.replaceDiagnostics(incFid,    errsByFile[filePath]  );
         m_sdb.replaceImports(incFid,        importsByFile[filePath]);
         m_sdb.replaceInstantiations(incFid, instsByFile[filePath]  );
-        if (m_log) { *m_log << "[parsed]   included: " << filePath << "\n"; m_log->flush(); }
     }
 
     return errsByFile[""];

@@ -5,6 +5,7 @@
 #include "compiler/project_config.h"
 #include <algorithm>
 #include <fstream>
+#include <sstream>
 
 // ---------------------------------------------------------------------------
 // Phase 5.4 — CompilationController (DB-backed incremental compilation)
@@ -148,6 +149,29 @@ TEST_CASE("symbols from included file are stored under included file path",
     auto mainSyms = f.sdb.symbolsForFile("/main.sv");
     REQUIRE(mainSyms.size() == 1);
     CHECK(mainSyms[0].name == "main_mod");
+}
+
+TEST_CASE("compile logs the primary file and each included file to its own log stream",
+          "[db][ctrl]") {
+    // Regression test for moving the "[parsed]   included: <path>" line out
+    // of this class's own post-hoc recsByFile loop and into
+    // SvPreprocessor::process itself (real-time, as each `include` is
+    // resolved) -- CompilationController's own logStream (what --build-db's
+    // progress counter and --log-files both consume) must still see both
+    // lines after this relocation.
+    Database db(":memory:");
+    db.initSchema();
+    SymbolDatabase sdb(db);
+    std::ostringstream log;
+    CompilationController ctrl(sdb, &log);
+
+    std::string incPath = "/tmp/svlsp_test_ctrl_log_inc.sv";
+    { std::ofstream ofs(incPath); ofs << "module from_include; endmodule\n"; }
+
+    ctrl.compile("/main_log.sv", "`include \"" + incPath + "\"\nmodule main_mod; endmodule\n");
+
+    CHECK(log.str() == "[parsed] /main_log.sv\n"
+                        "[parsed]   included: " + incPath + "\n");
 }
 
 TEST_CASE("compile persists an instantiation as unresolved when its type isn't declared",

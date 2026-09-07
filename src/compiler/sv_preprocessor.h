@@ -1,5 +1,6 @@
 #pragma once
 #include "compiler/parse_record.h"
+#include <iosfwd>
 #include <string>
 #include <vector>
 
@@ -49,7 +50,20 @@ public:
 
     // Preprocess `source` from the file at `filepath`.
     // Each call starts with a fresh macro table seeded from predefined macros.
-    PreprocessorResult process(const std::string& source, const std::string& filepath);
+    //
+    // `progressLog`, if non-null, gets one "[parsed]   included: <path>" line
+    // written to it the moment each `` `include `` is actually resolved and
+    // opened -- in real time, as the recursive-descent include walk reaches
+    // it, not after this whole call returns. This is what lets a caller like
+    // CompilationController's own `--build-db` progress counter show
+    // incremental feedback even for a single top-level file that `` `include ``s
+    // an entire library (e.g. UVM's usual one-`uvm_pkg.sv`-includes-everything
+    // shape): the alternative -- logging once per file after the whole
+    // preprocess+parse of the top-level file finishes -- gives no signal at
+    // all until the very end, since `` `include `` resolution and the ANTLR
+    // parse both happen inside this one call.
+    PreprocessorResult process(const std::string& source, const std::string& filepath,
+                                std::ostream* progressLog = nullptr);
 
 private:
     std::vector<std::string> m_includePaths;

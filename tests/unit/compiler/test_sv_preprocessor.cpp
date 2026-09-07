@@ -399,6 +399,71 @@ TEST_CASE("include: metadata directive inside included file is stripped without 
 }
 
 // ---------------------------------------------------------------------------
+// Real-time `include` progress logging (svlsp --build-db's progress counter)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("include resolution logs a progress line as soon as the file is opened",
+          "[compiler][preprocessor]") {
+    // The log line must appear the moment `include` is resolved -- not only
+    // once the whole top-level process() call returns -- so a caller like
+    // CompilationController's --build-db progress counter gets real
+    // incremental feedback even for a single top-level file that `include`s
+    // an entire library (the motivating real-world case: one uvm_pkg.sv
+    // `include`ing ~140 files, where a post-hoc "log after the whole parse
+    // finishes" approach gives no signal at all until the very end).
+    std::string tmpPath = "/tmp/svlsp_test_inc_progress_a.sv";
+    { std::ofstream f(tmpPath); f << "wire w;\n"; }
+
+    std::ostringstream progress;
+    SvPreprocessor pp;
+    auto [out, errs, macros_, map_] =
+        pp.process("`include \"" + tmpPath + "\"\n", "test.sv", &progress);
+    REQUIRE(errs.empty());
+    CHECK(progress.str() == "[parsed]   included: " + tmpPath + "\n");
+}
+
+TEST_CASE("nested includes each log their own progress line, in encounter order",
+          "[compiler][preprocessor]") {
+    std::string innerPath = "/tmp/svlsp_test_inc_progress_inner.sv";
+    std::string midPath   = "/tmp/svlsp_test_inc_progress_mid.sv";
+    { std::ofstream f(innerPath); f << "wire inner;\n"; }
+    { std::ofstream f(midPath); f << "`include \"" + innerPath + "\"\nwire mid;\n"; }
+
+    std::ostringstream progress;
+    SvPreprocessor pp;
+    auto [out, errs, macros_, map_] =
+        pp.process("`include \"" + midPath + "\"\n", "test.sv", &progress);
+    REQUIRE(errs.empty());
+    // mid.sv is opened (and logged) before its own nested `include` of
+    // inner.sv is reached, so mid's line comes first.
+    CHECK(progress.str() ==
+          "[parsed]   included: " + midPath + "\n"
+          "[parsed]   included: " + innerPath + "\n");
+}
+
+TEST_CASE("a missing include file logs no progress line", "[compiler][preprocessor]") {
+    std::ostringstream progress;
+    SvPreprocessor pp;
+    auto [out, errs, macros_, map_] =
+        pp.process("`include \"no_such_file.sv\"\n", "test.sv", &progress);
+    REQUIRE(!errs.empty());
+    CHECK(progress.str().empty());
+}
+
+TEST_CASE("progressLog defaults to null and is a no-op when omitted",
+          "[compiler][preprocessor]") {
+    std::string tmpPath = "/tmp/svlsp_test_inc_progress_noop.sv";
+    { std::ofstream f(tmpPath); f << "wire w;\n"; }
+
+    SvPreprocessor pp;
+    // No progressLog argument at all -- must behave exactly like every
+    // pre-existing `include` test above, not crash on a null stream.
+    auto [out, errs, macros_, map_] = pp.process("`include \"" + tmpPath + "\"\n", "test.sv");
+    REQUIRE(errs.empty());
+    REQUIRE(out.find("wire w;") != std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
 // Line preservation
 // ---------------------------------------------------------------------------
 

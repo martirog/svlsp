@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <ostream>
 #include <sstream>
 #include <unordered_map>
 
@@ -37,6 +38,7 @@ struct Ctx {
     std::vector<std::string> errors{};
     std::vector<std::string> includeStack{}; // cycle detection
     const std::vector<std::string>& includePaths;
+    std::ostream* progressLog{nullptr}; // real-time `include` progress, see sv_preprocessor.h
     std::string output{};
     std::vector<MacroRecord> macroRecords{};
     std::vector<SourceLine> sourceMap{};
@@ -473,6 +475,17 @@ static void processInclude(const std::string& filename, const std::string& curre
     // directives become blank lines), so the source map stays valid.
     auto stripped = CompilerDirectiveStripper::strip(ss.str(), found);
 
+    // Logged here -- at the moment the include is actually resolved and
+    // opened, before recursing into its own content -- rather than by the
+    // caller after this whole top-level `process()` call returns, so a
+    // caller watching this stream sees each file as it's discovered instead
+    // of all-at-once at the very end (see this method's own doc comment in
+    // sv_preprocessor.h).
+    if (ctx.progressLog) {
+        *ctx.progressLog << "[parsed]   included: " << found << "\n";
+        ctx.progressLog->flush();
+    }
+
     ctx.includeStack.push_back(found);
     processSource(stripped.source, found, ctx, depth + 1);
     ctx.includeStack.pop_back();
@@ -688,8 +701,9 @@ void SvPreprocessor::define(const std::string& name, const std::string& value) {
 }
 
 PreprocessorResult SvPreprocessor::process(const std::string& source,
-                                            const std::string& filepath) {
-    Ctx ctx{.includePaths = m_includePaths};
+                                            const std::string& filepath,
+                                            std::ostream* progressLog) {
+    Ctx ctx{.includePaths = m_includePaths, .progressLog = progressLog};
 
     // Seed macro table from predefined macros
     for (const auto& [name, value] : m_predefined)
