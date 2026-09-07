@@ -143,6 +143,9 @@ int buildDb(const std::string& configPath, const std::string& outputPath)
 // Entry point — reads LSP JSON-RPC from stdin, writes responses to stdout.
 // stderr is reserved for diagnostic logging (lsp-mode ignores it).
 //
+// --version: prints "svlsp <version> (git <commit>[-dirty], <Debug|Release>
+// build)" to stdout and exits immediately, ignoring every other flag.
+//
 // --log-files <path>: opens <path> (appending) and logs every file the
 // compiler parses/persists — the primary file on each didOpen/didChange,
 // plus every `include`d file discovered that pass. Lets you confirm a
@@ -159,6 +162,22 @@ int buildDb(const std::string& configPath, const std::string& outputPath)
 // plan.md §6.19 and docs/usage.md.
 int main(int argc, char** argv)
 {
+    // Checked in its own pass, ahead of everything else: --version must
+    // short-circuit unconditionally, regardless of what else is on the
+    // command line, rather than participate in --build-db/--output/
+    // --log-files's own value-parsing rules below. Answers "which commit was
+    // this binary actually built from" in one command -- useful any time a
+    // copy made via `tools/build.sh --output-dir` is suspected of being
+    // stale relative to the source tree (see handoff.md's own account of a
+    // debugging session that had no fast way to rule this out).
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--version") == 0) {
+            std::cout << "svlsp " SVLSP_VERSION " (git " SVLSP_GIT_VERSION ", "
+                          SVLSP_BUILD_TYPE " build)\n";
+            return 0;
+        }
+    }
+
     std::ofstream logFile;
     std::ostream* logStream = nullptr;
     std::string buildDbConfigPath;

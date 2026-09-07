@@ -7,6 +7,29 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # ---------------------------------------------------------------------------
+# Version info for `svlsp --version` -- resolved once at configure time (every
+# tools/build.sh invocation reconfigures from scratch, so this is never
+# stale). "unknown" outside a git checkout (e.g. a source tarball); no
+# repo tags exist, so this is always just the abbreviated commit hash,
+# with a "-dirty" suffix if tracked files have uncommitted changes.
+# ---------------------------------------------------------------------------
+find_package(Git QUIET)
+set(SVLSP_GIT_VERSION "unknown")
+if(GIT_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} describe --always --dirty --abbrev=7
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        OUTPUT_VARIABLE SVLSP_GIT_VERSION
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+        RESULT_VARIABLE _svlsp_git_describe_result
+    )
+    if(NOT _svlsp_git_describe_result EQUAL 0)
+        set(SVLSP_GIT_VERSION "unknown")
+    endif()
+endif()
+
+# ---------------------------------------------------------------------------
 # Dependencies
 # ---------------------------------------------------------------------------
 
@@ -182,6 +205,11 @@ target_link_libraries(svlsp_lib PUBLIC lsp svlsp_compiler svlsp_db svlsp_options
 # ---------------------------------------------------------------------------
 add_executable(svlsp src/main.cpp)
 target_link_libraries(svlsp PRIVATE svlsp_lib)
+target_compile_definitions(svlsp PRIVATE
+    SVLSP_VERSION="${PROJECT_VERSION}"
+    SVLSP_GIT_VERSION="${SVLSP_GIT_VERSION}"
+    SVLSP_BUILD_TYPE="$<CONFIG>"
+)
 
 # ---------------------------------------------------------------------------
 # Unit-test binary
