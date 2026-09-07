@@ -49,6 +49,29 @@ TEST_CASE("LibraryDbBuilder: builds a persistent DB from a .f filelist",
     CHECK(rows[0].kind == "Module");
 }
 
+TEST_CASE("LibraryDbBuilder: bakes the config's resolved includeDirs into the output DB "
+          "(plan.md §6.19 piece 4)",
+          "[lsp][library-db-builder][library-include-dirs]")
+{
+    std::string root = kRoot + "/bakes-include-dirs";
+    writeFile(root + "/headers/macros.svh", "module from_header; endmodule\n");
+    writeFile(root + "/top.sv", "`include \"macros.svh\"\n");
+    writeFile(root + "/proj.f", "top.sv\n+incdir+headers\n");
+    std::string dbPath = root + "/out.db";
+    fs::remove(dbPath);
+
+    auto result = LibraryDbBuilder::build(root + "/proj.f", dbPath);
+    REQUIRE(result.ok);
+
+    // Reopening the DB fresh (a later project attaching it would do the
+    // same) must see the includeDirs this build resolved from proj.f's own
+    // +incdir+, without needing proj.f itself to still exist alongside it.
+    Database db(dbPath);
+    SymbolDatabase sdb(db);
+    CHECK(sdb.libraryIncludeDirs() ==
+          std::vector<std::string>{fs::path(root + "/headers").lexically_normal().string()});
+}
+
 TEST_CASE("LibraryDbBuilder: creates a not-yet-existing output directory",
           "[lsp][library-db-builder]")
 {

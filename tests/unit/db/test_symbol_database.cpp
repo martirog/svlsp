@@ -494,3 +494,48 @@ TEST_CASE("enclosingClassNameAt returns empty string outside any class",
     });
     CHECK(f.sdb.enclosingClassNameAt("/a.sv", 2) == "");
 }
+
+// ---------------------------------------------------------------------------
+// setLibraryIncludeDirs / libraryIncludeDirs (plan.md §6.19 piece 4 --
+// baking a library DB's own build-time includeDirs into the DB file itself)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("libraryIncludeDirs is empty before setLibraryIncludeDirs is ever called",
+          "[db][symbol-db][library-include-dirs]") {
+    Fixture f;
+    CHECK(f.sdb.libraryIncludeDirs().empty());
+}
+
+TEST_CASE("setLibraryIncludeDirs then libraryIncludeDirs round-trips in order",
+          "[db][symbol-db][library-include-dirs]") {
+    Fixture f;
+    f.sdb.setLibraryIncludeDirs({"/a/dir", "/b/dir", "/c/dir"});
+    CHECK(f.sdb.libraryIncludeDirs() == std::vector<std::string>{"/a/dir", "/b/dir", "/c/dir"});
+}
+
+TEST_CASE("setLibraryIncludeDirs overwrites whatever was stored before",
+          "[db][symbol-db][library-include-dirs]") {
+    Fixture f;
+    f.sdb.setLibraryIncludeDirs({"/old/dir"});
+    f.sdb.setLibraryIncludeDirs({"/new/dir1", "/new/dir2"});
+    CHECK(f.sdb.libraryIncludeDirs() == std::vector<std::string>{"/new/dir1", "/new/dir2"});
+}
+
+TEST_CASE("setLibraryIncludeDirs with an empty list clears any previously stored dirs",
+          "[db][symbol-db][library-include-dirs]") {
+    Fixture f;
+    f.sdb.setLibraryIncludeDirs({"/old/dir"});
+    f.sdb.setLibraryIncludeDirs({});
+    CHECK(f.sdb.libraryIncludeDirs().empty());
+}
+
+TEST_CASE("libraryIncludeDirs returns empty, not throws, on a DB predating this feature",
+          "[db][symbol-db][library-include-dirs]") {
+    // Simulates a library DB built before schema v6 added this table --
+    // must be treated as "no includeDirs to contribute," not an error, so a
+    // project referencing an older prebuilt DB keeps working exactly as it
+    // did before this feature existed.
+    Fixture f;
+    f.db.execute("DROP TABLE library_include_dirs");
+    CHECK(f.sdb.libraryIncludeDirs().empty());
+}

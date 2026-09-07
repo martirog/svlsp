@@ -4,7 +4,7 @@ namespace db {
 
 // Current schema version.  Increment and add a migration in Database::initSchema
 // whenever the schema changes.
-inline constexpr int SCHEMA_VERSION = 5;
+inline constexpr int SCHEMA_VERSION = 6;
 
 // DDL executed on a fresh (version-0) database — always reflects the latest schema.
 inline constexpr const char* SCHEMA_DDL = R"sql(
@@ -73,6 +73,33 @@ CREATE TABLE instantiations (
 
 CREATE INDEX idx_instantiations_file_id   ON instantiations(file_id);
 CREATE INDEX idx_instantiations_type_name ON instantiations(type_name);
+
+-- Populated only by LibraryDbBuilder::build (plan.md §6.19 piece 4), never
+-- by the live server's own :memory: DB: the includeDirs a library DB was
+-- itself built with, baked into the DB file so a project referencing it via
+-- libraryDbs can adopt them for its own `` `include `` resolution without
+-- needing that library's source .f/.json config to still exist (or still
+-- match) alongside the .db file -- multiple versions of a library DB can
+-- then sit in one directory, each self-describing and independently
+-- correct, rather than sharing one ambient sidecar config file.
+CREATE TABLE library_include_dirs (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    ordinal INTEGER NOT NULL, -- preserves original search order
+    dir     TEXT    NOT NULL
+);
+
+CREATE INDEX idx_library_include_dirs_ordinal ON library_include_dirs(ordinal);
+)sql";
+
+// SQL applied when migrating an existing v5 database to v6.
+inline constexpr const char* MIGRATION_V5_TO_V6 = R"sql(
+CREATE TABLE IF NOT EXISTS library_include_dirs (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    ordinal INTEGER NOT NULL,
+    dir     TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_library_include_dirs_ordinal ON library_include_dirs(ordinal);
+UPDATE schema_version SET version = 6;
 )sql";
 
 // SQL applied when migrating an existing v4 database to v5.

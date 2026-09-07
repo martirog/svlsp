@@ -54,6 +54,31 @@ void SymbolDatabase::attachLibraryDbs(const std::vector<std::string>& paths)
     }
 }
 
+void SymbolDatabase::setLibraryIncludeDirs(const std::vector<std::string>& dirs)
+{
+    m_db.execute("DELETE FROM library_include_dirs");
+    int ordinal = 0;
+    for (const auto& dir : dirs) {
+        m_db.prepare("INSERT INTO library_include_dirs (ordinal, dir) VALUES (?, ?)")
+            .bind(1, ordinal++)
+            .bind(2, dir)
+            .step();
+    }
+}
+
+std::vector<std::string> SymbolDatabase::libraryIncludeDirs() const
+{
+    auto check = m_db.prepare(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='library_include_dirs'");
+    check.step();
+    if (check.columnInt(0) == 0) return {};
+
+    std::vector<std::string> dirs;
+    auto stmt = m_db.prepare("SELECT dir FROM library_include_dirs ORDER BY ordinal");
+    while (stmt.step()) dirs.push_back(stmt.columnText(0));
+    return dirs;
+}
+
 std::vector<SymbolRow> SymbolDatabase::queryAcrossAttachedDbs(
     const std::string& cond, const std::string& bindValue) const
 {

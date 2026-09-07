@@ -13,14 +13,14 @@ TEST_CASE("open in-memory database succeeds", "[db][database]") {
 TEST_CASE("initSchema creates tables and sets current version", "[db][database]") {
     Database db(":memory:");
     db.initSchema();
-    CHECK(db.schemaVersion() == 5);
+    CHECK(db.schemaVersion() == 6);
 }
 
 TEST_CASE("initSchema is idempotent", "[db][database]") {
     Database db(":memory:");
     db.initSchema();
     CHECK_NOTHROW(db.initSchema());
-    CHECK(db.schemaVersion() == 5);
+    CHECK(db.schemaVersion() == 6);
 }
 
 TEST_CASE("schemaVersion returns 0 on fresh database", "[db][database]") {
@@ -119,4 +119,13 @@ TEST_CASE("initSchema creates files, symbols and diagnostics tables", "[db][data
     CHECK_NOTHROW(db.execute(
         "INSERT INTO diagnostics (file_id,line,col,message) VALUES ("
         + std::to_string(fid) + ",2,3,'oops')"));
+}
+
+TEST_CASE("initSchema creates library_include_dirs table", "[db][database]") {
+    // Backs plan.md §6.19 piece 4 (SymbolDatabase::setLibraryIncludeDirs/
+    // libraryIncludeDirs) -- schema v6.
+    Database db(":memory:");
+    db.initSchema();
+    CHECK_NOTHROW(db.execute(
+        "INSERT INTO library_include_dirs (ordinal, dir) VALUES (0, '/some/dir')"));
 }

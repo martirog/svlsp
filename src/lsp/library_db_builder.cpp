@@ -48,6 +48,14 @@ LibraryDbBuilder::Result LibraryDbBuilder::build(
 
         result.fileCount = ProjectCompiler::loadProject(config, controller, sdb);
 
+        // Bake this build's own resolved includeDirs into the DB file
+        // itself (plan.md §6.19 piece 4) -- by this point config.includeDirs
+        // already reflects whatever loadProject merged in from any of this
+        // config's *own* libraryDbs/libraryDbSources, so a project attaching
+        // just this one DB later inherits the full transitive closure, not
+        // only this config's own top-level includeDirs.
+        sdb.setLibraryIncludeDirs(config.includeDirs);
+
         if (auto stmt = db.prepare("SELECT COUNT(*) FROM diagnostics"); stmt.step())
             result.diagnosticCount = stmt.columnInt(0);
 

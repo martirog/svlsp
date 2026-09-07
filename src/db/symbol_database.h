@@ -69,6 +69,24 @@ public:
     // disclosed limitations for this first cut, not oversights.
     void attachLibraryDbs(const std::vector<std::string>& paths);
 
+    // Persists `dirs` (in order) into *this connection's own main schema's*
+    // library_include_dirs table -- overwriting whatever was stored there
+    // before. Called once by LibraryDbBuilder::build, right after building
+    // a library DB, so the DB file itself records the includeDirs it was
+    // built with (plan.md §6.19 piece 4). Never called by the live server's
+    // own :memory: DB -- there's nothing for it to record.
+    void setLibraryIncludeDirs(const std::vector<std::string>& dirs);
+
+    // Reads back whatever setLibraryIncludeDirs stored on *this
+    // connection's own main schema* (never an attached one -- this is meant
+    // to be called on a throwaway SymbolDatabase opened directly against a
+    // library .db file, not the live project's own connection), in original
+    // order. Returns {} if the table doesn't exist at all (a DB built
+    // before this feature existed) or nothing was ever stored -- both
+    // treated as "this library has no includeDirs to contribute," not an
+    // error.
+    std::vector<std::string> libraryIncludeDirs() const;
+
     // Insert or update the file record for `path`, recording `contentHash`.
     // Returns the file_id (stable across calls for the same path).
     int64_t upsertFile(const std::string& path, const std::string& contentHash);

@@ -4,6 +4,7 @@
 #include "db/compilation_controller.h"
 #include "db/project_compiler.h"
 #include "compiler/project_config.h"
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 
@@ -119,4 +120,42 @@ TEST_CASE("loadProject invokes LibraryResolver for unresolved instantiations",
     CHECK(compiled == 2); // top_needs_lib.sv + library-resolved leaf_mod.sv
     CHECK(f.sdb.unresolvedInstantiatedTypeNames().empty());
     REQUIRE(!f.sdb.symbolsForFile(libPath).empty());
+}
+
+TEST_CASE("loadProject adopts includeDirs a library DB recorded at build time "
+          "(plan.md §6.19 piece 4)",
+          "[db][project-compiler][library-include-dirs]") {
+    // Build a separate, real, file-backed library DB with its own stored
+    // includeDirs -- exactly what LibraryDbBuilder::build does, independent
+    // of anything in this test's own project config.
+    std::string libDbPath = kRoot + "/lib_with_incdirs.db";
+    std::string libIncDir = kRoot + "/lib_headers";
+    fs::create_directories(libIncDir);
+    {
+        Database db(libDbPath);
+        db.initSchema();
+        SymbolDatabase sdb(db);
+        sdb.setLibraryIncludeDirs({libIncDir});
+    }
+
+    std::string headerPath = libIncDir + "/macros.svh";
+    writeFile(headerPath, "module from_library_header; endmodule\n");
+
+    std::string mainPath = kRoot + "/main_uses_library_incdir.sv";
+    writeFile(mainPath, "`include \"macros.svh\"\n");
+
+    Fixture f;
+    ProjectConfig config;
+    config.files      = {mainPath};
+    config.libraryDbs = {libDbPath};
+
+    ProjectCompiler::loadProject(config, f.ctrl, f.sdb);
+
+    // The adopted dir must be visible on config itself, not just its effect...
+    CHECK(std::find(config.includeDirs.begin(), config.includeDirs.end(), libIncDir) !=
+          config.includeDirs.end());
+    // ...and must actually have resolved the `include during preprocessing.
+    auto syms = f.sdb.symbolsForFile(headerPath);
+    REQUIRE(syms.size() == 1);
+    CHECK(syms[0].name == "from_library_header");
 }
