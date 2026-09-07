@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-09-06 (compressed from full session history — see git log for
+**Last updated:** 2026-09-07 (compressed from full session history — see git log for
 narrative detail if ever needed; this file now documents current-state-and-next-steps
 only).
 
@@ -260,7 +260,7 @@ src/compiler/      compiler_directive_stripper, sv_preprocessor, sv_tree_walker,
                    parse_record, parse_cache, filelist_parser, project_config,
                    file_utils — compiler front-end
 src/db/            database, symbol_database, compilation_controller,
-                   library_resolver, project_compiler, schema — SQLite persistence (schema v5)
+                   library_resolver, project_compiler, schema — SQLite persistence (schema v6)
 src/main.cpp       entry point (supports `--log-files <path>`, see below)
 tests/unit/        Catch2 unit tests (551 cases, 1562 assertions)
 tests/integration/ Emacs functional test scripts (197 test cases across 36 files)
@@ -881,7 +881,7 @@ one publish reflecting the final version — not just a timing/count check.
 
 ## Database layer (`src/db/`)
 
-### Schema v5 (`src/db/schema.h`, `db::SCHEMA_VERSION = 5`)
+### Schema v6 (`src/db/schema.h`, `db::SCHEMA_VERSION = 6`)
 
 - `files (id, path UNIQUE, content_hash, parsed_at)`
 - `symbols (id, file_id, kind, name, line, col, parent, detail, end_line, scope)` —
@@ -891,9 +891,14 @@ one publish reflecting the final version — not just a timing/count check.
   `is_export=1` = `export pkg::item`/`export pkg::*`
 - `instantiations (id, file_id, type_name, inst_name, line)` — one row per
   module/interface/program instantiation; drives library resolution
+- `library_include_dirs (id, ordinal, dir)` — populated only by
+  `LibraryDbBuilder::build` (plan.md §6.19 piece 4, below), never by the
+  live server's own `:memory:` DB; a library DB's own `includeDirs` at build
+  time, baked into the file itself
 
 Migrations (`database.cpp`, run automatically): v1→v2 adds end_line/scope; v2→v3 adds
-`imports`; v3→v4 adds `imports.is_export`; v4→v5 adds `instantiations`.
+`imports`; v3→v4 adds `imports.is_export`; v4→v5 adds `instantiations`; v5→v6 adds
+`library_include_dirs`.
 
 ### Query API (`src/db/symbol_database.h/.cpp`)
 
@@ -911,6 +916,8 @@ Migrations (`database.cpp`, run automatically): v1→v2 adds end_line/scope; v2�
 | `fileIdForPackage` *(private)* | file_id declaring a top-level package by name |
 | `instantiationsOfType(typeName)` | every file referencing an unresolved instantiated type |
 | `unresolvedInstantiatedTypeNames()` | distinct instantiated type names with no matching declaration anywhere — drives `LibraryResolver` |
+| `setLibraryIncludeDirs(dirs)` | overwrites `library_include_dirs` with `dirs`, in order (plan.md §6.19 piece 4) |
+| `libraryIncludeDirs()` | reads `library_include_dirs` back, in order; `{}` if the table doesn't exist (a DB built before this feature) or nothing was stored — never throws |
 
 `SymbolRow { id, kind, name, line, col, parent, detail, filePath, endLine, scope }`.
 
@@ -920,8 +927,12 @@ Migrations (`database.cpp`, run automatically): v1→v2 adds end_line/scope; v2�
 recompile → update DB. `config` seeds `SvPreprocessor`'s include dirs/defines; `nullptr`
 (default) preserves pre-multi-file-project behavior exactly. Optional
 `std::ostream* logStream` ctor param (default `nullptr`): when set, logs `[parsed] <path>`
-(primary; ` (cached)` on a cache hit) and `[parsed]   included: <path>` per file in the
-cache-miss loop — backs `--log-files`.
+(primary; ` (cached)` on a cache hit) itself, and passes the same stream straight through
+to `SvPreprocessor::process` as its own `progressLog` — which logs
+`[parsed]   included: <path>` in real time, the moment each `` `include `` is actually
+resolved, not after this whole `compile()` call returns (see "Real-time `include`
+progress logging" fix, 2026-09-07, below) — backs both `--log-files` and `--build-db`'s
+progress counter.
 
 ### Library dependency graph
 
@@ -1083,6 +1094,111 @@ against an empty parent — a bare `"out.db"` with no directory component,
 which `create_directories` throws on rather than no-op'ing). Two new
 regression tests in `test_library_db_builder.cpp`.
 
+### Baking a library DB's own includeDirs into itself (plan.md §6.19 piece 4 — implemented 2026-09-07)
+
+A real user bug report (`` `include "uvm_macros.svh" `` and every
+`` `uvm_fatal ``/etc. invocation failing in `/home/martin/src/policy/policy_mixin.sv`,
+a project referencing a prebuilt `uvm.db` via `libraryDbs`): a library DB
+only ever stored *compiled symbols*, never macro bodies or raw source, so
+referencing one couldn't help a project's own `` `include ``s of that
+library's macro headers resolve — a real, structural gap, not something
+`libraryDbs` was ever going to fix on its own, since macro expansion has to
+happen before parsing, from real source text, not from a database of
+already-parsed results.
+
+**First design considered, not implemented:** look for a `.f`/`.svlsp.json`
+sitting in the same directory as the referenced `.db` file (the config the
+library was itself built from) and adopt its `includeDirs`. **Rejected by
+the user before implementation**, for a concrete reason: they keep multiple
+versions of a library DB in one directory (e.g. archiving a known-good `.db`
+before a change) — a directory-sidecar config is necessarily shared/ambient
+across every `.db` in that directory, so an old, archived `.db` would
+silently pick up whatever the *current* sidecar config says, not what it was
+actually built with; and if that config changes incompatibly, the archived
+`.db` should keep working with its own original settings, not break or
+silently drift.
+
+**Implemented instead: bake the includeDirs directly into the `.db` file.**
+New table, schema v6: `library_include_dirs (id, ordinal, dir)` — see
+"Schema v6" above. `SymbolDatabase::setLibraryIncludeDirs(dirs)`/
+`libraryIncludeDirs()` write/read it (ordinal preserves original search
+order). `LibraryDbBuilder::build` calls `setLibraryIncludeDirs(config.includeDirs)`
+right after `ProjectCompiler::loadProject` finishes — by that point
+`config.includeDirs` already reflects anything *this* config's own
+`libraryDbs`/`libraryDbSources` contributed (see below), so a project
+attaching just the top-level DB later inherits the full transitive closure,
+not only that config's own top-level dirs.
+
+On the read side, `ProjectCompiler::loadProject` (`src/db/project_compiler.cpp`)
+gained a new private `mergeIncludeDirsFromLibraryDbs(config)`, called right
+after `attachLibraryDbs`, before compiling any file in `config.files` —
+satisfying "must run before the preprocessor sees any file" exactly as
+requested. For each path in `config.libraryDbs`, it opens its own
+standalone, throwaway `Database`/`SymbolDatabase` directly on that file
+(deliberately **not** through the live connection's attached-schema
+mechanism — that's for symbol queries, unrelated to this) and merges
+whatever `libraryIncludeDirs()` returns into `config.includeDirs`, deduped.
+Because this only needs `Database`/`SymbolDatabase` (already available in
+`svlsp_db`), not `ProjectManifestParser`'s JSON parsing (only available
+higher up, in `svlsp_lib` — see "Library dependency graph" above), it lives
+in `ProjectCompiler` itself, one call site, rather than needing to be
+duplicated at both of `LibraryDbBuilder::build`'s and
+`ProjectRegistry::loadAndCache`'s own call sites the way `resolveLibraryDbSources`
+is — an earlier draft of this design (a directory-sidecar lookup, before the
+rejection above) *did* need exactly that duplication, purely because
+`ProjectManifestParser` isn't reachable from `ProjectCompiler`'s own layer;
+switching to a DB-embedded table removed that constraint entirely as a side
+effect, not just the versioning problem it was chosen to fix.
+
+**Deliberately doesn't call `Database::initSchema()` when reading** a
+referenced library DB — only a fresh `sqlite_master` existence check for
+`library_include_dirs` before selecting from it (`{}` if absent, e.g. a
+`.db` built before this feature existed). Reading must never migrate or
+otherwise mutate a file the caller may be treating as an immutable, archived
+version — the exact property this whole feature exists to preserve.
+Best-effort throughout: a missing `.db` file, or one that fails to open, is
+silently skipped (`attachLibraryDbs` already throws a real error for that
+case separately; this merge step must not turn it into a second,
+differently-worded failure). Only `includeDirs` are adopted this way, not
+`defines` — a library built with its own defines (UVM's usual
+`UVM_NO_DPI`) may still need those set explicitly in the referencing
+project's own config for macro expansion to match exactly how the library
+itself was compiled; not attempted here.
+
+**Verified end-to-end against the real motivating bug report**, not just
+unit tests: rebuilt a throwaway copy of the user's real `uvm.db` with the
+new binary (their actual `uvm.db` was left untouched), confirmed
+`library_include_dirs` was populated correctly (`python3 -c
+"import sqlite3; ..."` — no `sqlite3` CLI available in this environment),
+then ran the live server against the user's real `policy_mixin.sv` two ways
+via a scratch `initializationOptions.svlsp.projectConfig` (so the user's own
+`.svlsp.json` was never modified): with the new baked-in dirs, every
+`` `uvm_fatal ``-related error is gone; with a copy of the same test DB with
+`library_include_dirs` cleared (negative control), the exact `` `uvm_fatal(...) ``
+parse errors reappear — proving the fix is what's actually responsible, not
+some other already-working path. `ProjectCompiler::loadProject`'s own
+`config` parameter changed from `const ProjectConfig&` to `ProjectConfig&`
+(mutated in place by the merge) — checked every caller (`LibraryDbBuilder::build`,
+`ProjectRegistry::loadAndCache`, and every unit test) already held a
+non-`const` local, so this was a safe, non-breaking signature change.
+
+8 new unit tests: `SymbolDatabase` set/get round-trip, overwrite, empty-list
+clears, and the "predates this feature" `{}` case (`test_symbol_database.cpp`);
+schema creates the new table (`test_database.cpp`); `LibraryDbBuilder::build`
+actually bakes in the resolved dirs, reopened fresh (`test_library_db_builder.cpp`);
+and a full `ProjectCompiler::loadProject` end-to-end case — a real,
+separately-built library DB with its own stored dir resolving a `` `include ``
+in the referencing project's own file (`test_project_compiler.cpp`). Unit
+suite now at 1598 assertions / 566 test cases, no regressions. Not yet
+committed — only commit when asked.
+
+**Also surfaced, independent of this fix — two new Sv.g4 grammar quirks**,
+found while narrowing the same real bug report down to its actual cause
+(the `` `uvm_fatal ``/include errors were masking these underneath): see
+"Sv.g4 grammar quirks" below — a method literally named `randomize()` and
+`super.new(args)` positioned after another statement in a constructor both
+fail to parse. Neither is fixed yet.
+
 ---
 
 ## Multi-file project support (Phase 6.2/6.3 — complete)
@@ -1198,7 +1314,7 @@ field-automation macros; not confirmed as a corpus contributor beyond that one s
 | Transport | stdio |
 | Compiler | g++-13 |
 | Parser generator | ANTLR4 v4.13.2 (FetchContent) |
-| Database | SQLite3 (amalgamation, schema v5) |
+| Database | SQLite3 (amalgamation, schema v6) |
 | SV preprocessor | Minimal in-house C++ (not slang) |
 | `__FILE__`/`__LINE__` | Resolved in pass 1, before include shifts line numbers |
 
@@ -1267,6 +1383,8 @@ access) vs. `expectedUriPath` (output comparison — runs the expected value thr
 | **`data_type`/`variable_decl_assignment` ambiguity** (`grammar/Sv.g4:740-753`, alts 9/10/12 all reduce to a bare `IDENTIFIER` — SV's classic "identifier classification needs a symbol table" problem, LRM Annex A acknowledges this) | **Confirmed, not fixed.** Under default (SLL) prediction this is silently resolved correctly almost everywhere; fails specifically for `const local`/`const protected` (or any 2+ qualifiers) + `new(...)` initializer combos. Real fix needs semantic predicates (symbol table) or risky restructuring of some of the grammar's most heavily-used rules — not attempted; two cheap structural experiments (reordering alts, removing a redundant one) had no effect. Real-world impact: **1 diagnostic in the entire 140-file UVM corpus** (`base/uvm_transaction.svh`). | Open — revisit only if it starts showing up more broadly |
 | A bare `MyClass foo;` at `module_common_item` level is ALSO ambiguous between `data_declaration` (`MyClass` as a `data_type`) and `net_declaration` alt 2 (`MyClass` as a `net_type_identifier`, i.e. a user-defined nettype) — a second, distinct manifestation of the same underlying problem, discovered 2026-09-01 building §6.10 dot-completion's type-detail population (`enterData_declaration` alone never saw plain class-typed signals; this grammar resolves them via `enterNet_declaration` instead) | **Not a diagnostic-producing bug** — both alts still record a `Signal` with the right name, so hover/definition/completion were unaffected before 2026-09-01. Only became visible because `userTypeName()` needed wiring into the alt that actually fires. Now handled in both listener methods (see "Dot/member-access completion" above). | Resolved for the one dependent (§6.10); the underlying grammar ambiguity itself is unchanged |
 | `interface class Foo; ... endclass` (LRM's true interface-class construct — always prototype-only methods, common in UVM-style code) | **Fixed 2026-09-03 (§6.16).** `interface_class_declaration` was defined in the grammar (`// ROOT node` comment) but never referenced from any reachable parent rule — completely dead grammar. Every use produced spurious "extraneous input 'interface'..." parse errors; ANTLR's error recovery discarded the `interface` token and happened to reparse the remainder as an ordinary `class_declaration`, which is why it silently "mostly worked" (misclassified, alongside false-positive diagnostics) rather than failing loudly. Found while investigating a real user bug report, confirmed against a real project file before fixing. | **Fixed** — added `| interface_class_declaration` to `package_or_generate_item_declaration` (the reported failure shape: an interface class declared inside a `package`). Deliberately not wired into `module_or_generate_item`/top-level `description` — no demonstrated failing case for those placements; revisit if one surfaces. |
+| Method literally named `randomize()` (`function void randomize(); ... endfunction`) — a common, legal UVM idiom: every class implicitly has a `randomize` method (§6.13's own `RANDOMIZE_METHODS`), and overriding it is normal, not exotic | **Confirmed 2026-09-07, not fixed** — found investigating a real user bug report (`/home/martin/src/policy/policy_mixin.sv`, which does exactly this at line 69). Minimal isolated repro (`class foo; function void randomize(); endfunction endclass`, nothing else in the file) reproduces it standalone: `"no viable alternative at input 'void randomize'"` then a cascading `"extraneous input 'endfunction'..."`. Same root-cause *shape* as the already-fixed `sample()` quirk above — `grammar/Sv.g4:3097`'s built-in `randomize_call` rule uses the bare string literal `` 'randomize' ``, which ANTLR promotes to its own implicit keyword-like token, so the lexer never offers `IDENTIFIER` for that spelling anywhere else in the file, including as a `function_body_declaration`'s own method name. Not yet fixed the way `sample()` was (rewiring that one alternative to `IDENTIFIER`) — only found and isolated so far. | Open — same fix shape as `sample()` should apply; not yet attempted |
+| `super.new(args);` anywhere in a constructor body *except* as the literal first statement (e.g. after an `if` block doing argument validation — another real pattern in the same file, line 32: a fatal-check `if` before `super.new(name)`) | **Confirmed 2026-09-07, not fixed** — found in the same investigation. `class_constructor_declaration` (`grammar/Sv.g4:522`) hardcodes the LRM's strict structural position: `block_item_declaration* ('super' '.' 'new' (...))? function_statement_or_null*` — i.e. `super.new(...)` can only follow declarations, never an ordinary statement. Minimal isolated repro confirms both directions: `super.new()` as the constructor's first statement parses clean; identical code with one `if (1) begin end` statement placed before it fails with `"no viable alternative at input 'super.new'"`. IEEE 1800-2017 *does* technically require `super.new` to be the first statement, so this may be intentional strictness rather than a bug — but real simulators are commonly more permissive about statements preceding it, and this file is real, existing UVM-adjacent code. | Open — undecided whether to relax the grammar (accept `super.new(...)` anywhere a statement is legal in a constructor body) or leave it LRM-strict; needs a decision, not just an implementation |
 
 ---
 
@@ -1580,3 +1698,18 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
     *dependent* files once §6.4 (cross-file invalidation) exists, rather than
     propagating on every debounced keystroke — see plan.md §6.18 for the full
     writeup.
+22. **Two new grammar quirks, confirmed 2026-09-07, not yet fixed** — see
+    "Sv.g4 grammar quirks" above for the full writeup on each: a method
+    literally named `randomize()` fails to parse (same root-cause shape as
+    the already-fixed `sample()` collision — `grammar/Sv.g4:3097`'s
+    `` 'randomize' `` literal shadows `IDENTIFIER` for that spelling
+    everywhere in the file); and `super.new(args)` only parses as a
+    constructor's literal first statement, never after an ordinary
+    statement (`grammar/Sv.g4:522`'s `class_constructor_declaration` bakes
+    the LRM-strict ordering directly into the rule's structure — needs a
+    decision on whether to relax this before fixing it, not just an
+    implementation). Both found investigating the same real user bug report
+    (`/home/martin/src/policy/policy_mixin.sv`), independent of and
+    unrelated to that session's actual fix (plan.md §6.19 piece 4, baking a
+    library DB's own includeDirs into itself — see "Library dependency
+    graph"/"`LibraryDbBuilder`" above).
