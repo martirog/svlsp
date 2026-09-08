@@ -4,6 +4,69 @@
 narrative detail if ever needed; this file now documents current-state-and-next-steps
 only).
 
+**Added 2026-09-08** — a follow-on to the `ProjectManifestParser` fix directly below:
+after fixing that bug, the user rebuilt their own `svlsp` via `tools/build.sh release`
+and re-ran `--build-db` against their already-populated `uvm.db`, and it "exits
+immediately" while `` `uvm_fatal `` still failed. Root-caused to a *second*, independent
+issue this time (not a stale-binary-on-PATH repeat, though that also happened this same
+session — see below): the per-file content-hash cache in `CompilationController` has no
+way to know the *parser itself* changed between two `--build-db` runs against the same
+output path, only that a file's own text didn't — so a grammar/parser fix (like the
+`randomize()`/`super.new()` ones two entries down) never actually gets applied to an
+already-built library DB unless the user deletes it first. The user's own proposed fix
+— add a version field to the schema, and have `--build-db` check it against the
+running binary — is exactly what got implemented.
+
+Schema v7 adds `library_build_info` (`src/db/schema.h`) — a single row recording which
+`SVLSP_GIT_VERSION` built a given library DB, mirroring `library_include_dirs`' own
+"library DB self-description" shape (schema v6, below). `LibraryDbBuilder::build`
+(`src/lsp/library_db_builder.h/.cpp`) gained an optional `currentVersion` parameter —
+`main.cpp`'s `--build-db` CLI path passes `SVLSP_GIT_VERSION` (the only place it's
+available; baked into the `svlsp` executable target alone, not the whole `svlsp_lib`,
+per the `--version` flag's own design note below); every other call site (the live
+server's own lazy `ProjectRegistry`-driven `libraryDbSources` path) has no version to
+offer and passes `""` unchanged, skipping the check exactly as before this feature
+existed. A mismatch — including "nothing recorded", e.g. a DB built before this feature,
+or being built into a not-yet-existing output path for the first time — forces a full
+rebuild via a new `SymbolDatabase::resetAllFiles()` (`DELETE FROM files`, cascading via
+the existing `ON DELETE CASCADE` FKs to symbols/diagnostics/imports/instantiations)
+before compiling, rather than trusting the stale per-file hashes. A *matching* version
+still reuses the cache exactly as before — this only changes behavior on an actual
+mismatch, so re-running `--build-db` twice with the same binary and nothing changed
+stays a near-instant no-op (confirmed: 0.02s on the real ~140-file UVM corpus).
+
+13 new unit tests: schema/table creation (`test_database.cpp`); `setBuiltByVersion`/
+`builtByVersion` round-trip, overwrite, and "predates this feature" cases plus
+`resetAllFiles`' cascade (`test_symbol_database.cpp`); and `LibraryDbBuilder`-level proof
+in both directions (`test_library_db_builder.cpp`) — a symbol name planted directly into
+the DB that a real recompile of the unchanged source could never produce survives a
+same-version rebuild (proving the cache really is reused, not just "happened to produce
+the same output") and is discarded by a different-version one (proving the cache really
+is bypassed). Full unit suite: 1630 assertions/582 cases, no regressions.
+
+Verified end-to-end against the real motivating `uvm.db`: it had no `library_build_info`
+row at all (predates this feature, schema v6). Rebuilding it with a version-checking
+binary forced a real ~140-file recompile (not an instant exit — itself proof the
+mismatch was detected) and recorded the new version; immediately re-running the
+identical command with the same binary completed in 0.02s. `/home/martin/src/policy/
+policy_mixin.sv` stayed diagnostic-free throughout. Commit: `c386080`.
+
+**Also found and fixed in the same session** (unrelated code, same investigation): the
+"exits immediately" symptom on the *first* attempt (before the version-field feature
+existed to explain the second one) turned out to be `/home/martin/bin/svlsp` — first on
+the user's own `PATH` — silently shadowing the just-rebuilt `build/release/svlsp` with a
+stale pre-fix copy from an earlier `tools/build.sh release --output-dir ~/bin` run.
+`tools/build.sh --output-dir` only refreshes that copy when explicitly re-passed; a
+plain `tools/build.sh release` (no `--output-dir`) never touches it. Not a code bug —
+flagged here since it's an easy trap for this project's own documented `--output-dir`
+workflow (see "Build and test" below) to fall into silently. A live `~/bin/svlsp`
+process (the user's own already-running editor LSP session, from before the refresh) was
+also found holding that file open (`cp`'s destination-file-open fails with "Text file
+busy" against a running executable) — refreshing that copy while the old process is
+still alive needs a rename-based swap (`mv` a freshly-built copy into place, not `cp`
+in place) rather than killing the user's live session; deferred to the user's own next
+editor restart rather than done unilaterally.
+
 **Fixed 2026-09-08** — a real user bug report, found right after rebuilding their own
 `uvm.db` with the previous day's `randomize()`/`super.new()` grammar fixes (below):
 the rebuild itself "immediately finished" (near-instant, as if nothing was compiled),
@@ -316,9 +379,9 @@ src/compiler/      compiler_directive_stripper, sv_preprocessor, sv_tree_walker,
                    parse_record, parse_cache, filelist_parser, project_config,
                    file_utils — compiler front-end
 src/db/            database, symbol_database, compilation_controller,
-                   library_resolver, project_compiler, schema — SQLite persistence (schema v6)
+                   library_resolver, project_compiler, schema — SQLite persistence (schema v7)
 src/main.cpp       entry point (supports `--log-files <path>`, see below)
-tests/unit/        Catch2 unit tests (551 cases, 1562 assertions)
+tests/unit/        Catch2 unit tests (582 cases, 1630 assertions)
 tests/integration/ Emacs functional test scripts (197 test cases across 36 files)
 tests/uvm_corpus/  opt-in test suite against a real, external UVM corpus (NOT in
                    ctest/make test — see "UVM corpus testing" below)
@@ -937,7 +1000,7 @@ one publish reflecting the final version — not just a timing/count check.
 
 ## Database layer (`src/db/`)
 
-### Schema v6 (`src/db/schema.h`, `db::SCHEMA_VERSION = 6`)
+### Schema v7 (`src/db/schema.h`, `db::SCHEMA_VERSION = 7`)
 
 - `files (id, path UNIQUE, content_hash, parsed_at)`
 - `symbols (id, file_id, kind, name, line, col, parent, detail, end_line, scope)` —
@@ -951,10 +1014,15 @@ one publish reflecting the final version — not just a timing/count check.
   `LibraryDbBuilder::build` (plan.md §6.19 piece 4, below), never by the
   live server's own `:memory:` DB; a library DB's own `includeDirs` at build
   time, baked into the file itself
+- `library_build_info (id, svlsp_version)` — single row, populated only by
+  `LibraryDbBuilder::build` (2026-09-08, see top of this document), never by
+  the live server's own `:memory:` DB; which `SVLSP_GIT_VERSION` built this
+  DB, checked against the running binary on the next `--build-db` to detect
+  and force past a stale per-file content-hash cache
 
 Migrations (`database.cpp`, run automatically): v1→v2 adds end_line/scope; v2→v3 adds
 `imports`; v3→v4 adds `imports.is_export`; v4→v5 adds `instantiations`; v5→v6 adds
-`library_include_dirs`.
+`library_include_dirs`; v6→v7 adds `library_build_info`.
 
 ### Query API (`src/db/symbol_database.h/.cpp`)
 
@@ -974,6 +1042,9 @@ Migrations (`database.cpp`, run automatically): v1→v2 adds end_line/scope; v2�
 | `unresolvedInstantiatedTypeNames()` | distinct instantiated type names with no matching declaration anywhere — drives `LibraryResolver` |
 | `setLibraryIncludeDirs(dirs)` | overwrites `library_include_dirs` with `dirs`, in order (plan.md §6.19 piece 4) |
 | `libraryIncludeDirs()` | reads `library_include_dirs` back, in order; `{}` if the table doesn't exist (a DB built before this feature) or nothing was stored — never throws |
+| `setBuiltByVersion(version)` | overwrites `library_build_info` with a single row holding `version` |
+| `builtByVersion()` | reads it back; `""` if the table doesn't exist (a DB built before this feature) or nothing was stored — never throws |
+| `resetAllFiles()` | `DELETE FROM files`, cascading (via existing `ON DELETE CASCADE` FKs) to symbols/diagnostics/imports/instantiations — forces every subsequent `compile()` call to be a cache miss |
 
 `SymbolRow { id, kind, name, line, col, parent, detail, filePath, endLine, scope }`.
 
@@ -1376,7 +1447,7 @@ field-automation macros; not confirmed as a corpus contributor beyond that one s
 | Transport | stdio |
 | Compiler | g++-13 |
 | Parser generator | ANTLR4 v4.13.2 (FetchContent) |
-| Database | SQLite3 (amalgamation, schema v6) |
+| Database | SQLite3 (amalgamation, schema v7) |
 | SV preprocessor | Minimal in-house C++ (not slang) |
 | `__FILE__`/`__LINE__` | Resolved in pass 1, before include shifts line numbers |
 
