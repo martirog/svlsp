@@ -294,3 +294,144 @@ TEST_CASE("build() transitively resolves its own config's libraryDbSources",
         CHECK(nestedSdb.findSymbolsByName("nested_class").size() == 1);
     }
 }
+
+// ---------------------------------------------------------------------------
+// currentVersion stale-cache guard: a real user bug report -- re-running
+// `svlsp --build-db` against an already-populated DB with a fixed/upgraded
+// binary (no source file content changed) silently kept every stale,
+// pre-fix parse result, since the per-file content-hash cache alone has no
+// way to know the *parser* itself changed. See LibraryDbBuilder::build's own
+// doc comment and SymbolDatabase::resetAllFiles/builtByVersion.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("LibraryDbBuilder: records currentVersion into the output DB",
+          "[lsp][library-db-builder][built-by-version]")
+{
+    std::string root = kRoot + "/records-version";
+    writeFile(root + "/top.sv", "module top_mod; endmodule\n");
+    writeFile(root + "/proj.f", "top.sv\n");
+    std::string dbPath = root + "/out.db";
+    fs::remove(dbPath);
+
+    auto result = LibraryDbBuilder::build(root + "/proj.f", dbPath, nullptr, "v1");
+
+    REQUIRE(result.ok);
+    Database db(dbPath);
+    SymbolDatabase sdb(db);
+    CHECK(sdb.builtByVersion() == "v1");
+}
+
+TEST_CASE("LibraryDbBuilder: an empty currentVersion never records or checks a version "
+          "(every pre-existing call site's behavior, unchanged)",
+          "[lsp][library-db-builder][built-by-version]")
+{
+    std::string root = kRoot + "/no-version-info";
+    writeFile(root + "/top.sv", "module top_mod; endmodule\n");
+    writeFile(root + "/proj.f", "top.sv\n");
+    std::string dbPath = root + "/out.db";
+    fs::remove(dbPath);
+
+    auto result = LibraryDbBuilder::build(root + "/proj.f", dbPath);
+
+    REQUIRE(result.ok);
+    Database db(dbPath);
+    SymbolDatabase sdb(db);
+    CHECK(sdb.builtByVersion() == "");
+}
+
+TEST_CASE("LibraryDbBuilder: re-building with the same currentVersion reuses the "
+          "per-file content-hash cache",
+          "[lsp][library-db-builder][built-by-version]")
+{
+    std::string root = kRoot + "/same-version-reuses-cache";
+    writeFile(root + "/top.sv", "module top_mod; endmodule\n");
+    writeFile(root + "/proj.f", "top.sv\n");
+    std::string dbPath = root + "/out.db";
+    fs::remove(dbPath);
+
+    REQUIRE(LibraryDbBuilder::build(root + "/proj.f", dbPath, nullptr, "v1").ok);
+
+    // Plant a symbol name a real recompile of this exact source would never
+    // produce (upsertFile with the file's own current hash reuses its
+    // existing row rather than creating a new one), proving on its own
+    // survival whether the second build() call below actually skipped
+    // reparsing.
+    {
+        Database db(dbPath);
+        SymbolDatabase sdb(db);
+        auto fileId = sdb.upsertFile(root + "/top.sv", sdb.getFileHash(root + "/top.sv"));
+        sdb.replaceSymbols(fileId, {{ParseRecordKind::Module, "planted_stale_name", 1, 0, "", "",
+                                     1}});
+    }
+
+    auto result = LibraryDbBuilder::build(root + "/proj.f", dbPath, nullptr, "v1");
+    REQUIRE(result.ok);
+
+    Database db(dbPath);
+    SymbolDatabase sdb(db);
+    CHECK(sdb.findSymbolsByName("planted_stale_name").size() == 1);
+    CHECK(sdb.findSymbolsByName("top_mod").size() == 0);
+}
+
+TEST_CASE("LibraryDbBuilder: re-building with a different currentVersion discards the "
+          "stale per-file content-hash cache",
+          "[lsp][library-db-builder][built-by-version]")
+{
+    std::string root = kRoot + "/different-version-forces-rebuild";
+    writeFile(root + "/top.sv", "module top_mod; endmodule\n");
+    writeFile(root + "/proj.f", "top.sv\n");
+    std::string dbPath = root + "/out.db";
+    fs::remove(dbPath);
+
+    REQUIRE(LibraryDbBuilder::build(root + "/proj.f", dbPath, nullptr, "v1").ok);
+
+    // Same plant as the "same version" test above -- proves whether the
+    // second build() call actually reparsed (discarding this) or not.
+    {
+        Database db(dbPath);
+        SymbolDatabase sdb(db);
+        auto fileId = sdb.upsertFile(root + "/top.sv", sdb.getFileHash(root + "/top.sv"));
+        sdb.replaceSymbols(fileId, {{ParseRecordKind::Module, "planted_stale_name", 1, 0, "", "",
+                                     1}});
+    }
+
+    auto result = LibraryDbBuilder::build(root + "/proj.f", dbPath, nullptr, "v2");
+    REQUIRE(result.ok);
+
+    Database db(dbPath);
+    SymbolDatabase sdb(db);
+    CHECK(sdb.findSymbolsByName("planted_stale_name").size() == 0);
+    CHECK(sdb.findSymbolsByName("top_mod").size() == 1);
+    CHECK(sdb.builtByVersion() == "v2");
+}
+
+TEST_CASE("LibraryDbBuilder: a DB predating this feature (no recorded version) is "
+          "treated as stale by any real currentVersion",
+          "[lsp][library-db-builder][built-by-version]")
+{
+    std::string root = kRoot + "/predates-feature";
+    writeFile(root + "/top.sv", "module top_mod; endmodule\n");
+    writeFile(root + "/proj.f", "top.sv\n");
+    std::string dbPath = root + "/out.db";
+    fs::remove(dbPath);
+
+    // Build with no version info at all (library_build_info stays empty),
+    // simulating a DB produced before this feature existed.
+    REQUIRE(LibraryDbBuilder::build(root + "/proj.f", dbPath).ok);
+    {
+        Database db(dbPath);
+        SymbolDatabase sdb(db);
+        auto fileId = sdb.upsertFile(root + "/top.sv", sdb.getFileHash(root + "/top.sv"));
+        sdb.replaceSymbols(fileId, {{ParseRecordKind::Module, "planted_stale_name", 1, 0, "", "",
+                                     1}});
+    }
+
+    auto result = LibraryDbBuilder::build(root + "/proj.f", dbPath, nullptr, "v1");
+    REQUIRE(result.ok);
+
+    Database db(dbPath);
+    SymbolDatabase sdb(db);
+    CHECK(sdb.findSymbolsByName("planted_stale_name").size() == 0);
+    CHECK(sdb.findSymbolsByName("top_mod").size() == 1);
+    CHECK(sdb.builtByVersion() == "v1");
+}

@@ -79,6 +79,31 @@ std::vector<std::string> SymbolDatabase::libraryIncludeDirs() const
     return dirs;
 }
 
+void SymbolDatabase::setBuiltByVersion(const std::string& version)
+{
+    m_db.execute("DELETE FROM library_build_info");
+    m_db.prepare("INSERT INTO library_build_info (svlsp_version) VALUES (?)")
+        .bind(1, version)
+        .step();
+}
+
+std::string SymbolDatabase::builtByVersion() const
+{
+    auto check = m_db.prepare(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='library_build_info'");
+    check.step();
+    if (check.columnInt(0) == 0) return "";
+
+    auto stmt = m_db.prepare("SELECT svlsp_version FROM library_build_info LIMIT 1");
+    if (stmt.step()) return stmt.columnText(0);
+    return "";
+}
+
+void SymbolDatabase::resetAllFiles()
+{
+    m_db.execute("DELETE FROM files");
+}
+
 std::vector<SymbolRow> SymbolDatabase::queryAcrossAttachedDbs(
     const std::string& cond, const std::string& bindValue) const
 {

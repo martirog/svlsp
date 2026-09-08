@@ -30,8 +30,26 @@ public:
     // `outputPath` at all. Resolves `configPath`'s own `libraryDbSources`
     // first (see resolveLibraryDbSources below), so a library being built
     // can itself depend on other lazily-cached libraries.
+    //
+    // `currentVersion`, when non-empty (main.cpp's --build-db path passes
+    // SVLSP_GIT_VERSION), is compared against whatever `outputPath` already
+    // has recorded via SymbolDatabase::builtByVersion(). A mismatch --
+    // including "nothing recorded", e.g. `outputPath` predates this feature
+    // or is being built for the first time -- forces a full rebuild
+    // (SymbolDatabase::resetAllFiles(), clearing the per-file content-hash
+    // cache) before compiling, since that cache has no way to know the
+    // *parser itself* changed between two builds of the same output path.
+    // Left "" (the default) skips the check entirely, matching every
+    // pre-existing call site's behavior exactly (a caller with no version
+    // information to offer, e.g. the live server's own lazy
+    // ProjectRegistry-driven build via resolveLibraryDbSources below).
+    // `builtByVersion()` is always updated to `currentVersion` at the end of
+    // a successful build, but only when it's non-empty -- a caller that
+    // didn't supply one never clobbers a real value an earlier --build-db
+    // run recorded.
     static Result build(const std::string& configPath, const std::string& outputPath,
-                        std::ostream* progressLog = nullptr);
+                        std::ostream* progressLog = nullptr,
+                        const std::string& currentVersion = "");
 
     // For each `config.libraryDbSources` entry (plan.md §6.19 piece 3):
     // if its cachePath already exists on disk, leave it alone; otherwise
@@ -48,5 +66,6 @@ public:
     // A's libraryDbSources building B, whose own libraryDbSources builds
     // A) -- disclosed, not fixed, in this first cut.
     static void resolveLibraryDbSources(ProjectConfig& config,
-                                        std::ostream* progressLog = nullptr);
+                                        std::ostream* progressLog = nullptr,
+                                        const std::string& currentVersion = "");
 };

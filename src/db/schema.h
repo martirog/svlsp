@@ -4,7 +4,7 @@ namespace db {
 
 // Current schema version.  Increment and add a migration in Database::initSchema
 // whenever the schema changes.
-inline constexpr int SCHEMA_VERSION = 6;
+inline constexpr int SCHEMA_VERSION = 7;
 
 // DDL executed on a fresh (version-0) database — always reflects the latest schema.
 inline constexpr const char* SCHEMA_DDL = R"sql(
@@ -89,6 +89,32 @@ CREATE TABLE library_include_dirs (
 );
 
 CREATE INDEX idx_library_include_dirs_ordinal ON library_include_dirs(ordinal);
+
+-- Populated only by LibraryDbBuilder::build, never by the live server's own
+-- :memory: DB (same "library DB self-description" rationale as
+-- library_include_dirs above): which svlsp build (SVLSP_GIT_VERSION)
+-- actually produced this DB. The per-file content-hash cache in
+-- CompilationController has no way to know the *parser itself* changed
+-- between two --build-db runs against the same output path -- re-running
+-- --build-db with a fixed/upgraded binary against an already-populated DB
+-- would otherwise silently skip every unchanged file and never apply the
+-- fix. Checked at the start of a build; a mismatch (including "no row at
+-- all", e.g. a DB built before this feature existed) forces a full
+-- rebuild by clearing `files` (see SymbolDatabase::resetAllFiles) rather
+-- than trusting the stale per-file hashes.
+CREATE TABLE library_build_info (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    svlsp_version TEXT    NOT NULL
+);
+)sql";
+
+// SQL applied when migrating an existing v6 database to v7.
+inline constexpr const char* MIGRATION_V6_TO_V7 = R"sql(
+CREATE TABLE IF NOT EXISTS library_build_info (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    svlsp_version TEXT    NOT NULL
+);
+UPDATE schema_version SET version = 7;
 )sql";
 
 // SQL applied when migrating an existing v5 database to v6.

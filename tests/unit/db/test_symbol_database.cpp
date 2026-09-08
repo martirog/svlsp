@@ -539,3 +539,56 @@ TEST_CASE("libraryIncludeDirs returns empty, not throws, on a DB predating this 
     f.db.execute("DROP TABLE library_include_dirs");
     CHECK(f.sdb.libraryIncludeDirs().empty());
 }
+
+// ---------------------------------------------------------------------------
+// setBuiltByVersion / builtByVersion / resetAllFiles (stale-cache guard: a
+// library DB records which svlsp build produced it, so LibraryDbBuilder::
+// build can detect a different binary and force a full rebuild instead of
+// trusting per-file content hashes that can't see the parser itself changed)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("builtByVersion is empty before setBuiltByVersion is ever called",
+          "[db][symbol-db][built-by-version]") {
+    Fixture f;
+    CHECK(f.sdb.builtByVersion() == "");
+}
+
+TEST_CASE("setBuiltByVersion then builtByVersion round-trips",
+          "[db][symbol-db][built-by-version]") {
+    Fixture f;
+    f.sdb.setBuiltByVersion("abc1234");
+    CHECK(f.sdb.builtByVersion() == "abc1234");
+}
+
+TEST_CASE("setBuiltByVersion overwrites whatever was stored before",
+          "[db][symbol-db][built-by-version]") {
+    Fixture f;
+    f.sdb.setBuiltByVersion("abc1234");
+    f.sdb.setBuiltByVersion("def5678-dirty");
+    CHECK(f.sdb.builtByVersion() == "def5678-dirty");
+}
+
+TEST_CASE("builtByVersion returns empty, not throws, on a DB predating this feature",
+          "[db][symbol-db][built-by-version]") {
+    // Simulates a library DB built before schema v7 added this table --
+    // must be treated as "unknown version," not an error, matching
+    // libraryIncludeDirs's own precedent for the same "predates this
+    // feature" case.
+    Fixture f;
+    f.db.execute("DROP TABLE library_build_info");
+    CHECK(f.sdb.builtByVersion() == "");
+}
+
+TEST_CASE("resetAllFiles clears files and cascades to symbols/diagnostics",
+          "[db][symbol-db][built-by-version]") {
+    Fixture f;
+    auto fileId = f.sdb.upsertFile("/a.sv", "hash1");
+    f.sdb.replaceSymbols(fileId, {{ParseRecordKind::Module, "top", 1, 0, "", "", 5}});
+    f.sdb.replaceDiagnostics(fileId, {{1, 0, "oops"}});
+
+    f.sdb.resetAllFiles();
+
+    CHECK(f.sdb.getFileHash("/a.sv") == "");
+    CHECK(f.sdb.symbolsForFile("/a.sv").empty());
+    CHECK(f.sdb.diagnosticsForFile("/a.sv").empty());
+}

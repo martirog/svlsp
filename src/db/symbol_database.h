@@ -87,6 +87,28 @@ public:
     // error.
     std::vector<std::string> libraryIncludeDirs() const;
 
+    // Persists `version` (e.g. SVLSP_GIT_VERSION) into *this connection's own
+    // main schema's* library_build_info table -- overwriting whatever was
+    // stored there before. Called once by LibraryDbBuilder::build, right
+    // after building a library DB, so the DB file records which svlsp build
+    // produced it. Never called by the live server's own :memory: DB.
+    void setBuiltByVersion(const std::string& version);
+
+    // Reads back whatever setBuiltByVersion stored on *this connection's own
+    // main schema*. Returns "" if the table doesn't exist (a DB built before
+    // this feature existed) or nothing was ever stored -- both treated as
+    // "unknown version," not an error.
+    std::string builtByVersion() const;
+
+    // Forces every subsequent CompilationController::compile call against
+    // this connection to be a cache miss (full reparse), by deleting every
+    // row from `files` -- ON DELETE CASCADE takes symbols/diagnostics/
+    // imports/instantiations with it. Used by LibraryDbBuilder::build when
+    // builtByVersion() doesn't match the svlsp binary about to rebuild the
+    // DB: the per-file content-hash cache alone can't detect that the
+    // *parser itself* changed, only that file content didn't.
+    void resetAllFiles();
+
     // Insert or update the file record for `path`, recording `contentHash`.
     // Returns the file_id (stable across calls for the same path).
     int64_t upsertFile(const std::string& path, const std::string& contentHash);

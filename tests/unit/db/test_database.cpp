@@ -13,14 +13,14 @@ TEST_CASE("open in-memory database succeeds", "[db][database]") {
 TEST_CASE("initSchema creates tables and sets current version", "[db][database]") {
     Database db(":memory:");
     db.initSchema();
-    CHECK(db.schemaVersion() == 6);
+    CHECK(db.schemaVersion() == 7);
 }
 
 TEST_CASE("initSchema is idempotent", "[db][database]") {
     Database db(":memory:");
     db.initSchema();
     CHECK_NOTHROW(db.initSchema());
-    CHECK(db.schemaVersion() == 6);
+    CHECK(db.schemaVersion() == 7);
 }
 
 TEST_CASE("schemaVersion returns 0 on fresh database", "[db][database]") {
@@ -128,4 +128,13 @@ TEST_CASE("initSchema creates library_include_dirs table", "[db][database]") {
     db.initSchema();
     CHECK_NOTHROW(db.execute(
         "INSERT INTO library_include_dirs (ordinal, dir) VALUES (0, '/some/dir')"));
+}
+
+TEST_CASE("initSchema creates library_build_info table", "[db][database]") {
+    // Backs SymbolDatabase::setBuiltByVersion/builtByVersion, the
+    // stale-cache guard LibraryDbBuilder::build uses -- schema v7.
+    Database db(":memory:");
+    db.initSchema();
+    CHECK_NOTHROW(db.execute(
+        "INSERT INTO library_build_info (svlsp_version) VALUES ('abc1234')"));
 }

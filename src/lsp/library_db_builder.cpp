@@ -10,7 +10,8 @@
 #include <stdexcept>
 
 LibraryDbBuilder::Result LibraryDbBuilder::build(
-    const std::string& configPath, const std::string& outputPath, std::ostream* progressLog)
+    const std::string& configPath, const std::string& outputPath, std::ostream* progressLog,
+    const std::string& currentVersion)
 {
     Result result;
 
@@ -31,7 +32,7 @@ LibraryDbBuilder::Result LibraryDbBuilder::build(
             ? ProjectManifestParser::parse(configPath)
             : FilelistParser::parse(configPath,
                   std::filesystem::path(configPath).parent_path().string());
-        resolveLibraryDbSources(config, progressLog);
+        resolveLibraryDbSources(config, progressLog, currentVersion);
 
         // sqlite3_open (inside the Database constructor) does not create
         // missing parent directories -- the exact bug found live above.
@@ -44,6 +45,21 @@ LibraryDbBuilder::Result LibraryDbBuilder::build(
         Database db(outputPath);
         db.initSchema();
         SymbolDatabase sdb(db);
+
+        // A stale-cache guard, not a correctness requirement of the compile
+        // pipeline itself: the per-file content-hash cache below has no way
+        // to know the *parser* changed between two builds of the same
+        // outputPath, only that a file's own text didn't. Force a full
+        // rebuild whenever this DB's own recorded build version doesn't
+        // match the binary currently running -- including "nothing
+        // recorded" (a DB built before this feature, or being built into
+        // outputPath for the first time). currentVersion.empty() (a caller
+        // with no version information -- see build()'s own doc comment)
+        // always skips this, preserving every pre-existing call site's
+        // behavior exactly.
+        if (!currentVersion.empty() && sdb.builtByVersion() != currentVersion)
+            sdb.resetAllFiles();
+
         CompilationController controller(sdb, progressLog);
 
         result.fileCount = ProjectCompiler::loadProject(config, controller, sdb);
@@ -55,6 +71,8 @@ LibraryDbBuilder::Result LibraryDbBuilder::build(
         // just this one DB later inherits the full transitive closure, not
         // only this config's own top-level includeDirs.
         sdb.setLibraryIncludeDirs(config.includeDirs);
+        if (!currentVersion.empty())
+            sdb.setBuiltByVersion(currentVersion);
 
         if (auto stmt = db.prepare("SELECT COUNT(*) FROM diagnostics"); stmt.step())
             result.diagnosticCount = stmt.columnInt(0);
@@ -67,11 +85,12 @@ LibraryDbBuilder::Result LibraryDbBuilder::build(
     return result;
 }
 
-void LibraryDbBuilder::resolveLibraryDbSources(ProjectConfig& config, std::ostream* progressLog)
+void LibraryDbBuilder::resolveLibraryDbSources(ProjectConfig& config, std::ostream* progressLog,
+                                               const std::string& currentVersion)
 {
     for (const auto& src : config.libraryDbSources) {
         if (!std::filesystem::exists(src.cachePath)) {
-            Result built = build(src.configPath, src.cachePath, progressLog);
+            Result built = build(src.configPath, src.cachePath, progressLog, currentVersion);
             if (!built.ok)
                 throw std::runtime_error(
                     "failed to build cached library DB '" + src.cachePath + "' from '" +

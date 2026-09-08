@@ -126,7 +126,15 @@ int buildDb(const std::string& configPath, const std::string& outputPath)
     ProgressCounterBuf progressBuf(explicitFileCount(configPath));
     std::ostream progressStream(&progressBuf);
 
-    auto result = LibraryDbBuilder::build(configPath, outputPath, &progressStream);
+    // SVLSP_GIT_VERSION lets LibraryDbBuilder::build detect (and rebuild
+    // past) a DB left over from a different svlsp binary -- see its own doc
+    // comment. Only available here, not in svlsp_lib, since it's baked into
+    // the `svlsp` target alone (see --version above); every other build()
+    // call site (the live server's own lazy ProjectRegistry-driven path)
+    // has no version to offer and passes "" (build()'s default), skipping
+    // the check exactly as before this feature existed.
+    auto result = LibraryDbBuilder::build(configPath, outputPath, &progressStream,
+                                          SVLSP_GIT_VERSION);
     progressBuf.finish();
     if (!result.ok) {
         std::cerr << "svlsp: error parsing '" << configPath << "': " << result.error << '\n';
