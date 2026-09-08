@@ -356,3 +356,59 @@ TEST_CASE("SvParser still parses a const class property with a constant_expressi
     std::string src = "class C; const local int x = 0; endclass\n";
     REQUIRE(parseErrors(src) == 0);
 }
+
+TEST_CASE("SvParser parses a class method literally named randomize()",
+          "[compiler][parser][randomize]") {
+    // Regression test: randomize_call used the raw literal 'randomize',
+    // making it an implicit reserved keyword everywhere (same shape as the
+    // already-fixed coverage_event/'sample' collision above) and blocking any
+    // method actually named randomize() -- a common, legal UVM idiom, since
+    // every class implicitly gets a randomize() method and overriding it is
+    // normal. Fixed by loosening randomize_call's own keyword to IDENTIFIER.
+    std::string src = "class C; function void randomize(); endfunction endclass\n";
+    REQUIRE(parseErrors(src) == 0);
+}
+
+TEST_CASE("SvParser still parses ordinary randomize()/std::randomize() calls",
+          "[compiler][parser][randomize]") {
+    // Guards against the 'randomize' -> IDENTIFIER loosening regressing the
+    // already-working call-site shapes.
+    std::string src =
+        "class C; function void f(); "
+        "void'(randomize()); "
+        "void'(std::randomize()); "
+        "void'(randomize() with { 1; }); "
+        "endfunction endclass\n";
+    REQUIRE(parseErrors(src) == 0);
+}
+
+TEST_CASE("SvParser parses super.new(...) after a preceding statement in a constructor",
+          "[compiler][parser][superctor]") {
+    // Regression test: class_constructor_declaration hardcoded the LRM's
+    // strict structural position, only allowing super.new(...) as the
+    // literal first thing after any declarations -- real code (and real
+    // simulators) commonly place statements, e.g. argument validation,
+    // before it. Fixed by allowing super.new(...) anywhere among the
+    // constructor's own statements, not just first.
+    std::string src =
+        "class Base; function new(string name); endfunction endclass\n"
+        "class C extends Base; "
+        "function new(string name); "
+        "if (name == \"\") begin end "
+        "super.new(name); "
+        "endfunction endclass\n";
+    REQUIRE(parseErrors(src) == 0);
+}
+
+TEST_CASE("SvParser still parses super.new(...) as a constructor's first statement",
+          "[compiler][parser][superctor]") {
+    // Guards against the position-relaxation regressing the already-working,
+    // LRM-strict placement.
+    std::string src =
+        "class Base; function new(string name); endfunction endclass\n"
+        "class C extends Base; "
+        "function new(string name); "
+        "super.new(name); "
+        "endfunction endclass\n";
+    REQUIRE(parseErrors(src) == 0);
+}

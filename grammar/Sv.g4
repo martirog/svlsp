@@ -519,7 +519,16 @@ method_prototype :
 ;
 
 class_constructor_declaration :
-      'function' class_scope? 'new' ('(' tf_port_list ')')? ';' block_item_declaration* ('super' '.' 'new' ('(' list_of_arguments ')')? ';')? function_statement_or_null* 'endfunction' (':' 'new')?
+      'function' class_scope? 'new' ('(' tf_port_list ')')? ';' block_item_declaration* class_constructor_body_item* 'endfunction' (':' 'new')?
+;
+
+// LRM strictly requires super.new(...) to be the constructor's first statement
+// (if present at all); real-world code (and real simulators) are commonly more
+// permissive, allowing it anywhere a statement is legal in the body -- so this
+// is accepted anywhere among the constructor's statements, not just first.
+class_constructor_body_item :
+      'super' '.' 'new' ('(' list_of_arguments ')')? ';'
+    | function_statement_or_null
 ;
 
 
@@ -3094,7 +3103,7 @@ array_manipulation_call :
 ;
 
 randomize_call :
-      'randomize' attribute_instance* ('(' (variable_identifier_list | 'null')? ')')? ('with' ('(' identifier_list? ')')? constraint_block)?
+      IDENTIFIER attribute_instance* ('(' (variable_identifier_list | 'null')? ')')? ('with' ('(' identifier_list? ')')? constraint_block)?
 ;
 
 
