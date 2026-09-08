@@ -1,8 +1,64 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-09-07 (compressed from full session history — see git log for
+**Last updated:** 2026-09-08 (compressed from full session history — see git log for
 narrative detail if ever needed; this file now documents current-state-and-next-steps
 only).
+
+**Fixed 2026-09-08** — a real user bug report, found right after rebuilding their own
+`uvm.db` with the previous day's `randomize()`/`super.new()` grammar fixes (below):
+the rebuild itself "immediately finished" (near-instant, as if nothing was compiled),
+and their referencing project (`/home/martin/src/policy/policy_mixin.sv`) still failed
+every `` `uvm_fatal ``/`` `uvm_error ``-family macro invocation afterward. Root cause:
+`ProjectManifestParser::parse` (`src/lsp/project_manifest_parser.cpp`) fell back to the
+*literal string* `"."` as `baseDir` whenever the config path had no directory component
+at all (`fs::path(path).parent_path()` empty) — exactly what happens running `svlsp
+--build-db .svlsp.json --output uvm.db` from inside the manifest's own directory, a
+completely natural workflow. Every relative `includeDirs`/`files`/`libraryDirs`/
+`libraryFiles`/`libraryDbs` entry then resolved to a bare, un-anchored relative path
+instead of an absolute one. Harmless for a single live compile (the process's own CWD
+never changes mid-run) but wrong once persisted: `--build-db` bakes `includeDirs` into
+the output `.db`'s `library_include_dirs` table (plan.md §6.19 piece 4, 2026-09-07) for
+a *different* process — another project's own LSP server, with a different CWD — to
+read back later. A literal `"."` baked in this way resolves against whatever *that*
+later process's CWD happens to be, not the library's own directory — explaining both
+symptoms: the "immediate finish" (if invoked from yet another CWD, `config.files`
+entries resolve just as wrongly, so every listed source file is silently skipped —
+`ProjectCompiler::loadProject`'s own "missing files silently skipped" behavior — leaving
+0 files to compile), and the still-failing macros (the referencing project's own server
+attaches the library DB and gets back a useless include dir).
+
+`FilelistParser::parse` already handles this exact empty-baseDir case correctly
+(`std::string base = baseDir.empty() ? fs::current_path().string() : baseDir;` —
+`src/compiler/filelist_parser.cpp`), so this was a pre-existing asymmetry between the
+two config-format parsers (the same general category of bug as the earlier-documented
+`ProjectRegistry`-must-pass-explicit-baseDir asymmetry, "Multi-file project support"
+below, just manifesting on the JSON-manifest side this time). Fixed by making
+`ProjectManifestParser` match that same convention (`fs::current_path().string()`
+instead of the literal `"."`). 1 new regression test
+(`tests/unit/lsp/test_project_manifest_parser.cpp`): changes CWD, parses a bare filename
+with no directory component, confirms the resolved `includeDirs` entry is absolute.
+Full unit suite: 1604 assertions/571 cases, no regressions.
+
+Verified end-to-end against the real motivating case: rebuilt the real `uvm.db` in
+place with the fixed binary (confirmed `library_include_dirs` now stores the correct
+absolute path, not `"."`), then re-ran the live server against the real
+`policy_mixin.sv` — previously erroring on every `` `uvm_fatal ``/`` `uvm_error ``
+invocation — which now compiles with **zero diagnostics**. Commit: `ece74c5`.
+
+**Fixed 2026-09-08** — two more real grammar bugs found investigating the same
+`policy_mixin.sv` file (independent of the fix above): a class method literally named
+`randomize()` failed to parse (`randomize_call`'s bare `'randomize'` literal shadowed
+`IDENTIFIER` for that spelling everywhere, same root-cause shape as the earlier
+`sample()` collision — fixed the same way, rewiring it to plain `IDENTIFIER`); and
+`super.new(args)` only parsed as a constructor's literal first statement, never after an
+ordinary statement (`class_constructor_declaration` hardcoded the LRM-strict ordering —
+relaxed to accept `super.new(...)` anywhere among a constructor's own statements,
+deliberately more permissive than the LRM, matching real simulator behavior). See "Sv.g4
+grammar quirks" below for the full writeup. 4 new unit tests
+(`tests/unit/compiler/test_sv_parser.cpp`, `[randomize]`/`[superctor]` tags). Verified
+against the real file (both previously-erroring lines now diagnostic-free) and a full
+from-scratch UVM-corpus rebuild (1 diagnostic total, unchanged from the pre-existing
+baseline). Commits: `ac20eff` (fix + tests), `774cf64` (docs).
 
 Also on 2026-09-06: `--build-db` gained a growing progress counter — a single
 in-place `svlsp: compiling... N/total files` line on stderr (via a new
@@ -1222,7 +1278,13 @@ referencing file.
   JSON via `lsp::json`. Unknown top-level keys silently ignored (opposite policy from
   the filelist parser). `"mode"` only accepts `"sv"`/`"v95"`. Relative
   `files`/`includeDirs`/`libraryDirs`/`libraryFiles` resolve against the manifest's
-  own parent dir.
+  own parent dir — **for a bare `path` with no directory component at all** (empty
+  `parent_path()`, e.g. invoked as just `.svlsp.json` from inside its own directory),
+  this now resolves against the real `fs::current_path()` (fixed 2026-09-08, see top of
+  this document — previously fell back to the literal string `"."`, silently wrong once
+  persisted into a `--build-db` output's `library_include_dirs` and read back later by a
+  different process with a different CWD), matching `FilelistParser::parse`'s own
+  already-correct convention for the same empty-baseDir case.
 - **`LibraryResolver::resolve(config, controller, sdb)`** (`src/db/library_resolver.h/.cpp`):
   resolves one unresolved name at a time, re-querying `unresolvedInstantiatedTypeNames()`
   after every compile (simpler than a batch-per-round loop, same termination guarantee:
