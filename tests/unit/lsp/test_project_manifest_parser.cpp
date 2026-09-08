@@ -154,3 +154,34 @@ TEST_CASE("missing manifest file throws", "[lsp][project-manifest]") {
     REQUIRE_THROWS_AS(ProjectManifestParser::parse(kRoot + "/does_not_exist.svlsp.json"),
                        std::runtime_error);
 }
+
+TEST_CASE("a bare config filename (no directory component) resolves relative paths against "
+          "the real CWD, not a literal '.'",
+          "[lsp][project-manifest]") {
+    // Regression test: a real user bug report -- building a library DB via
+    // `svlsp --build-db .svlsp.json --output uvm.db` from inside the
+    // manifest's own directory (a natural workflow) baked a literal "."
+    // into the persisted library_include_dirs table, instead of an
+    // absolute path. That's harmless for a single live compile (the
+    // process's CWD never changes mid-run), but silently wrong once a
+    // *different* process reads it back later with a different CWD --
+    // exactly what happens when another project attaches the prebuilt
+    // library DB. Fixed by resolving the empty-baseDir fallback (a bare
+    // filename has no parent_path()) against the real current_path(),
+    // matching FilelistParser::parse's own already-correct convention.
+    writeManifest("bare.svlsp.json", R"({"includeDirs": ["macros"]})");
+
+    fs::path originalCwd = fs::current_path();
+    fs::current_path(kRoot);
+    ProjectConfig config;
+    try {
+        config = ProjectManifestParser::parse("bare.svlsp.json");
+    } catch (...) {
+        fs::current_path(originalCwd);
+        throw;
+    }
+    fs::current_path(originalCwd);
+
+    REQUIRE(config.includeDirs.size() == 1);
+    CHECK(config.includeDirs[0] == kRoot + "/macros");
+}

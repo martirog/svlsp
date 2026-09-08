@@ -86,7 +86,7 @@ ProjectConfig ProjectManifestParser::parse(const std::string& path) {
     const lsp::json::Object& obj = root.object();
 
     std::string baseDir = fs::path(path).parent_path().lexically_normal().string();
-    if (baseDir.empty()) baseDir = ".";
+    if (baseDir.empty()) baseDir = fs::current_path().string();
 
     ProjectConfig config;
 
