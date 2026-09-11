@@ -573,7 +573,10 @@ field, editing `a.sv` must eventually flag `b.sv` as stale and re-check it.
   Tradeoffs to weigh: disk-cache invalidation correctness (stale entries for
   files the DB never revisits), disk space/location conventions, and whether it
   meaningfully compounds with the daemon-plus-port question above versus being
-  a simpler independent win.
+  a simpler independent win. **See also §6.20** — external programs reading the
+  live project's structural data (for analysis, dashboards, custom tooling)
+  needs this same file-backed switch as its own prerequisite, independent of
+  the restart-persistence motivation above.
 - **Open question, needs investigation — pre-built/shared DBs for rarely-changing
   library code (UVM, verification IP).** **See §6.19 for a concrete design
   (drafted 2026-09-04), choosing the attach-and-query shape below over a true
@@ -2643,6 +2646,131 @@ reach-through, dedup, multiple attached DBs, and an end-to-end
 
 **Functional/unit tests for piece 3 (implemented):** see the
 "Verification" paragraph under piece 3's own writeup above.
+
+---
+
+### 6.20 External Read-Only Database Access (structural analysis by non-editor tools)
+
+**Status:** not started. Added to the plan 2026-09-11, per explicit user
+direction.
+
+**Why this is needed:** every query surface this project has built so far
+(hover, definition, completion, document/workspace symbols, §6.19's own
+attach-and-query library DBs) is reached *through* the LSP protocol, i.e.
+through `svlsp` itself acting as the query engine on behalf of one editor
+session. There is no way today for an unrelated external program — a
+dependency-graph visualizer, a custom lint/metrics script, a dashboard, an
+ad hoc `SELECT` for "who calls this function" — to get at the already-compiled
+structural data (`symbols`, `instantiations`, `imports`, `diagnostics`; schema
+v7, `src/db/schema.h`, documented in `handoff.md`'s "Schema v7" section) without
+reimplementing SystemVerilog parsing itself. `svlsp` already does the one
+expensive part (parse + resolve); this section is about letting other tools
+read the result, not about building any new analysis feature inside `svlsp`
+itself.
+
+**A version of this already exists, but only for library DBs, not live
+projects:** `svlsp --build-db` (§6.19 piece 1) already produces a real,
+standalone, file-backed SQLite database — and because it's a plain file on
+disk, it is *already* externally queryable today with any SQLite client
+(`sqlite3` CLI, Python's `sqlite3`/`pandas.read_sql`, DB Browser for SQLite,
+...) with zero new `svlsp` code. The schema is exactly what `src/db/schema.h`
+and `handoff.md`'s "Schema v7" section already document. So: for
+rarely-changing library code compiled once via `--build-db`, "secondary
+access for external programs" is a solved problem already — this section
+should say so explicitly rather than reinvent it, and any docs written for
+this feature should lead with "you can already do this for a `--build-db`
+output today."
+
+**The actual gap is the live, per-project DB.** `CompilationController`/
+`LanguageServer` open their `SymbolDatabase` against `":memory:"`
+(`src/lsp/server.h:35`, already flagged as a known gap and as one of §6.5's
+own open questions — "in-memory for now; file path in Phase 6"), so the
+database backing an actively-edited project literally does not exist as a
+file an external process could open. This section is the "make the live
+project's DB itself externally readable" half of that same open question,
+not a separate mechanism.
+
+**What is missing:**
+1. **Make the live DB file-backed.** Subsumes §6.5's own file-backed-DB open
+   question (this section doesn't re-litigate that one's own
+   restart-persistence motivation — see §6.5 for the cache-invalidation
+   tradeoffs of reusing it across restarts; here the file just needs to
+   *exist* while the server runs, restart-persistence is a nice-but-separate
+   side effect). Needs a real path, not `":memory:"` — candidate default: a
+   `.svlsp/<hash-or-name>.db` next to the discovered project config
+   (`ProjectRegistry`'s own discovery root), overridable via a new
+   `initializationOptions.svlsp.dbPath`, same absent-means-default pattern
+   `explicitProjectConfigPath`/§6.11's `fuzzyCompletion`/§6.12's `debounceMs`
+   already establish.
+2. **Open the file in SQLite WAL journal mode** (`PRAGMA journal_mode=WAL`,
+   set once via `Database`'s constructor or an `initSchema()`-time pragma).
+   WAL is exactly the mode this use case needs: it lets one writer (`svlsp`
+   itself, compiling in the background per §6.8) and arbitrarily many readers
+   (external tools) operate on the same file concurrently without blocking
+   each other — the default rollback-journal mode does not give this, and
+   without it a reader opening the file mid-write could see `SQLITE_BUSY` or
+   block `svlsp`'s own writes. An external tool should open its own
+   connection **read-only** (SQLite's URI-filename `?mode=ro`, or the
+   language binding's own read-only flag) so it can never accidentally
+   corrupt `svlsp`'s live DB or race its own writes — `svlsp` itself remains
+   the only writer, always.
+3. **Treat the schema itself as the public contract**, versioned exactly the
+   way it already is internally: `db::SCHEMA_VERSION` (currently 7,
+   `src/db/schema.h`) plus the existing migration chain already give external
+   consumers a way to check "do I understand this file's shape" before
+   querying it, the same way `LibraryDbBuilder`'s own version check (the
+   `library_build_info` feature, `handoff.md` 2026-09-08) already does this
+   *within* `svlsp` for a different purpose (detecting a stale per-file
+   cache). No new versioning mechanism needed — just documenting that this
+   existing one is now also an external-facing promise, not purely an
+   internal implementation detail.
+4. **Document the schema for external consumers** (a new `docs/db-schema.md`
+   or an extended `docs/usage.md` section) — table-by-table, in the same
+   shape `handoff.md`'s "Schema v7" section already has internally, plus a
+   handful of worked example queries (e.g. "every unresolved instantiation,"
+   "every class and its parent," "everything a given file imports") so a
+   consumer doesn't have to reverse-engineer the schema from `src/db/schema.h`
+   and the query methods in `src/db/symbol_database.h/.cpp`.
+
+**Deliberately not proposed here:** a bespoke query API, HTTP/RPC server, or
+JSON export layer. SQLite itself is already a mature, widely-supported,
+zero-install-cost query interface (every mainstream language has a driver),
+and this project's own working style favors reusing an existing, boring
+mechanism over building a new bespoke one (§6.19's own "don't invent the
+merge mechanism, model on clangd" precedent) — a new API surface would also
+need its own versioning/compatibility story that plain "open this file with
+SQLite" already gets for free. Revisit only if a concrete use case shows the
+raw schema genuinely isn't sufficient (e.g. a consumer needing to be notified
+of *changes* rather than polling, which this design doesn't address at all —
+external tools would re-query on their own schedule, no push mechanism from
+`svlsp` is in scope here).
+
+**No new exposure of anything not already visible:** the DB only contains
+structural facts (symbol names/kinds/locations, import/instantiation edges,
+diagnostics) derivable from the project's own source tree, which anyone with
+read access to the DB file already has filesystem read access to by
+construction (it has to sit somewhere the `svlsp` process itself can write,
+readable by the same user). Not a new trust boundary, just a new, more
+convenient way to read data that was already on disk in source form.
+
+**Open question, deliberately unresolved:** whether raw table access is
+enough long-term, or whether a thin layer of read-only SQL views
+(`v_symbols`, `v_dependencies`, ...) should sit in front of the raw
+`files`/`symbols`/`diagnostics`/`imports`/`instantiations` tables specifically
+to decouple external consumers from internal schema churn — the raw tables
+already change shape across schema versions for `svlsp`'s own internal
+reasons (v5→v6 added `library_include_dirs`, v6→v7 added
+`library_build_info`, neither remotely related to external consumption), and
+a view layer could stay stable across some of those changes the way a public
+API stays stable while its implementation changes underneath. Not designed
+here — start with documenting the raw schema (item 4 above) and revisit once
+a real external consumer exists to learn what it actually needs.
+
+**Depends on:** §6.5's file-backed-DB open question being resolved in the
+"yes, make it file-backed" direction (items 1-2 above are that same piece of
+work, done once and shared by both motivations) — if that's ever decided
+against for restart-persistence reasons, this section's item 1 still needs to
+happen independently for external access to be possible at all.
 
 ---
 
