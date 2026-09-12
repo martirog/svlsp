@@ -1,8 +1,45 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-09-08 (compressed from full session history — see git log for
+**Last updated:** 2026-09-12 (compressed from full session history — see git log for
 narrative detail if ever needed; this file now documents current-state-and-next-steps
 only).
+
+**Implemented 2026-09-12** — plan.md §6.18, recompile on `textDocument/didSave`,
+following its own sketch exactly (see plan.md §6.18 for the full writeup). A new
+`lsp::notifications::TextDocument_DidSave` handler in `registerHandlers()`
+(`src/lsp/server.cpp`, just ahead of the existing `didClose` handler) cancels any
+pending debounce entry for the URI (`m_debouncer.cancel`, same call `didClose`
+already makes) then calls `compileAndPublish(uri)` synchronously — giving an
+unconditional fresh compile at the moment of save regardless of where in §6.8's
+300ms debounce window the save lands, closing the gap where a paste-then-save (or
+a save-on-focus-loss binding) could briefly show pre-edit diagnostics. No
+`CompilationController`/DB changes — this only changes *when* `compileAndPublish`
+runs. `DidSaveTextDocumentParams::text` is unused (the server never requested
+`includeText`; `compileAndPublish` already reads current text from `m_store`).
+
+Extended `tests/unit/lsp/test_server_debounce.cpp` with a new case plus a
+`TestClient::didSave`/`hasPendingMessage` (non-blocking `poll()`) helper pair:
+schedules a debounced `didChange` introducing an error, sends `didSave`
+immediately, asserts the publish reflects the post-edit text and arrives in
+under 250ms (well under the 300ms debounce), then confirms no second, stale
+publish follows once the original debounce deadline passes — proving `didSave`
+actually cancelled the timer, not merely raced it. New functional test
+`tests/integration/test_36_recompile_on_save.sh` (2 cases) against a scratch
+temp `.sv` file outside `SVLSP_ROOT` (isolated single-file workspace, since this
+test actually calls `save-buffer`): insert-then-save shows the new diagnostic
+within 250ms; fix-then-save clears it just as promptly. **A client-side timing
+gotcha found writing it:** lsp-mode's own `lsp-idle-delay` (default 0.5s, longer
+than the server's 300ms debounce) gates how long lsp-mode waits before even
+*sending* a buffered `didChange` — must be lowered (`setq lsp-idle-delay 0.01`)
+*before* the buffer's `(lsp)` connection is established (the idle timer captures
+the delay at creation time; setting it on an already-connected buffer is a
+no-op), or "insert then save immediately" never gets `didChange` onto the wire
+in time regardless of whether the server-side fix works. Real end-to-end
+latency for the fixed path, confirmed empirically: ~200-220ms.
+
+Unit suite now at 1660 assertions / 583 test cases, no regressions. Full
+Emacs integration suite re-run clean: 199/199, no regressions. Not yet
+committed — only commit when asked.
 
 **Added 2026-09-08** — a follow-on to the `ProjectManifestParser` fix directly below:
 after fixing that bug, the user rebuilt their own `svlsp` via `tools/build.sh release`
@@ -381,8 +418,8 @@ src/compiler/      compiler_directive_stripper, sv_preprocessor, sv_tree_walker,
 src/db/            database, symbol_database, compilation_controller,
                    library_resolver, project_compiler, schema — SQLite persistence (schema v7)
 src/main.cpp       entry point (supports `--log-files <path>`, see below)
-tests/unit/        Catch2 unit tests (582 cases, 1630 assertions)
-tests/integration/ Emacs functional test scripts (197 test cases across 36 files)
+tests/unit/        Catch2 unit tests (583 cases, 1660 assertions)
+tests/integration/ Emacs functional test scripts (199 test cases across 37 files)
 tests/uvm_corpus/  opt-in test suite against a real, external UVM corpus (NOT in
                    ctest/make test — see "UVM corpus testing" below)
 tools/             emacs-test-daemon.sh, emacs-test-init.el, emacs-test-lib.sh
@@ -1817,22 +1854,16 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
     the complete writeup. Re-verified directly against the user's
     original bug report end to end: `all_queue[i].get_policy` now
     completes correctly.
-21. **Recompile on save (`plan.md §6.18`)** — not started. No
-    `textDocument/didSave` handler exists at all today (`registerHandlers()`,
-    `src/lsp/server.cpp`, wires `didOpen`/`didChange`/`didClose` only) —
-    `textDocumentSync` already advertises `save = true`
-    (`src/lsp/server_state.cpp`), so every `didSave` notification a client
-    sends is silently dropped for lack of a handler. Freshness currently
-    relies entirely on §6.8's 300ms debounced `didChange` compile, which is
-    usually already settled by the time a save happens, but a save landing
-    inside that window can briefly show pre-edit diagnostics. Fix: add a
-    `didSave` handler that cancels any pending debounce entry
-    (`m_debouncer.cancel`, same call `didClose` already makes) and calls
-    `compileAndPublish(uri)` immediately. Also flagged as the natural future
-    trigger point for recompiling
-    *dependent* files once §6.4 (cross-file invalidation) exists, rather than
-    propagating on every debounced keystroke — see plan.md §6.18 for the full
-    writeup.
+21. ~~Recompile on save (`plan.md §6.18`)~~ — **implemented 2026-09-12**,
+    following its own sketch exactly. A new `TextDocument_DidSave` handler
+    in `registerHandlers()` (`src/lsp/server.cpp`) cancels any pending
+    debounce entry (`m_debouncer.cancel`, same call `didClose` already
+    makes) and calls `compileAndPublish(uri)` immediately. See the entry at
+    the top of this document and plan.md §6.18 for the full writeup,
+    including a client-side `lsp-idle-delay` timing gotcha found writing
+    the functional test. Recompiling *dependent* files on save remains
+    intentionally deferred to §6.4 (cross-file invalidation) once that
+    section is planned in file-level detail.
 22. ~~Two new grammar quirks, confirmed 2026-09-07~~ — **both fixed
     2026-09-08.** See "Sv.g4 grammar quirks" above for the full writeup on
     each: a method literally named `randomize()` (same root-cause shape as

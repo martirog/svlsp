@@ -2243,7 +2243,7 @@ to disrupt `all_queue`'s own scope tracking after all).
 
 ### 6.18 Recompile on Save (`textDocument/didSave`)
 
-**Status:** not started.
+**Status:** implemented 2026-09-12, following this section's own sketch exactly.
 
 **Why this is needed:** `registerHandlers()` (`src/lsp/server.cpp:62-...`) wires
 `didOpen`/`didChange`/`didClose` but has no `TextDocument_DidSave` handler at
@@ -2265,30 +2265,55 @@ own "wait for typing to pause" intent, whereas "recompile dependents when the
 file is actually saved" matches how every mainstream language server (clangd,
 rust-analyzer) scopes that propagation.
 
-**What is missing:**
+**Implemented as:**
 - A new `lsp::notifications::TextDocument_DidSave` handler in
-  `registerHandlers()`, mirroring the existing `didOpen` pattern
-  (`server.cpp:83-91`): cancel any pending debounce entry for that URI
-  (`m_debouncer.cancel(uri.toString())`, the same call `didClose` already
+  `registerHandlers()` (`src/lsp/server.cpp`), placed just ahead of the
+  existing `didClose` handler: cancels any pending debounce entry for that
+  URI (`m_debouncer.cancel(uri.toString())`, the same call `didClose` already
   makes) so a stale, already-superseded timer can't fire a redundant publish
-  right after, then call `compileAndPublish(uri)` synchronously/immediately —
-  giving an unconditional fresh compile at the moment of save regardless of
-  where in the debounce window it lands.
-- No `CompilationController`/DB changes needed — this only changes *when*
-  `compileAndPublish` runs, not what it does.
+  right after, then calls `compileAndPublish(uri)` synchronously/immediately
+  — giving an unconditional fresh compile at the moment of save regardless of
+  where in the debounce window it lands. Exactly as sketched: no
+  `CompilationController`/DB changes needed, since this only changes *when*
+  `compileAndPublish` runs, not what it does. `DidSaveTextDocumentParams`'s
+  optional `text` field is unused — the server never requested
+  `includeText` (`server_state.cpp`'s `save = true` is the plain-boolean
+  form), and `compileAndPublish` already reads the current text from
+  `m_store` (kept fresh by the preceding `didChange`), matching every other
+  call site.
 
-**Unit tests:** extend `tests/unit/lsp/test_server_debounce.cpp`: schedule a
-`didChange` (debounced, not yet fired) introducing an error, send `didSave`
-before the debounce deadline elapses, assert the diagnostics publish
-immediately and reflect the latest (post-edit) text; then let the original
-debounce deadline pass and assert no second, stale publish follows (proving
-`didSave` actually cancelled it, not just raced it).
+**Unit tests (implemented):** extended `tests/unit/lsp/test_server_debounce.cpp`
+with a new case and a `TestClient::didSave`/`hasPendingMessage` helper pair:
+schedules a `didChange` (debounced, not yet fired) introducing an error,
+sends `didSave` immediately, asserts the diagnostics publish reflects the
+latest (post-edit) text and arrives in well under the ~300ms debounce delay
+(`elapsed < 250ms`), then polls (via `poll()` on the pipe fd, non-blocking)
+past the *original* debounce deadline and asserts no second, stale publish
+follows — proving `didSave` actually cancelled the timer, not just raced it.
 
-**Functional test:** `tests/integration/test_36_recompile_on_save.sh` (next
-free integration test number as of this writing -- §6.11 claimed
-`test_35_fuzzy_completion_toggle.sh` first) — edit an open buffer to
-introduce a diagnostic and save immediately (well inside the 300ms window),
-confirm the diagnostic appears without waiting out the debounce period.
+**Functional test (implemented):** `tests/integration/test_36_recompile_on_save.sh`
+— two cases against a scratch temp file (not a tracked fixture, since this
+test actually calls `save-buffer`; the temp file also sits outside
+`SVLSP_ROOT`, so it gets its own isolated single-file workspace rather than
+sharing the rest of the suite's `SVLSP_ROOT`-rooted one): (1) insert a bad
+token and save-buffer immediately, poll diagnostics for up to 250ms
+(strictly under the 300ms debounce) and confirm they appear; (2) the
+reverse — fix the error and save again, confirming diagnostics clear
+promptly too.
+
+**A client-side timing subtlety found writing this test:** `lsp-idle-delay`
+(the suite's init file leaves it at lsp-mode's own default, 0.5s) governs
+how long lsp-mode itself waits for typing to pause before it even *sends*
+a buffered `didChange` — longer than the server's own 300ms debounce, so
+"insert then save immediately" against the default never got `didChange`
+onto the wire before the 250ms poll window closed, regardless of whether
+the server-side fix worked. Lowering it (`(setq lsp-idle-delay 0.01)`)
+*before* `svlsp-test/open-file` establishes the buffer's connection is
+required — lsp-mode captures the delay when it creates its idle timer at
+connect time, so setting it afterward on an already-connected buffer is a
+no-op. Confirmed real end-to-end latency for the fixed didSave path is
+~200-220ms once this is corrected. Restored unconditionally after each case
+since it's a global defcustom, not buffer-local.
 
 **Open question, deliberately unresolved:** whether `didSave` should also
 force a *bypass* of the file's own hash-cache check in
