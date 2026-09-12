@@ -4,6 +4,75 @@
 narrative detail if ever needed; this file now documents current-state-and-next-steps
 only).
 
+**Implemented 2026-09-12** — the "LSP diagnostics-visibility gap" (documented below
+under "Known gaps" and "Not yet done" #2): `LanguageServer::compileAndPublish`
+(`src/lsp/server.cpp`) previously only ever called `publishDiagnostics` for the
+primary (`didOpen`ed) URI — every transitively `` `include ``d file's own
+diagnostics were already computed and persisted to the DB by
+`CompilationController::compile` (`replaceDiagnostics(incFid, ...)` per included
+file) but silently never sent to the client. Confirmed this is a self-imposed gap
+in this codebase, not an LSP protocol limitation: `textDocument/publishDiagnostics`
+takes an arbitrary `uri` and an explicitly optional `version` (`Opt<int>`, spec'd
+since 3.15.0) for exactly the "this file was never opened" case — the same
+mechanism clangd already uses to surface header diagnostics.
+
+`CompilationController::compile` gained an optional out-param,
+`std::vector<std::string>* includedFiles` (default `nullptr`, every pre-existing
+call site unaffected): populated with every distinct file this call actually
+recompiled, left empty on a cache hit (nothing new to report then — a real but
+explicitly out-of-scope residual gap, since an included file changing
+independently of the primary file's own content hash still isn't detected; that's
+Phase 6.4's job). `compileAndPublish` now reads this list and, for each path,
+queries `SymbolDatabase::diagnosticsForFile` and publishes with no version
+(`std::nullopt` — `DiagnosticsPublisher::publish`/`buildParams` both changed from
+`int version` to `std::optional<int>` for this). URIs for included files reuse
+the existing `pathToUri()` helper (`symbol_utils.cpp`) — every real production
+call site already uses it uniformly, including for definition/workspace-symbol
+results that can point into included files, so no new URI-construction
+convention was needed.
+
+**A related, necessary fix surfaced in the same pass, not scope creep:** the
+loop persisting included-file data was keyed off `recsByFile`'s own keys, so a
+file whose parse produced errors but *zero* records at all (unparseable from the
+very first token, not just a bad body partway through) was previously dropped
+entirely — never persisted to the DB, not merely unpublished. Added a second
+pass over `errsByFile` for exactly this case. Real included files with a bad
+body but at least one recognizable declaration (the overwhelmingly common case)
+were unaffected either way.
+
+New unit test file `tests/unit/lsp/test_server_diagnostics_visibility.cpp`
+(registered in `CMakeLists.txt`): drives a real `LanguageServer` over a real
+pipe transport (same harness shape as `test_server_debounce.cpp`), opens a
+clean primary `` `include ``ing a broken file, and confirms two independent
+`publishDiagnostics` notifications arrive — the primary's own (clean, with a
+version) and the included file's own (real errors, no version field at all,
+not just a null one). Plus 4 new `CompilationController` unit tests
+(`includedFiles` populated on a miss / cleared+empty when nothing included /
+empty on a cache hit / the zero-records edge case) and 1 new
+`DiagnosticsPublisher` test (`buildParams` with `std::nullopt` leaves `version`
+unset). New functional test `tests/integration/test_37_diagnostics_visibility.sh`
+against two new fixtures (`diagvis_top.sv`/`diagvis_inc.sv`): confirms
+`(lsp-diagnostics)` — a session-wide hash lsp-mode maintains independent of
+whether a buffer is open — shows the included file's error even though it was
+never opened directly, while the primary's own diagnostics stay clean. Unit
+suite now at 1701 assertions / 589 test cases; Emacs integration suite now
+201/201 across 38 files. No regressions anywhere. Commits: not yet committed —
+only commit when asked.
+
+**A process trap hit (and worth flagging for next time) verifying this fix:**
+`cmake --build --preset debug --target svlsp_lib` (or `--target unit_tests`)
+does **not** relink the standalone `svlsp` executable target — the actual
+binary `tools/emacs-test-daemon.sh` runs (`SVLSP_BIN=build/debug/svlsp`) — since
+`svlsp` isn't a dependency of either. The first full functional-suite run after
+this fix landed passed 200/200 with the *new* `test_37` case failing exactly as
+expected pre-fix, which read as a plausible real bug — but the actual cause was
+running against a `build/debug/svlsp` last linked 2026-09-08, four days stale,
+predating this session's `didSave` work too. Always `cmake --build --preset
+debug --target svlsp` (the executable itself, not just `svlsp_lib`) before
+trusting an Emacs functional-test result — the same general shape of trap
+`handoff.md` already documented once for `tools/build.sh --output-dir` and a
+shadowing `~/bin/svlsp` (2026-09-08 entry, further below).
+
 **Implemented 2026-09-12** — plan.md §6.18, recompile on `textDocument/didSave`,
 following its own sketch exactly (see plan.md §6.18 for the full writeup). A new
 `lsp::notifications::TextDocument_DidSave` handler in `registerHandlers()`
@@ -37,9 +106,14 @@ no-op), or "insert then save immediately" never gets `didChange` onto the wire
 in time regardless of whether the server-side fix works. Real end-to-end
 latency for the fixed path, confirmed empirically: ~200-220ms.
 
-Unit suite now at 1660 assertions / 583 test cases, no regressions. Full
-Emacs integration suite re-run clean: 199/199, no regressions. Not yet
-committed — only commit when asked.
+Unit suite now at 1660 assertions / 583 test cases, no regressions. Commits:
+`1e7e17e` (feat + tests), `5b7a888` (docs). **Correction, discovered later the
+same session:** the 199/199 Emacs integration re-run reported here at the time
+was actually against a `build/debug/svlsp` that had never been rebuilt this
+session (only `svlsp_lib`/`unit_tests` had) — see the diagnostics-visibility
+entry above for the full story of how that surfaced. `test_36` was re-verified
+against a genuinely fresh binary immediately after (still passing, this time
+for real) once that was caught.
 
 **Added 2026-09-08** — a follow-on to the `ProjectManifestParser` fix directly below:
 after fixing that bug, the user rebuilt their own `svlsp` via `tools/build.sh release`
@@ -418,8 +492,8 @@ src/compiler/      compiler_directive_stripper, sv_preprocessor, sv_tree_walker,
 src/db/            database, symbol_database, compilation_controller,
                    library_resolver, project_compiler, schema — SQLite persistence (schema v7)
 src/main.cpp       entry point (supports `--log-files <path>`, see below)
-tests/unit/        Catch2 unit tests (583 cases, 1660 assertions)
-tests/integration/ Emacs functional test scripts (199 test cases across 37 files)
+tests/unit/        Catch2 unit tests (589 cases, 1701 assertions)
+tests/integration/ Emacs functional test scripts (201 test cases across 38 files)
 tests/uvm_corpus/  opt-in test suite against a real, external UVM corpus (NOT in
                    ctest/make test — see "UVM corpus testing" below)
 tools/             emacs-test-daemon.sh, emacs-test-init.el, emacs-test-lib.sh
@@ -502,11 +576,13 @@ rename all registered. **Note:** C++ designated initializers must follow
 
 - `DocumentStore`: pure `uri → {text, version}` map (`open`/`update`/`close`/`contains`/`get`).
 - `DiagnosticsPublisher::publish(uri, version, diags)`: sends `publishDiagnostics`.
-  **Known gap:** only ever called with the *primary* opened file's diagnostics
-  (`compile()` returns `errsByFile[""]`) — diagnostics for transitively-included files
-  are computed and persisted to the DB but never `publish()`'d to the client. A user
-  opening a thin wrapper file sees "0 problems" even if included files have errors.
-  Not fixed — see "Not yet done" below.
+  `version` is `std::optional<int>` (fixed 2026-09-12, was a plain `int`) — pass
+  `std::nullopt` for a file the client never `didOpen`ed, matching the LSP spec's
+  own optional `version` field. **Fixed 2026-09-12** (see the entry at the top of
+  this document): `LanguageServer::compileAndPublish` now also publishes
+  diagnostics for every transitively-included file a compile touched, read back
+  from the DB via `SymbolDatabase::diagnosticsForFile` and published with no
+  version attached.
 - `symbol_utils.h/.cpp`: `symbolKindFor`/`completionKindFor` (DB kind string → LSP enum),
   `wordAtPosition(text, line, char)` (extracts identifier at cursor, walks left even off
   an id char — intentional, completion needs the prefix), `makeRange`, `pathToUri`
@@ -1570,9 +1646,10 @@ access) vs. `expectedUriPath` (output comparison — runs the expected value thr
 - `export *::*;` LRM shorthand not implemented (see Phase 6.3 section above).
 - **References, rename, signature help are unconditional-null stubs.** No real
   implementation exists yet.
-- **LSP diagnostics-visibility gap**: only the primary opened file's diagnostics are
+- ~~**LSP diagnostics-visibility gap**: only the primary opened file's diagnostics are
   ever `publish()`'d to the client; included files' diagnostics are computed/persisted
-  to the DB but never sent. See "Document store / diagnostics" above.
+  to the DB but never sent.~~ — **fixed 2026-09-12**, see the entry at the top of this
+  document.
 - ~~`findSymbolsByName`/hover/definition have no kind-preference tiebreak~~ —
   **mitigated 2026-09-01** via `pickBestSymbol()` (see above): declaration-like kinds
   (`Module`/`Interface`/`Program`/`Package`/`Class`/`Function`/`Task`) now outrank
@@ -1620,9 +1697,9 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
 1. **Phase 6.4 — cross-file invalidation / dependency graph** (`plan.md §6.4`) — not
    yet planned in file-level detail. Needed for correct incremental recompilation when
    a shared/included file changes.
-2. **LSP diagnostics-visibility gap** — publish diagnostics for every file touched by
-   a `compile()` call, not just the primary opened one. Small, self-contained,
-   immediately-actionable editor-UX fix independent of Phase 6.4.
+2. ~~LSP diagnostics-visibility gap~~ — **implemented 2026-09-12**: publish diagnostics
+   for every file touched by a `compile()` call, not just the primary opened one. See
+   the entry at the top of this document for the full writeup.
 3. **Implement real `references`/`rename`/`signatureHelp`** — currently unconditional
    null stubs; if upgraded, add matching `tests/uvm_corpus/test_*_uvm.cpp` coverage too.
 4. **`data_type`/`variable_decl_assignment` ambiguity** — documented, not fixed (see
