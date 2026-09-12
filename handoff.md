@@ -1,8 +1,61 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-09-12 (compressed from full session history — see git log for
+**Last updated:** 2026-09-13 (compressed from full session history — see git log for
 narrative detail if ever needed; this file now documents current-state-and-next-steps
 only).
+
+**Implemented 2026-09-13** — real `references`/`rename`/`signatureHelp` (plan.md
+§6.22, closing "Not yet done" #3 below), replacing the three long-standing
+unconditional-`null` stubs. None of the three had any data model to build on
+directly (no reference-tracking table, only declarations; no per-parameter data
+for function/task calls), so each was scoped to a genuinely useful but honestly
+limited v1 rather than building the full "real" semantic version:
+
+- **References/rename**: a lexical, cross-file text search, not scope-aware.
+  New `SymbolDatabase::allFilePaths()` plus `symbol_utils.h`'s
+  `findIdentifierOccurrences(text, name)` (skips comments/string literals, same
+  in-string handling the preprocessor's own macro-argument scanner uses).
+  `ReferencesProvider`/`RenameProvider` take an injected `textForPath` callback
+  (open-buffer-or-disk) rather than touching `DocumentStore` directly, reusing
+  `LanguageServer::currentTextFor` — the same helper §6.4's
+  `forceRecompileAndPublish` already needed, extracted for this second use.
+  `RenameProvider` validates `newName` against IEEE 1800's identifier grammar,
+  throwing `lsp::RequestError` otherwise. Disclosed limitation: two unrelated
+  same-named declarations in different files are indistinguishable from here
+  and both get included/renamed — a real fix needs the same semantic
+  reference-resolution machinery plan.md §6.21 already scopes out separately.
+- **Signature help**: scoped to module/interface/program instantiation port
+  lists only (reuses existing `Port` symbols — name + direction). A local
+  backward-paren-depth scan finds the enclosing argument list and the
+  `<TypeName> <InstanceName> (` header; active-parameter tracking counts
+  top-level commas but also recognizes a named port connection (`.portName(`)
+  and resolves it by name instead when present — a real subtlety found
+  implementing this: a named connection's own parens must be distinguished
+  from a genuine nested call (`obj.method(`) or the scan stops at the wrong
+  paren; `isNamedConnectionParen` checks what precedes the leading `.`
+  (`(`/`,`/start-of-text` vs. an identifier) to tell them apart. Function/task
+  calls are explicitly NOT supported — no per-parameter data exists for them
+  anywhere in this schema (only the function's own name/return type are
+  recorded); extending this needs a new extraction step capturing a verbatim
+  parameter-list source span, not attempted here.
+
+New unit tests: `tests/unit/lsp/test_references.cpp`, `test_rename.cpp`,
+`test_signature_help.cpp` (all three rewritten from their old "always null"
+stub tests). Functional tests: `tests/integration/test_07_references.sh`,
+`test_11_rename.sh`, `test_12_signature_help.sh` (also rewritten in place, same
+numbers) against a new fixture, `fixtures/ref_rename_sighelp.sv`. **A real
+fixture-naming bug caught only by the full suite, not the isolated 3-file
+run:** the fixture's first draft named its module `adder`, already declared by
+`examples/module_basic.sv` and opened by several earlier tests — since this
+daemon session shares one `svlsp` process and one growing in-memory DB across
+every `test_*.sh` file (never purged on `didClose`), `findSymbolsInScope`
+silently unioned both files' ports once `module_basic.sv` had been opened
+earlier in the full run. Fixed by prefixing every declared name with `rrsh_`,
+matching this repo's own established convention (`gapb_`, `diagvis_`,
+`svlsp_test_` prefixes elsewhere) for exactly this reason — see plan.md §6.22
+for the full writeup. Unit suite now at 2029 assertions / 614 test cases;
+Emacs integration suite now 204/204 across 39 files. No regressions anywhere.
+Not yet committed — only commit when asked.
 
 **Implemented 2026-09-12** — plan.md §6.4, cross-file invalidation, scoped to
 `` `include `` edges only (the "Not yet done" #1 item below). New schema-v8
@@ -553,8 +606,8 @@ src/compiler/      compiler_directive_stripper, sv_preprocessor, sv_tree_walker,
 src/db/            database, symbol_database, compilation_controller,
                    library_resolver, project_compiler, schema — SQLite persistence (schema v8)
 src/main.cpp       entry point (supports `--log-files <path>`, see below)
-tests/unit/        Catch2 unit tests (603 cases, 2000 assertions)
-tests/integration/ Emacs functional test scripts (202 test cases across 39 files)
+tests/unit/        Catch2 unit tests (614 cases, 2029 assertions)
+tests/integration/ Emacs functional test scripts (204 test cases across 39 files)
 tests/uvm_corpus/  opt-in test suite against a real, external UVM corpus (NOT in
                    ctest/make test — see "UVM corpus testing" below)
 tools/             emacs-test-daemon.sh, emacs-test-init.el, emacs-test-lib.sh
@@ -661,9 +714,9 @@ rename all registered. **Note:** C++ designated initializers must follow
 | `completion.h/.cpp` | `CompletionProvider` | `findSymbolsVisibleAt(path, line1)` → fuzzy-scored (see below) → `CompletionItem[]` |
 | `document_symbols.h/.cpp` | `DocumentSymbolsProvider` | `symbolsForFile` → `DocumentSymbol[]` with scope ranges |
 | `workspace_symbols.h/.cpp` | `WorkspaceSymbolsProvider` | `findSymbolsByNamePrefix(query)` → `WorkspaceSymbol[]` |
-| `references.h/.cpp` | `ReferencesProvider` | Returns `nullptr` — **unimplemented stub** |
-| `rename.h/.cpp` | `RenameProvider` | Returns `nullptr` — **unimplemented stub** |
-| `signature_help.h/.cpp` | `SignatureHelpProvider` | Returns `nullptr` — **unimplemented stub** |
+| `references.h/.cpp` | `ReferencesProvider` | `wordAtPosition` → `findSymbolsByName` (fail closed) → lexical cross-file `findIdentifierOccurrences` scan → `Location[]` (plan.md §6.22) |
+| `rename.h/.cpp` | `RenameProvider` | Same scan as references, always including the declaration → `WorkspaceEdit`; throws on an invalid new identifier (plan.md §6.22) |
+| `signature_help.h/.cpp` | `SignatureHelpProvider` | Module/interface/program instantiation port lists only (existing `Port` symbols) — backward paren scan finds the enclosing call, named-connection-aware active-parameter tracking; `nullptr` for function/task calls (no per-parameter data exists for those) (plan.md §6.22) |
 
 Position-based providers (hover, definition, completion) check `m_store.contains(uri)`
 first and return `nullptr` if the document isn't open. Hover/Definition do **global**
@@ -1712,8 +1765,11 @@ access) vs. `expectedUriPath` (output comparison — runs the expected value thr
 - `CompilationController` uses `":memory:"` SQLite — symbols lost on server restart
   (swap to a file-backed path in `server.cpp` for persistence, straightforward change).
 - `export *::*;` LRM shorthand not implemented (see Phase 6.3 section above).
-- **References, rename, signature help are unconditional-null stubs.** No real
-  implementation exists yet.
+- ~~**References, rename, signature help are unconditional-null stubs.**~~ —
+  **implemented 2026-09-13**, each scoped to an honest v1 (lexical cross-file
+  text search for references/rename; module/interface/program instantiation
+  ports only for signatureHelp) rather than the full semantic version — see
+  the entry at the top of this document and plan.md §6.22.
 - ~~**LSP diagnostics-visibility gap**: only the primary opened file's diagnostics are
   ever `publish()`'d to the client; included files' diagnostics are computed/persisted
   to the DB but never sent.~~ — **fixed 2026-09-12**, see the entry at the top of this
@@ -1769,8 +1825,16 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
 2. ~~LSP diagnostics-visibility gap~~ — **implemented 2026-09-12**: publish diagnostics
    for every file touched by a `compile()` call, not just the primary opened one. See
    the entry at the top of this document for the full writeup.
-3. **Implement real `references`/`rename`/`signatureHelp`** — currently unconditional
-   null stubs; if upgraded, add matching `tests/uvm_corpus/test_*_uvm.cpp` coverage too.
+3. ~~Implement real `references`/`rename`/`signatureHelp`~~ — **implemented
+   2026-09-13**, each scoped to an honest v1 rather than the full semantic
+   version (references/rename: lexical cross-file text search, not
+   scope-aware; signatureHelp: module/interface/program instantiation port
+   lists only, not function/task calls). See the entry at the top of this
+   document and plan.md §6.22 for the full writeup. **Not done**: no
+   `tests/uvm_corpus/test_*_uvm.cpp` coverage was added for these three —
+   this sandbox has no access to the external UVM checkout that suite
+   depends on; worth adding whenever this is next touched somewhere that
+   does.
 4. **`data_type`/`variable_decl_assignment` ambiguity** — documented, not fixed (see
    grammar quirks table above). Only pursue if it starts causing more than the current
    1 known corpus diagnostic, or a user-reported false diagnostic traces back to it.

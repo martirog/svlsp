@@ -179,6 +179,7 @@ Each sub-phase follows the same pattern:
 ### 3.5 Find References (`textDocument/references`)
 - List all references to a symbol across the project.
 - Functional test: trigger find-references; verify the reference list in Emacs.
+- **Implemented 2026-09-13** — see §6.22 for the full writeup.
 
 ### 3.6 Completion (`textDocument/completion`)
 - Context-aware completions: keywords, module ports, signal names, macros.
@@ -204,10 +205,12 @@ Each sub-phase follows the same pattern:
 ### 3.9 Rename (`textDocument/rename`)
 - Rename a symbol and all its references across the project.
 - Functional test: rename a signal; verify all occurrences updated in Emacs buffers.
+- **Implemented 2026-09-13** — see §6.22 for the full writeup.
 
 ### 3.10 Signature Help (`textDocument/signatureHelp`)
 - Show port/parameter signatures when editing a module instantiation.
 - Functional test: type a module instantiation; verify signature popup in Emacs.
+- **Implemented 2026-09-13** — see §6.22 for the full writeup.
 
 ---
 
@@ -2997,6 +3000,142 @@ than `Error` (mirroring §6.7's own "an unrecognized value defaults to
 Warning, not Error, so a typo doesn't become build-breaking" reasoning) is
 the likely right choice, but not decided here — revisit once real usage shows
 how often this actually false-positives in practice.
+
+### 6.22 References, Rename, Signature Help (`textDocument/references`/`rename`/`signatureHelp`)
+
+**Status:** implemented 2026-09-13, closing out §3.5/§3.9/§3.10's original
+one-line sketches (unconditional-`null` stubs until now).
+
+**Why this needed a real design, not just "wire it up":** unlike hover/
+definition/completion, none of these three have any data model to build on
+directly. There is no reference-tracking table in this schema — only
+declarations (`symbols`) — and no per-parameter data for function/task
+calls (only the function/task's own name and return type are recorded, see
+`enterFunction_body_declaration`/`enterFunction_prototype` in
+`sv_tree_walker.cpp`). Building the "real," fully semantic, scope-aware
+version of any of these three would be a substantial new subsystem (general
+reference resolution — the same underlying gap §6.21 already documents for
+a different reason). Given the size of implementing all three in one pass,
+each was scoped to a genuinely useful, honestly-limited v1 built on data
+that already exists, with the gap to "real" explicitly disclosed rather than
+silently accepted.
+
+**References and rename — a lexical, cross-file text search:**
+- New `SymbolDatabase::allFilePaths()` — every path in `files`, no reference
+  edges to walk.
+- New `symbol_utils.h`/`.cpp`: `findIdentifierOccurrences(text, name)` — a
+  lexical scanner (not a re-parse) returning every whole-identifier match of
+  `name` in `text`, skipping `//`/`/* */` comments and `"..."` string
+  literals (same in-string escape handling the preprocessor's own
+  macro-argument scanner already uses) so a same-named identifier inside one
+  of those is never (wrongly) reported.
+- `ReferencesProvider::getReferences(params, db, docText, textForPath)`:
+  resolves the word under the cursor (`wordAtPosition`, same helper hover/
+  definition already use), confirms it's a real known symbol
+  (`findSymbolsByName` non-empty — fails closed otherwise), then scans every
+  file `allFilePaths()` returns via `textForPath` (an injected
+  path→text lookup, so this provider needs no knowledge of `DocumentStore`
+  or the filesystem itself), filtering out the declaration's own location
+  unless `context.includeDeclaration` is set.
+- `RenameProvider::getRename` reuses the identical scan (always including
+  the declaration, since a rename must cover it) and builds a
+  `WorkspaceEdit` with one `TextEdit` per occurrence per file. Validates
+  `newName` against IEEE 1800's "simple identifier" grammar
+  (`[a-zA-Z_][a-zA-Z0-9_$]*`) and throws `lsp::RequestError` (`InvalidParams`)
+  otherwise, per the LSP spec's own requirement that an invalid new name be
+  reported as an error response, not a silently-broken edit.
+- **Disclosed limitation, not fixed:** this is name-based, not scope-aware —
+  two unrelated declarations that happen to share a name (two classes both
+  named `Packet` in different files, say) are indistinguishable from here
+  and both get included/renamed. A real fix needs the same semantic
+  reference-resolution machinery §6.21 already scopes out as a separate,
+  larger effort.
+- Both providers take an injected `textForPath` callback rather than reading
+  `DocumentStore`/disk directly, for testability (a unit test backs it with
+  a plain `std::map`) and reuse: `LanguageServer` passes its own
+  `currentTextFor` (m_store if open, else disk — the same helper
+  `forceRecompileAndPublish` already uses for §6.4, extracted for this
+  second use).
+
+**Signature help — scoped to module/interface/program instantiation port
+lists only:**
+- Reuses existing `Port`-kind symbols (name + direction already recorded via
+  `enterAnsi_port_declaration`) — no new extraction needed for this part.
+- A local (signature_help.cpp-only) lexical scan: `findEnclosingParen` walks
+  backward from the cursor with a paren-depth counter to find the argument
+  list it's inside; `parseInstantiationHeader` then reads the two
+  identifiers immediately before that `(` (`<TypeName> <InstanceName> (`).
+  The resolved type name is looked up via `findSymbolsByName`, filtered to
+  Module/Interface/Program kind, disambiguated by the existing
+  `pickBestSymbol` (same-file-first) — then its ports come from
+  `findSymbolsInScope` on its own qualified scope, sorted by (line, col) to
+  approximate declaration order.
+- Active-parameter tracking counts top-level commas between the paren and
+  the cursor for a plain positional index, but also recognizes a named port
+  connection (`.portName(` — ubiquitous in real SV verification code) at the
+  start of the current argument and resolves that to the matching port's
+  index by name instead, when present.
+- **A real subtlety found implementing this:** a named connection's own
+  parens (`.portName(`) must NOT be treated as a nested call by
+  `findEnclosingParen` — a cursor positioned to type the connected signal
+  (right after `.a(`) needs the *outer* instantiation's own paren, not this
+  one. `isNamedConnectionParen` distinguishes this shape (`.identifier(`
+  where the `.` itself starts a fresh argument — preceded by `(`, `,`, or
+  start-of-text) from a genuine dotted method call (`obj.method(`, where an
+  identifier rather than `(`/`,` precedes the `.`) so the latter is left
+  alone (and simply fails to resolve later, since no per-parameter data
+  exists for arbitrary calls either way).
+- **Function/task calls are explicitly NOT supported** — the reason this
+  section opened with: there is no per-parameter data for them anywhere in
+  this schema to build a signature from. Extending this would need a new,
+  separate extraction step (capturing a function/task's own verbatim
+  parameter-list source text, since ANTLR's `getText()` strips inter-token
+  whitespace and can't be used directly for a human-readable signature) —
+  not attempted in this pass; `SignatureHelpProvider`'s own header comment
+  documents this as the concrete next step if it's ever picked up.
+- **Also not attempted:** a parameter-override block between type and
+  instance name (`Module #(...) inst (`) — `parseInstantiationHeader` only
+  recognizes the plain `TypeName InstanceName (` shape and fails closed
+  (returns no signature help) otherwise, a disclosed simplification rather
+  than an oversight.
+
+**Unit tests:** `tests/unit/lsp/test_references.cpp` (cursor not on an
+identifier; unknown identifier; excludes/includes the declaration;
+cross-file; comment/string exclusion; a file with unavailable text is
+skipped, not a crash); `tests/unit/lsp/test_rename.cpp` (the same shape,
+plus invalid-identifier rejection via `CHECK_THROWS_AS`, and a
+multi-file `WorkspaceEdit`); `tests/unit/lsp/test_signature_help.cpp`
+(no enclosing parens; unknown type name; a real port list; positional
+active-parameter tracking; named-connection active-parameter tracking
+overriding the positional count; works for `interface` too; explicitly
+confirms `null` for a function call). Unit suite now at 2029 assertions /
+614 test cases, no regressions.
+
+**Functional tests:** `tests/integration/test_07_references.sh`,
+`test_11_rename.sh`, and `test_12_signature_help.sh` — these three files
+already existed as the original "always null" stub tests and were rewritten
+in place (not given new numbers) against a new fixture,
+`fixtures/ref_rename_sighelp.sv`. Emacs integration suite now 204/204 across
+39 files, no regressions.
+
+**A real fixture-naming bug caught by the full suite, not the isolated
+three-file run:** the fixture's first draft named its module `adder` —
+already declared by `examples/module_basic.sv`, opened by several earlier,
+unrelated tests. Since this daemon session shares one `svlsp` process and
+one growing in-memory DB across every `test_*.sh` file, never purged on
+`didClose` (a documented risk in this handoff/plan already, "Emacs test
+infrastructure" section), `findSymbolsInScope("adder")` silently unioned
+*both* files' ports together once `module_basic.sv` had been opened by an
+earlier test — a name collision, not a provider bug. Running the new tests
+in isolation (just these three files) never surfaces this, since
+`module_basic.sv` is never opened in that narrower run — only the full
+39-file suite does. Fixed by prefixing every declared name in the new
+fixture with `rrsh_`, matching this repo's own established convention for
+exactly this reason (`gapb_`, `diagvis_`, `svlsp_test_` prefixes elsewhere).
+Worth remembering for any future fixture: check `tests/integration/
+fixtures/**` and `examples/**` for a name collision, and always run the
+*full* suite at least once before trusting an isolated few-file run — see
+handoff.md's own "Emacs test infrastructure" section for the same caution.
 
 ---
 
