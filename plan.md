@@ -476,48 +476,132 @@ packages themselves), not their contents. A class inside a package has
 
 ### 6.4 Cross-File Invalidation
 
+**Status:** implemented 2026-09-12, scoped to `` `include `` edges only — see
+the "Note" and "Implemented as" below for exactly why, and §6.21 for the
+edge kind deliberately left out.
+
 **Why this is needed:** `CompilationController` is single-file: it recompiles a file
 when its own content hash changes, but does not detect that other files referencing its
 symbols may now be broken. If `MyClass` in `a.sv` loses a field and `b.sv` uses that
 field, editing `a.sv` must eventually flag `b.sv` as stale and re-check it.
 
-**What is missing:**
-- A `file_dependencies` table `(dependent_file_id → files, dependency_file_id → files)`
-  recording "dependent uses at least one symbol defined in dependency".
-  - Populated during compilation: for each identifier reference resolved to a symbol
-    in another file, record the edge. (Requires a reference-resolution pass, which is
-    part of Phase 6 provider wiring anyway.)
-- `CompilationController::compile(path, text)` after updating file A must:
-  1. Query `file_dependencies` for all files that depend on A.
-  2. For each dependent file, call `compile` recursively (or queue it for background
-     recompilation) so its diagnostics are refreshed.
-- Cycle guard: a file may indirectly depend on itself (mutual use); use a visited set.
+**Original sketch (superseded by "Implemented as" below, kept for history):**
+a `file_dependencies` table `(dependent_file_id → files, dependency_file_id →
+files)` populated by a general "reference resolution" pass, walked after every
+`compile()` call to recursively recompile every dependent. This predates
+imports/instantiations tracking and assumed a resolution pass that doesn't
+exist in this codebase — see the note directly below.
 
-**Note, added 2026-09-12 (research pass ahead of implementation):** this
-section's original sketch above predates imports/instantiations tracking and
-assumes a general "reference resolution" pass that does not exist in this
-codebase — see §6.21 below for why. As things stand today, only two edge
-kinds can actually leave a diagnostic stale: `` `include `` edges (B's
-compiled unit literally embeds A's text) and instantiation edges
-(`LibraryResolver`'s "unresolved instantiation" check). **Import edges
-(`import pkg::X`) are deliberately out of scope for this section, not because
-they're already handled, but because there is currently no diagnostic at all
-that checks whether an imported or declared-type reference actually resolves
-to a real declaration** — removing `X` from `pkg` today produces silence
-(hover/completion just fail closed), not a stale error, so there is nothing
-for cross-file invalidation to refresh. §6.21 proposes closing that gap; if
-it ships, its own reference-resolution edges need exactly the invalidation
-treatment this section describes for instantiation edges — same
-name-based-diff shape, different name set.
+**Note, added 2026-09-12 (research pass ahead of implementation):** as things
+stand today, only two edge kinds can actually leave a diagnostic stale:
+`` `include `` edges (B's compiled unit literally embeds A's text) and
+instantiation edges (`LibraryResolver`'s "unresolved instantiation" check).
+**Import edges (`import pkg::X`) are deliberately out of scope for this
+section, not because they're already handled, but because there is currently
+no diagnostic at all that checks whether an imported or declared-type
+reference actually resolves to a real declaration** — removing `X` from `pkg`
+today produces silence (hover/completion just fail closed), not a stale
+error, so there is nothing for cross-file invalidation to refresh. §6.21
+proposes closing that gap; if it ships, its own reference-resolution edges
+need exactly the invalidation treatment described below for `` `include ``
+edges — same name-based-diff shape, different name set. **Instantiation
+edges are also deliberately deferred out of this pass**, for a related but
+distinct reason found in the same research: `SymbolDatabase::replaceDiagnostics`
+does an unconditional `DELETE FROM diagnostics WHERE file_id=?` shared with
+`LibraryResolver::appendDiagnostics`'s own rows, so a live edit already
+silently wipes a file's "unresolved instantiation" diagnostic today with no
+mechanism to re-add it — building instantiation-edge invalidation on top of
+that without fixing it first would just paper over a bug rather than close
+it. §6.21's own writeup covers the shared `source`-column fix both need.
 
-**Integration tests (once provider wiring and import resolution are done):**
-- `test_17_cross_file_error_propagation.sh`:
-  1. Compile a project with `class_def.sv` (defines `MyClass` with field `x`) and
-     `consumer.sv` (uses `MyClass.x`). Both show no diagnostics.
-  2. Edit `class_def.sv` to remove field `x` via `didChange`.
-  3. Verify that `consumer.sv` now has a diagnostic on the broken reference,
-     without the user explicitly touching `consumer.sv`.
-- `test_18_cross_file_error_cleared.sh`: restore field `x`, verify consumer clears.
+**Implemented as (`` `include `` edges only):**
+- New table, schema v8: `file_includes(includer_file_id, included_file_id)`
+  (`src/db/schema.h`). `CompilationController::compile` (`src/db/compilation_controller.cpp`)
+  persists one row per file in its own already-computed, fully-transitive
+  include set (the same `includedFiles` list the diagnostics-visibility fix
+  builds) via `SymbolDatabase::replaceFileIncludes` — on every real recompile,
+  never on a cache hit, and unconditionally (not gated on whether a caller
+  asked for the `includedFiles` out-param). Because one compile of a
+  top-level file already discovers its *entire* include tree, a reverse
+  lookup (`SymbolDatabase::includersOf(path)`) needs no recursion to find
+  every file that would need recompiling if `path` changes — it's a single
+  flat query.
+- `CompilationController::compile` gained a `bool forceRecompile = false`
+  parameter: unconditionally skips the content-hash cache-hit check.
+  Required because a dependent file's own text can be completely unchanged
+  even though something it `` `include ``s just changed — the ordinary hash
+  comparison alone would wrongly treat that as a cache hit and skip
+  re-parsing it.
+- `LanguageServer`'s `textDocument/didSave` handler (`src/lsp/server.cpp`),
+  right after its existing §6.18 primary-file recompile, looks up
+  `includersOf(savedPath)` and schedules each result on a **second**
+  `ChangeDebouncer` instance, `m_dependencyRechecker` (reusing the same class
+  §6.8 already built rather than inventing a new queue — its per-key
+  coalescing is exactly right here too). Its own fire callback,
+  `forceRecompileAndPublish(path)`, reads current text from `m_store` if
+  `path` is open (attaching its real client-tracked version) or from disk if
+  not (no version — never `didOpen`ed), force-recompiles, and publishes its
+  diagnostics plus every one of *its* included files' own (reusing the
+  diagnostics-visibility fix's `collectIncludedDiagnostics` helper, factored
+  out of `compileAndPublish` for this reuse).
+- **Deliberately gated to `didSave`, not `didChange`** — directly validating
+  the concern that motivated writing this section in the first place: a
+  widely-`` `include ``d file (a shared macros header) could have many
+  includers, and recompiling all of them synchronously, or on every
+  keystroke-pause, would either stall the server or flood it with cascading
+  recompiles during active typing. Save is deliberate and infrequent, exactly
+  the reasoning §6.18's own text already established for this same handler.
+- **Never holds `m_dataMutex` across the whole cascade.** Each queued
+  dependent is an independent `ChangeDebouncer`-fired call: acquire the lock,
+  force-recompile *one* file, publish, release. An interactive request
+  (hover/completion/...) waiting on the same lock only ever waits behind one
+  file's compile time, never the whole fan-out — `ChangeDebouncer::run`'s own
+  loop already unlocks its *own* internal mutex before firing each due
+  callback in sequence, and `m_dataMutex` itself is only held per-call inside
+  `forceRecompileAndPublish`, not across the loop.
+
+**A non-obvious testing subtlety, worth remembering for anyone extending
+this:** diagnostics are attributed to the file a problem actually occurs in,
+not to every file that transitively includes it (the same per-file
+attribution the diagnostics-visibility fix already established) — so
+breaking `` `include ``d file A does **not** change includer B's own
+diagnostic *count* (it stays 0, correctly). The observable proof B was
+genuinely force-recompiled is that B's own recompile re-discovers A as one of
+its own included files and republishes A's diagnostics a *second* time (a
+version-less echo, distinct from A's own client-tracked publish) — this is
+what the unit tests below actually assert, after an initial, wrong attempt
+assumed B's own count would change.
+
+**Unit tests (implemented):** `tests/unit/db/test_symbol_database.cpp`
+(`replaceFileIncludes`/`includersOf` round-trip, multiple includers of the
+same file, overwrite-on-recompile); `tests/unit/db/test_compilation_controller.cpp`
+(a real compile persists the edge; persisted independent of whether
+`includedFiles` is requested; untouched on a cache hit; `forceRecompile`
+genuinely bypasses the cache — proven the same sentinel-symbol way §5.4's own
+cache-hit test does, in reverse); `tests/unit/db/test_database.cpp` (schema
+creates `file_includes`, schema version 8). New full-stack file
+`tests/unit/lsp/test_server_cross_file_invalidation.cpp` (real pipe
+transport, same harness shape as `test_server_debounce.cpp`): saving an
+included file force-recompiles its one includer (proven via the echo
+mechanism above); editing without saving produces no propagation at all
+(`hasPendingMessage` proving *no* further message arrives, not just "none for
+this URI"); a widely-included file force-recompiles every one of several
+includers. Unit suite now at 2000 assertions / 603 test cases, no
+regressions.
+
+**Functional test (implemented):** `tests/integration/test_38_cross_file_invalidation.sh`
+— against two scratch temp files (A, and B which `` `include ``s A) outside
+`SVLSP_ROOT`: dynamically shadows lsp-mode's own `lsp-diagnostics-updated-hook`
+with a counting function for the duration of an edit+save on A, and confirms
+at least two diagnostics-updated events fire (A's own save-triggered
+recompile, plus at least one more from B's asynchronous force-recompile) —
+a plain single-file save with no dependents would only ever produce one. This
+proxy (an event count, not exact wire-message inspection) was chosen because
+`(lsp-diagnostics)` alone can't distinguish "B was recompiled and found
+nothing new" from "B was never touched" the way the unit test's version-field
+check can; the precise mechanism is already proven directly at the unit
+level, so the functional test's job is confirming the wiring reaches a real
+client, not re-deriving that proof.
 
 ### 6.5 Performance Baseline
 - Measure and document: time to parse a large SystemVerilog file, time to answer a

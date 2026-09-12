@@ -4,6 +4,67 @@
 narrative detail if ever needed; this file now documents current-state-and-next-steps
 only).
 
+**Implemented 2026-09-12** — plan.md §6.4, cross-file invalidation, scoped to
+`` `include `` edges only (the "Not yet done" #1 item below). New schema-v8
+table `file_includes(includer_file_id, included_file_id)` — populated in
+`CompilationController::compile` (`src/db/compilation_controller.cpp`) from
+the same fully-transitive `includedFiles` list the diagnostics-visibility fix
+above already computes, so `SymbolDatabase::includersOf(path)` (the reverse
+lookup) needs no recursion. `compile` also gained a `forceRecompile` bool that
+skips the content-hash cache-hit check unconditionally — needed because a
+dependent file's own text can be unchanged even though something it
+`` `include ``s just changed.
+
+`LanguageServer`'s `didSave` handler (`src/lsp/server.cpp`), right after its
+existing §6.18 primary recompile, looks up every includer of the saved path
+and schedules each on a **second** `ChangeDebouncer` instance,
+`m_dependencyRechecker` (reusing §6.8's own class rather than a new queue).
+Its callback, `forceRecompileAndPublish`, reads text from `m_store` if open
+(disk if not), force-recompiles, and publishes — reusing the
+diagnostics-visibility fix's `collectIncludedDiagnostics` helper (factored out
+of `compileAndPublish` for this). **Deliberately gated to `didSave`, not
+`didChange`** — a widely-`` `include ``d header could have many includers, and
+recompiling them synchronously or on every keystroke-pause would either stall
+the server or flood it during active typing; save is deliberate and
+infrequent. **Never holds `m_dataMutex` across the whole cascade** — each
+queued dependent is independently lock-scoped (acquire, recompile one file,
+publish, release), so an interactive request waiting on the same lock only
+ever waits behind one file's compile time.
+
+**Import edges and instantiation edges are deliberately out of scope for this
+pass** — see plan.md §6.4's own "Note" for the full reasoning: there's
+currently no diagnostic at all for an unresolved import/declared-type
+reference (§6.21 covers that gap), and `LibraryResolver`'s own diagnostics are
+already unstable today for an unrelated reason (`replaceDiagnostics` silently
+wipes them on any live edit, with nothing to re-add them) that needs fixing
+before instantiation-edge invalidation would even be meaningful.
+
+**A testing subtlety worth remembering:** diagnostics attribute to the file a
+problem actually occurs in, not to every includer — so breaking an included
+file does NOT change an includer's own diagnostic *count* (correctly stays
+0). The real proof an includer was force-recompiled is that it re-discovers
+the changed file as one of its own includes and republishes *that* file's
+diagnostics a second time (a version-less echo, distinct from the changed
+file's own client-tracked publish) — an initial test-writing mistake assumed
+the includer's own count would change; see plan.md §6.4 for the corrected
+design.
+
+New unit tests: `tests/unit/db/test_symbol_database.cpp`
+(`replaceFileIncludes`/`includersOf`), `tests/unit/db/test_compilation_controller.cpp`
+(edge persistence, `forceRecompile`), `tests/unit/db/test_database.cpp`
+(schema v8), and a new full-stack file
+`tests/unit/lsp/test_server_cross_file_invalidation.cpp` (real pipe
+transport: single-includer propagation, no-propagation-without-save, and a
+three-includer fan-out). New functional test
+`tests/integration/test_38_cross_file_invalidation.sh` — shadows lsp-mode's
+own `lsp-diagnostics-updated-hook` with a counter to prove more than one
+diagnostics update fires from a single save (the precise per-file mechanism
+is already proven at the unit level; `(lsp-diagnostics)` alone can't
+distinguish "recompiled, found nothing new" from "never touched"). Unit
+suite now at 2000 assertions / 603 test cases; Emacs integration suite now
+202/202 across 39 files. No regressions anywhere. Not yet committed — only
+commit when asked.
+
 **Implemented 2026-09-12** — the "LSP diagnostics-visibility gap" (documented below
 under "Known gaps" and "Not yet done" #2): `LanguageServer::compileAndPublish`
 (`src/lsp/server.cpp`) previously only ever called `publishDiagnostics` for the
@@ -490,10 +551,10 @@ src/compiler/      compiler_directive_stripper, sv_preprocessor, sv_tree_walker,
                    parse_record, parse_cache, filelist_parser, project_config,
                    file_utils — compiler front-end
 src/db/            database, symbol_database, compilation_controller,
-                   library_resolver, project_compiler, schema — SQLite persistence (schema v7)
+                   library_resolver, project_compiler, schema — SQLite persistence (schema v8)
 src/main.cpp       entry point (supports `--log-files <path>`, see below)
-tests/unit/        Catch2 unit tests (589 cases, 1701 assertions)
-tests/integration/ Emacs functional test scripts (201 test cases across 38 files)
+tests/unit/        Catch2 unit tests (603 cases, 2000 assertions)
+tests/integration/ Emacs functional test scripts (202 test cases across 39 files)
 tests/uvm_corpus/  opt-in test suite against a real, external UVM corpus (NOT in
                    ctest/make test — see "UVM corpus testing" below)
 tools/             emacs-test-daemon.sh, emacs-test-init.el, emacs-test-lib.sh
@@ -1113,7 +1174,7 @@ one publish reflecting the final version — not just a timing/count check.
 
 ## Database layer (`src/db/`)
 
-### Schema v7 (`src/db/schema.h`, `db::SCHEMA_VERSION = 7`)
+### Schema v8 (`src/db/schema.h`, `db::SCHEMA_VERSION = 8`)
 
 - `files (id, path UNIQUE, content_hash, parsed_at)`
 - `symbols (id, file_id, kind, name, line, col, parent, detail, end_line, scope)` —
@@ -1132,10 +1193,15 @@ one publish reflecting the final version — not just a timing/count check.
   the live server's own `:memory:` DB; which `SVLSP_GIT_VERSION` built this
   DB, checked against the running binary on the next `--build-db` to detect
   and force past a stale per-file content-hash cache
+- `file_includes (id, includer_file_id, included_file_id)` — one row per file
+  transitively `` `include ``d by a given compile, populated on every real
+  recompile (plan.md §6.4, 2026-09-12); `SymbolDatabase::includersOf(path)`
+  reverse-queries it to find every file needing a forced recompile when
+  `path` itself changes
 
 Migrations (`database.cpp`, run automatically): v1→v2 adds end_line/scope; v2→v3 adds
 `imports`; v3→v4 adds `imports.is_export`; v4→v5 adds `instantiations`; v5→v6 adds
-`library_include_dirs`; v6→v7 adds `library_build_info`.
+`library_include_dirs`; v6→v7 adds `library_build_info`; v7→v8 adds `file_includes`.
 
 ### Query API (`src/db/symbol_database.h/.cpp`)
 
@@ -1158,6 +1224,8 @@ Migrations (`database.cpp`, run automatically): v1→v2 adds end_line/scope; v2�
 | `setBuiltByVersion(version)` | overwrites `library_build_info` with a single row holding `version` |
 | `builtByVersion()` | reads it back; `""` if the table doesn't exist (a DB built before this feature) or nothing was stored — never throws |
 | `resetAllFiles()` | `DELETE FROM files`, cascading (via existing `ON DELETE CASCADE` FKs) to symbols/diagnostics/imports/instantiations — forces every subsequent `compile()` call to be a cache miss |
+| `replaceFileIncludes(fileId, includedPaths)` | DELETE + INSERT `file_includes` rows for `fileId` as includer (plan.md §6.4) — called on every real recompile, never a cache hit |
+| `includersOf(path)` | reverse lookup: every file whose own compiled unit `` `include ``s `path` — drives forced background recompilation on `didSave` |
 
 `SymbolRow { id, kind, name, line, col, parent, detail, filePath, endLine, scope }`.
 
@@ -1560,7 +1628,7 @@ field-automation macros; not confirmed as a corpus contributor beyond that one s
 | Transport | stdio |
 | Compiler | g++-13 |
 | Parser generator | ANTLR4 v4.13.2 (FetchContent) |
-| Database | SQLite3 (amalgamation, schema v7) |
+| Database | SQLite3 (amalgamation, schema v8) |
 | SV preprocessor | Minimal in-house C++ (not slang) |
 | `__FILE__`/`__LINE__` | Resolved in pass 1, before include shifts line numbers |
 
@@ -1694,9 +1762,10 @@ access) vs. `expectedUriPath` (output comparison — runs the expected value thr
 
 Roughly in suggested priority order; none are blocking, pick based on what matters most:
 
-1. **Phase 6.4 — cross-file invalidation / dependency graph** (`plan.md §6.4`) — not
-   yet planned in file-level detail. Needed for correct incremental recompilation when
-   a shared/included file changes.
+1. ~~Phase 6.4 — cross-file invalidation / dependency graph~~ — **implemented
+   2026-09-12**, scoped to `` `include `` edges only. See the entry at the top
+   of this document and plan.md §6.4 for the full writeup, including why
+   import edges (§6.21) and instantiation edges are deliberately deferred.
 2. ~~LSP diagnostics-visibility gap~~ — **implemented 2026-09-12**: publish diagnostics
    for every file touched by a `compile()` call, not just the primary opened one. See
    the entry at the top of this document for the full writeup.
