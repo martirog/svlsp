@@ -101,6 +101,15 @@ void LanguageServer::registerHandlers()
                 // once typing pauses — see plan.md §6.8.
                 m_debouncer.schedule(uri.toString());
             })
+        .add<lsp::notifications::TextDocument_DidSave>(
+            [this](lsp::notifications::TextDocument_DidSave::Params&& params) {
+                const auto uri = params.textDocument.uri;
+                // Cancel any pending debounced compile for this URI first, so
+                // a stale, already-superseded timer can't fire a redundant
+                // publish right after this one — see plan.md §6.18.
+                m_debouncer.cancel(uri.toString());
+                compileAndPublish(uri);
+            })
         .add<lsp::notifications::TextDocument_DidClose>(
             [this](lsp::notifications::TextDocument_DidClose::Params&& params) {
                 const auto uri = params.textDocument.uri;

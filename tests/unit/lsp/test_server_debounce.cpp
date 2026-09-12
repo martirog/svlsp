@@ -16,6 +16,7 @@
 
 #include <chrono>
 #include <memory>
+#include <poll.h>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -215,11 +216,32 @@ public:
             R"(},"contentChanges":[{"text":")" + jsonEscape(text) + R"("}]}})");
     }
 
+    void didSave(const std::string& uri)
+    {
+        sendRaw(
+            R"({"jsonrpc":"2.0","method":"textDocument/didSave","params":{)"
+            R"("textDocument":{"uri":")" + uri + R"("}}})");
+    }
+
     void didClose(const std::string& uri)
     {
         sendRaw(
             R"({"jsonrpc":"2.0","method":"textDocument/didClose","params":{)"
             R"("textDocument":{"uri":")" + uri + R"("}}})");
+    }
+
+    // Non-blocking check: true if a full message is already waiting (or
+    // arrives within timeoutMs), without consuming/blocking indefinitely
+    // the way recvMessage() does. Used to prove a *lack* of a message —
+    // e.g. a cancelled debounce timer never firing a stale, superseded
+    // publish — which recvMessage() alone can't express.
+    bool hasPendingMessage(int timeoutMs)
+    {
+        pollfd pfd{m_fromServer[0], POLLIN, 0};
+        int rv = ::poll(&pfd, 1, timeoutMs);
+        if (rv < 0)
+            throw std::runtime_error("test: poll failed");
+        return rv > 0 && (pfd.revents & POLLIN) != 0;
     }
 
     void shutdownAndExit()
@@ -308,6 +330,47 @@ TEST_CASE("debounced didChange republishes updated diagnostics: error -> fixed",
     auto [v3, count3] = asPublishDiagnostics(client.recvMessage());
     CHECK(v3 == 3);
     CHECK(count3 > 0);
+
+    client.didClose(uri);
+    client.shutdownAndExit();
+}
+
+TEST_CASE("didSave cancels a pending debounce and republishes immediately, "
+          "with no stale second publish once the original deadline passes",
+          "[lsp][server][debounce][save]")
+{
+    TestClient client;
+    client.initialize();
+
+    const std::string uri = "file:///debounce_test_save.sv";
+
+    client.didOpen(uri, kValidSv, 1);
+    auto [v1, count1] = asPublishDiagnostics(client.recvMessage());
+    CHECK(v1 == 1);
+    CHECK(count1 == 0);
+
+    // Schedule a debounced didChange introducing an error, then immediately
+    // (well before ChangeDebouncer's ~300ms default deadline could fire)
+    // send didSave. Per plan.md §6.18, didSave must cancel the pending
+    // timer and force an unconditional, synchronous recompile+publish right
+    // away rather than waiting out the debounce.
+    const auto beforeSave = std::chrono::steady_clock::now();
+    client.didChange(uri, kBadSv, 2);
+    client.didSave(uri);
+    auto [v2, count2] = asPublishDiagnostics(client.recvMessage());
+    const auto elapsed = std::chrono::steady_clock::now() - beforeSave;
+
+    CHECK(v2 == 2);
+    CHECK(count2 > 0); // reflects the latest (post-edit) text, not the stale valid one
+    // Proves this went through didSave's immediate path, not the ~300ms
+    // debounce timer.
+    CHECK(elapsed < 250ms);
+
+    // Let the *original* didChange debounce deadline pass (well past the
+    // ~300ms default) and confirm no further, stale publish follows —
+    // proving didSave actually cancelled the pending timer, not merely won
+    // a race against it.
+    CHECK_FALSE(client.hasPendingMessage(400));
 
     client.didClose(uri);
     client.shutdownAndExit();
