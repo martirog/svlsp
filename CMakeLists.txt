@@ -221,6 +221,7 @@ add_executable(unit_tests
     tests/unit/lsp/test_change_debouncer.cpp
     tests/unit/lsp/test_server_debounce.cpp
     tests/unit/lsp/test_server_diagnostics_visibility.cpp
+    tests/unit/lsp/test_server_cross_file_invalidation.cpp
     tests/unit/lsp/test_symbol_utils.cpp
     tests/unit/lsp/test_fuzzy_match.cpp
     tests/unit/lsp/test_completion.cpp

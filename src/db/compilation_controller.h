@@ -40,14 +40,27 @@ public:
     // this only reports *which* paths so a caller can also publish their
     // diagnostics, e.g. LanguageServer::compileAndPublish). Left empty on a
     // cache hit: the primary file's own text didn't change, so nothing new
-    // needs reporting for files it includes either (a real but out-of-scope
-    // gap this deliberately doesn't fix: an included file changing on disk
-    // independently of the primary file's own hash isn't detected here —
-    // see plan.md §6.4, cross-file invalidation).
+    // needs reporting for files it includes either.
+    //
+    // On every real recompile (never a cache hit), this same transitive
+    // include set is also persisted via SymbolDatabase::replaceFileIncludes,
+    // independent of whether `includedFiles` is non-null — this is what lets
+    // a caller later ask "who includes path X" (SymbolDatabase::includersOf)
+    // to find every file that needs recompiling when X itself changes
+    // (plan.md §6.4, cross-file invalidation).
+    //
+    // `forceRecompile`, when true, skips the content-hash cache-hit check
+    // unconditionally and always runs the full pipeline. Needed for exactly
+    // this cross-file-invalidation case: a dependent file's own text may be
+    // completely unchanged even though something it `` `include ``s just
+    // changed, so the ordinary hash comparison alone would wrongly treat it
+    // as a cache hit and skip re-parsing it — the plain compile() path where
+    // the caller's own text really did change never needs this.
     std::vector<ParseError> compile(const std::string& path,
                                     const std::string& text,
                                     const ProjectConfig* config = nullptr,
-                                    std::vector<std::string>* includedFiles = nullptr);
+                                    std::vector<std::string>* includedFiles = nullptr,
+                                    bool forceRecompile = false);
 
 private:
     SymbolDatabase& m_sdb;

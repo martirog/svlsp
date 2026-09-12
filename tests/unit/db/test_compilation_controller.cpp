@@ -230,6 +230,101 @@ TEST_CASE("compile persists diagnostics for an included file even when it produc
     CHECK(std::find(included.begin(), included.end(), incPath) != included.end());
 }
 
+// ---------------------------------------------------------------------------
+// file_includes persistence / forceRecompile -- plan.md §6.4, cross-file
+// invalidation
+// ---------------------------------------------------------------------------
+
+TEST_CASE("compile persists a file_includes edge for the top-level file's own include",
+          "[db][ctrl][includes]") {
+    Fixture f;
+
+    std::string incPath = "/tmp/svlsp_test_ctrl_fileincl_a.sv";
+    { std::ofstream ofs(incPath); ofs << "module from_include; endmodule\n"; }
+    std::string src = "`include \"" + incPath + "\"\nmodule main_mod; endmodule\n";
+
+    f.ctrl.compile("/main.sv", src);
+
+    auto includers = f.sdb.includersOf(incPath);
+    REQUIRE(includers.size() == 1);
+    CHECK(includers[0] == "/main.sv");
+}
+
+TEST_CASE("compile persists file_includes independent of whether includedFiles is requested",
+          "[db][ctrl][includes]") {
+    Fixture f;
+
+    std::string incPath = "/tmp/svlsp_test_ctrl_fileincl_b.sv";
+    { std::ofstream ofs(incPath); ofs << "module from_include; endmodule\n"; }
+    std::string src = "`include \"" + incPath + "\"\nmodule main_mod; endmodule\n";
+
+    // No includedFiles out-param passed at all.
+    f.ctrl.compile("/main.sv", src);
+
+    REQUIRE(f.sdb.includersOf(incPath).size() == 1);
+    CHECK(f.sdb.includersOf(incPath)[0] == "/main.sv");
+}
+
+TEST_CASE("compile does not touch file_includes on a cache hit",
+          "[db][ctrl][includes]") {
+    Fixture f;
+
+    std::string incPath = "/tmp/svlsp_test_ctrl_fileincl_c.sv";
+    { std::ofstream ofs(incPath); ofs << "module from_include; endmodule\n"; }
+    std::string src = "`include \"" + incPath + "\"\nmodule main_mod; endmodule\n";
+
+    f.ctrl.compile("/main.sv", src);
+    REQUIRE(f.sdb.includersOf(incPath).size() == 1);
+
+    // Same content again -> cache hit -> replaceFileIncludes NOT called --
+    // the edge from the real compile above must simply survive untouched.
+    f.ctrl.compile("/main.sv", src);
+    REQUIRE(f.sdb.includersOf(incPath).size() == 1);
+    CHECK(f.sdb.includersOf(incPath)[0] == "/main.sv");
+}
+
+TEST_CASE("forceRecompile re-runs the pipeline even though the file's own text is unchanged",
+          "[db][ctrl][includes]") {
+    Fixture f;
+    const std::string src = "module top; endmodule\n";
+    f.ctrl.compile("/a.sv", src);
+
+    // Inject a sentinel symbol directly into the DB -- a real recompile
+    // (forced or not) always calls replaceSymbols, which would delete it.
+    auto fid = f.sdb.upsertFile("/a.sv", f.sdb.getFileHash("/a.sv"));
+    f.db.execute("INSERT INTO symbols (file_id,kind,name,line,col) VALUES ("
+                 + std::to_string(fid) + ",'Module','__sentinel__',99,0)");
+
+    // Same content, but forceRecompile=true this time -- unlike the ordinary
+    // cache-hit case (test_compilation_controller.cpp's own "symbols
+    // unchanged" test), the sentinel must NOT survive: the whole point of
+    // forceRecompile is to bypass the hash-cache shortcut unconditionally
+    // (plan.md §6.4 -- this file's own text is unchanged, but something it
+    // `` `include ``s might not be).
+    f.ctrl.compile("/a.sv", src, nullptr, nullptr, /*forceRecompile=*/true);
+
+    auto syms = f.sdb.symbolsForFile("/a.sv");
+    bool sentinelSurvived = false;
+    for (const auto& s : syms)
+        if (s.name == "__sentinel__") { sentinelSurvived = true; break; }
+    CHECK_FALSE(sentinelSurvived);
+}
+
+TEST_CASE("forceRecompile reflects genuinely new content the same as an ordinary compile",
+          "[db][ctrl][includes]") {
+    // Not just "does it bypass the cache" -- forceRecompile must still
+    // correctly recompile *changed* content, not just re-run against stale
+    // text.
+    Fixture f;
+    f.ctrl.compile("/a.sv", "module old_name; endmodule\n");
+    f.ctrl.compile("/a.sv", "module new_name; endmodule\n", nullptr, nullptr,
+                   /*forceRecompile=*/true);
+
+    auto syms = f.sdb.symbolsForFile("/a.sv");
+    REQUIRE(syms.size() == 1);
+    CHECK(syms[0].name == "new_name");
+}
+
 TEST_CASE("compile logs the primary file and each included file to its own log stream",
           "[db][ctrl]") {
     // Regression test for moving the "[parsed]   included: <path>" line out

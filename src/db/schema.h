@@ -4,7 +4,7 @@ namespace db {
 
 // Current schema version.  Increment and add a migration in Database::initSchema
 // whenever the schema changes.
-inline constexpr int SCHEMA_VERSION = 7;
+inline constexpr int SCHEMA_VERSION = 8;
 
 // DDL executed on a fresh (version-0) database — always reflects the latest schema.
 inline constexpr const char* SCHEMA_DDL = R"sql(
@@ -106,6 +106,35 @@ CREATE TABLE library_build_info (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     svlsp_version TEXT    NOT NULL
 );
+
+-- One row per (includer, included) pair: `includer_file_id`'s own compiled
+-- unit transitively `` `include ``s `included_file_id`'s text (plan.md
+-- §6.4). Populated by CompilationController::compile on every real recompile
+-- (never on a cache hit) from the same already-computed, fully-transitive
+-- `includedFiles` list the diagnostics-visibility fix (2026-09-12) uses --
+-- one compile of a top-level file already discovers its *entire* include
+-- tree, so a reverse lookup here needs no further recursion to find every
+-- file that would need recompiling if `included_file_id` changes.
+CREATE TABLE file_includes (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    includer_file_id  INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    included_file_id  INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_file_includes_includer ON file_includes(includer_file_id);
+CREATE INDEX idx_file_includes_included ON file_includes(included_file_id);
+)sql";
+
+// SQL applied when migrating an existing v7 database to v8.
+inline constexpr const char* MIGRATION_V7_TO_V8 = R"sql(
+CREATE TABLE IF NOT EXISTS file_includes (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    includer_file_id  INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    included_file_id  INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_file_includes_includer ON file_includes(includer_file_id);
+CREATE INDEX IF NOT EXISTS idx_file_includes_included ON file_includes(included_file_id);
+UPDATE schema_version SET version = 8;
 )sql";
 
 // SQL applied when migrating an existing v6 database to v7.

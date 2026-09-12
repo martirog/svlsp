@@ -13,14 +13,14 @@ TEST_CASE("open in-memory database succeeds", "[db][database]") {
 TEST_CASE("initSchema creates tables and sets current version", "[db][database]") {
     Database db(":memory:");
     db.initSchema();
-    CHECK(db.schemaVersion() == 7);
+    CHECK(db.schemaVersion() == 8);
 }
 
 TEST_CASE("initSchema is idempotent", "[db][database]") {
     Database db(":memory:");
     db.initSchema();
     CHECK_NOTHROW(db.initSchema());
-    CHECK(db.schemaVersion() == 7);
+    CHECK(db.schemaVersion() == 8);
 }
 
 TEST_CASE("schemaVersion returns 0 on fresh database", "[db][database]") {
@@ -137,4 +137,15 @@ TEST_CASE("initSchema creates library_build_info table", "[db][database]") {
     db.initSchema();
     CHECK_NOTHROW(db.execute(
         "INSERT INTO library_build_info (svlsp_version) VALUES ('abc1234')"));
+}
+
+TEST_CASE("initSchema creates file_includes table", "[db][database]") {
+    // Backs SymbolDatabase::replaceFileIncludes/includersOf, plan.md §6.4's
+    // cross-file invalidation -- schema v8.
+    Database db(":memory:");
+    db.initSchema();
+    db.execute("INSERT INTO files (path, content_hash) VALUES ('/a.sv', 'h1')");
+    db.execute("INSERT INTO files (path, content_hash) VALUES ('/b.sv', 'h2')");
+    CHECK_NOTHROW(db.execute(
+        "INSERT INTO file_includes (includer_file_id, included_file_id) VALUES (1, 2)"));
 }

@@ -22,7 +22,8 @@ std::string CompilationController::hashContent(const std::string& text)
 std::vector<ParseError> CompilationController::compile(const std::string& path,
                                                         const std::string& text,
                                                         const ProjectConfig* config,
-                                                        std::vector<std::string>* includedFiles)
+                                                        std::vector<std::string>* includedFiles,
+                                                        bool forceRecompile)
 {
     if (includedFiles) includedFiles->clear();
 
@@ -30,7 +31,10 @@ std::vector<ParseError> CompilationController::compile(const std::string& path,
 
     // Cache hit: return diagnostics from DB without re-parsing. Included
     // files aren't reported here -- see this function's own doc comment.
-    if (m_sdb.getFileHash(path) == hash) {
+    // `forceRecompile` skips this shortcut unconditionally (plan.md §6.4) --
+    // needed when `path`'s own text is unchanged but something it
+    // `` `include ``s just did.
+    if (!forceRecompile && m_sdb.getFileHash(path) == hash) {
         if (m_log) { *m_log << "[parsed] " << path << " (cached)\n"; m_log->flush(); }
         auto rows = m_sdb.diagnosticsForFile(path);
         std::vector<ParseError> errs;
@@ -77,6 +81,7 @@ std::vector<ParseError> CompilationController::compile(const std::string& path,
     // itself, in real time as each `` `include `` is actually resolved,
     // rather than only once this entire pipeline finishes; see
     // SvPreprocessor::process's own doc comment for why that matters.)
+    std::vector<std::string> allIncluded;
     for (const auto& [filePath, recs] : recsByFile) {
         if (filePath.empty()) continue;
         int64_t incFid = m_sdb.upsertFile(filePath, "");
@@ -84,7 +89,7 @@ std::vector<ParseError> CompilationController::compile(const std::string& path,
         m_sdb.replaceDiagnostics(incFid,    errsByFile[filePath]  );
         m_sdb.replaceImports(incFid,        importsByFile[filePath]);
         m_sdb.replaceInstantiations(incFid, instsByFile[filePath]  );
-        if (includedFiles) includedFiles->push_back(filePath);
+        allIncluded.push_back(filePath);
     }
 
     // A file with parse errors but no records at all (e.g. one that fails
@@ -95,8 +100,14 @@ std::vector<ParseError> CompilationController::compile(const std::string& path,
         if (filePath.empty() || recsByFile.count(filePath)) continue;
         int64_t incFid = m_sdb.upsertFile(filePath, "");
         m_sdb.replaceDiagnostics(incFid, errs);
-        if (includedFiles) includedFiles->push_back(filePath);
+        allIncluded.push_back(filePath);
     }
+
+    // Always persisted (plan.md §6.4), independent of whether a caller asked
+    // for `includedFiles` -- this is what lets a *different* file's own
+    // didSave later find "who includes me" via SymbolDatabase::includersOf.
+    m_sdb.replaceFileIncludes(fid, allIncluded);
+    if (includedFiles) *includedFiles = std::move(allIncluded);
 
     return errsByFile[""];
 }

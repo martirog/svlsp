@@ -312,6 +312,44 @@ void SymbolDatabase::appendDiagnostics(int64_t fileId, const std::vector<ParseEr
     m_db.execute("COMMIT");
 }
 
+void SymbolDatabase::replaceFileIncludes(int64_t fileId,
+                                         const std::vector<std::string>& includedPaths)
+{
+    m_db.execute("BEGIN");
+    auto del = m_db.prepare("DELETE FROM file_includes WHERE includer_file_id = ?");
+    del.bind(1, fileId);
+    del.step();
+
+    auto ins = m_db.prepare(
+        "INSERT INTO file_includes (includer_file_id, included_file_id) VALUES (?,?)");
+    for (const auto& path : includedPaths) {
+        int64_t includedId = fileIdFor(path);
+        if (includedId < 0) continue; // shouldn't happen -- caller already upserted it
+        ins.reset();
+        ins.bind(1, fileId)
+           .bind(2, includedId);
+        ins.step();
+    }
+    m_db.execute("COMMIT");
+}
+
+std::vector<std::string> SymbolDatabase::includersOf(const std::string& path) const
+{
+    int64_t fid = fileIdFor(path);
+    if (fid < 0) return {};
+
+    auto stmt = m_db.prepare(
+        "SELECT f.path FROM file_includes fi "
+        "JOIN files f ON f.id = fi.includer_file_id "
+        "WHERE fi.included_file_id = ?");
+    stmt.bind(1, fid);
+
+    std::vector<std::string> result;
+    while (stmt.step())
+        result.push_back(stmt.columnText(0));
+    return result;
+}
+
 int64_t SymbolDatabase::fileIdForPackage(const std::string& pkgName) const
 {
     auto stmt = m_db.prepare(

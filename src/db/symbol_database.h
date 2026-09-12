@@ -142,6 +142,19 @@ public:
     // `fileId` (unlike replaceDiagnostics, which is delete-then-insert).
     void appendDiagnostics(int64_t fileId, const std::vector<ParseError>& extra);
 
+    // Delete all file_includes rows where `fileId` is the includer, then
+    // insert one row per path in `includedPaths` (each already upserted into
+    // `files` by the caller). Records "fileId's own compiled unit
+    // transitively includes each of these files" (plan.md §6.4) — called on
+    // every real recompile, never on a cache hit.
+    void replaceFileIncludes(int64_t fileId, const std::vector<std::string>& includedPaths);
+
+    // Every file whose own compiled unit `` `include ``s `path` — the
+    // reverse of replaceFileIncludes, used to find who needs a forced
+    // recompile when `path` itself changes (plan.md §6.4). {} if nothing
+    // includes `path`, or `path` is unknown.
+    std::vector<std::string> includersOf(const std::string& path) const;
+
     // LSP query helpers (used by Phase-6 feature providers).
     std::vector<SymbolRow>     symbolsForFile(const std::string& path) const;
     std::vector<SymbolRow>     findSymbolsByName(const std::string& name) const;

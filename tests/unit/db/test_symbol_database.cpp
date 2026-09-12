@@ -2,6 +2,7 @@
 #include "db/database.h"
 #include "db/symbol_database.h"
 #include "compiler/parse_record.h"
+#include <algorithm>
 
 // ---------------------------------------------------------------------------
 // Phase 5.3 — SymbolDatabase typed query API
@@ -591,4 +592,64 @@ TEST_CASE("resetAllFiles clears files and cascades to symbols/diagnostics",
     CHECK(f.sdb.getFileHash("/a.sv") == "");
     CHECK(f.sdb.symbolsForFile("/a.sv").empty());
     CHECK(f.sdb.diagnosticsForFile("/a.sv").empty());
+}
+
+// ---------------------------------------------------------------------------
+// replaceFileIncludes / includersOf -- plan.md §6.4, cross-file invalidation
+// ---------------------------------------------------------------------------
+
+TEST_CASE("includersOf is empty before anything is recorded", "[db][symbol-db][includes]") {
+    Fixture f;
+    f.sdb.upsertFile("/inc.sv", "");
+    CHECK(f.sdb.includersOf("/inc.sv").empty());
+}
+
+TEST_CASE("includersOf returns the includer after replaceFileIncludes",
+          "[db][symbol-db][includes]") {
+    Fixture f;
+    auto topId = f.sdb.upsertFile("/top.sv", "hash1");
+    f.sdb.upsertFile("/inc.sv", "");
+
+    f.sdb.replaceFileIncludes(topId, {"/inc.sv"});
+
+    auto includers = f.sdb.includersOf("/inc.sv");
+    REQUIRE(includers.size() == 1);
+    CHECK(includers[0] == "/top.sv");
+}
+
+TEST_CASE("includersOf returns every top-level file that includes the same file",
+          "[db][symbol-db][includes]") {
+    Fixture f;
+    auto topAId = f.sdb.upsertFile("/top_a.sv", "hash1");
+    auto topBId = f.sdb.upsertFile("/top_b.sv", "hash2");
+    f.sdb.upsertFile("/shared.svh", "");
+
+    f.sdb.replaceFileIncludes(topAId, {"/shared.svh"});
+    f.sdb.replaceFileIncludes(topBId, {"/shared.svh"});
+
+    auto includers = f.sdb.includersOf("/shared.svh");
+    CHECK(includers.size() == 2);
+    CHECK(std::find(includers.begin(), includers.end(), "/top_a.sv") != includers.end());
+    CHECK(std::find(includers.begin(), includers.end(), "/top_b.sv") != includers.end());
+}
+
+TEST_CASE("replaceFileIncludes overwrites a file's previous include set",
+          "[db][symbol-db][includes]") {
+    Fixture f;
+    auto topId = f.sdb.upsertFile("/top.sv", "hash1");
+    f.sdb.upsertFile("/old_inc.sv", "");
+    f.sdb.upsertFile("/new_inc.sv", "");
+
+    f.sdb.replaceFileIncludes(topId, {"/old_inc.sv"});
+    f.sdb.replaceFileIncludes(topId, {"/new_inc.sv"});
+
+    CHECK(f.sdb.includersOf("/old_inc.sv").empty());
+    REQUIRE(f.sdb.includersOf("/new_inc.sv").size() == 1);
+    CHECK(f.sdb.includersOf("/new_inc.sv")[0] == "/top.sv");
+}
+
+TEST_CASE("includersOf returns empty for a path with no known file row",
+          "[db][symbol-db][includes]") {
+    Fixture f;
+    CHECK(f.sdb.includersOf("/never_seen.sv").empty());
 }

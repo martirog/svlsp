@@ -1,5 +1,6 @@
 #include "server.h"
 #include "lsp/symbol_utils.h"
+#include "compiler/file_utils.h"
 #include <iostream>
 #include <optional>
 #include <lsp/messages.h>
@@ -16,6 +17,9 @@ LanguageServer::LanguageServer(lsp::io::Stream& io, std::ostream* logStream)
     , m_diagnostics{m_messageHandler}
     , m_debouncer{[this](const std::string& uriStr) {
           compileAndPublish(lsp::DocumentUri{lsp::Uri::parse(uriStr)});
+      }}
+    , m_dependencyRechecker{[this](const std::string& path) {
+          forceRecompileAndPublish(path);
       }}
 {
     m_db.initSchema();
@@ -51,6 +55,20 @@ lsp::Array<lsp::Diagnostic> LanguageServer::toDiagnostics(const std::vector<Pars
     return diags;
 }
 
+std::vector<std::pair<lsp::DocumentUri, lsp::Array<lsp::Diagnostic>>>
+LanguageServer::collectIncludedDiagnostics(const std::vector<std::string>& paths)
+{
+    std::vector<std::pair<lsp::DocumentUri, lsp::Array<lsp::Diagnostic>>> result;
+    for (const auto& incPath : paths) {
+        auto rows = m_symbolDb.diagnosticsForFile(incPath);
+        std::vector<ParseError> errs;
+        errs.reserve(rows.size());
+        for (const auto& r : rows) errs.push_back({r.line, r.col, r.message});
+        result.emplace_back(pathToUri(incPath), toDiagnostics(errs));
+    }
+    return result;
+}
+
 void LanguageServer::compileAndPublish(const lsp::DocumentUri& uri)
 {
     lsp::Array<lsp::Diagnostic> diags;
@@ -70,14 +88,38 @@ void LanguageServer::compileAndPublish(const lsp::DocumentUri& uri)
 
         std::vector<std::string> includedFiles;
         diags = parseDiagnostics(uri, m_store.get(uri).text, &includedFiles);
+        includedDiags = collectIncludedDiagnostics(includedFiles);
+    }
+    m_diagnostics.publish(uri, version, diags);
+    for (auto& [incUri, incDiags] : includedDiags)
+        m_diagnostics.publish(incUri, std::nullopt, std::move(incDiags));
+}
 
-        for (const auto& incPath : includedFiles) {
-            auto rows = m_symbolDb.diagnosticsForFile(incPath);
-            std::vector<ParseError> errs;
-            errs.reserve(rows.size());
-            for (const auto& r : rows) errs.push_back({r.line, r.col, r.message});
-            includedDiags.emplace_back(pathToUri(incPath), toDiagnostics(errs));
+void LanguageServer::forceRecompileAndPublish(const std::string& path)
+{
+    const lsp::DocumentUri uri = pathToUri(path);
+
+    std::string text;
+    std::optional<int> version;
+    lsp::Array<lsp::Diagnostic> diags;
+    std::vector<std::pair<lsp::DocumentUri, lsp::Array<lsp::Diagnostic>>> includedDiags;
+    {
+        std::lock_guard lock{m_dataMutex};
+        if (m_store.contains(uri)) {
+            version = m_store.get(uri).version;
+            text    = m_store.get(uri).text;
+        } else {
+            auto diskText = readFile(path);
+            if (!diskText)
+                return; // deleted/unreadable since being scheduled -- nothing to do
+            text = std::move(*diskText);
         }
+
+        std::vector<std::string> includedFiles;
+        auto parseErrors = m_compiler.compile(path, text, m_projects.configFor(path),
+                                               &includedFiles, /*forceRecompile=*/true);
+        diags = toDiagnostics(parseErrors);
+        includedDiags = collectIncludedDiagnostics(includedFiles);
     }
     m_diagnostics.publish(uri, version, diags);
     for (auto& [incUri, incDiags] : includedDiags)
@@ -134,6 +176,22 @@ void LanguageServer::registerHandlers()
                 // publish right after this one — see plan.md §6.18.
                 m_debouncer.cancel(uri.toString());
                 compileAndPublish(uri);
+
+                // Cross-file invalidation (plan.md §6.4): every file whose
+                // own compiled unit `` `include ``s the just-saved file needs
+                // recompiling too, since its content just changed under
+                // them. Scheduled asynchronously rather than recompiled
+                // right here -- a widely-`` `include ``d file (e.g. a shared
+                // macros header) could have many includers, and this
+                // notification handler must return promptly regardless of
+                // how large that fan-out is.
+                std::vector<std::string> includers;
+                {
+                    std::lock_guard lock{m_dataMutex};
+                    includers = m_symbolDb.includersOf(std::string{uri.path()});
+                }
+                for (const auto& includerPath : includers)
+                    m_dependencyRechecker.schedule(includerPath);
             })
         .add<lsp::notifications::TextDocument_DidClose>(
             [this](lsp::notifications::TextDocument_DidClose::Params&& params) {

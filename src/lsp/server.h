@@ -62,6 +62,20 @@ private:
     // back into.
     ChangeDebouncer m_debouncer;
 
+    // Cross-file invalidation (plan.md §6.4): on didSave, every file whose
+    // own compiled unit `` `include ``s the saved file (SymbolDatabase::
+    // includersOf) is scheduled here instead of recompiled inline — its own
+    // background thread drains them one at a time, each independently
+    // mutex-scoped (see forceRecompileAndPublish), so a large fan-out from a
+    // widely-`` `include ``d file never holds m_dataMutex for longer than one
+    // file's compile time and never blocks the message-read thread. Reuses
+    // ChangeDebouncer rather than a bespoke queue -- its per-key coalescing
+    // is exactly right here too (a file already pending from the user's own
+    // typing that also gets flagged as a dependent should still fire once,
+    // not twice). Declared last for the same destruction-order reason as
+    // m_debouncer above.
+    ChangeDebouncer m_dependencyRechecker;
+
     void registerHandlers();
 
     // Run the compiler pipeline (or return cached DB result) for the primary
@@ -77,6 +91,13 @@ private:
     // Converts already-computed ParseErrors to LSP Diagnostics.
     static lsp::Array<lsp::Diagnostic> toDiagnostics(const std::vector<ParseError>& errs);
 
+    // For each path, reads its current diagnostics back from the DB and
+    // pairs them with its URI, ready to publish once the caller releases
+    // m_dataMutex. Caller must hold m_dataMutex while calling this. Shared
+    // by compileAndPublish and forceRecompileAndPublish.
+    std::vector<std::pair<lsp::DocumentUri, lsp::Array<lsp::Diagnostic>>>
+    collectIncludedDiagnostics(const std::vector<std::string>& paths);
+
     // Compiles the given (already-open) document's current text and
     // publishes its diagnostics, plus diagnostics for every `` `include ``d
     // file touched by this compile (read back from the DB — those files were
@@ -85,4 +106,16 @@ private:
     // it. If the document was closed in the meantime (e.g. a debounced fire
     // racing a didClose), this is a harmless no-op.
     void compileAndPublish(const lsp::DocumentUri& uri);
+
+    // Cross-file invalidation (plan.md §6.4): force-recompiles `path`
+    // (bypassing CompilationController's content-hash cache — `path`'s own
+    // text may be unchanged, only something it `` `include ``s changed) and
+    // publishes its diagnostics, plus every included file's own. Reads
+    // current text from m_store if `path` is open (attaching its real
+    // client-tracked version), else from disk (no version — never
+    // `didOpen`ed). A disk read failure (e.g. the file was deleted since
+    // being scheduled) is silently skipped. Locks m_dataMutex itself; called
+    // from m_dependencyRechecker's own background thread, never inline from
+    // a request/notification handler.
+    void forceRecompileAndPublish(const std::string& path);
 };
