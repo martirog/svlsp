@@ -1963,3 +1963,19 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
     no new corpus-wide diagnostics or ambiguity regressions). 4 new unit
     tests (`tests/unit/compiler/test_sv_parser.cpp`, `[randomize]`/
     `[superctor]` tags). Not yet committed — only commit when asked.
+23. **Semantic reference-resolution diagnostics (`plan.md §6.21`)** — not
+    started. Found researching §6.4 (cross-file invalidation): there is
+    currently no diagnostic anywhere that checks whether a declared type
+    reference or an imported symbol actually resolves to a real declaration
+    — an `import pkg::X` where `X` doesn't exist (or was just removed)
+    produces total silence (hover/completion just fail closed), not an
+    error. See plan.md §6.21 for the full design (reuses §6.10/§6.17's
+    already-built type-resolution machinery, scoped narrowly to declared
+    type references, not general expression-level semantic analysis) and
+    the §6.4 section above it for why this is a real prerequisite for
+    import-edge cross-file invalidation ever being meaningful. Also
+    surfaced a related, already-real bug worth fixing regardless: a live
+    edit's own `replaceDiagnostics` call silently wipes any diagnostic
+    `LibraryResolver` previously appended, since both share one
+    undiscriminated `diagnostics` table with no way to clear just one
+    source's own rows.

@@ -493,6 +493,23 @@ field, editing `a.sv` must eventually flag `b.sv` as stale and re-check it.
      recompilation) so its diagnostics are refreshed.
 - Cycle guard: a file may indirectly depend on itself (mutual use); use a visited set.
 
+**Note, added 2026-09-12 (research pass ahead of implementation):** this
+section's original sketch above predates imports/instantiations tracking and
+assumes a general "reference resolution" pass that does not exist in this
+codebase — see §6.21 below for why. As things stand today, only two edge
+kinds can actually leave a diagnostic stale: `` `include `` edges (B's
+compiled unit literally embeds A's text) and instantiation edges
+(`LibraryResolver`'s "unresolved instantiation" check). **Import edges
+(`import pkg::X`) are deliberately out of scope for this section, not because
+they're already handled, but because there is currently no diagnostic at all
+that checks whether an imported or declared-type reference actually resolves
+to a real declaration** — removing `X` from `pkg` today produces silence
+(hover/completion just fail closed), not a stale error, so there is nothing
+for cross-file invalidation to refresh. §6.21 proposes closing that gap; if
+it ships, its own reference-resolution edges need exactly the invalidation
+treatment this section describes for instantiation edges — same
+name-based-diff shape, different name set.
+
 **Integration tests (once provider wiring and import resolution are done):**
 - `test_17_cross_file_error_propagation.sh`:
   1. Compile a project with `class_def.sv` (defines `MyClass` with field `x`) and
@@ -2796,6 +2813,106 @@ a real external consumer exists to learn what it actually needs.
 work, done once and shared by both motivations) — if that's ever decided
 against for restart-persistence reasons, this section's item 1 still needs to
 happen independently for external access to be possible at all.
+
+### 6.21 Semantic Reference-Resolution Diagnostics (unresolved type/import usage)
+
+**Status:** not started. Added to the plan 2026-09-12, found researching §6.4's
+own "why don't import edges need cross-file invalidation" question.
+
+**Why this is needed:** every diagnostic this project has ever produced comes
+from exactly two sources — ANTLR parse errors, and `LibraryResolver`'s
+"unresolved instantiation of X" check (module/interface/program instantiation
+only). Confirmed directly (`grep` across every diagnostic-producing call site
+in `src/compiler/` and `src/db/`): there is **no check anywhere that a
+declared type reference, an imported symbol, or any other identifier actually
+resolves to a real declaration**. Concretely: `b.sv` does
+`import a_pkg::SomeClass;` then declares `SomeClass obj;`; `SomeClass` is
+later removed from `a_pkg` (in `a.sv`) or never existed at all. Today, `obj`'s
+declaration still parses cleanly (`SomeClass` is just an `IDENTIFIER` token to
+the grammar), and every consumer **fails closed silently** rather than
+reporting anything: `hover.cpp` on `obj` calls `findSymbolsByName` (or, for
+the *type* itself, whatever resolves `userTypeName()`'s output), gets zero
+rows, and returns `nullptr` (no hover, not an error); dot-completion's
+`candidatesForResolvedType` chain (§6.10/§6.13/§6.14/§6.17) already
+deliberately "fails closed" the same way — no completions, no diagnostic
+either. A user sees nothing telling them `SomeClass` doesn't exist — arguably
+worse than a stale error, since there's no signal at all, not even a delayed
+one. This is also *why* §6.4's cross-file invalidation deliberately scopes
+import edges out: there is currently nothing for invalidation to refresh.
+
+**What is missing:**
+- A new check, run as part of `CompilationController::compile`'s existing
+  extract step, over exactly the set of declared-type references §6.10's
+  `userTypeName()` already identifies (class/interface-typed `Signal`s and
+  `Parameter`s — the same narrow slice that already exists for dot-completion
+  type resolution, not a new extraction pass): for each non-empty
+  `userTypeName()` result, resolve it the same way dot-completion's own
+  `qualifiedClassScope()`/`pickBestSymbol()` helpers already do (package-aware,
+  cross-file, attached-library-DB-aware per §6.19) and emit a diagnostic if it
+  resolves to nothing.
+- Deliberately narrow scope for v1 — **not** general expression-level
+  identifier resolution (an undeclared variable used inside an arbitrary
+  expression, a typo'd method call, ...). That is full semantic/type
+  analysis, a materially bigger undertaking than anything this project has
+  attempted so far (this is a symbol-table-for-IDE-features tool, not a
+  compiler-grade checker) and is explicitly out of scope here. Start with
+  "does this declared type name resolve," since the resolution machinery for
+  exactly that case is already built and proven (§6.10/§6.17); widen only if
+  a real need surfaces.
+- **A real prerequisite, not just a nice-to-have:** a per-source diagnostic
+  clear/replace mechanism. `SymbolDatabase::replaceDiagnostics` today does an
+  unconditional `DELETE FROM diagnostics WHERE file_id=?` before inserting —
+  shared, undiscriminated storage that already causes a real bug for
+  `LibraryResolver`'s own diagnostics (any unrelated live edit silently wipes
+  a file's "unresolved instantiation" diagnostic with nothing to re-add it,
+  since `LibraryResolver::resolve` isn't re-run on live edits — found in the
+  same research pass as this section). §6.7's own schema sketch (`severity`/
+  `source` columns, `source = 'parser'|'lint'`) already anticipates exactly
+  this problem for its lint engine. This section, §6.7's lint engine, and
+  `LibraryResolver` should all land on **one** shared fix — a `source` column
+  plus a `replaceDiagnosticsBySource(fileId, source, diags)` that deletes only
+  that source's own prior rows — rather than three independent, ad hoc
+  patches; whichever of §6.7/§6.21/the `LibraryResolver` live-edit fix lands
+  first should build this shared mechanism, not just its own narrow piece of
+  it. Proposed `source` value for this section: `'reference'`.
+- **Feeds directly back into §6.4**: once this ships, editing `a.sv` to
+  remove `SomeClass` must eventually re-flag `b.sv` — the same
+  name-based-diff-and-invalidate shape §6.4 already needs for instantiation
+  edges (diff a file's declared-type-name set across a recompile, look up
+  every file referencing an affected name, queue each for a forced background
+  recompile), just keyed off resolved *reference* names instead of
+  *instantiated* ones. If §6.4 is implemented before this section, its own
+  design should leave room for a second name-index of this shape rather than
+  hardcoding "instantiations only."
+
+**Integration tests (once implemented):**
+- A file with `import pkg::RealClass; RealClass obj;` where `pkg` genuinely
+  declares `RealClass` — zero diagnostics.
+- The same file where `RealClass` has been renamed/removed from `pkg` —
+  exactly one diagnostic on the `RealClass obj;` declaration line, naming the
+  unresolved type.
+- A class declared inside a package, referenced via `import`, resolves
+  cleanly (regression guard against §6.17's own package-scoped-resolution
+  fix regressing once a diagnostic depends on the same resolution path).
+- A class that only exists in an attached library DB (§6.19) resolves cleanly
+  — this check must reuse the exact same cross-DB-aware resolution path
+  hover/dot-completion already use, not a narrower one that would produce
+  false positives for perfectly valid library-backed code.
+
+**Unit tests:** the new resolution-check function directly, against a
+`SymbolDatabase` fixture — resolves / doesn't resolve / resolves via an
+attached library DB / resolves via a package-qualified scope.
+
+**Open question, deliberately unresolved:** default severity. A false
+positive here is a real risk independent of genuine bugs — e.g. a class
+declared in a project file that hasn't been compiled into the DB yet (an
+ordering/incomplete-project-config issue, not a real error, the same class of
+false-positive risk `LibraryResolver` already guards against with its own
+`compiledPaths`/`failedNames` bookkeeping). Defaulting to `Warning` rather
+than `Error` (mirroring §6.7's own "an unrecognized value defaults to
+Warning, not Error, so a typo doesn't become build-breaking" reasoning) is
+the likely right choice, but not decided here — revisit once real usage shows
+how often this actually false-positives in practice.
 
 ---
 
