@@ -2112,3 +2112,21 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
     `LibraryResolver` previously appended, since both share one
     undiscriminated `diagnostics` table with no way to clear just one
     source's own rows.
+24. **Extend signature help to function/task calls (`plan.md §6.22`'s own
+    follow-up section)** — not started. §6.22's shipped v1 only covers
+    module/interface/program instantiation port lists, since those already
+    have real per-port data; function/task parameters are never recorded as
+    symbols at all today (only the function/task's own name and return
+    type are). See plan.md §6.22's "Follow-up, deliberately not started
+    here" subsection for the full design: a new `enterTf_port_item`
+    listener reusing `ParseRecordKind::Port` (so `SignatureHelpProvider`'s
+    existing port-list query machinery needs no changes), a second,
+    one-identifier call-header shape alongside the existing two-identifier
+    instantiation one, and — the one piece touching code outside the
+    listener itself — widening `SvRecordListener`'s constructor to receive
+    the token stream `SvTreeWalker::walk` already builds but currently
+    keeps local, so parameter types/default values can be extracted with
+    real source spacing (`getText()` alone strips it). Deliberately scoped
+    to bare, undotted calls only (`my_func(`) — a dotted call
+    (`obj.method(`) needs completion's own chain-resolution machinery, a
+    further, separate follow-up.

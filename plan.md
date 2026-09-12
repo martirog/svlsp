@@ -3087,17 +3087,85 @@ lists only:**
   exists for arbitrary calls either way).
 - **Function/task calls are explicitly NOT supported** — the reason this
   section opened with: there is no per-parameter data for them anywhere in
-  this schema to build a signature from. Extending this would need a new,
-  separate extraction step (capturing a function/task's own verbatim
-  parameter-list source text, since ANTLR's `getText()` strips inter-token
-  whitespace and can't be used directly for a human-readable signature) —
-  not attempted in this pass; `SignatureHelpProvider`'s own header comment
-  documents this as the concrete next step if it's ever picked up.
+  this schema to build a signature from. See the "Follow-up, deliberately
+  not started here" subsection right after this list for the full design
+  needed to close this; `SignatureHelpProvider`'s own header comment also
+  flags it as the concrete next step if it's ever picked up.
 - **Also not attempted:** a parameter-override block between type and
   instance name (`Module #(...) inst (`) — `parseInstantiationHeader` only
   recognizes the plain `TypeName InstanceName (` shape and fails closed
   (returns no signature help) otherwise, a disclosed simplification rather
   than an oversight.
+
+**Follow-up, deliberately not started here: extending signature help to
+function/task calls.** Arguably the more commonly wanted case than module
+instantiation (`my_func(a, b, |` mid-expression is a far more frequent
+editing moment than typing a port list), explicitly out of scope for the
+pass above for the reason already stated: no per-parameter data exists for
+functions/tasks anywhere in this schema, only the function/task's own name
+and return type (`enterFunction_body_declaration`/`enterFunction_prototype`/
+their task equivalents, `sv_tree_walker.cpp`). What's needed to close this:
+
+1. **A new listener pair, `enterTf_port_item`** (grammar rule
+   `tf_port_item`, reached via `tf_port_list` from
+   `function_body_declaration`/`function_prototype`/`task_body_declaration`/
+   `task_prototype`'s own `'(' tf_port_list ')'`) — one call per declared
+   parameter, extracting its `port_identifier` (name),
+   `tf_port_direction` (direction — defaults to `input` per LRM semantics
+   when the grammar's own `tf_port_direction?` is absent, so the listener
+   should apply that default explicitly rather than leaving it blank), and
+   `data_type_or_implicit` (declared type).
+2. **Reuse `ParseRecordKind::Port` for these, not a new kind.** A function/
+   task parameter is semantically the same shape a module port already is
+   (name + direction + type) — reusing `Port` means
+   `SignatureHelpProvider`'s existing `findSymbolsInScope(scope)` →
+   filter-to-`Port` → sort-by-`(line,col)` pipeline (already built for
+   module ports) works for function/task parameters completely unchanged,
+   with zero new query code. The only genuinely new provider-side code is:
+   (a) the extraction listener itself, and (b) teaching
+   `SignatureHelpProvider` a *second* call-header shape — a function/task
+   call has no separate instance name, so `parseInstantiationHeader`'s
+   "two identifiers before the paren" reading doesn't apply; only *one*
+   identifier (the callee's own name) precedes a plain call's `(`. Try the
+   existing two-identifier (module instantiation) shape first, then this
+   one-identifier shape, resolving via `findSymbolsByName` filtered to
+   Function/Task kind instead of Module/Interface/Program.
+3. **A verbatim-source-text gap this needs, confirmed by reading
+   `SvTreeWalker::walk` directly (not assumed):** ANTLR's default
+   `ctx->getText()` strips inter-token whitespace entirely (`"input logic
+   [7:0] a"` becomes `"inputlogic[7:0]a"`) — already true of every existing
+   `detail` field populated this way (e.g. a function's own return-type
+   text), but never mattered before now since those are only ever shown as
+   short, single-token-ish hover text, not a multi-token parameter list a
+   person will actually read character-by-character in a signature-help
+   popup. `SvTreeWalker::walk` constructs its `antlr4::CommonTokenStream`
+   as a purely local variable and never passes it to `SvRecordListener` at
+   all today — getting real source spacing (via the token stream's own
+   `getText(startToken, stopToken)`, not the parse tree context's) needs
+   `SvRecordListener`'s constructor widened to accept the token stream, and
+   `walk()` to pass `&tokens` through. This is the one piece of this
+   follow-up that touches code outside the listener itself.
+4. **Default parameter values** (`('=' expression)?` in `tf_port_item`) are
+   worth surfacing in the signature label too (`int width = 8`, not just
+   `int width`) — same verbatim-text extraction as (3), capturing the
+   `'=' expression` span alongside the type.
+5. **No overload handling needed:** SV allows only one declaration per
+   function/task name in a given scope, so `SignatureHelp.signatures` stays
+   a single-entry array here too, consistent with the module-instantiation
+   shape already implemented.
+6. **Scope this follow-up to bare, undotted calls only** (`my_func(`,
+   including a class method called as `my_func(` from inside its own
+   class) — a *dotted* call (`obj.method(`) needs the same chain-resolution
+   machinery completion's own `resolveChain`/`resolveMemberSegment`
+   (`completion.cpp`) already has for dot-completion, which is a
+   meaningfully bigger lift than this section's own scope; treat that as a
+   further, separate follow-up, not bundled into this one.
+
+**Unit/integration tests, once implemented:** a function with 2+
+differently-typed parameters; a task; a class method called bare (not
+dotted); a default parameter value rendered in the label; a call to
+something that isn't a function/task (fails closed, matching existing
+behavior); a zero-argument call.
 
 **Unit tests:** `tests/unit/lsp/test_references.cpp` (cursor not on an
 identifier; unknown identifier; excludes/includes the declaration;
