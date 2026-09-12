@@ -5,7 +5,7 @@ DiagnosticsPublisher::DiagnosticsPublisher(lsp::MessageHandler& handler)
     : m_handler{handler}
 {}
 
-void DiagnosticsPublisher::publish(const lsp::DocumentUri& uri, int version,
+void DiagnosticsPublisher::publish(const lsp::DocumentUri& uri, std::optional<int> version,
                                    lsp::Array<lsp::Diagnostic> diags)
 {
     m_handler.sendNotification<lsp::notifications::TextDocument_PublishDiagnostics>(
@@ -14,14 +14,14 @@ void DiagnosticsPublisher::publish(const lsp::DocumentUri& uri, int version,
 }
 
 lsp::PublishDiagnosticsParams DiagnosticsPublisher::buildParams(
-    const lsp::DocumentUri& uri, int version,
+    const lsp::DocumentUri& uri, std::optional<int> version,
     lsp::Array<lsp::Diagnostic> diags)
 {
-    return {
-        .uri         = uri,
-        .diagnostics = std::move(diags),
-        .version     = version,
-    };
+    lsp::PublishDiagnosticsParams params;
+    params.uri         = uri;
+    params.diagnostics = std::move(diags);
+    if (version) params.version = *version;
+    return params;
 }
 
 lsp::Diagnostic DiagnosticsPublisher::buildDiagnostic(const ParseError& err)

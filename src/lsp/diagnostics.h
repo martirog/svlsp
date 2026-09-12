@@ -2,6 +2,7 @@
 
 #include <lsp/messages.h>
 #include <lsp/messagehandler.h>
+#include <optional>
 #include "compiler/parse_record.h"
 
 // DiagnosticsPublisher sends textDocument/publishDiagnostics notifications
@@ -14,12 +15,17 @@ public:
 
     // Send publishDiagnostics for the given URI.  Pass an empty vector (the
     // default) to clear any previously published diagnostics for that URI.
-    void publish(const lsp::DocumentUri& uri, int version,
+    // `version` is the document version the client is tracking; pass
+    // std::nullopt for a file the client never `didOpen`ed (e.g. an
+    // `` `include ``d file whose diagnostics are published on the primary
+    // file's behalf) — the LSP spec's own `version` field is optional for
+    // exactly this case.
+    void publish(const lsp::DocumentUri& uri, std::optional<int> version,
                  lsp::Array<lsp::Diagnostic> diags = {});
 
     // Build the params without sending — used by unit tests.
     static lsp::PublishDiagnosticsParams buildParams(
-        const lsp::DocumentUri& uri, int version,
+        const lsp::DocumentUri& uri, std::optional<int> version,
         lsp::Array<lsp::Diagnostic> diags = {});
 
     // Convert a compiler ParseError to an LSP Diagnostic.

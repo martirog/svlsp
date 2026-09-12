@@ -1,5 +1,7 @@
 #include "server.h"
+#include "lsp/symbol_utils.h"
 #include <iostream>
+#include <optional>
 #include <lsp/messages.h>
 #include <lsp/process.h>
 #include <lsp/uri.h>
@@ -33,13 +35,18 @@ int LanguageServer::run()
 }
 
 lsp::Array<lsp::Diagnostic> LanguageServer::parseDiagnostics(
-    const lsp::DocumentUri& uri, const std::string& text)
+    const lsp::DocumentUri& uri, const std::string& text,
+    std::vector<std::string>* includedFiles)
 {
     const std::string path{uri.path()};
-    auto parseErrors = m_compiler.compile(path, text, m_projects.configFor(path));
+    auto parseErrors = m_compiler.compile(path, text, m_projects.configFor(path), includedFiles);
+    return toDiagnostics(parseErrors);
+}
 
+lsp::Array<lsp::Diagnostic> LanguageServer::toDiagnostics(const std::vector<ParseError>& errs)
+{
     lsp::Array<lsp::Diagnostic> diags;
-    for (const auto& err : parseErrors)
+    for (const auto& err : errs)
         diags.push_back(DiagnosticsPublisher::buildDiagnostic(err));
     return diags;
 }
@@ -48,15 +55,33 @@ void LanguageServer::compileAndPublish(const lsp::DocumentUri& uri)
 {
     lsp::Array<lsp::Diagnostic> diags;
     int version = 0;
+    // {URI, diagnostics} for every `` `include ``d file touched by this
+    // compile -- these were never `didOpen`ed by the client, so they're
+    // published separately, with no client-tracked version (plan.md's own
+    // "LSP diagnostics-visibility gap": this data was already computed and
+    // persisted to the DB per file, just never sent).
+    std::vector<std::pair<lsp::DocumentUri, lsp::Array<lsp::Diagnostic>>> includedDiags;
     {
         std::lock_guard lock{m_dataMutex};
         if (!m_store.contains(uri))
             return; // closed before this fired (didClose cancels the pending
                      // debounce entry, but guard here too for the narrow race)
         version = m_store.get(uri).version;
-        diags   = parseDiagnostics(uri, m_store.get(uri).text);
+
+        std::vector<std::string> includedFiles;
+        diags = parseDiagnostics(uri, m_store.get(uri).text, &includedFiles);
+
+        for (const auto& incPath : includedFiles) {
+            auto rows = m_symbolDb.diagnosticsForFile(incPath);
+            std::vector<ParseError> errs;
+            errs.reserve(rows.size());
+            for (const auto& r : rows) errs.push_back({r.line, r.col, r.message});
+            includedDiags.emplace_back(pathToUri(incPath), toDiagnostics(errs));
+        }
     }
     m_diagnostics.publish(uri, version, diags);
+    for (auto& [incUri, incDiags] : includedDiags)
+        m_diagnostics.publish(incUri, std::nullopt, std::move(incDiags));
 }
 
 void LanguageServer::registerHandlers()

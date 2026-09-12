@@ -151,6 +151,85 @@ TEST_CASE("symbols from included file are stored under included file path",
     CHECK(mainSyms[0].name == "main_mod");
 }
 
+// ---------------------------------------------------------------------------
+// `includedFiles` out-param — closes the LSP diagnostics-visibility gap:
+// a caller (LanguageServer::compileAndPublish) needs to know *which* files
+// this compile call touched so it can also publish their diagnostics,
+// already computed/persisted above but previously never reported anywhere.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("compile populates includedFiles with every touched include on a cache miss",
+          "[db][ctrl]") {
+    Fixture f;
+
+    std::string incA = "/tmp/svlsp_test_ctrl_included_a.sv";
+    std::string incB = "/tmp/svlsp_test_ctrl_included_b.sv";
+    { std::ofstream ofs(incA); ofs << "module inc_a; endmodule\n"; }
+    { std::ofstream ofs(incB); ofs << "module inc_b; endmodule\n"; }
+
+    std::string src = "`include \"" + incA + "\"\n`include \"" + incB + "\"\n"
+                       "module main_mod; endmodule\n";
+
+    std::vector<std::string> included;
+    f.ctrl.compile("/main.sv", src, nullptr, &included);
+
+    CHECK(included.size() == 2);
+    CHECK(std::find(included.begin(), included.end(), incA) != included.end());
+    CHECK(std::find(included.begin(), included.end(), incB) != included.end());
+    // The primary file itself is never listed as one of its own "included" files.
+    CHECK(std::find(included.begin(), included.end(), "/main.sv") == included.end());
+}
+
+TEST_CASE("compile clears and leaves includedFiles empty when there is nothing included",
+          "[db][ctrl]") {
+    Fixture f;
+    std::vector<std::string> included{"stale_entry_from_a_previous_call"};
+    f.ctrl.compile("/a.sv", "module top; endmodule\n", nullptr, &included);
+    CHECK(included.empty());
+}
+
+TEST_CASE("compile leaves includedFiles empty on a cache hit — nothing new to report",
+          "[db][ctrl]") {
+    Fixture f;
+
+    std::string incPath = "/tmp/svlsp_test_ctrl_included_cachehit.sv";
+    { std::ofstream ofs(incPath); ofs << "module from_include; endmodule\n"; }
+    std::string src = "`include \"" + incPath + "\"\nmodule main_mod; endmodule\n";
+
+    std::vector<std::string> firstPass;
+    f.ctrl.compile("/main.sv", src, nullptr, &firstPass);
+    REQUIRE(firstPass.size() == 1);
+
+    // Same content again → cache hit → nothing re-parsed, so nothing new to
+    // report (the included file's own diagnostics haven't changed and were
+    // already reported on the pass above).
+    std::vector<std::string> secondPass;
+    f.ctrl.compile("/main.sv", src, nullptr, &secondPass);
+    CHECK(secondPass.empty());
+}
+
+TEST_CASE("compile persists diagnostics for an included file even when it produces "
+          "no records at all", "[db][ctrl]") {
+    // Regression test: the loop persisting included-file data was originally
+    // keyed off recsByFile's own keys, so a file whose parse produced errors
+    // but literally zero symbols (unparseable from the very first token, not
+    // just a bad body) was previously silently dropped -- never persisted to
+    // the DB at all, not just unpublished.
+    Fixture f;
+
+    std::string incPath = "/tmp/svlsp_test_ctrl_included_norecords.sv";
+    { std::ofstream ofs(incPath); ofs << "%%% totally not SystemVerilog %%%\n"; }
+    std::string src = "`include \"" + incPath + "\"\nmodule main_mod; endmodule\n";
+
+    std::vector<std::string> included;
+    f.ctrl.compile("/main.sv", src, nullptr, &included);
+
+    REQUIRE(f.sdb.symbolsForFile(incPath).empty());
+    auto diags = f.sdb.diagnosticsForFile(incPath);
+    CHECK(!diags.empty());
+    CHECK(std::find(included.begin(), included.end(), incPath) != included.end());
+}
+
 TEST_CASE("compile logs the primary file and each included file to its own log stream",
           "[db][ctrl]") {
     // Regression test for moving the "[parsed]   included: <path>" line out

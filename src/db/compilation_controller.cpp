@@ -21,11 +21,15 @@ std::string CompilationController::hashContent(const std::string& text)
 
 std::vector<ParseError> CompilationController::compile(const std::string& path,
                                                         const std::string& text,
-                                                        const ProjectConfig* config)
+                                                        const ProjectConfig* config,
+                                                        std::vector<std::string>* includedFiles)
 {
+    if (includedFiles) includedFiles->clear();
+
     const std::string hash = hashContent(text);
 
-    // Cache hit: return diagnostics from DB without re-parsing.
+    // Cache hit: return diagnostics from DB without re-parsing. Included
+    // files aren't reported here -- see this function's own doc comment.
     if (m_sdb.getFileHash(path) == hash) {
         if (m_log) { *m_log << "[parsed] " << path << " (cached)\n"; m_log->flush(); }
         auto rows = m_sdb.diagnosticsForFile(path);
@@ -80,6 +84,18 @@ std::vector<ParseError> CompilationController::compile(const std::string& path,
         m_sdb.replaceDiagnostics(incFid,    errsByFile[filePath]  );
         m_sdb.replaceImports(incFid,        importsByFile[filePath]);
         m_sdb.replaceInstantiations(incFid, instsByFile[filePath]  );
+        if (includedFiles) includedFiles->push_back(filePath);
+    }
+
+    // A file with parse errors but no records at all (e.g. one that fails
+    // to parse into anything recognizable) still needs its diagnostics
+    // reported even though the loop above -- keyed off recsByFile -- never
+    // saw it.
+    for (const auto& [filePath, errs] : errsByFile) {
+        if (filePath.empty() || recsByFile.count(filePath)) continue;
+        int64_t incFid = m_sdb.upsertFile(filePath, "");
+        m_sdb.replaceDiagnostics(incFid, errs);
+        if (includedFiles) includedFiles->push_back(filePath);
     }
 
     return errsByFile[""];

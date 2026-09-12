@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include "lsp/diagnostics.h"
+#include <optional>
 
 static lsp::DocumentUri makeUri(std::string_view path)
 {
@@ -35,6 +36,17 @@ TEST_CASE("DiagnosticsPublisher: buildParams sets version", "[diagnostics]")
     auto params = DiagnosticsPublisher::buildParams(makeUri("/tmp/test.sv"), 7);
     REQUIRE(params.version.has_value());
     REQUIRE(*params.version == 7);
+}
+
+TEST_CASE("DiagnosticsPublisher: buildParams with std::nullopt leaves version unset",
+          "[diagnostics]")
+{
+    // For a file the client never `didOpen`ed (e.g. an `` `include ``d file
+    // whose diagnostics are published on the primary file's behalf) there is
+    // no client-tracked version to attach -- the LSP spec's own `version`
+    // field is optional for exactly this case.
+    auto params = DiagnosticsPublisher::buildParams(makeUri("/tmp/test.sv"), std::nullopt);
+    REQUIRE_FALSE(params.version.has_value());
 }
 
 // ---------------------------------------------------------------------------

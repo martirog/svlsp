@@ -32,9 +32,22 @@ public:
     // and defines seed the preprocessor (project-aware compilation); when
     // null (the default), preprocessing behaves exactly as before Phase 6.2
     // — no defines, no extra include directories.
+    //
+    // When `includedFiles` is non-null, it is cleared and then populated
+    // with every distinct, transitively `` `include ``d file this call
+    // actually recompiled (symbols/diagnostics for each are already
+    // persisted to the DB either way — see `replaceDiagnostics` below —
+    // this only reports *which* paths so a caller can also publish their
+    // diagnostics, e.g. LanguageServer::compileAndPublish). Left empty on a
+    // cache hit: the primary file's own text didn't change, so nothing new
+    // needs reporting for files it includes either (a real but out-of-scope
+    // gap this deliberately doesn't fix: an included file changing on disk
+    // independently of the primary file's own hash isn't detected here —
+    // see plan.md §6.4, cross-file invalidation).
     std::vector<ParseError> compile(const std::string& path,
                                     const std::string& text,
-                                    const ProjectConfig* config = nullptr);
+                                    const ProjectConfig* config = nullptr,
+                                    std::vector<std::string>* includedFiles = nullptr);
 
 private:
     SymbolDatabase& m_sdb;

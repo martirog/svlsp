@@ -64,14 +64,25 @@ private:
 
     void registerHandlers();
 
-    // Run the compiler pipeline (or return cached DB result) and publish diagnostics.
-    // Caller must hold m_dataMutex.
+    // Run the compiler pipeline (or return cached DB result) for the primary
+    // file and build its LSP diagnostics. When `includedFiles` is non-null,
+    // it is populated with every transitively `` `include ``d file this call
+    // actually recompiled (empty on a cache hit — see
+    // CompilationController::compile's own doc comment on why included
+    // files aren't re-reported then). Caller must hold m_dataMutex.
     lsp::Array<lsp::Diagnostic> parseDiagnostics(const lsp::DocumentUri& uri,
-                                                  const std::string& text);
+                                                  const std::string& text,
+                                                  std::vector<std::string>* includedFiles = nullptr);
+
+    // Converts already-computed ParseErrors to LSP Diagnostics.
+    static lsp::Array<lsp::Diagnostic> toDiagnostics(const std::vector<ParseError>& errs);
 
     // Compiles the given (already-open) document's current text and
-    // publishes its diagnostics. Locks m_dataMutex itself — do not call
-    // while already holding it. If the document was closed in the meantime
-    // (e.g. a debounced fire racing a didClose), this is a harmless no-op.
+    // publishes its diagnostics, plus diagnostics for every `` `include ``d
+    // file touched by this compile (read back from the DB — those files were
+    // never `didOpen`ed, so they're published with no client-tracked
+    // version). Locks m_dataMutex itself — do not call while already holding
+    // it. If the document was closed in the meantime (e.g. a debounced fire
+    // racing a didClose), this is a harmless no-op.
     void compileAndPublish(const lsp::DocumentUri& uri);
 };
