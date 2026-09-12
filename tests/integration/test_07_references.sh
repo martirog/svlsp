@@ -1,59 +1,69 @@
 #!/usr/bin/env bash
-# test_07_references.sh — verify that svlsp handles textDocument/references
-# without crashing and returns a null result (pre-ANTLR4, no symbol DB yet).
+# test_07_references.sh — verify textDocument/references (plan.md item 3).
 #
-# Phase 3.5: the references handler is wired and routing works, but the server
-# has no parser or database, so it always responds with JSON null.
-# Phase 4 will return all source locations that reference a given symbol.
+# There is no reference-tracking table in this schema, only declarations
+# (see ReferencesProvider's own doc comment) -- this is a lexical, cross-file
+# text search for the identifier under the cursor, not a scope-aware one.
 #
-# lsp-request sends a synchronous textDocument/references RPC.  JSON null maps
-# to Emacs nil, so a null response is verified with (null result).
+# Fixture: fixtures/ref_rename_sighelp.sv -- `rrsh_data` is declared once
+# (line 16, 0-based, col 8) and used twice ("assign rrsh_result =
+# rrsh_data;" and "assign rrsh_data = 1;").
 
-SV_FIXTURE="${SVLSP_ROOT}/examples/module_basic.sv"
+SV_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/ref_rename_sighelp.sv"
 
 section "find references (textDocument/references)"
 
 if [ ! -x "${SVLSP_BIN}" ]; then
-    skip_test "server alive after references request" "svlsp binary not found at ${SVLSP_BIN}"
-    skip_test "references returns null (pre-ANTLR4)"  "svlsp binary not found at ${SVLSP_BIN}"
+    for name in \
+        "null when the cursor isn't on an identifier" \
+        "excludes the declaration by default" \
+        "includes the declaration when requested"
+    do
+        skip_test "$name" "svlsp binary not found at ${SVLSP_BIN}"
+    done
 else
-    # --- server survives a references request -----------------------------
-    run_test "server alive after references request" \
+    run_test "null when the cursor isn't on an identifier" \
         "(condition-case err
-           (let* ((buf   (svlsp-test/open-file \"${SV_FIXTURE}\"))
-                   (ok    (with-current-buffer buf
-                            (svlsp-test/wait-for-lsp 15)))
-                   (alive
-                     (when ok
-                       (with-current-buffer buf
-                         (ignore
-                           (lsp-request \"textDocument/references\"
-                                        (list :textDocument (list :uri (lsp--buffer-uri))
-                                              :position     (list :line 0 :character 0)
-                                              :context      (list :includeDeclaration t))))
-                         (cl-some (lambda (ws)
-                                    (eq (lsp--workspace-status ws) 'initialized))
-                                  (lsp-workspaces))))))
+           (let* ((buf    (svlsp-test/open-file \"${SV_FIXTURE}\"))
+                  (ok     (with-current-buffer buf (svlsp-test/wait-for-lsp 15)))
+                  (result (when ok
+                            (with-current-buffer buf
+                              (lsp-request \"textDocument/references\"
+                                           (list :textDocument (list :uri (lsp--buffer-uri))
+                                                 :position     (list :line 14 :character 0)
+                                                 :context      (list :includeDeclaration t)))))))
              (svlsp-test/close-file buf)
-             (if alive t nil))
+             (if (and ok (null result)) t nil))
          (error (format \"elisp-error: %s\" (error-message-string err))))" \
         "t"
 
-    # --- null result (no symbol DB yet) -----------------------------------
-    run_test "references returns null (pre-ANTLR4)" \
+    run_test "excludes the declaration by default" \
         "(condition-case err
            (let* ((buf    (svlsp-test/open-file \"${SV_FIXTURE}\"))
-                   (ok     (with-current-buffer buf
-                             (svlsp-test/wait-for-lsp 15)))
-                   (result
-                     (when ok
-                       (with-current-buffer buf
-                         (lsp-request \"textDocument/references\"
-                                      (list :textDocument (list :uri (lsp--buffer-uri))
-                                            :position     (list :line 0 :character 5)
-                                            :context      (list :includeDeclaration :json-false)))))))
+                  (ok     (with-current-buffer buf (svlsp-test/wait-for-lsp 15)))
+                  (result (when ok
+                            (with-current-buffer buf
+                              (lsp-request \"textDocument/references\"
+                                           (list :textDocument (list :uri (lsp--buffer-uri))
+                                                 :position     (list :line 16 :character 8)
+                                                 :context      (list :includeDeclaration :json-false)))))))
              (svlsp-test/close-file buf)
-             (if (and ok (null result)) t nil))
+             (if (and ok (listp result) (eql (length result) 2)) t nil))
+         (error (format \"elisp-error: %s\" (error-message-string err))))" \
+        "t"
+
+    run_test "includes the declaration when requested" \
+        "(condition-case err
+           (let* ((buf    (svlsp-test/open-file \"${SV_FIXTURE}\"))
+                  (ok     (with-current-buffer buf (svlsp-test/wait-for-lsp 15)))
+                  (result (when ok
+                            (with-current-buffer buf
+                              (lsp-request \"textDocument/references\"
+                                           (list :textDocument (list :uri (lsp--buffer-uri))
+                                                 :position     (list :line 16 :character 8)
+                                                 :context      (list :includeDeclaration t)))))))
+             (svlsp-test/close-file buf)
+             (if (and ok (listp result) (eql (length result) 3)) t nil))
          (error (format \"elisp-error: %s\" (error-message-string err))))" \
         "t"
 fi

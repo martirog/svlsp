@@ -95,28 +95,31 @@ void LanguageServer::compileAndPublish(const lsp::DocumentUri& uri)
         m_diagnostics.publish(incUri, std::nullopt, std::move(incDiags));
 }
 
+std::optional<std::string> LanguageServer::currentTextFor(const std::string& path)
+{
+    const lsp::DocumentUri uri = pathToUri(path);
+    if (m_store.contains(uri))
+        return m_store.get(uri).text;
+    return readFile(path);
+}
+
 void LanguageServer::forceRecompileAndPublish(const std::string& path)
 {
     const lsp::DocumentUri uri = pathToUri(path);
 
-    std::string text;
     std::optional<int> version;
     lsp::Array<lsp::Diagnostic> diags;
     std::vector<std::pair<lsp::DocumentUri, lsp::Array<lsp::Diagnostic>>> includedDiags;
     {
         std::lock_guard lock{m_dataMutex};
-        if (m_store.contains(uri)) {
+        if (m_store.contains(uri))
             version = m_store.get(uri).version;
-            text    = m_store.get(uri).text;
-        } else {
-            auto diskText = readFile(path);
-            if (!diskText)
-                return; // deleted/unreadable since being scheduled -- nothing to do
-            text = std::move(*diskText);
-        }
+        auto text = currentTextFor(path);
+        if (!text)
+            return; // deleted/unreadable since being scheduled -- nothing to do
 
         std::vector<std::string> includedFiles;
-        auto parseErrors = m_compiler.compile(path, text, m_projects.configFor(path),
+        auto parseErrors = m_compiler.compile(path, *text, m_projects.configFor(path),
                                                &includedFiles, /*forceRecompile=*/true);
         diags = toDiagnostics(parseErrors);
         includedDiags = collectIncludedDiagnostics(includedFiles);
@@ -217,8 +220,13 @@ void LanguageServer::registerHandlers()
                     params, m_symbolDb, m_store.get(params.textDocument.uri).text);
             })
         .add<lsp::requests::TextDocument_References>(
-            [](lsp::ReferenceParams&& params) {
-                return ReferencesProvider::getReferences(params);
+            [this](lsp::ReferenceParams&& params) {
+                std::lock_guard lock{m_dataMutex};
+                if (!m_store.contains(params.textDocument.uri))
+                    return lsp::TextDocument_ReferencesResult{nullptr};
+                return ReferencesProvider::getReferences(
+                    params, m_symbolDb, m_store.get(params.textDocument.uri).text,
+                    [this](const std::string& path) { return currentTextFor(path); });
             })
         .add<lsp::requests::TextDocument_Completion>(
             [this](lsp::CompletionParams&& params) {
@@ -240,11 +248,20 @@ void LanguageServer::registerHandlers()
                 return WorkspaceSymbolsProvider::getWorkspaceSymbols(params, m_symbolDb);
             })
         .add<lsp::requests::TextDocument_Rename>(
-            [](lsp::RenameParams&& params) {
-                return RenameProvider::getRename(params);
+            [this](lsp::RenameParams&& params) {
+                std::lock_guard lock{m_dataMutex};
+                if (!m_store.contains(params.textDocument.uri))
+                    return lsp::TextDocument_RenameResult{nullptr};
+                return RenameProvider::getRename(
+                    params, m_symbolDb, m_store.get(params.textDocument.uri).text,
+                    [this](const std::string& path) { return currentTextFor(path); });
             })
         .add<lsp::requests::TextDocument_SignatureHelp>(
-            [](lsp::SignatureHelpParams&& params) {
-                return SignatureHelpProvider::getSignatureHelp(params);
+            [this](lsp::SignatureHelpParams&& params) {
+                std::lock_guard lock{m_dataMutex};
+                if (!m_store.contains(params.textDocument.uri))
+                    return lsp::TextDocument_SignatureHelpResult{nullptr};
+                return SignatureHelpProvider::getSignatureHelp(
+                    params, m_symbolDb, m_store.get(params.textDocument.uri).text);
             });
 }

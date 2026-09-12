@@ -98,6 +98,14 @@ private:
     std::vector<std::pair<lsp::DocumentUri, lsp::Array<lsp::Diagnostic>>>
     collectIncludedDiagnostics(const std::vector<std::string>& paths);
 
+    // Returns `path`'s current text: m_store's live copy if open, else a
+    // fresh disk read. std::nullopt if neither is available (e.g. a file
+    // referenced by some stale DB row that was since deleted). Caller must
+    // hold m_dataMutex. Shared by forceRecompileAndPublish and the
+    // references/rename handlers, both of which need "current text for an
+    // arbitrary file the DB knows about," not just the requesting document.
+    std::optional<std::string> currentTextFor(const std::string& path);
+
     // Compiles the given (already-open) document's current text and
     // publishes its diagnostics, plus diagnostics for every `` `include ``d
     // file touched by this compile (read back from the DB — those files were

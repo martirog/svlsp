@@ -1,60 +1,62 @@
 #!/usr/bin/env bash
-# test_12_signature_help.sh — verify that svlsp handles
-# textDocument/signatureHelp without crashing and returns a null result
-# (pre-ANTLR4, no port-list or function-signature information yet).
+# test_12_signature_help.sh — verify textDocument/signatureHelp (plan.md
+# item 3), scoped to module/interface/program instantiation port lists --
+# see SignatureHelpProvider's own doc comment for why function/task calls
+# aren't supported.
 #
-# Phase 3.10: the signature-help handler is wired and routing works, but the
-# server has no parser or database, so it always responds with JSON null.
-# Phase 4 will return SignatureHelp with port/parameter signatures when the
-# cursor is inside a module instantiation or function call.
-#
-# lsp-request sends a synchronous textDocument/signatureHelp RPC.  JSON null
-# maps to Emacs nil, so a null response is verified with (null result).
+# Fixture: fixtures/ref_rename_sighelp.sv -- `rrsh_adder` has three ports
+# (rrsh_clk, rrsh_rst_n, rrsh_done, in that declaration order); `rrsh_top`
+# instantiates it with `.rrsh_clk(rrsh_clk)`, `.rrsh_rst_n(rrsh_rst_n)`
+# already connected and the cursor positioned right after `.rrsh_done(`
+# (line 25, 0-based, col 15) -- both the positional comma count (this is
+# the third argument) and the named-connection lookup ("rrsh_done") should
+# agree on activeParameter = 2.
 
-SV_FIXTURE="${SVLSP_ROOT}/examples/module_basic.sv"
+SV_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/ref_rename_sighelp.sv"
 
 section "signature help (textDocument/signatureHelp)"
 
 if [ ! -x "${SVLSP_BIN}" ]; then
-    skip_test "server alive after signatureHelp request" "svlsp binary not found at ${SVLSP_BIN}"
-    skip_test "signatureHelp returns null (pre-ANTLR4)"  "svlsp binary not found at ${SVLSP_BIN}"
+    for name in \
+        "null when the cursor isn't inside any parentheses" \
+        "returns rrsh_adder's port list with the named-connection active parameter"
+    do
+        skip_test "$name" "svlsp binary not found at ${SVLSP_BIN}"
+    done
 else
-    # --- server survives a signatureHelp request --------------------------
-    run_test "server alive after signatureHelp request" \
+    run_test "null when the cursor isn't inside any parentheses" \
         "(condition-case err
-           (let* ((buf   (svlsp-test/open-file \"${SV_FIXTURE}\"))
-                   (ok    (with-current-buffer buf
-                            (svlsp-test/wait-for-lsp 15)))
-                   (alive
-                     (when ok
-                       (with-current-buffer buf
-                         (ignore
-                           (lsp-request \"textDocument/signatureHelp\"
-                                        (list :textDocument (list :uri (lsp--buffer-uri))
-                                              :position     (list :line 0 :character 0)))))
-                       (with-current-buffer buf
-                         (cl-some (lambda (ws)
-                                    (eq (lsp--workspace-status ws) 'initialized))
-                                  (lsp-workspaces))))))
+           (let* ((buf    (svlsp-test/open-file \"${SV_FIXTURE}\"))
+                  (ok     (with-current-buffer buf (svlsp-test/wait-for-lsp 15)))
+                  (result (when ok
+                            (with-current-buffer buf
+                              (lsp-request \"textDocument/signatureHelp\"
+                                           (list :textDocument (list :uri (lsp--buffer-uri))
+                                                 :position     (list :line 14 :character 0)))))))
              (svlsp-test/close-file buf)
-             (if alive t nil))
+             (if (and ok (null result)) t nil))
          (error (format \"elisp-error: %s\" (error-message-string err))))" \
         "t"
 
-    # --- null result (no parser yet) --------------------------------------
-    run_test "signatureHelp returns null (pre-ANTLR4)" \
+    run_test "returns rrsh_adder's port list with the named-connection active parameter" \
         "(condition-case err
            (let* ((buf    (svlsp-test/open-file \"${SV_FIXTURE}\"))
-                   (ok     (with-current-buffer buf
-                             (svlsp-test/wait-for-lsp 15)))
-                   (result
-                     (when ok
-                       (with-current-buffer buf
-                         (lsp-request \"textDocument/signatureHelp\"
-                                      (list :textDocument (list :uri (lsp--buffer-uri))
-                                            :position     (list :line 0 :character 5)))))))
+                  (ok     (with-current-buffer buf (svlsp-test/wait-for-lsp 15)))
+                  (result (when ok
+                            (with-current-buffer buf
+                              (lsp-request \"textDocument/signatureHelp\"
+                                           (list :textDocument (list :uri (lsp--buffer-uri))
+                                                 :position     (list :line 25 :character 15))))))
+                  (sig     (when result (aref (gethash \"signatures\" result) 0)))
+                  (label   (when sig (gethash \"label\" sig)))
+                  (params  (when sig (gethash \"parameters\" sig)))
+                  (active  (when sig (gethash \"activeParameter\" sig))))
              (svlsp-test/close-file buf)
-             (if (and ok (null result)) t nil))
+             (if (and ok sig
+                      (string-prefix-p \"rrsh_adder(\" label)
+                      (eql (length params) 3)
+                      (eql active 2))
+                 t nil))
          (error (format \"elisp-error: %s\" (error-message-string err))))" \
         "t"
 fi

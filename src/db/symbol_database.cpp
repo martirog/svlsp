@@ -168,6 +168,15 @@ std::string SymbolDatabase::getFileHash(const std::string& path) const
     return {};
 }
 
+std::vector<std::string> SymbolDatabase::allFilePaths() const
+{
+    auto stmt = m_db.prepare("SELECT path FROM files");
+    std::vector<std::string> paths;
+    while (stmt.step())
+        paths.push_back(stmt.columnText(0));
+    return paths;
+}
+
 void SymbolDatabase::replaceSymbols(int64_t fileId,
                                     const std::vector<ParseRecord>& records)
 {

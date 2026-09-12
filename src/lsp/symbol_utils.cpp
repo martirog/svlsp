@@ -212,3 +212,57 @@ std::optional<DotCompletion> dotCompletionContext(
     std::reverse(segments.begin(), segments.end());
     return DotCompletion{std::move(segments), prefix};
 }
+
+std::vector<TextOccurrence> findIdentifierOccurrences(
+    const std::string& text, const std::string& name)
+{
+    std::vector<TextOccurrence> result;
+    if (name.empty()) return result;
+
+    bool inBlockComment = false;
+    int lineNo = 0;
+    size_t pos = 0;
+    while (pos <= text.size()) {
+        size_t eol = text.find('\n', pos);
+        const size_t lineEnd = (eol == std::string::npos) ? text.size() : eol;
+
+        for (size_t i = pos; i < lineEnd; ) {
+            if (inBlockComment) {
+                size_t end = text.find("*/", i);
+                if (end == std::string::npos || end >= lineEnd) { i = lineEnd; break; }
+                inBlockComment = false;
+                i = end + 2;
+                continue;
+            }
+            if (i + 1 < lineEnd && text[i] == '/' && text[i + 1] == '*') {
+                inBlockComment = true;
+                i += 2;
+                continue;
+            }
+            if (i + 1 < lineEnd && text[i] == '/' && text[i + 1] == '/')
+                break; // rest of the line is a line comment
+            if (text[i] == '"') {
+                ++i;
+                while (i < lineEnd && text[i] != '"') {
+                    if (text[i] == '\\' && i + 1 < lineEnd) i += 2;
+                    else ++i;
+                }
+                if (i < lineEnd) ++i; // closing quote
+                continue;
+            }
+            if (isIdChar(text[i]) && !std::isdigit(static_cast<unsigned char>(text[i]))) {
+                size_t start = i;
+                while (i < lineEnd && isIdChar(text[i])) ++i;
+                if (i - start == name.size() && text.compare(start, i - start, name) == 0)
+                    result.push_back({lineNo, static_cast<int>(start - pos)});
+                continue;
+            }
+            ++i;
+        }
+
+        if (eol == std::string::npos) break;
+        pos = eol + 1;
+        ++lineNo;
+    }
+    return result;
+}

@@ -116,6 +116,13 @@ public:
     // Return the stored content hash for `path`, or "" if the file is unknown.
     std::string getFileHash(const std::string& path) const;
 
+    // Every path in `files`, in no particular order. Used by
+    // ReferencesProvider/RenameProvider (plan.md item 3) to scan every file
+    // the DB knows about for a name's occurrences -- there is no reference-
+    // tracking table, only declarations, so those providers fall back to a
+    // lexical, cross-file text search over this file set.
+    std::vector<std::string> allFilePaths() const;
+
     // Delete all symbols for `fileId` then insert `records` in a single
     // transaction.
     void replaceSymbols(int64_t fileId, const std::vector<ParseRecord>& records);

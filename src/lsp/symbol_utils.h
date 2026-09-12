@@ -91,3 +91,23 @@ struct DotCompletion {
 // pre-existing convention).
 std::optional<DotCompletion> dotCompletionContext(
     const std::string& text, unsigned line, unsigned character);
+
+// A lexical hit for a whole-identifier text search (findIdentifierOccurrences
+// below) -- 0-based LSP line/character of the occurrence's first character.
+struct TextOccurrence {
+    int line;
+    int character;
+};
+
+// Every whole-identifier occurrence of `name` in `text` -- used by
+// ReferencesProvider/RenameProvider (there is no reference-tracking table,
+// only declarations, so both fall back to this). A lexical scan only: skips
+// `//` and `/* */` comments and `"..."` string literals (same in-string
+// escape handling as the preprocessor's own macro-argument scanning) so a
+// same-named identifier inside one of those is never reported, but it is
+// NOT scope-aware -- two unrelated declarations sharing a name (e.g. two
+// classes both named `Packet` in different files) are indistinguishable
+// from here and both match. `name` must be a plain identifier (no `::`/`.`);
+// an empty `name` returns {}.
+std::vector<TextOccurrence> findIdentifierOccurrences(
+    const std::string& text, const std::string& name);
