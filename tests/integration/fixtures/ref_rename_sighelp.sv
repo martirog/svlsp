@@ -26,3 +26,17 @@ module rrsh_top;
     .rrsh_done(
   );
 endmodule
+
+// rrsh_compute -- fixture for the plan.md §6.22 follow-up: signature help
+// on a bare (undotted) function call. Two parameters, the second with a
+// default value, so the same fixture also covers default-value rendering.
+function automatic int rrsh_compute(input int rrsh_a, input int rrsh_b = 4);
+  return rrsh_a + rrsh_b;
+endfunction
+
+module rrsh_caller;
+  logic [31:0] rrsh_out;
+  initial begin
+    rrsh_out = rrsh_compute(rrsh_out,
+  end
+endmodule

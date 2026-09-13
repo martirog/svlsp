@@ -1,5 +1,6 @@
 #include "signature_help.h"
 #include "lsp/symbol_utils.h"
+#include "compiler/parse_record.h"
 #include <algorithm>
 #include <cctype>
 #include <optional>
@@ -119,6 +120,35 @@ std::optional<InstantiationHeader> parseInstantiationHeader(
     return InstantiationHeader{std::move(typeName), std::move(instanceName)};
 }
 
+// Reads the single identifier immediately before `parenOffset`: a bare
+// function/task call header, `<calleeName> (`. Tried only after
+// parseInstantiationHeader's two-identifier shape above fails to resolve to
+// a known Module/Interface/Program -- see plan.md §6.22's follow-up section.
+// Deliberately scoped to *undotted* calls only: if a '.' immediately
+// precedes the identifier (skipping whitespace), this is a dotted call
+// (`obj.method(`) that needs completion's own chain-resolution machinery,
+// not this lexical scan -- fails closed (nullopt) rather than guessing,
+// since blindly resolving just the method name by itself risks matching an
+// unrelated same-named method on a different class entirely.
+std::optional<std::string> parseCallHeader(const std::string& text, size_t parenOffset)
+{
+    auto skipWsBack = [&](size_t& i) {
+        while (i > 0 && std::isspace(static_cast<unsigned char>(text[i - 1]))) --i;
+    };
+
+    size_t i = parenOffset;
+    skipWsBack(i);
+    size_t end = i;
+    while (i > 0 && isIdentChar(static_cast<unsigned char>(text[i - 1]))) --i;
+    if (i == end) return std::nullopt;
+    std::string name = text.substr(i, end - i);
+
+    skipWsBack(i);
+    if (i > 0 && text[i - 1] == '.') return std::nullopt; // dotted -- out of scope
+
+    return name;
+}
+
 struct ActiveParam {
     int                        index;
     std::optional<std::string> namedPort;
@@ -154,9 +184,20 @@ ActiveParam computeActiveParam(const std::string& text, size_t parenOffset, size
     return {index, std::nullopt};
 }
 
+// A function/task parameter's detail carries a "<direction> <type>" prefix
+// and, if a default value is present, a "= <value>" suffix past
+// PARAM_DEFAULT_VALUE_SEP (see enterTf_port_item, sv_tree_walker.cpp) --
+// rendered as "<prefix> <name> <suffix>", e.g. "int width = 8". A plain
+// module/interface/program port's detail never contains the separator, so
+// it falls through to the original "<direction> <name>" shape unchanged.
 std::string portLabel(const SymbolRow& port)
 {
-    return port.detail.empty() ? port.name : port.detail + " " + port.name;
+    auto sep = port.detail.find(PARAM_DEFAULT_VALUE_SEP);
+    const std::string prefix = sep == std::string::npos ? port.detail : port.detail.substr(0, sep);
+    const std::string suffix = sep == std::string::npos ? "" : port.detail.substr(sep + 1);
+    std::string label = prefix.empty() ? port.name : prefix + " " + port.name;
+    label += suffix;
+    return label;
 }
 
 } // namespace
@@ -171,16 +212,27 @@ lsp::TextDocument_SignatureHelpResult SignatureHelpProvider::getSignatureHelp(
     auto parenOffset = findEnclosingParen(docText, *cursorOffset);
     if (!parenOffset) return nullptr;
 
-    auto header = parseInstantiationHeader(docText, *parenOffset);
-    if (!header) return nullptr;
-
-    auto candidates = db.findSymbolsByName(header->typeName);
+    // Try the module/interface/program instantiation shape first
+    // (`<TypeName> <InstanceName> (`); only if that fails to resolve to a
+    // known design-unit type, try the bare function/task call shape
+    // (`<calleeName> (`, plan.md §6.22 follow-up) instead.
+    std::string calleeName;
     std::vector<SymbolRow> typeRows;
-    for (auto& row : candidates) {
-        if (row.kind == "Module" || row.kind == "Interface" || row.kind == "Program")
-            typeRows.push_back(row);
+    if (auto header = parseInstantiationHeader(docText, *parenOffset)) {
+        for (auto& row : db.findSymbolsByName(header->typeName))
+            if (row.kind == "Module" || row.kind == "Interface" || row.kind == "Program")
+                typeRows.push_back(row);
+        calleeName = header->typeName;
     }
-    if (typeRows.empty()) return nullptr; // not a known design-unit type -- fail closed
+    if (typeRows.empty()) {
+        if (auto callee = parseCallHeader(docText, *parenOffset)) {
+            for (auto& row : db.findSymbolsByName(*callee))
+                if (row.kind == "Function" || row.kind == "Task")
+                    typeRows.push_back(row);
+            calleeName = *callee;
+        }
+    }
+    if (typeRows.empty()) return nullptr; // not a known design-unit/function/task -- fail closed
 
     const std::string curPath{params.textDocument.uri.path()};
     const SymbolRow* best = pickBestSymbol(typeRows, curPath);
@@ -197,7 +249,7 @@ lsp::TextDocument_SignatureHelpResult SignatureHelpProvider::getSignatureHelp(
     const auto active = computeActiveParam(docText, *parenOffset, *cursorOffset);
 
     lsp::SignatureInformation sig;
-    std::string label = header->typeName + "(";
+    std::string label = calleeName + "(";
     lsp::Array<lsp::ParameterInformation> params_;
     int activeIndex = active.index;
     if (active.namedPort) {

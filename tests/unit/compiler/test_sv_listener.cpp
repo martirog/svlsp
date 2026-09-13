@@ -600,6 +600,104 @@ TEST_CASE("a DPI-imported function is recorded as a Function symbol",
 }
 
 // ---------------------------------------------------------------------------
+// Function/task parameters -- tf_port_item (plan.md §6.22 follow-up).
+// Recorded as ParseRecordKind::Port (same shape a module port already is),
+// scoped to the enclosing function/task's own scope chain, powering
+// SignatureHelpProvider's extension to bare function/task calls.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a function parameter is recorded as a Port scoped to the function",
+          "[compiler][listener][phase6.22]") {
+    auto [recs, errs, imps, insts] = walkSource(
+        "function int add(input int a);\n"
+        "  return a;\n"
+        "endfunction\n");
+    REQUIRE(errs.empty());
+    auto* p = findRecord(recs, ParseRecordKind::Port, "a");
+    REQUIRE(p != nullptr);
+    CHECK(p->parent == "add");
+    CHECK(p->scope == "add");
+    // Plain `input` is the default direction -- dropped from detail as
+    // noise; only type remains.
+    CHECK(p->detail == "int");
+}
+
+TEST_CASE("a task parameter is recorded as a Port scoped to the task",
+          "[compiler][listener][phase6.22]") {
+    auto [recs, errs, imps, insts] = walkSource(
+        "task automatic do_thing(input int x);\n"
+        "endtask\n");
+    REQUIRE(errs.empty());
+    auto* p = findRecord(recs, ParseRecordKind::Port, "x");
+    REQUIRE(p != nullptr);
+    CHECK(p->scope == "do_thing");
+}
+
+TEST_CASE("a non-default parameter direction is kept in detail",
+          "[compiler][listener][phase6.22]") {
+    auto [recs, errs, imps, insts] = walkSource(
+        "function void foo(output int b);\n"
+        "endfunction\n");
+    REQUIRE(errs.empty());
+    auto* p = findRecord(recs, ParseRecordKind::Port, "b");
+    REQUIRE(p != nullptr);
+    CHECK(p->detail == "output int");
+}
+
+TEST_CASE("a two-token parameter direction keeps its real spacing",
+          "[compiler][listener][phase6.22]") {
+    // Regression guard for the verbatim-token-stream extraction: ctx->getText()
+    // would strip the space and yield "constrefint" instead.
+    auto [recs, errs, imps, insts] = walkSource(
+        "function void foo(const ref int x);\n"
+        "endfunction\n");
+    REQUIRE(errs.empty());
+    auto* p = findRecord(recs, ParseRecordKind::Port, "x");
+    REQUIRE(p != nullptr);
+    CHECK(p->detail == "const ref int");
+}
+
+TEST_CASE("a default parameter value is appended after the separator",
+          "[compiler][listener][phase6.22]") {
+    auto [recs, errs, imps, insts] = walkSource(
+        "function void foo(int width = 8);\n"
+        "endfunction\n");
+    REQUIRE(errs.empty());
+    auto* p = findRecord(recs, ParseRecordKind::Port, "width");
+    REQUIRE(p != nullptr);
+    CHECK(p->detail == std::string("int") + PARAM_DEFAULT_VALUE_SEP + " = 8");
+}
+
+TEST_CASE("a class method's parameters are scoped to Class::method",
+          "[compiler][listener][phase6.22]") {
+    auto [recs, errs, imps, insts] = walkSource(
+        "class C;\n"
+        "  function int get(int i);\n"
+        "    return i;\n"
+        "  endfunction\n"
+        "endclass\n");
+    REQUIRE(errs.empty());
+    auto* p = findRecord(recs, ParseRecordKind::Port, "i");
+    REQUIRE(p != nullptr);
+    CHECK(p->scope == "C::get");
+}
+
+TEST_CASE("a pure-virtual method's parameters are recorded even with no body",
+          "[compiler][listener][phase6.22]") {
+    auto [recs, errs, imps, insts] = walkSource(
+        "class C;\n"
+        "  pure virtual function int compute(int a, int b);\n"
+        "endclass\n");
+    REQUIRE(errs.empty());
+    auto* pa = findRecord(recs, ParseRecordKind::Port, "a");
+    auto* pb = findRecord(recs, ParseRecordKind::Port, "b");
+    REQUIRE(pa != nullptr);
+    REQUIRE(pb != nullptr);
+    CHECK(pa->scope == "C::compute");
+    CHECK(pb->scope == "C::compute");
+}
+
+// ---------------------------------------------------------------------------
 // Parent scope tracking
 // ---------------------------------------------------------------------------
 

@@ -137,8 +137,16 @@ private:
 
 class SvRecordListener : public SvBaseListener {
 public:
-    explicit SvRecordListener(const std::vector<SourceLine>& sourceMap)
-        : m_sourceMap(sourceMap) {}
+    // `tokens` is needed only for verbatim (whitespace-preserving) source
+    // text of a function/task parameter's type/default-value (plan.md
+    // §6.22 follow-up) -- ctx->getText() strips inter-token whitespace
+    // entirely ("input logic [7:0] a" -> "inputlogic[7:0]a"), fine for the
+    // short single-token-ish `detail` strings populated elsewhere but not
+    // for a multi-token parameter list a person reads character-by-character
+    // in a signature-help popup.
+    SvRecordListener(const std::vector<SourceLine>& sourceMap,
+                      antlr4::CommonTokenStream* tokens)
+        : m_sourceMap(sourceMap), m_tokens(tokens) {}
 
     const std::vector<ParseRecord>&  records() const { return m_records; }
     const std::vector<ImportRecord>& imports() const { return m_imports; }
@@ -351,6 +359,55 @@ public:
         popScope();
     }
 
+    // ---- Function/task parameters (plan.md §6.22 follow-up) ----
+    // Reuses ParseRecordKind::Port -- a function/task parameter is
+    // semantically the same shape a module port already is (name +
+    // direction + type), so SignatureHelpProvider's existing
+    // findSymbolsInScope(scope) -> filter-to-Port -> sort-by-(line,col)
+    // pipeline works unchanged for these too. Fires while the enclosing
+    // function/task's own scope is already on the stack (pushId already
+    // pushed it in enter*_body_declaration/enter*_prototype above, which run
+    // before their children), so currentScopeChain() here is
+    // "...::funcName", exactly matching a module's own ports being scoped to
+    // "...::moduleName".
+    void enterTf_port_item(SvParser::Tf_port_itemContext* ctx) override {
+        auto* portId = ctx->port_identifier();
+        if (!portId || !portId->IDENTIFIER()) return; // no name -- nothing to record
+
+        // LRM: direction defaults to `input` when tf_port_direction is
+        // absent; applied explicitly here rather than leaving it blank.
+        std::string dir = "input";
+        if (auto* tpd = ctx->tf_port_direction())
+            dir = m_tokens->getText(tpd);
+
+        std::string type;
+        if (auto* dtoi = ctx->data_type_or_implicit())
+            type = m_tokens->getText(dtoi);
+
+        // Only call out a non-default direction in the label -- the
+        // overwhelming majority of real parameters are plain (implicit
+        // `input`), and showing it on every single one would be noise
+        // ("input int width, input bit valid, ..."); `output`/`inout`/`ref`/
+        // `const ref` are genuinely informative, so those are kept.
+        std::string prefix = (dir == "input") ? type
+                            : type.empty()     ? dir
+                                                : dir + " " + type;
+
+        // A default value is rendered *after* the name ("int width = 8"),
+        // unlike direction/type which precede it -- stored past a sentinel
+        // byte (never produced by real SV source) so portLabel() in
+        // signature_help.cpp can split prefix/suffix back apart. Module/
+        // interface/program ports never contain this sentinel, so their
+        // existing "<direction> <name>" rendering is unaffected.
+        std::string detail = prefix;
+        if (auto* expr = ctx->expression()) {
+            detail += PARAM_DEFAULT_VALUE_SEP;
+            detail += " = " + m_tokens->getText(expr);
+        }
+
+        pushId(ParseRecordKind::Port, portId->IDENTIFIER(), ctx, currentScope(), detail);
+    }
+
     // ---- Ports (ANSI style) ----
 
     void enterAnsi_port_declaration(
@@ -487,6 +544,7 @@ public:
 
 private:
     const std::vector<SourceLine>& m_sourceMap;
+    antlr4::CommonTokenStream* m_tokens;
     std::vector<ParseRecord>  m_records;
     std::vector<ImportRecord> m_imports;
     std::vector<InstantiationRecord> m_instantiations;
@@ -579,7 +637,7 @@ WalkResult SvTreeWalker::walk(const std::string& source,
 
     antlr4::tree::ParseTree* tree = parser.source_text();
 
-    SvRecordListener listener(sourceMap);
+    SvRecordListener listener(sourceMap, &tokens);
     antlr4::tree::ParseTreeWalker::DEFAULT.walk(&listener, tree);
 
     return {listener.records(), errListener.errors(), listener.imports(), listener.instantiations()};

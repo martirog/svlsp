@@ -5,16 +5,24 @@
 
 // SignatureHelpProvider handles textDocument/signatureHelp requests.
 //
-// Scope, disclosed: only module/interface/program instantiation port lists
-// are supported (`MyModule u_inst ( ... )`) -- these already have real
-// per-port data (name + direction, ParseRecordKind::Port). Function/task
-// calls are NOT supported: individual parameters of a function/task are
-// never recorded as symbols of their own (only the function/task's own name
-// and return type are, see enterFunction_body_declaration/
-// enterFunction_prototype in sv_tree_walker.cpp), so there is nothing here
-// to build a parameter list from without a new, separate extraction effort
-// (capturing a function's own verbatim parameter-list source text) that
-// wasn't attempted in this pass.
+// Two supported call-header shapes, tried in order (plan.md §6.22 +
+// its own follow-up section):
+//   1. Module/interface/program instantiation port lists
+//      (`MyModule u_inst ( ... )`) -- ParseRecordKind::Port rows recorded by
+//      enterAnsi_port_declaration (name + direction only).
+//   2. Bare (undotted) function/task calls (`my_func( ... )`, including a
+//      class method called bare from inside its own class) --
+//      ParseRecordKind::Port rows recorded by enterTf_port_item
+//      (sv_tree_walker.cpp), reusing the same kind since a function/task
+//      parameter is semantically the same shape (name + direction + type,
+//      plus an optional default value rendered after the name -- see
+//      portLabel() below and PARAM_DEFAULT_VALUE_SEP in parse_record.h).
+//
+// Disclosed scope limit: a *dotted* call (`obj.method(`) is NOT supported --
+// resolving it needs the same chain-resolution machinery dot-completion
+// already has (completion.cpp's resolveChain/resolveMemberSegment), which
+// this file's lexical scan deliberately doesn't attempt; parseCallHeader
+// fails closed for this shape rather than guessing by method name alone.
 class SignatureHelpProvider {
 public:
     static lsp::TextDocument_SignatureHelpResult getSignatureHelp(

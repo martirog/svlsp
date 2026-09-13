@@ -48,6 +48,17 @@ inline constexpr const char* CONTAINER_FIXED_ARRAY   = "$fixed_array";
 inline constexpr const char* CONTAINER_STRING        = "$string";
 inline constexpr const char* CONTAINER_EVENT         = "$event";
 
+// Separator byte inside a function/task parameter's Port::detail (plan.md
+// §6.22 follow-up), splitting the "<direction> <type>" prefix (rendered
+// before the parameter name) from a "= <default value>" suffix (rendered
+// after it) -- e.g. "int\x1F = 8" for "int width = 8". A real SV source
+// character sequence can never contain this byte, so a plain module/
+// interface/program port's detail (just "input"/"output"/...) is never
+// mistaken for having a suffix. See portLabel() in src/lsp/signature_help.cpp
+// for the split, and enterTf_port_item in src/compiler/sv_tree_walker.cpp
+// for where it's written.
+inline constexpr char PARAM_DEFAULT_VALUE_SEP = '\x1F';
+
 struct ParseRecord {
     ParseRecordKind kind;
     std::string     name;

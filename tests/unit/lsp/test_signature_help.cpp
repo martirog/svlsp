@@ -125,16 +125,128 @@ TEST_CASE("SignatureHelpProvider: works for an interface instantiation too",
     CHECK(result.value().signatures[0].parameters->size() == 1);
 }
 
-TEST_CASE("SignatureHelpProvider: null for a function call (no per-parameter data tracked)",
+TEST_CASE("SignatureHelpProvider: null for a call to something that isn't a function/task/design-unit",
           "[signature_help]")
 {
     Fixture f;
     auto fid = f.sdb.upsertFile("/t.sv", "h");
     f.sdb.replaceSymbols(fid, {
-        {ParseRecordKind::Function, "my_func", 1, 13, "", "int", 0, ""},
+        {ParseRecordKind::Signal, "not_callable", 1, 4, "", "int", 0, ""},
     });
-    const std::string text = "x = my_func(";
+    const std::string text = "x = not_callable(";
+    auto result = SignatureHelpProvider::getSignatureHelp(
+        makeParams("/t.sv", 0, static_cast<unsigned>(text.size())), f.sdb, text);
+    REQUIRE(result.isNull());
+}
+
+TEST_CASE("SignatureHelpProvider: null for a dotted call (out of scope -- needs chain resolution)",
+          "[signature_help]")
+{
+    Fixture f;
+    auto fid = f.sdb.upsertFile("/t.sv", "h");
+    f.sdb.replaceSymbols(fid, {
+        {ParseRecordKind::Function, "get_val", 1, 13, "", "int", 0, ""},
+        {ParseRecordKind::Port, "x", 1, 20, "get_val", "int", 0, "get_val"},
+    });
+    const std::string text = "y = obj.get_val(";
     auto result = SignatureHelpProvider::getSignatureHelp(
         makeParams("/t.sv", 0, static_cast<unsigned>(text.size())), f.sdb, text);
     REQUIRE(result.isNull()); // disclosed scope limitation -- see signature_help.h
+}
+
+// Declares function `my_func` (int a, output int b) -- as a real compile
+// would produce via enterTf_port_item (sv_tree_walker.cpp): two Port rows
+// scoped to "my_func".
+void declareMyFunc(SymbolDatabase& sdb)
+{
+    auto fid = sdb.upsertFile("/t.sv", "h");
+    sdb.replaceSymbols(fid, {
+        {ParseRecordKind::Function, "my_func", 1, 13, "", "int", 0, ""},
+        {ParseRecordKind::Port, "a", 1, 25, "my_func", "int",         0, "my_func"},
+        {ParseRecordKind::Port, "b", 1, 40, "my_func", "output int",  0, "my_func"},
+    });
+}
+
+TEST_CASE("SignatureHelpProvider: returns the parameter list for a bare function call",
+          "[signature_help]")
+{
+    Fixture f;
+    declareMyFunc(f.sdb);
+    const std::string text = "x = my_func(";
+    auto result = SignatureHelpProvider::getSignatureHelp(
+        makeParams("/t.sv", 0, static_cast<unsigned>(text.size())), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    const auto& help = result.value();
+    REQUIRE(help.signatures.size() == 1);
+    REQUIRE(help.signatures[0].parameters.has_value());
+    CHECK(help.signatures[0].parameters->size() == 2);
+    CHECK(help.signatures[0].label == "my_func(int a, output int b)");
+}
+
+TEST_CASE("SignatureHelpProvider: works for a task call too", "[signature_help]")
+{
+    Fixture f;
+    auto fid = f.sdb.upsertFile("/t.sv", "h");
+    f.sdb.replaceSymbols(fid, {
+        {ParseRecordKind::Task, "my_task", 1, 5, "", "", 0, ""},
+        {ParseRecordKind::Port, "x", 1, 18, "my_task", "int", 0, "my_task"},
+    });
+    const std::string text = "my_task(";
+    auto result = SignatureHelpProvider::getSignatureHelp(
+        makeParams("/t.sv", 0, static_cast<unsigned>(text.size())), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+    CHECK(result.value().signatures[0].parameters->size() == 1);
+}
+
+TEST_CASE("SignatureHelpProvider: a class method called bare from inside its own class resolves",
+          "[signature_help]")
+{
+    Fixture f;
+    auto fid = f.sdb.upsertFile("/t.sv", "h");
+    f.sdb.replaceSymbols(fid, {
+        {ParseRecordKind::Class, "MyClass", 1, 6, "", "", 5, ""},
+        {ParseRecordKind::Function, "get_val", 2, 6, "MyClass", "int", 0, "MyClass"},
+        {ParseRecordKind::Port, "idx", 2, 18, "get_val", "int", 0, "MyClass::get_val"},
+    });
+    const std::string text = "return get_val(";
+    auto result = SignatureHelpProvider::getSignatureHelp(
+        makeParams("/t.sv", 0, static_cast<unsigned>(text.size())), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+    CHECK(result.value().signatures[0].parameters->size() == 1);
+}
+
+TEST_CASE("SignatureHelpProvider: zero-argument call resolves to an empty parameter list, not null",
+          "[signature_help]")
+{
+    Fixture f;
+    auto fid = f.sdb.upsertFile("/t.sv", "h");
+    f.sdb.replaceSymbols(fid, {
+        {ParseRecordKind::Function, "no_args", 1, 13, "", "int", 0, ""},
+    });
+    const std::string text = "x = no_args(";
+    auto result = SignatureHelpProvider::getSignatureHelp(
+        makeParams("/t.sv", 0, static_cast<unsigned>(text.size())), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+    const auto& help = result.value();
+    REQUIRE(help.signatures[0].parameters.has_value());
+    CHECK(help.signatures[0].parameters->empty());
+    CHECK(help.signatures[0].label == "no_args()");
+}
+
+TEST_CASE("SignatureHelpProvider: a default parameter value is rendered after the name",
+          "[signature_help]")
+{
+    Fixture f;
+    auto fid = f.sdb.upsertFile("/t.sv", "h");
+    f.sdb.replaceSymbols(fid, {
+        {ParseRecordKind::Function, "with_default", 1, 13, "", "int", 0, ""},
+        {ParseRecordKind::Port, "width", 1, 25, "with_default", std::string("int") + PARAM_DEFAULT_VALUE_SEP + " = 8",
+         0, "with_default"},
+    });
+    const std::string text = "x = with_default(";
+    auto result = SignatureHelpProvider::getSignatureHelp(
+        makeParams("/t.sv", 0, static_cast<unsigned>(text.size())), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+    CHECK(result.value().signatures[0].label == "with_default(int width = 8)");
 }
