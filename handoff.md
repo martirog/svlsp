@@ -4,6 +4,110 @@
 narrative detail if ever needed; this file now documents current-state-and-next-steps
 only).
 
+**Implemented 2026-09-13** — extended signature help to bare (undotted)
+function/task calls (plan.md §6.22's own follow-up section, closing "Not yet
+done" #24 below). §6.22's original pass covered module/interface/program
+instantiation port lists only, since function/task parameters had no
+per-parameter data anywhere in this schema (only the function/task's own
+name and return type were recorded) — this closes that gap:
+
+- New `enterTf_port_item` listener (`src/compiler/sv_tree_walker.cpp`),
+  reusing `ParseRecordKind::Port` (a function/task parameter is
+  semantically the same shape a module port already is), so
+  `SignatureHelpProvider`'s existing `findSymbolsInScope` → filter-to-`Port`
+  → sort-by-`(line,col)` pipeline needed zero query changes. Extracts
+  direction (defaults to `input` per LRM when absent), declared type, and
+  an optional default-value expression.
+- **Verbatim source text needed a real plumbing change:** `ctx->getText()`
+  strips inter-token whitespace (`"const ref int"` → `"constrefint"`) —
+  harmless for the short, single-token-ish `detail` strings populated
+  elsewhere, but not for a multi-token parameter someone reads
+  character-by-character in a signature-help popup. `SvRecordListener`'s
+  constructor was widened to take the `antlr4::CommonTokenStream*`
+  `SvTreeWalker::walk` already builds (previously kept local), so
+  `m_tokens->getText(ctx)` can be used instead — `SvTreeWalker::walk`'s own
+  public signature is unchanged, this is purely an internal plumbing
+  addition.
+- `SignatureHelpProvider::getSignatureHelp` (`src/lsp/signature_help.cpp`)
+  now tries the existing two-identifier module-instantiation header shape
+  first; only if that resolves to no Module/Interface/Program does it try a
+  new one-identifier bare-call shape (`parseCallHeader`), resolving via
+  `findSymbolsByName` filtered to Function/Task. **Deliberately fails closed
+  for a dotted call** (`obj.method(`) — `parseCallHeader` checks for a `.`
+  immediately before the identifier and bails rather than resolving the
+  bare method name alone, which would risk matching an unrelated same-named
+  method on a different class; a dotted call needs completion's own
+  chain-resolution machinery, a further, separate follow-up, not attempted
+  here.
+- A default value is rendered *after* the parameter name (`int width = 8`),
+  unlike direction/type which precede it — `Port::detail` now optionally
+  carries a `"<prefix>\x1F<suffix>"` two-part encoding (new
+  `PARAM_DEFAULT_VALUE_SEP` sentinel, `src/compiler/parse_record.h`, a byte
+  no real SV source can produce), split back apart by `portLabel()`
+  (`signature_help.cpp`). A plain module/interface/program port's detail
+  never contains the sentinel, so its existing "<direction> <name>"
+  rendering is unaffected. Direction itself is only shown in the label when
+  it's not the default `input` (`output`/`inout`/`ref`/`const ref` are kept
+  as genuinely informative; showing `input` on every ordinary parameter
+  would just be noise).
+- **A real, narrow, disclosed gap found implementing this, not fixed:** SV's
+  comma-shorthand for sharing one direction/type across several parameters
+  (`function int add(input int a, b);`, `b` inheriting `input int` from
+  `a`) is genuinely ambiguous in this grammar's own `tf_port_item` rule
+  (`data_type_or_implicit` is mandatory, `port_identifier` is not — so a
+  bare trailing `b` parses as an unnamed parameter *of type* `b`, not a
+  second `int` parameter named `b`), the same category of grammar ambiguity
+  as the already-documented `data_type`/`variable_decl_assignment` one.
+  `enterTf_port_item` skips a parameter with no `port_identifier` rather
+  than mis-tag it. Not fixed — real verification code overwhelmingly spells
+  out each parameter's own direction/type explicitly.
+- **Also disclosed, accepted:** `Foo bar(` where `Foo` isn't a real
+  design-unit type but `bar` happens to also be a declared function/task
+  elsewhere now resolves against that unrelated function — both header
+  shapes are lexical heuristics over the same ambiguous prefix, and this
+  overlap is an inherent consequence of trying both in sequence, not a new
+  regression introduced here.
+
+New unit tests: `tests/unit/compiler/test_sv_listener.cpp` (7 new cases —
+function/task parameter recorded as Port; non-default direction kept; a
+two-token direction like `const ref` keeps its real spacing, a regression
+guard for the verbatim-token-stream extraction; default value past the
+separator; a class method's parameters scoped `Class::method`; a
+pure-virtual method's parameters recorded despite no body) and
+`tests/unit/lsp/test_signature_help.cpp` (6 new/rewritten cases — bare
+function call with 2 differently-directioned parameters; a task call; a
+class method called bare from inside its own class; a zero-argument call
+resolving to an empty parameter list rather than null; a default value
+rendered after the name; a dotted call and a non-function/task call still
+fail closed). Unit suite now at 2070 assertions / 627 test cases. Functional
+test `tests/integration/test_12_signature_help.sh` gained a new case against
+a fixture addition (`rrsh_compute`, appended to the end of
+`fixtures/ref_rename_sighelp.sv` so the two pre-existing cases' hardcoded
+line numbers stay valid) — confirms the resolved label, parameter count,
+and positional `activeParameter` through a real round trip. Emacs
+integration suite now 205/205 across 39 files. No regressions anywhere
+(full suite re-run, not just the isolated file). See plan.md §6.22's
+follow-up section for the complete writeup.
+
+**Also added same day, closing part of "Not yet done" #3 below:** a UVM
+corpus test, `tests/uvm_corpus/test_signature_help_uvm.cpp` — this sandbox
+turned out to have the real UVM-core checkout available after all (at the
+`uvm_corpus_fixture.cpp` default path), so the previously-disclosed "no
+access" gap no longer applies, at least here. Scoped to the
+bare-function/task-call half only, since the real UVM corpus is a pure class
+library with no modules/interfaces anywhere in it to exercise the other
+half. Three cases against real call sites in `uvm_component::do_execute_op`:
+a single-`input`-parameter bare call, a `ref`-direction bare call, and a
+dotted call confirmed `nullptr` against a real method with real recorded
+parameters. `get_child`/`get_next_child` are each declared twice in the real
+file (an in-class `extern` prototype plus the out-of-class body definition)
+— `pickBestSymbol`'s same-file/earliest-line tie-break resolving to the
+prototype's own scope both times was empirically confirmed against the real
+corpus, not just assumed. Full `uvm_corpus_tests` suite: 505 assertions / 14
+test cases, no regressions (baseline was 496/11). References/rename still
+have no corpus coverage — a further follow-up, not attempted here. Not yet
+committed — only commit when asked.
+
 **Implemented 2026-09-13** — real `references`/`rename`/`signatureHelp` (plan.md
 §6.22, closing "Not yet done" #3 below), replacing the three long-standing
 unconditional-`null` stubs. None of the three had any data model to build on
@@ -606,8 +710,8 @@ src/compiler/      compiler_directive_stripper, sv_preprocessor, sv_tree_walker,
 src/db/            database, symbol_database, compilation_controller,
                    library_resolver, project_compiler, schema — SQLite persistence (schema v8)
 src/main.cpp       entry point (supports `--log-files <path>`, see below)
-tests/unit/        Catch2 unit tests (614 cases, 2029 assertions)
-tests/integration/ Emacs functional test scripts (204 test cases across 39 files)
+tests/unit/        Catch2 unit tests (627 cases, 2070 assertions)
+tests/integration/ Emacs functional test scripts (205 test cases across 39 files)
 tests/uvm_corpus/  opt-in test suite against a real, external UVM corpus (NOT in
                    ctest/make test — see "UVM corpus testing" below)
 tools/             emacs-test-daemon.sh, emacs-test-init.el, emacs-test-lib.sh
@@ -716,7 +820,7 @@ rename all registered. **Note:** C++ designated initializers must follow
 | `workspace_symbols.h/.cpp` | `WorkspaceSymbolsProvider` | `findSymbolsByNamePrefix(query)` → `WorkspaceSymbol[]` |
 | `references.h/.cpp` | `ReferencesProvider` | `wordAtPosition` → `findSymbolsByName` (fail closed) → lexical cross-file `findIdentifierOccurrences` scan → `Location[]` (plan.md §6.22) |
 | `rename.h/.cpp` | `RenameProvider` | Same scan as references, always including the declaration → `WorkspaceEdit`; throws on an invalid new identifier (plan.md §6.22) |
-| `signature_help.h/.cpp` | `SignatureHelpProvider` | Module/interface/program instantiation port lists only (existing `Port` symbols) — backward paren scan finds the enclosing call, named-connection-aware active-parameter tracking; `nullptr` for function/task calls (no per-parameter data exists for those) (plan.md §6.22) |
+| `signature_help.h/.cpp` | `SignatureHelpProvider` | Module/interface/program instantiation port lists (existing `Port` symbols) — backward paren scan finds the enclosing call, named-connection-aware active-parameter tracking; also bare (undotted) function/task calls via `Port` symbols from `enterTf_port_item` (plan.md §6.22 + its follow-up); `nullptr` for a dotted call (`obj.method(`) or a name that resolves to none of Module/Interface/Program/Function/Task |
 
 Position-based providers (hover, definition, completion) check `m_store.contains(uri)`
 first and return `nullptr` if the document isn't open. Hover/Definition do **global**
@@ -1829,12 +1933,16 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
    2026-09-13**, each scoped to an honest v1 rather than the full semantic
    version (references/rename: lexical cross-file text search, not
    scope-aware; signatureHelp: module/interface/program instantiation port
-   lists only, not function/task calls). See the entry at the top of this
-   document and plan.md §6.22 for the full writeup. **Not done**: no
-   `tests/uvm_corpus/test_*_uvm.cpp` coverage was added for these three —
-   this sandbox has no access to the external UVM checkout that suite
-   depends on; worth adding whenever this is next touched somewhere that
-   does.
+   lists, then extended same day to bare function/task calls too — see item
+   24 below). See the entry at the top of this document and plan.md §6.22
+   for the full writeup. **Partially closed**: `test_signature_help_uvm.cpp`
+   now covers signatureHelp's bare-call half against the real UVM corpus
+   (see the entry at the top of this document); references/rename still have
+   no `tests/uvm_corpus/test_*_uvm.cpp` coverage — plan.md §6.22 now has a
+   "Follow-up, not started" subsection sketching candidate cases (a
+   widely-referenced real identifier, a real same-named-declaration
+   collision if one exists, a real multi-file rename) — worth adding whenever
+   this is next touched.
 4. **`data_type`/`variable_decl_assignment` ambiguity** — documented, not fixed (see
    grammar quirks table above). Only pursue if it starts causing more than the current
    1 known corpus diagnostic, or a user-reported false diagnostic traces back to it.
@@ -2112,21 +2220,39 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
     `LibraryResolver` previously appended, since both share one
     undiscriminated `diagnostics` table with no way to clear just one
     source's own rows.
-24. **Extend signature help to function/task calls (`plan.md §6.22`'s own
-    follow-up section)** — not started. §6.22's shipped v1 only covers
-    module/interface/program instantiation port lists, since those already
-    have real per-port data; function/task parameters are never recorded as
-    symbols at all today (only the function/task's own name and return
-    type are). See plan.md §6.22's "Follow-up, deliberately not started
-    here" subsection for the full design: a new `enterTf_port_item`
-    listener reusing `ParseRecordKind::Port` (so `SignatureHelpProvider`'s
-    existing port-list query machinery needs no changes), a second,
-    one-identifier call-header shape alongside the existing two-identifier
-    instantiation one, and — the one piece touching code outside the
-    listener itself — widening `SvRecordListener`'s constructor to receive
-    the token stream `SvTreeWalker::walk` already builds but currently
-    keeps local, so parameter types/default values can be extracted with
-    real source spacing (`getText()` alone strips it). Deliberately scoped
-    to bare, undotted calls only (`my_func(`) — a dotted call
-    (`obj.method(`) needs completion's own chain-resolution machinery, a
-    further, separate follow-up.
+24. ~~Extend signature help to function/task calls (`plan.md §6.22`'s own
+    follow-up section)~~ — **implemented 2026-09-13**. See the entry at the
+    top of this document and plan.md §6.22's follow-up section for the full
+    writeup: a new `enterTf_port_item` listener reusing `ParseRecordKind::Port`
+    (so `SignatureHelpProvider`'s existing port-list query machinery needed no
+    changes), a second, one-identifier call-header shape alongside the
+    existing two-identifier instantiation one, and widening
+    `SvRecordListener`'s constructor to receive the token stream
+    `SvTreeWalker::walk` already builds, so parameter types/default values
+    could be extracted with real source spacing (`getText()` alone strips
+    it). Deliberately scoped to bare, undotted calls only (`my_func(`) — a
+    dotted call (`obj.method(`) still needs completion's own
+    chain-resolution machinery, left as a further, separate follow-up, not
+    attempted here.
+25. **Missing-required-argument diagnostic for function/task calls
+    (`plan.md §6.23`)** — not started. Builds directly on item 24's own
+    per-parameter data (name, direction, type, default-value presence) to
+    catch a call like `my_func(a)` against `function int my_func(int a, int
+    b);` (no default on `b`) — currently accepted with zero diagnostics.
+    See plan.md §6.23 for the full design: a new `enterTf_call` listener
+    recording a `CallRecord` per bare call site (argument slots — positional,
+    elided, or named — since SV allows *both* named argument association
+    and eliding a defaulted positional slot for a plain function/task call,
+    not just module port connections), resolved in a post-parse pass over
+    the completed `SymbolDatabase` (not inline during the walk, since a
+    callee may be declared later in the same file or in another file
+    entirely — same architectural reason as §6.21). Deliberately scoped to
+    bare/undotted calls only, matching item 24's own scope limit.
+26. **Audit compiler warnings from `tools/build.sh` (`plan.md §6.24`)** —
+    not started. `-Wall -Wextra -Wpedantic` are already enabled for every
+    first-party target, but nobody has captured and reviewed a genuinely
+    clean `tools/build.sh debug`/`release` build's actual warning output as
+    its own task. See plan.md §6.24 for the plan: capture both logs, review
+    every distinct warning (fix real ones, narrowly suppress-with-a-comment
+    any deliberate ones), record the outcome, and only then weigh `-Werror`
+    as a follow-on question — not decided in advance.

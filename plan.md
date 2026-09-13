@@ -3097,14 +3097,15 @@ lists only:**
   (returns no signature help) otherwise, a disclosed simplification rather
   than an oversight.
 
-**Follow-up, deliberately not started here: extending signature help to
-function/task calls.** Arguably the more commonly wanted case than module
+**Follow-up — extending signature help to function/task calls, implemented
+2026-09-13.** Arguably the more commonly wanted case than module
 instantiation (`my_func(a, b, |` mid-expression is a far more frequent
 editing moment than typing a port list), explicitly out of scope for the
 pass above for the reason already stated: no per-parameter data exists for
 functions/tasks anywhere in this schema, only the function/task's own name
 and return type (`enterFunction_body_declaration`/`enterFunction_prototype`/
-their task equivalents, `sv_tree_walker.cpp`). What's needed to close this:
+their task equivalents, `sv_tree_walker.cpp`). What closed this, following
+the sketch below essentially as designed:
 
 1. **A new listener pair, `enterTf_port_item`** (grammar rule
    `tf_port_item`, reached via `tf_port_list` from
@@ -3161,13 +3162,97 @@ their task equivalents, `sv_tree_walker.cpp`). What's needed to close this:
    meaningfully bigger lift than this section's own scope; treat that as a
    further, separate follow-up, not bundled into this one.
 
-**Unit/integration tests, once implemented:** a function with 2+
-differently-typed parameters; a task; a class method called bare (not
-dotted); a default parameter value rendered in the label; a call to
-something that isn't a function/task (fails closed, matching existing
-behavior); a zero-argument call.
+**Implementation notes, found doing the above:**
+- `enterTf_port_item` (`src/compiler/sv_tree_walker.cpp`) skips a parameter
+  with no `port_identifier` at all rather than crash or mis-tag it — this is
+  a real, narrow gap, not a defensive no-op: SV's comma-shorthand for
+  sharing one direction/type across several parameters (`function int
+  add(input int a, b);`, `b` inheriting `input int` from `a`) is genuinely
+  ambiguous in this grammar's own `tf_port_item` rule (`data_type_or_implicit`
+  is mandatory, `port_identifier` is not, so a bare trailing `b` parses as an
+  unnamed parameter *of type* `b`, not a second `int` parameter named `b` —
+  the same category of grammar ambiguity as the already-documented
+  `data_type`/`variable_decl_assignment` one). Not fixed here — real
+  verification code overwhelmingly spells out each parameter's own
+  direction/type explicitly, so this only bites the terser, rarer style.
+- The direction extracted per parameter is only surfaced in the label when
+  it's not the default `input` (`output`/`inout`/`ref`/`const ref` are kept,
+  since those are genuinely informative; showing `input` on every single
+  ordinary parameter would just be noise no real tool does).
+- `portLabel()` (`signature_help.cpp`) splits a Port's `detail` on a new
+  sentinel byte, `PARAM_DEFAULT_VALUE_SEP` (`parse_record.h`, `'\x1F'` —
+  never producible by real SV source), to place a default value *after* the
+  parameter name (`int width = 8`) while direction/type stay a *prefix*
+  (`output int b`) — the same field format module/interface/program ports
+  already use, just with an optional suffix appended past the sentinel; a
+  plain port's `detail` never contains it, so existing rendering is
+  unaffected.
+- `SignatureHelpProvider::getSignatureHelp` tries the two-identifier
+  (module-instantiation) header shape first, exactly as piece 2 above
+  describes; only if that resolves to no Module/Interface/Program does it
+  try the new one-identifier call shape. This has one disclosed, accepted
+  overlap: `Foo bar(` where `Foo` isn't a real design-unit type but `bar`
+  happens to also be a declared function/task elsewhere would then resolve
+  against that unrelated function — an inherent consequence of both shapes
+  being lexical heuristics over the same ambiguous prefix, not a new
+  regression; not guarded against, since doing so would require knowing
+  intent this lexical scan doesn't have.
+- `parseCallHeader` explicitly fails closed (returns `nullopt`) when a `.`
+  precedes the identifier before the paren, rather than resolving a dotted
+  call's method name alone — implementing piece 6's "dotted calls are out of
+  scope" as a real guard, not just a documented gap, since silently
+  resolving by bare method name would risk matching an unrelated same-named
+  method on a completely different class.
 
-**Unit tests:** `tests/unit/lsp/test_references.cpp` (cursor not on an
+**Unit tests:** `tests/unit/compiler/test_sv_listener.cpp` (function/task
+parameter recorded as Port; non-default direction kept in `detail`; a
+two-token direction like `const ref` keeps its real spacing — a regression
+guard for the verbatim-token-stream extraction; a default value appended
+past the separator; a class method's parameters scoped `Class::method`; a
+pure-virtual method's parameters recorded despite having no body);
+`tests/unit/lsp/test_signature_help.cpp` (bare function call with 2
+differently-directioned parameters; a task call; a class method called bare
+from inside its own class; a zero-argument call resolving to an empty
+parameter list rather than null; a default value rendered after the name; a
+dotted call still fails closed; a call to a non-function/task symbol still
+fails closed). Unit suite now at 2070 assertions / 627 test cases, no
+regressions.
+
+**Functional tests:** `tests/integration/test_12_signature_help.sh` gained
+one new case against a new fixture addition, `rrsh_compute(input int
+rrsh_a, input int rrsh_b = 4)` and its call site in `rrsh_caller` (appended
+to the end of `fixtures/ref_rename_sighelp.sv` rather than inserted, so the
+two pre-existing cases' hardcoded line numbers stay valid) — confirms the
+resolved label (`"rrsh_compute(int rrsh_a, int rrsh_b = 4)"`, direction
+dropped since both are the default `input`, default value rendered after
+the name), parameter count, and positional `activeParameter` all come back
+correctly through a real `initialize`/`didOpen`/`signatureHelp` round trip.
+
+**UVM corpus test, added same day:** `tests/uvm_corpus/test_signature_help_uvm.cpp`
+(new, registered in `CMakeLists.txt`'s `uvm_corpus_tests` target) — closes
+part of the disclosed gap the original §6.22 pass left open (no
+`tests/uvm_corpus/test_*_uvm.cpp` coverage for references/rename/
+signatureHelp at all). Scoped to the bare-function/task-call half only: the
+real UVM-core corpus is a pure class library with no modules/interfaces to
+instantiate anywhere in it, so the module/interface/program-port-list half
+of `SignatureHelpProvider` has no real fixture to exercise here. Three cases
+against real call sites in `uvm_component::do_execute_op`
+(`base/uvm_component.svh`, an out-of-class method body): a bare call to a
+single-`input`-parameter method (`get_child(name)`, direction dropped from
+the label since `input` is the default); a bare call to a `ref`-direction
+parameter (`get_next_child(name)`, direction kept in the label); and a
+dotted call (`m_children[c].set_domain(domain)`) confirmed still `nullptr`
+against a real method with real recorded parameters, not just a synthetic
+unit-test fixture. Both `get_child`/`get_next_child` are declared twice in
+this real file (an `extern function ...;` prototype inside the class body,
+plus the actual out-of-class `function ... uvm_component::name(...)`
+definition) — `pickBestSymbol`'s same-file/earliest-line tie-break resolves
+to the in-class prototype's own scope both times, empirically confirmed
+rather than assumed (all three cases passed on the first real-corpus run).
+Full `uvm_corpus_tests` suite: 505 assertions / 14 test cases, no
+regressions (up from the pre-existing baseline's 496/11).
+
+**Unit tests (§6.22's original three, unchanged):** `tests/unit/lsp/test_references.cpp` (cursor not on an
 identifier; unknown identifier; excludes/includes the declaration;
 cross-file; comment/string exclusion; a file with unavailable text is
 skipped, not a crash); `tests/unit/lsp/test_rename.cpp` (the same shape,
@@ -3204,6 +3289,187 @@ Worth remembering for any future fixture: check `tests/integration/
 fixtures/**` and `examples/**` for a name collision, and always run the
 *full* suite at least once before trusting an isolated few-file run — see
 handoff.md's own "Emacs test infrastructure" section for the same caution.
+
+**Follow-up, not started: UVM corpus tests for `references`/`rename`.**
+`test_signature_help_uvm.cpp` (added 2026-09-13, see this section's own
+signature-help follow-up above) closed this gap for signatureHelp's
+bare-function/task-call half; `references`/`rename` still have no
+`tests/uvm_corpus/test_*_uvm.cpp` coverage at all — the original §6.22 pass
+only had unit tests (synthetic, hand-built DB rows) and Emacs functional
+tests (a small dedicated fixture), neither of which exercises the lexical
+scan against the real ~140-file corpus's actual scale and naming. Candidate
+cases, following `test_signature_help_uvm.cpp`'s own pattern of picking
+real, stable call/declaration sites in `base/uvm_component.svh`:
+- **References:** a `getReferences` call on a widely-used identifier (e.g.
+  `get_name` — declared once, called from many places across the corpus)
+  confirms every real cross-file occurrence comes back, not just a
+  same-file subset — the kind of scale bug a small hand-built fixture can't
+  surface.
+- **A real same-named-but-unrelated-declaration case, if one can be found**
+  (or synthesized alongside real corpus text) — directly exercises this
+  provider's own disclosed "name-based, not scope-aware" limitation
+  (plan.md, this section, above) against real code, the way
+  `test_signature_help_uvm.cpp`'s dotted-call case did for signatureHelp's
+  own disclosed limitation.
+- **Rename:** a `getRename` call on a real declaration, confirming the
+  `WorkspaceEdit` covers every real file the identifier appears in (a
+  genuine multi-file edit at corpus scale, not the 2-3-file synthetic case
+  the unit test already covers) — read-only (never actually apply the edit
+  to the checked-out corpus on disk).
+- Register the new file in `CMakeLists.txt`'s `uvm_corpus_tests` target,
+  same as `test_signature_help_uvm.cpp`; verify with an isolated run first,
+  then the full `uvm_corpus_tests` binary to catch any interaction with the
+  other provider tests sharing the same corpus DB.
+
+---
+
+### 6.23 Missing-Required-Argument Diagnostic (function/task calls)
+
+**Status:** not started.
+
+**Motivation:** §6.22's follow-up (above) added, for the first time, real
+per-parameter data for function/task parameters — name, direction, declared
+type, and whether a default value is present (`enterTf_port_item`,
+`sv_tree_walker.cpp`; a default's presence is currently encoded as a
+`PARAM_DEFAULT_VALUE_SEP`-delimited suffix on `Port::detail`, `parse_record.h`).
+Nothing in this codebase currently checks a real call site against that
+data: `my_func(a)` against `function int my_func(int a, int b);` (no default
+on `b`) compiles with zero diagnostics today, even though every real
+simulator rejects it. This closes that gap.
+
+**Grammar, confirmed by reading `grammar/Sv.g4` directly (not assumed):**
+`tf_call: ps_or_hierarchical_tf_identifier attribute_instance* ('(' list_of_arguments ')')?`
+— note the parens themselves are optional (a task call with nothing but
+defaulted parameters can be written with no parens at all, e.g. `my_task;`).
+`list_of_arguments` supports **both** forms real SV allows for a plain call,
+not just positional:
+```
+list_of_arguments :
+      expression? (',' expression?)* (',' '.' IDENTIFIER '(' expression? ')')*
+    | '.' IDENTIFIER '(' expression? ')' (',' '.' IDENTIFIER '(' expression? ')')*
+;
+```
+Two things worth calling out that an initial, un-verified assumption would
+have gotten wrong:
+- **Named argument association (`my_func(.b(2), .a(1))`) is legal for plain
+  function/task calls in SystemVerilog, not just module port connections.**
+  This means the diagnostic needs the *same* named-vs-positional argument
+  matching `computeActiveParam`/`isNamedConnectionParen`
+  (`signature_help.cpp`) already implements for module instantiations —
+  reuse that logic (or extract it to a shared helper) rather than
+  re-inventing it.
+- **A positional slot can be elided** (`expression?` between commas, e.g.
+  `foo(a, , c)`) to explicitly skip a defaulted parameter while still
+  supplying later ones by position — this is a real, legal SV construct
+  the "missing argument" check must treat as "parameter 2 intentionally
+  uses its default," not as a syntax error or an unrelated omission.
+- `ps_or_hierarchical_tf_identifier` reaches this same `tf_call` rule for
+  **both** bare and dotted calls (`obj.method(...)` is a hierarchical
+  identifier, not a separate grammar alternative) — distinguishing them is
+  a property of the extracted identifier text (single segment vs.
+  containing a `.`), not the grammar shape. Scope this first pass to the
+  single-segment (bare, undotted) case only, matching §6.22 follow-up's own
+  disclosed scope limit — a dotted call needs the same chain-resolution
+  machinery already deferred there.
+
+**Design, following §6.21's own architecture note for the same reason:**
+a call site's callee may be declared *later* in the same file (SV classes
+allow calling a sibling method declared further down the class body with no
+forward declaration, unlike C++) or in another file entirely — so this
+cannot be checked inline during the single-file AST walk the way,
+say, `enterTf_port_item` populates a record for its own enclosing scope.
+It needs a real post-parse resolution step over the completed
+`SymbolDatabase`, the same shape §6.21 already scopes out for unresolved
+type/import references:
+1. A new listener, `enterTf_call`, extracts one `CallRecord` per bare
+   `tf_call` site: callee name, an ordered list of argument "slots" (each
+   either a supplied positional expression, an elided positional slot, or
+   a named `.identifier(...)` connection), plus line/file — the same
+   shape `InstantiationRecord` already uses for module instantiations,
+   sibling to it rather than folded into it (a function/task call's own
+   argument-matching rules, per the two bullets above, are meaningfully
+   different from a module port connection's).
+2. A new resolution pass (`CompilationController`, run after symbols are
+   persisted, mirroring §6.21's own placement) resolves each `CallRecord`'s
+   callee name against `SymbolDatabase` (Function/Task kind only,
+   `pickBestSymbol` for the same-name-collision case — see this section's
+   own disclosed references/rename limitation above for why that tie-break
+   is already an accepted, pre-existing simplification in this codebase),
+   then reads that symbol's own Port list as `SignatureHelpProvider`
+   already does. For each declared parameter, checks whether it received a
+   value (by position, honoring elided slots, or by name); one without a
+   default and without either counts as a real diagnostic: `error: missing
+   required argument 'b' in call to 'my_func'` at the call site's own
+   location, persisted through the same `diagnostics` table/
+   `replaceDiagnostics` flow every other diagnostic already uses.
+
+**Deliberately out of scope for a first pass:**
+- Dotted calls (`obj.method(...)`) — see above.
+- `system_tf_call` (`$display`, `$cast`, ...) — variadic/built-in, never
+  has `tf_port_item`-recorded parameters to check against.
+- A callee name that doesn't resolve to any known Function/Task at all
+  (typo, unresolved import, or genuinely routed to a different grammar
+  rule entirely — `new(...)`, `randomize()`, a `let` call) is silently
+  skipped, not flagged; whether *that* name should itself produce a
+  diagnostic is §6.21's own, already-scoped-out concern, not this one's.
+- **Worth testing explicitly, not assumed:** a DPI-imported function/task
+  (`import "DPI-C" function ...`) reduces to the same `function_prototype`/
+  `task_prototype` rules §6.16 already wired up, so it *would* have real
+  Port data recorded — confirm this diagnostic behaves sensibly (or is
+  deliberately excluded, if DPI's own C-side calling convention makes the
+  check meaningless) rather than assuming either way.
+- **Not a real risk, but worth recording why:** a virtual method override
+  cannot legally redeclare a different parameter list than the method it
+  overrides (an LRM constraint), so resolving a bare/self call inside a
+  base class's own method body against that method's *statically* declared
+  parameter list is always correct — no runtime-dispatch ambiguity to
+  worry about here, unlike, say, hover/definition's own same-name-in-
+  different-files ambiguity.
+
+**Unit tests, once implemented:** a call missing a required trailing
+argument; a call using an elided positional slot to correctly skip a
+defaulted parameter (no diagnostic); a call using named association to
+supply an otherwise-missing required parameter (no diagnostic); a call to
+an unresolved name (no diagnostic, not this check's job); a dotted call
+(no diagnostic, out of scope); a DPI-imported call, to settle the "worth
+testing" item above one way or the other.
+
+---
+
+### 6.24 Audit Compiler Warnings from `tools/build.sh`
+
+**Status:** not started.
+
+**Motivation:** `-Wall -Wextra -Wpedantic` are already enabled for every
+first-party target (`svlsp_options`, `CMakeLists.txt`) — the ANTLR4-generated
+parser/lexer and the SQLite amalgamation are the only two exemptions,
+deliberately built with `-w` since they're machine-generated/vendored code
+this project doesn't own. Nobody has actually sat down and reviewed what
+those flags currently surface across `src/`/`tests/` as its own task — a
+`tools/build.sh` from-scratch build's warning output has never been
+captured and gone through line by line.
+
+**Plan:**
+1. Run `tools/build.sh debug` and `tools/build.sh release` from scratch
+   (each wipes its own `build/<preset>` first, so this is a genuinely clean
+   compile of every first-party file), capturing full compiler output to a
+   log rather than letting it scroll past.
+2. Grep both logs for `warning:` and review every *distinct* one (same
+   warning at the same source location across debug/release only counts
+   once) — real bugs get fixed outright; a warning that's a deliberate,
+   understood pattern (if any turn out to be) gets a narrow, explained
+   suppression (a targeted pragma plus a comment saying why, not a blanket
+   flag downgrade) rather than being silently left alone.
+3. Record the outcome here or in handoff.md either way — "reviewed, N
+   warnings found, M fixed, K deliberately suppressed with reasons" or
+   "reviewed, zero warnings" — so this doesn't quietly need re-doing from
+   scratch next time someone wonders whether the build is clean.
+4. **Open question, don't decide preemptively:** once the backlog (if any)
+   is actually clean, consider adding `-Werror` (at minimum to debug
+   builds, where ASan/UBSan already make the build strict about other
+   classes of bug) to keep new warnings from silently accumulating again —
+   flagged here as something to weigh once there's a real "clean" baseline
+   to protect, not decided now.
 
 ---
 
