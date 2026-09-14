@@ -1915,6 +1915,22 @@ access) vs. `expectedUriPath` (output comparison — runs the expected value thr
   thread without needing that extra layer. Remaining open point from the
   original design, still true: the 300ms debounce delay is a fixed constant,
   not configurable via `initializationOptions` — see "Not yet done" #10 below.
+- **`wordAtPosition` has no comment/string awareness — real bug, needs a test.**
+  Found live against the user's own `/home/martin/src/policy/policy_mixin.sv:37`
+  (`endfunction // put`): hovering on `put` inside that trailing `//` comment
+  resolves to an unrelated `put` method pulled in from the attached `uvm_cache`
+  library DB — obviously wrong; a comment isn't code and hover should return
+  nothing there. Root cause: `wordAtPosition` (`src/lsp/symbol_utils.cpp`) does
+  a pure text-based word-boundary scan around the cursor with **zero notion of
+  comments or string literals**, unlike `findIdentifierOccurrences`
+  (`symbol_utils.cpp`, used by references/rename, §6.22) which already skips
+  both. Every caller inherits the same gap — `hover.cpp`, `definition.cpp`,
+  `completion.cpp`, `references.cpp`, `rename.cpp` — so hovering, go-to-def, or
+  a rename/references cursor-target lookup positioned inside a comment (or a
+  string literal) can resolve against an arbitrary unrelated same-named symbol
+  instead of correctly reporting nothing. No existing unit or functional test
+  puts the cursor inside a comment/string at all, so this shipped unnoticed.
+  See "Not yet done" #27 below.
 
 ---
 
@@ -2256,3 +2272,17 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
     every distinct warning (fix real ones, narrowly suppress-with-a-comment
     any deliberate ones), record the outcome, and only then weigh `-Werror`
     as a follow-on question — not decided in advance.
+27. **Fix `wordAtPosition` resolving symbols inside comments/strings — needs a
+    regression test.** Not started. Real bug, found live: hovering on `put` in
+    `/home/martin/src/policy/policy_mixin.sv:37`'s trailing `endfunction //
+    put` comment returns a `uvm_cache` method, not nothing — see "Known gaps"
+    above for the full root-cause writeup (`wordAtPosition`,
+    `src/lsp/symbol_utils.cpp`, has no comment/string-literal awareness, unlike
+    `findIdentifierOccurrences` which already skips both). Affects every
+    `wordAtPosition` caller — hover, definition, completion, references,
+    rename — not just hover. Fix should make `wordAtPosition` (or its callers)
+    comment/string-aware, likely reusing `findIdentifierOccurrences`'s existing
+    skip logic rather than re-inventing it; needs unit test coverage for a
+    cursor inside a `//` comment, a `/* */` comment, and a string literal
+    (each should resolve to nothing, not an unrelated symbol), plus a
+    functional test against a real fixture reproducing this exact shape.
