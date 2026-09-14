@@ -3473,6 +3473,86 @@ captured and gone through line by line.
 
 ---
 
+### 6.25 Investigate Signature Help for Macro Invocations (`` `uvm_info(...) ``-style)
+
+**Status:** not started — investigation only, not committed to implementation.
+
+**Motivation:** §6.22's follow-up extended signature help to bare function/task
+calls; macro invocations (`` `uvm_info(ID, MSG, VERBOSITY) ``,
+`` `uvm_object_utils(T) ``, and the whole UVM macro surface that real users of
+this LSP actually type constantly) currently get none at all, and it's not
+obvious this is a small extension of the existing feature rather than a
+mostly-separate one — worth an explicit investigation pass before committing
+to a design.
+
+**Confirmed by reading the code directly, not assumed:**
+- Macro definitions are resolved entirely inside `SvPreprocessor`
+  (`src/compiler/sv_preprocessor.cpp`) as pure text substitution, *before*
+  `SvTreeWalker`/ANTLR ever see the token stream — a macro invocation site is
+  gone (fully expanded) by the time the parse tree signature help already
+  walks even exists. This is a materially different pipeline stage than the
+  bare-function-call case, which resolves against `Port` records the AST
+  walker itself populated.
+- `MacroRecord` (`src/compiler/sv_preprocessor.h`) currently stores only
+  `name`, `body` (raw macro-body text), and a definition `line` — **no
+  parameter names or count at all**, even though `parseMacroDefinition`
+  (`sv_preprocessor.cpp`) clearly parses a parameter list internally to do
+  the substitution; that data just isn't retained on `MacroRecord` once
+  substitution is done.
+- `ParseRecordKind::Macro` already exists (`src/compiler/parse_record.h`) but
+  is dead in practice: `grep -rn ParseRecordKind::Macro src/` finds it used
+  only in `symbol_database.cpp`'s kind-to-string mapping — nothing anywhere
+  actually constructs a `Macro`-kind `ParseRecord`, and `PreprocessorResult::
+  macros` (populated per-call) has no consumer in `CompilationController` at
+  all. Macros are, today, entirely invisible to `SymbolDatabase` — no macro
+  can currently be hovered, go-to-definition'd, or found by workspace symbol
+  search either, not just signature help specifically.
+
+**What an investigation pass should actually settle, not implement outright:**
+1. Whether `MacroRecord` should carry a real parameter list (names, and
+   whether each is variadic/has a default per `` `define FOO(a, b=1) ``-style
+   defaults, which SV macros do support) — likely requires widening
+   `parseMacroDefinition`'s already-parsed-and-discarded parameter list to
+   survive onto the record, the same shape of gap §6.22's follow-up closed
+   for `tf_port_item` (parsed data existed, just wasn't retained past its
+   immediate use).
+2. Whether macros belong in `SymbolDatabase` as real `Macro`-kind
+   `ParseRecord`s at all (which would also incidentally unlock macro
+   hover/definition/workspace-symbol, arguably a bigger win than signature
+   help alone), versus a narrower, preprocessor-local lookup table
+   `SignatureHelpProvider` queries directly without going through the DB —
+   these have different persistence/invalidation implications (a macro
+   redefinition on a later `` `include ``d file, conditional-compilation
+   branches changing which definition is "active," etc.) worth weighing
+   before picking either.
+3. Whether a macro invocation's *call site* is even visible anywhere once
+   `CompilerDirectiveStripper`/`SvPreprocessor` have run — since the whole
+   point of the preprocessor pass is to erase the invocation by expanding it
+   in place, signature help's usual "find the enclosing open-paren at the
+   cursor" scan (as `SignatureHelpProvider` does today for both its existing
+   shapes) would need to run against something closer to the *original*
+   source text/token positions, not the post-expansion buffer the AST walker
+   consumes — confirm whether the existing `sourceMap`
+   (`PreprocessorResult::sourceMap`, already used to map expanded-line
+   positions back to original source for diagnostics) is sufficient for this
+   or whether it's the wrong tool for a mid-line cursor position.
+4. Scope check against real usage: UVM's own macros are overwhelmingly
+   function-like with positional (not named) arguments and no defaults in
+   practice — confirm whether SV even allows named-argument or default-value
+   macro invocation syntax at all (unlike function/task calls, which
+   §6.23 already had to handle named connections and defaults for) before
+   assuming the full §6.22/§6.23 argument-matching machinery is needed here
+   too; a much simpler positional-only implementation may be all real usage
+   ever needs.
+
+**Deliberately not decided here:** whether this is worth building at all
+once the above is understood — record the findings (here or in handoff.md)
+either way, including "investigated, not worth it because X" as a valid
+outcome, rather than treating investigation as an implicit commitment to
+ship it.
+
+---
+
 ## Appendix A — Technology Stack Summary
 
 | Concern | Choice | Rationale |
