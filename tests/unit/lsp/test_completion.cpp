@@ -698,6 +698,35 @@ TEST_CASE("CompletionProvider: super. resolves through the parent class, not the
     CHECK_FALSE(hasItem(items, "greet_from_child"));
 }
 
+TEST_CASE("CompletionProvider: an ordinary object handle offers a method inherited "
+          "two extends levels up, not just one (plan.md §6.26)",
+          "[completion][dot][chain]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        // Class hierarchy deliberately placed far from line 1 (same
+        // precaution the super. test above takes) so it never ambiguously
+        // overlaps `top`'s own span at the cursor's actual line.
+        {ParseRecordKind::Module, "top",         1, 7,  "",     "",             5,  ""},
+        {ParseRecordKind::Signal, "obj",         2, 10, "top",  "Child",        0,  "top"},
+        {ParseRecordKind::Class,  "Grandparent", 30, 7,  "",     "",             32, ""},
+        {ParseRecordKind::Function, "greet",     31, 10, "Grandparent", "void", 31, "Grandparent"},
+        {ParseRecordKind::Class,  "Parent",      20, 7,  "",     "Grandparent", 22, ""},
+        {ParseRecordKind::Class,  "Child",       10, 7,  "",     "Parent",      12, ""},
+    });
+
+    // Before plan.md §6.26, dot-completion only walked a single `extends`
+    // hop (and only for the literal `super` keyword) -- `greet`, declared
+    // two levels up an ordinary object handle's own class hierarchy, was
+    // previously invisible here.
+    const std::string text = "module top;\n  obj.";
+    auto result = CompletionProvider::getCompletion(makeParams("/t.sv", 1, 6), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "greet"));
+}
+
 TEST_CASE("CompletionProvider: a chain ending on a built-in container member reuses §6.13's tables",
           "[completion][dot][chain]")
 {

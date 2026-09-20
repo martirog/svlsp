@@ -120,33 +120,57 @@ std::optional<InstantiationHeader> parseInstantiationHeader(
     return InstantiationHeader{std::move(typeName), std::move(instanceName)};
 }
 
+struct CallHeader {
+    std::string name;
+    // The immediate `Class::`/`pkg::` scope name directly before `name`
+    // (plan.md §6.26), or "" for a genuinely unqualified call -- same
+    // "segment directly before the last '::'" convention as
+    // extractCalleeScope (src/compiler/sv_tree_walker.cpp), so
+    // "T::type_id::create(" yields scope "type_id", not "T".
+    std::string scope;
+};
+
 // Reads the single identifier immediately before `parenOffset`: a bare
-// function/task call header, `<calleeName> (`. Tried only after
-// parseInstantiationHeader's two-identifier shape above fails to resolve to
-// a known Module/Interface/Program -- see plan.md §6.22's follow-up section.
-// Deliberately scoped to *undotted* calls only: if a '.' immediately
-// precedes the identifier (skipping whitespace), this is a dotted call
+// function/task call header, `<calleeName> (`, optionally preceded by a
+// `Class::`/`pkg::` scope. Tried only after parseInstantiationHeader's
+// two-identifier shape above fails to resolve to a known Module/Interface/
+// Program -- see plan.md §6.22's follow-up section. Deliberately scoped to
+// *undotted* calls only: if a '.' immediately precedes the identifier (or
+// its scope prefix, skipping whitespace), this is a dotted call
 // (`obj.method(`) that needs completion's own chain-resolution machinery,
-// not this lexical scan -- fails closed (nullopt) rather than guessing,
-// since blindly resolving just the method name by itself risks matching an
-// unrelated same-named method on a different class entirely.
-std::optional<std::string> parseCallHeader(const std::string& text, size_t parenOffset)
+// not this lexical scan -- fails closed (nullopt) rather than guessing.
+std::optional<CallHeader> parseCallHeader(const std::string& text, size_t parenOffset)
 {
     auto skipWsBack = [&](size_t& i) {
         while (i > 0 && std::isspace(static_cast<unsigned char>(text[i - 1]))) --i;
     };
+    auto readIdentBack = [&](size_t& i) {
+        size_t end = i;
+        while (i > 0 && isIdentChar(static_cast<unsigned char>(text[i - 1]))) --i;
+        return text.substr(i, end - i);
+    };
 
     size_t i = parenOffset;
     skipWsBack(i);
-    size_t end = i;
-    while (i > 0 && isIdentChar(static_cast<unsigned char>(text[i - 1]))) --i;
-    if (i == end) return std::nullopt;
-    std::string name = text.substr(i, end - i);
+    std::string name = readIdentBack(i);
+    if (name.empty()) return std::nullopt;
+
+    // A "::" immediately before the name means a scope-qualified call --
+    // walk back over one or more "Scope::" segments the same way
+    // extractCalleeScope's "last segment before the last '::'" rule does,
+    // keeping only the immediate one.
+    std::string scope;
+    while (i >= 2 && text[i - 1] == ':' && text[i - 2] == ':') {
+        i -= 2;
+        std::string seg = readIdentBack(i);
+        if (seg.empty()) return std::nullopt;
+        if (scope.empty()) scope = seg; // keep only the immediate (last) segment
+    }
 
     skipWsBack(i);
     if (i > 0 && text[i - 1] == '.') return std::nullopt; // dotted -- out of scope
 
-    return name;
+    return CallHeader{std::move(name), std::move(scope)};
 }
 
 struct ActiveParam {
@@ -212,12 +236,16 @@ lsp::TextDocument_SignatureHelpResult SignatureHelpProvider::getSignatureHelp(
     auto parenOffset = findEnclosingParen(docText, *cursorOffset);
     if (!parenOffset) return nullptr;
 
+    const std::string curPath{params.textDocument.uri.path()};
+    const int line1 = static_cast<int>(params.position.line) + 1;
+
     // Try the module/interface/program instantiation shape first
     // (`<TypeName> <InstanceName> (`); only if that fails to resolve to a
     // known design-unit type, try the bare function/task call shape
     // (`<calleeName> (`, plan.md §6.22 follow-up) instead.
     std::string calleeName;
     std::vector<SymbolRow> typeRows;
+    std::optional<SymbolRow> resolvedCallee;
     if (auto header = parseInstantiationHeader(docText, *parenOffset)) {
         for (auto& row : db.findSymbolsByName(header->typeName))
             if (row.kind == "Module" || row.kind == "Interface" || row.kind == "Program")
@@ -226,18 +254,37 @@ lsp::TextDocument_SignatureHelpResult SignatureHelpProvider::getSignatureHelp(
     }
     if (typeRows.empty()) {
         if (auto callee = parseCallHeader(docText, *parenOffset)) {
-            for (auto& row : db.findSymbolsByName(*callee))
-                if (row.kind == "Function" || row.kind == "Task")
-                    typeRows.push_back(row);
-            calleeName = *callee;
+            calleeName = callee->name;
+            if (!callee->scope.empty()) {
+                // Explicitly `Class::`/`pkg::`-qualified -- resolve
+                // strictly within that name's own class hierarchy, and fail
+                // closed if it isn't a known class or doesn't declare this
+                // method anywhere in it (plan.md §6.26). Never falls back
+                // to a flat whole-database search for this case -- that
+                // fallback is what made `type_id::get()`-style calls
+                // resolve against an unrelated same-named method elsewhere.
+                resolvedCallee = db.resolveMethod(callee->scope, callee->name, curPath);
+            } else {
+                // Unqualified -- try the call site's own enclosing class
+                // hierarchy first (an inherited method called bare), then
+                // fall back to the pre-existing flat search only when
+                // there's no class context at all to have gotten wrong.
+                std::string enclosing = db.enclosingClassNameAt(curPath, line1);
+                if (!enclosing.empty())
+                    resolvedCallee = db.resolveMethod(enclosing, callee->name, curPath);
+                if (!resolvedCallee) {
+                    for (auto& row : db.findSymbolsByName(callee->name))
+                        if (row.kind == "Function" || row.kind == "Task")
+                            typeRows.push_back(row);
+                }
+            }
         }
     }
-    if (typeRows.empty()) return nullptr; // not a known design-unit/function/task -- fail closed
+    if (!resolvedCallee && typeRows.empty()) return nullptr; // fail closed
 
-    const std::string curPath{params.textDocument.uri.path()};
-    const SymbolRow* best = pickBestSymbol(typeRows, curPath);
+    const SymbolRow best = resolvedCallee ? *resolvedCallee : *pickBestSymbol(typeRows, curPath);
     const std::string scope =
-        best->scope.empty() ? best->name : best->scope + "::" + best->name;
+        best.scope.empty() ? best.name : best.scope + "::" + best.name;
 
     std::vector<SymbolRow> ports;
     for (auto& row : db.findSymbolsInScope(scope))

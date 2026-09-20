@@ -497,6 +497,79 @@ TEST_CASE("enclosingClassNameAt returns empty string outside any class",
 }
 
 // ---------------------------------------------------------------------------
+// baseClassChain / resolveMethod (plan.md §6.26 -- scope/type-aware
+// method-call resolution, fixing the false positives §6.23's own
+// UVM-corpus probe surfaced)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("baseClassChain walks two extends levels outward", "[db][symbol-db][chain]") {
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/a.sv", "h"), {
+        {ParseRecordKind::Class, "Base",    1, 0, "", "",     5,  ""},
+        {ParseRecordKind::Class, "Derived", 10, 0, "", "Base", 15, ""},
+    });
+    auto chain = f.sdb.baseClassChain("Derived", "/a.sv");
+    REQUIRE(chain.size() == 2);
+    CHECK(chain[0] == "Derived");
+    CHECK(chain[1] == "Base");
+}
+
+TEST_CASE("baseClassChain returns empty for a name that isn't a known class",
+          "[db][symbol-db][chain]") {
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/a.sv", "h"), {
+        {ParseRecordKind::Class, "Base", 1, 0, "", "", 5, ""},
+    });
+    CHECK(f.sdb.baseClassChain("type_id", "/a.sv").empty());
+}
+
+TEST_CASE("baseClassChain stops on a cycle rather than looping forever",
+          "[db][symbol-db][chain]") {
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/a.sv", "h"), {
+        {ParseRecordKind::Class, "ClassX", 1,  0, "", "ClassY", 5,  ""},
+        {ParseRecordKind::Class, "ClassY", 10, 0, "", "ClassX", 15, ""},
+    });
+    auto chain = f.sdb.baseClassChain("ClassX", "/a.sv");
+    REQUIRE(chain.size() == 2);
+    CHECK(chain[0] == "ClassX");
+    CHECK(chain[1] == "ClassY");
+}
+
+TEST_CASE("resolveMethod finds a method on a distant ancestor, not a same-named "
+          "method on an unrelated class", "[db][symbol-db][chain]") {
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/a.sv", "h"), {
+        {ParseRecordKind::Class,    "Other",   1,  0, "",      "",      5,  ""},
+        {ParseRecordKind::Function, "helper",  2,  0, "Other", "void",  3,  "Other"},
+        {ParseRecordKind::Class,    "Base",    10, 0, "",      "",      15, ""},
+        {ParseRecordKind::Function, "helper",  11, 0, "Base",  "void",  12, "Base"},
+        {ParseRecordKind::Class,    "Derived", 20, 0, "",      "Base",  25, ""},
+    });
+    auto found = f.sdb.resolveMethod("Derived", "helper", "/a.sv");
+    REQUIRE(found.has_value());
+    CHECK(found->scope == "Base");
+}
+
+TEST_CASE("resolveMethod returns nullopt for a name that isn't a known class",
+          "[db][symbol-db][chain]") {
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/a.sv", "h"), {
+        {ParseRecordKind::Class, "Base", 1, 0, "", "", 5, ""},
+    });
+    CHECK_FALSE(f.sdb.resolveMethod("type_id", "get", "/a.sv").has_value());
+}
+
+TEST_CASE("resolveMethod returns nullopt when neither the class nor any ancestor "
+          "declares the method", "[db][symbol-db][chain]") {
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/a.sv", "h"), {
+        {ParseRecordKind::Class, "Lonely", 1, 0, "", "", 5, ""},
+    });
+    CHECK_FALSE(f.sdb.resolveMethod("Lonely", "missing", "/a.sv").has_value());
+}
+
+// ---------------------------------------------------------------------------
 // setLibraryIncludeDirs / libraryIncludeDirs (plan.md §6.19 piece 4 --
 // baking a library DB's own build-time includeDirs into the DB file itself)
 // ---------------------------------------------------------------------------

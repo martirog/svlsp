@@ -35,7 +35,7 @@ static int countKind(const std::vector<ParseRecord>& recs, ParseRecordKind kind)
 // ---------------------------------------------------------------------------
 
 TEST_CASE("module record emitted for inline source", "[compiler][listener]") {
-    auto [recs, errs, imps, insts] = walkSource("module top; endmodule\n");
+    auto [recs, errs, imps, insts, calls] = walkSource("module top; endmodule\n");
     REQUIRE(errs.empty());
     auto* r = findRecord(recs, ParseRecordKind::Module, "top");
     REQUIRE(r != nullptr);
@@ -43,13 +43,13 @@ TEST_CASE("module record emitted for inline source", "[compiler][listener]") {
 }
 
 TEST_CASE("module record from module_basic.sv", "[compiler][listener]") {
-    auto [recs, errs, imps, insts] = walkFile(SV_EXAMPLES_DIR "/module_basic.sv");
+    auto [recs, errs, imps, insts, calls] = walkFile(SV_EXAMPLES_DIR "/module_basic.sv");
     REQUIRE(errs.empty());
     REQUIRE(findRecord(recs, ParseRecordKind::Module, "adder") != nullptr);
 }
 
 TEST_CASE("multiple modules produce multiple records", "[compiler][listener]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "module a; endmodule\n"
         "module b; endmodule\n");
     REQUIRE(errs.empty());
@@ -59,7 +59,7 @@ TEST_CASE("multiple modules produce multiple records", "[compiler][listener]") {
 }
 
 TEST_CASE("module line number is correct", "[compiler][listener]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "\n"
         "\n"
         "module positioned; endmodule\n");
@@ -74,13 +74,13 @@ TEST_CASE("module line number is correct", "[compiler][listener]") {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("interface record from interfaces.sv", "[compiler][listener]") {
-    auto [recs, errs, imps, insts] = walkFile(SV_EXAMPLES_DIR "/interfaces.sv");
+    auto [recs, errs, imps, insts, calls] = walkFile(SV_EXAMPLES_DIR "/interfaces.sv");
     REQUIRE(errs.empty());
     REQUIRE(findRecord(recs, ParseRecordKind::Interface, "bus_if") != nullptr);
 }
 
 TEST_CASE("interface record emitted for inline source", "[compiler][listener]") {
-    auto [recs, errs, imps, insts] = walkSource("interface my_if; endinterface\n");
+    auto [recs, errs, imps, insts, calls] = walkSource("interface my_if; endinterface\n");
     REQUIRE(errs.empty());
     REQUIRE(findRecord(recs, ParseRecordKind::Interface, "my_if") != nullptr);
 }
@@ -90,14 +90,14 @@ TEST_CASE("interface record emitted for inline source", "[compiler][listener]") 
 // ---------------------------------------------------------------------------
 
 TEST_CASE("package record from packages.sv", "[compiler][listener]") {
-    auto [recs, errs, imps, insts] = walkFile(SV_EXAMPLES_DIR "/packages.sv");
+    auto [recs, errs, imps, insts, calls] = walkFile(SV_EXAMPLES_DIR "/packages.sv");
     REQUIRE(errs.empty());
     REQUIRE(findRecord(recs, ParseRecordKind::Package, "math_pkg") != nullptr);
     REQUIRE(findRecord(recs, ParseRecordKind::Package, "bus_pkg") != nullptr);
 }
 
 TEST_CASE("package record emitted for inline source", "[compiler][listener]") {
-    auto [recs, errs, imps, insts] = walkSource("package my_pkg; endpackage\n");
+    auto [recs, errs, imps, insts, calls] = walkSource("package my_pkg; endpackage\n");
     REQUIRE(errs.empty());
     REQUIRE(findRecord(recs, ParseRecordKind::Package, "my_pkg") != nullptr);
 }
@@ -107,7 +107,7 @@ TEST_CASE("package record emitted for inline source", "[compiler][listener]") {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("class records from classes.sv", "[compiler][listener]") {
-    auto [recs, errs, imps, insts] = walkFile(SV_EXAMPLES_DIR "/classes.sv");
+    auto [recs, errs, imps, insts, calls] = walkFile(SV_EXAMPLES_DIR "/classes.sv");
     REQUIRE(errs.empty());
     REQUIRE(findRecord(recs, ParseRecordKind::Class, "Packet") != nullptr);
     REQUIRE(findRecord(recs, ParseRecordKind::Class, "ErrPacket") != nullptr);
@@ -115,7 +115,7 @@ TEST_CASE("class records from classes.sv", "[compiler][listener]") {
 }
 
 TEST_CASE("class record emitted for inline source", "[compiler][listener]") {
-    auto [recs, errs, imps, insts] = walkSource("class Foo; endclass\n");
+    auto [recs, errs, imps, insts, calls] = walkSource("class Foo; endclass\n");
     REQUIRE(errs.empty());
     REQUIRE(findRecord(recs, ParseRecordKind::Class, "Foo") != nullptr);
 }
@@ -125,7 +125,7 @@ TEST_CASE("class record emitted for inline source", "[compiler][listener]") {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("function and task records from functions_tasks.sv", "[compiler][listener]") {
-    auto [recs, errs, imps, insts] = walkFile(SV_EXAMPLES_DIR "/functions_tasks.sv");
+    auto [recs, errs, imps, insts, calls] = walkFile(SV_EXAMPLES_DIR "/functions_tasks.sv");
     REQUIRE(errs.empty());
     REQUIRE(findRecord(recs, ParseRecordKind::Function, "byte_reverse") != nullptr);
     REQUIRE(findRecord(recs, ParseRecordKind::Function, "clog2") != nullptr);
@@ -134,7 +134,7 @@ TEST_CASE("function and task records from functions_tasks.sv", "[compiler][liste
 }
 
 TEST_CASE("function record emitted for inline source", "[compiler][listener]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "module m;\n"
         "  function automatic int add(input int a, b); return a+b; endfunction\n"
         "endmodule\n");
@@ -143,7 +143,7 @@ TEST_CASE("function record emitted for inline source", "[compiler][listener]") {
 }
 
 TEST_CASE("task record emitted for inline source", "[compiler][listener]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "module m;\n"
         "  task automatic delay(input int n); repeat(n) @(posedge clk); endtask\n"
         "endmodule\n");
@@ -156,7 +156,7 @@ TEST_CASE("task record emitted for inline source", "[compiler][listener]") {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("ANSI port records emitted", "[compiler][listener]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "module m (input logic clk, input logic rst, output logic q);\n"
         "endmodule\n");
     REQUIRE(errs.empty());
@@ -167,7 +167,7 @@ TEST_CASE("ANSI port records emitted", "[compiler][listener]") {
 }
 
 TEST_CASE("port records from module_basic.sv", "[compiler][listener]") {
-    auto [recs, errs, imps, insts] = walkFile(SV_EXAMPLES_DIR "/module_basic.sv");
+    auto [recs, errs, imps, insts, calls] = walkFile(SV_EXAMPLES_DIR "/module_basic.sv");
     REQUIRE(errs.empty());
     CHECK(countKind(recs, ParseRecordKind::Port) > 0);
 }
@@ -177,12 +177,12 @@ TEST_CASE("port records from module_basic.sv", "[compiler][listener]") {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("parse errors reported for malformed source", "[compiler][listener]") {
-    auto [recs, errs, imps, insts] = walkSource("module bad { endmodule\n");
+    auto [recs, errs, imps, insts, calls] = walkSource("module bad { endmodule\n");
     CHECK(!errs.empty());
 }
 
 TEST_CASE("zero parse errors for valid source", "[compiler][listener]") {
-    auto [recs, errs, imps, insts] = walkSource("module ok; endmodule\n");
+    auto [recs, errs, imps, insts, calls] = walkSource("module ok; endmodule\n");
     CHECK(errs.empty());
 }
 
@@ -191,7 +191,7 @@ TEST_CASE("zero parse errors for valid source", "[compiler][listener]") {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("signal record from data_declaration inside module", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "module m;\n"
         "  logic [7:0] data;\n"
         "endmodule\n");
@@ -200,7 +200,7 @@ TEST_CASE("signal record from data_declaration inside module", "[compiler][liste
 }
 
 TEST_CASE("multiple signals from comma-separated data_declaration", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "module m;\n"
         "  logic a, b, c;\n"
         "endmodule\n");
@@ -211,7 +211,7 @@ TEST_CASE("multiple signals from comma-separated data_declaration", "[compiler][
 }
 
 TEST_CASE("signal record from net_declaration inside module", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "module m;\n"
         "  wire w;\n"
         "endmodule\n");
@@ -220,7 +220,7 @@ TEST_CASE("signal record from net_declaration inside module", "[compiler][listen
 }
 
 TEST_CASE("signals from functions_tasks.sv captured", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps, insts] = walkFile(SV_EXAMPLES_DIR "/functions_tasks.sv");
+    auto [recs, errs, imps, insts, calls] = walkFile(SV_EXAMPLES_DIR "/functions_tasks.sv");
     REQUIRE(errs.empty());
     REQUIRE(findRecord(recs, ParseRecordKind::Signal, "data") != nullptr);
     REQUIRE(findRecord(recs, ParseRecordKind::Signal, "clk")  != nullptr);
@@ -232,7 +232,7 @@ TEST_CASE("signals from functions_tasks.sv captured", "[compiler][listener][phas
 // ---------------------------------------------------------------------------
 
 TEST_CASE("class-typed signal records its declared type in detail", "[compiler][listener][phase6.10]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "module m;\n"
         "  MyClass foo;\n"
         "endmodule\n");
@@ -243,7 +243,7 @@ TEST_CASE("class-typed signal records its declared type in detail", "[compiler][
 }
 
 TEST_CASE("built-in-typed signal leaves detail empty", "[compiler][listener][phase6.10]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "module m;\n"
         "  logic [7:0] data;\n"
         "endmodule\n");
@@ -261,7 +261,7 @@ TEST_CASE("built-in-typed signal leaves detail empty", "[compiler][listener][pha
 // ---------------------------------------------------------------------------
 
 TEST_CASE("queue-typed signal is tagged $queue", "[compiler][listener][phase6.13]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "module m;\n"
         "  int q[$];\n"
         "endmodule\n");
@@ -272,7 +272,7 @@ TEST_CASE("queue-typed signal is tagged $queue", "[compiler][listener][phase6.13
 }
 
 TEST_CASE("associative-array-typed signal is tagged $assoc_array", "[compiler][listener][phase6.13]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "module m;\n"
         "  int aa[string];\n"
         "endmodule\n");
@@ -283,7 +283,7 @@ TEST_CASE("associative-array-typed signal is tagged $assoc_array", "[compiler][l
 }
 
 TEST_CASE("dynamic-array-typed signal is tagged $dynamic_array", "[compiler][listener][phase6.13]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "module m;\n"
         "  int arr[];\n"
         "endmodule\n");
@@ -294,7 +294,7 @@ TEST_CASE("dynamic-array-typed signal is tagged $dynamic_array", "[compiler][lis
 }
 
 TEST_CASE("fixed-size-array-typed signal is tagged $fixed_array", "[compiler][listener][phase6.13]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "module m;\n"
         "  int arr[8];\n"
         "endmodule\n");
@@ -305,7 +305,7 @@ TEST_CASE("fixed-size-array-typed signal is tagged $fixed_array", "[compiler][li
 }
 
 TEST_CASE("string-typed signal is tagged $string", "[compiler][listener][phase6.13]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "module m;\n"
         "  string s;\n"
         "endmodule\n");
@@ -316,7 +316,7 @@ TEST_CASE("string-typed signal is tagged $string", "[compiler][listener][phase6.
 }
 
 TEST_CASE("event-typed signal is tagged $event", "[compiler][listener][phase6.13]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "module m;\n"
         "  event e;\n"
         "endmodule\n");
@@ -328,7 +328,7 @@ TEST_CASE("event-typed signal is tagged $event", "[compiler][listener][phase6.13
 
 TEST_CASE("mailbox-typed signal records its declared type in detail (regression, no tree-walker change needed)",
           "[compiler][listener][phase6.13]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "module m;\n"
         "  mailbox #(int) mbx;\n"
         "endmodule\n");
@@ -340,7 +340,7 @@ TEST_CASE("mailbox-typed signal records its declared type in detail (regression,
 
 TEST_CASE("process-typed signal records its declared type in detail (regression, no tree-walker change needed)",
           "[compiler][listener][phase6.13]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "module m;\n"
         "  process p;\n"
         "endmodule\n");
@@ -352,7 +352,7 @@ TEST_CASE("process-typed signal records its declared type in detail (regression,
 
 TEST_CASE("semaphore-typed signal records its declared type in detail (regression, no tree-walker change needed)",
           "[compiler][listener][phase6.13]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "module m;\n"
         "  semaphore sem;\n"
         "endmodule\n");
@@ -364,7 +364,7 @@ TEST_CASE("semaphore-typed signal records its declared type in detail (regressio
 
 TEST_CASE("queue-typed and plain declarators sharing one data_type are tagged independently",
           "[compiler][listener][phase6.13]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "module m;\n"
         "  int a[$], b;\n"
         "endmodule\n");
@@ -386,7 +386,7 @@ TEST_CASE("queue-typed and plain declarators sharing one data_type are tagged in
 
 TEST_CASE("class-typed queue is tagged $queue:ClassName (element type appended)",
           "[compiler][listener][phase6.15]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "class MyClass; endclass\n"
         "module m;\n"
         "  MyClass q[$];\n"
@@ -399,7 +399,7 @@ TEST_CASE("class-typed queue is tagged $queue:ClassName (element type appended)"
 
 TEST_CASE("string-element queue is tagged $queue:$string (container wins, element still recorded)",
           "[compiler][listener][phase6.15]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "module m;\n"
         "  string s[$];\n"
         "endmodule\n");
@@ -414,7 +414,7 @@ TEST_CASE("int-element queue has no trailing element layer (unchanged from §6.1
     // Regression: a built-in scalar element type has no tag, so the detail
     // stays exactly the single container tag, matching §6.13's original
     // (pre-§6.15) behavior for this case.
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "module m;\n"
         "  int q[$];\n"
         "endmodule\n");
@@ -426,7 +426,7 @@ TEST_CASE("int-element queue has no trailing element layer (unchanged from §6.1
 
 TEST_CASE("a fixed array of queues of a class records all three layers, outermost first",
           "[compiler][listener][phase6.15]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "class MyClass; endclass\n"
         "module m;\n"
         "  MyClass arr[4][$];\n"
@@ -439,7 +439,7 @@ TEST_CASE("a fixed array of queues of a class records all three layers, outermos
 
 TEST_CASE("a fixed array of queues of int has only the two dimension layers, no element layer",
           "[compiler][listener][phase6.15]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "module m;\n"
         "  int arr[4][$];\n"
         "endmodule\n");
@@ -451,7 +451,7 @@ TEST_CASE("a fixed array of queues of int has only the two dimension layers, no 
 
 TEST_CASE("associative array of a class is tagged $assoc_array:ClassName",
           "[compiler][listener][phase6.15]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "class MyClass; endclass\n"
         "module m;\n"
         "  MyClass aa[string];\n"
@@ -471,7 +471,7 @@ TEST_CASE("associative array of a class is tagged $assoc_array:ClassName",
 
 TEST_CASE("pure virtual function is recorded as a Function symbol with its return type",
           "[compiler][listener][phase6.16]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "virtual class Base;\n"
         "  pure virtual function int get_val(int x);\n"
         "endclass\n");
@@ -484,7 +484,7 @@ TEST_CASE("pure virtual function is recorded as a Function symbol with its retur
 
 TEST_CASE("pure virtual task is recorded as a Task symbol",
           "[compiler][listener][phase6.16]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "virtual class Base;\n"
         "  pure virtual task do_it(int x);\n"
         "endclass\n");
@@ -496,7 +496,7 @@ TEST_CASE("pure virtual task is recorded as a Task symbol",
 
 TEST_CASE("extern function/task prototypes are recorded even with no body anywhere in the source",
           "[compiler][listener][phase6.16]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "class Base;\n"
         "  extern function int get_val(int x);\n"
         "  extern task do_it(int x);\n"
@@ -516,7 +516,7 @@ TEST_CASE("a pure-virtual method does not leak its scope onto declarations that 
     // listener. A prototype has no body -- if its own exit listener didn't
     // pop that frame, "y" below would be wrongly recorded as nested inside
     // get_val's scope instead of directly inside Base.
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "class Base;\n"
         "  pure virtual function int get_val(int x);\n"
         "  int y;\n"
@@ -534,7 +534,7 @@ TEST_CASE("interface class parses cleanly and records itself plus its pure-virtu
     // this: interface_class_declaration was defined in the grammar but never
     // referenced from any reachable parent rule, so this construct always
     // produced spurious parse errors before this fix.
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "package p;\n"
         "  interface class Foo;\n"
         "    pure virtual function int get_val(int x);\n"
@@ -554,7 +554,7 @@ TEST_CASE("interface class parses cleanly and records itself plus its pure-virtu
 
 TEST_CASE("interface class with multiple inheritance records only the first parent in detail",
           "[compiler][listener][phase6.16]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "package p;\n"
         "  interface class A;\n"
         "    pure virtual function int a_fn();\n"
@@ -577,7 +577,7 @@ TEST_CASE("a pure-virtual method still resolves cleanly when the class extends a
     // Models the real-world shape that motivated this fix: a class
     // extending an unresolved base (e.g. UVM's uvm_object, never declared
     // in this same file) with a pure-virtual method of its own.
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "virtual class Base extends uvm_object;\n"
         "  pure virtual function Base get_policy(int par);\n"
         "endclass\n");
@@ -592,7 +592,7 @@ TEST_CASE("a DPI-imported function is recorded as a Function symbol",
     // Falls out for free: dpi_function_proto/dpi_task_proto reduce to the
     // same function_prototype/task_prototype rules pure-virtual/extern
     // methods use, so no separate handling is needed for DPI imports.
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "import \"DPI-C\" function int foo(int x);\n");
     REQUIRE(errs.empty());
     auto* r = findRecord(recs, ParseRecordKind::Function, "foo");
@@ -608,7 +608,7 @@ TEST_CASE("a DPI-imported function is recorded as a Function symbol",
 
 TEST_CASE("a function parameter is recorded as a Port scoped to the function",
           "[compiler][listener][phase6.22]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "function int add(input int a);\n"
         "  return a;\n"
         "endfunction\n");
@@ -624,7 +624,7 @@ TEST_CASE("a function parameter is recorded as a Port scoped to the function",
 
 TEST_CASE("a task parameter is recorded as a Port scoped to the task",
           "[compiler][listener][phase6.22]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "task automatic do_thing(input int x);\n"
         "endtask\n");
     REQUIRE(errs.empty());
@@ -635,7 +635,7 @@ TEST_CASE("a task parameter is recorded as a Port scoped to the task",
 
 TEST_CASE("a non-default parameter direction is kept in detail",
           "[compiler][listener][phase6.22]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "function void foo(output int b);\n"
         "endfunction\n");
     REQUIRE(errs.empty());
@@ -648,7 +648,7 @@ TEST_CASE("a two-token parameter direction keeps its real spacing",
           "[compiler][listener][phase6.22]") {
     // Regression guard for the verbatim-token-stream extraction: ctx->getText()
     // would strip the space and yield "constrefint" instead.
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "function void foo(const ref int x);\n"
         "endfunction\n");
     REQUIRE(errs.empty());
@@ -659,7 +659,7 @@ TEST_CASE("a two-token parameter direction keeps its real spacing",
 
 TEST_CASE("a default parameter value is appended after the separator",
           "[compiler][listener][phase6.22]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "function void foo(int width = 8);\n"
         "endfunction\n");
     REQUIRE(errs.empty());
@@ -670,7 +670,7 @@ TEST_CASE("a default parameter value is appended after the separator",
 
 TEST_CASE("a class method's parameters are scoped to Class::method",
           "[compiler][listener][phase6.22]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "class C;\n"
         "  function int get(int i);\n"
         "    return i;\n"
@@ -684,7 +684,7 @@ TEST_CASE("a class method's parameters are scoped to Class::method",
 
 TEST_CASE("a pure-virtual method's parameters are recorded even with no body",
           "[compiler][listener][phase6.22]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "class C;\n"
         "  pure virtual function int compute(int a, int b);\n"
         "endclass\n");
@@ -702,7 +702,7 @@ TEST_CASE("a pure-virtual method's parameters are recorded even with no body",
 // ---------------------------------------------------------------------------
 
 TEST_CASE("signal parent is the enclosing module name", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "module my_mod;\n"
         "  logic sig;\n"
         "endmodule\n");
@@ -713,7 +713,7 @@ TEST_CASE("signal parent is the enclosing module name", "[compiler][listener][ph
 }
 
 TEST_CASE("port parent is the enclosing module name", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "module top (input logic clk);\n"
         "endmodule\n");
     REQUIRE(errs.empty());
@@ -723,7 +723,7 @@ TEST_CASE("port parent is the enclosing module name", "[compiler][listener][phas
 }
 
 TEST_CASE("function parent is the enclosing module name", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "module m;\n"
         "  function automatic int add(input int a, b); return a+b; endfunction\n"
         "endmodule\n");
@@ -734,7 +734,7 @@ TEST_CASE("function parent is the enclosing module name", "[compiler][listener][
 }
 
 TEST_CASE("top-level module has empty parent", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps, insts] = walkSource("module top_level; endmodule\n");
+    auto [recs, errs, imps, insts, calls] = walkSource("module top_level; endmodule\n");
     REQUIRE(errs.empty());
     auto* r = findRecord(recs, ParseRecordKind::Module, "top_level");
     REQUIRE(r != nullptr);
@@ -746,7 +746,7 @@ TEST_CASE("top-level module has empty parent", "[compiler][listener][phase44]") 
 // ---------------------------------------------------------------------------
 
 TEST_CASE("input port detail is 'input'", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "module m (input logic clk);\n"
         "endmodule\n");
     REQUIRE(errs.empty());
@@ -756,7 +756,7 @@ TEST_CASE("input port detail is 'input'", "[compiler][listener][phase44]") {
 }
 
 TEST_CASE("output port detail is 'output'", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "module m (output logic q);\n"
         "endmodule\n");
     REQUIRE(errs.empty());
@@ -766,7 +766,7 @@ TEST_CASE("output port detail is 'output'", "[compiler][listener][phase44]") {
 }
 
 TEST_CASE("inout port detail is 'inout'", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "module m (inout wire bus);\n"
         "endmodule\n");
     REQUIRE(errs.empty());
@@ -780,7 +780,7 @@ TEST_CASE("inout port detail is 'inout'", "[compiler][listener][phase44]") {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("class with extends has parent class in detail", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "class Base; endclass\n"
         "class Child extends Base; endclass\n");
     REQUIRE(errs.empty());
@@ -790,7 +790,7 @@ TEST_CASE("class with extends has parent class in detail", "[compiler][listener]
 }
 
 TEST_CASE("class without extends has empty detail", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps, insts] = walkSource("class Standalone; endclass\n");
+    auto [recs, errs, imps, insts, calls] = walkSource("class Standalone; endclass\n");
     REQUIRE(errs.empty());
     auto* r = findRecord(recs, ParseRecordKind::Class, "Standalone");
     REQUIRE(r != nullptr);
@@ -798,7 +798,7 @@ TEST_CASE("class without extends has empty detail", "[compiler][listener][phase4
 }
 
 TEST_CASE("class hierarchy from classes.sv detail fields", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps, insts] = walkFile(SV_EXAMPLES_DIR "/classes.sv");
+    auto [recs, errs, imps, insts, calls] = walkFile(SV_EXAMPLES_DIR "/classes.sv");
     REQUIRE(errs.empty());
     auto* err_pkt = findRecord(recs, ParseRecordKind::Class, "ErrPacket");
     REQUIRE(err_pkt != nullptr);
@@ -813,7 +813,7 @@ TEST_CASE("class hierarchy from classes.sv detail fields", "[compiler][listener]
 // ---------------------------------------------------------------------------
 
 TEST_CASE("function detail contains return type text", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "module m;\n"
         "  function automatic int add(input int a, b); return a+b; endfunction\n"
         "endmodule\n");
@@ -828,7 +828,7 @@ TEST_CASE("function detail contains return type text", "[compiler][listener][pha
 // ---------------------------------------------------------------------------
 
 TEST_CASE("parameter record emitted for module parameter port", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "module m #(parameter int WIDTH = 8) (input logic clk);\n"
         "endmodule\n");
     REQUIRE(errs.empty());
@@ -836,7 +836,7 @@ TEST_CASE("parameter record emitted for module parameter port", "[compiler][list
 }
 
 TEST_CASE("localparam record emitted inside module body", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "module m;\n"
         "  localparam int DEPTH = 16;\n"
         "endmodule\n");
@@ -845,7 +845,7 @@ TEST_CASE("localparam record emitted inside module body", "[compiler][listener][
 }
 
 TEST_CASE("parameter parent is the enclosing module", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "module param_mod #(parameter int N = 4) ();\n"
         "endmodule\n");
     REQUIRE(errs.empty());
@@ -855,7 +855,7 @@ TEST_CASE("parameter parent is the enclosing module", "[compiler][listener][phas
 }
 
 TEST_CASE("class-typed localparam records its declared type in detail", "[compiler][listener][phase6.10]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "module m;\n"
         "  localparam MyClass DEFAULT_FOO = null;\n"
         "endmodule\n");
@@ -866,7 +866,7 @@ TEST_CASE("class-typed localparam records its declared type in detail", "[compil
 }
 
 TEST_CASE("built-in-typed parameter leaves detail empty", "[compiler][listener][phase6.10]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "module m #(parameter int N = 4) ();\n"
         "endmodule\n");
     REQUIRE(errs.empty());
@@ -881,7 +881,7 @@ TEST_CASE("built-in-typed parameter leaves detail empty", "[compiler][listener][
 
 TEST_CASE("walk without source map leaves file field empty",
           "[compiler][listener][sourcemap]") {
-    auto [recs, errs, imps, insts] = walkSource("module m; endmodule\n");
+    auto [recs, errs, imps, insts, calls] = walkSource("module m; endmodule\n");
     REQUIRE(errs.empty());
     auto* r = findRecord(recs, ParseRecordKind::Module, "m");
     REQUIRE(r != nullptr);
@@ -1083,7 +1083,7 @@ TEST_CASE("import inside a package that also exports is recorded distinctly",
 // ---------------------------------------------------------------------------
 
 TEST_CASE("program record emitted for inline source", "[compiler][listener][program]") {
-    auto [recs, errs, imps, insts] = walkSource("program my_prog; endprogram\n");
+    auto [recs, errs, imps, insts, calls] = walkSource("program my_prog; endprogram\n");
     REQUIRE(errs.empty());
     auto* r = findRecord(recs, ParseRecordKind::Program, "my_prog");
     REQUIRE(r != nullptr);
@@ -1091,7 +1091,7 @@ TEST_CASE("program record emitted for inline source", "[compiler][listener][prog
 }
 
 TEST_CASE("program endLine is backpatched", "[compiler][listener][program]") {
-    auto [recs, errs, imps, insts] = walkSource(
+    auto [recs, errs, imps, insts, calls] = walkSource(
         "program my_prog;\n"
         "  initial begin end\n"
         "endprogram\n");
@@ -1150,4 +1150,178 @@ TEST_CASE("file with no instantiations produces empty instantiations vector",
           "[compiler][listener][instantiation]") {
     auto result = walkSource("module m; endmodule\n");
     CHECK(result.instantiations.empty());
+}
+
+// ---------------------------------------------------------------------------
+// Bare function/task call sites (plan.md §6.23)
+// ---------------------------------------------------------------------------
+
+static const CallRecord* findCall(const std::vector<CallRecord>& calls, const std::string& name) {
+    for (const auto& c : calls)
+        if (c.calleeName == name) return &c;
+    return nullptr;
+}
+
+TEST_CASE("bare call with two positional arguments emits a CallRecord with two "
+          "positional slots", "[compiler][listener][call]") {
+    auto result = walkSource(
+        "module top;\n"
+        "  function int f(int a, int b); f = a + b; endfunction\n"
+        "  initial f(1, 2);\n"
+        "endmodule\n");
+    auto* c = findCall(result.calls, "f");
+    REQUIRE(c != nullptr);
+    REQUIRE(c->args.size() == 2);
+    CHECK(c->args[0].kind == CallArgSlot::Kind::Positional);
+    CHECK(c->args[1].kind == CallArgSlot::Kind::Positional);
+    CHECK(c->line == 3);
+}
+
+TEST_CASE("an elided positional slot is recorded between two supplied ones",
+          "[compiler][listener][call]") {
+    auto result = walkSource(
+        "module top;\n"
+        "  function int f(int a, int b = 2, int c = 3); f = a+b+c; endfunction\n"
+        "  initial f(1, , 5);\n"
+        "endmodule\n");
+    auto* c = findCall(result.calls, "f");
+    REQUIRE(c != nullptr);
+    REQUIRE(c->args.size() == 3);
+    CHECK(c->args[0].kind == CallArgSlot::Kind::Positional);
+    CHECK(c->args[1].kind == CallArgSlot::Kind::Elided);
+    CHECK(c->args[2].kind == CallArgSlot::Kind::Positional);
+}
+
+TEST_CASE("a trailing elided slot with nothing after the last comma is recorded",
+          "[compiler][listener][call]") {
+    auto result = walkSource(
+        "module top;\n"
+        "  function int f(int a, int b = 2); f = a+b; endfunction\n"
+        "  initial f(1, );\n"
+        "endmodule\n");
+    auto* c = findCall(result.calls, "f");
+    REQUIRE(c != nullptr);
+    REQUIRE(c->args.size() == 2);
+    CHECK(c->args[0].kind == CallArgSlot::Kind::Positional);
+    CHECK(c->args[1].kind == CallArgSlot::Kind::Elided);
+}
+
+TEST_CASE("named argument connections are recorded with their port names",
+          "[compiler][listener][call]") {
+    auto result = walkSource(
+        "module top;\n"
+        "  function int f(int a, int b); f = a + b; endfunction\n"
+        "  initial f(.b(2), .a(1));\n"
+        "endmodule\n");
+    auto* c = findCall(result.calls, "f");
+    REQUIRE(c != nullptr);
+    REQUIRE(c->args.size() == 2);
+    CHECK(c->args[0].kind == CallArgSlot::Kind::Named);
+    CHECK(c->args[0].name == "b");
+    CHECK(c->args[1].kind == CallArgSlot::Kind::Named);
+    CHECK(c->args[1].name == "a");
+}
+
+TEST_CASE("a positional prefix followed by a named tail is recorded in order",
+          "[compiler][listener][call]") {
+    auto result = walkSource(
+        "module top;\n"
+        "  function int f(int a, int b, int c); f = a+b+c; endfunction\n"
+        "  initial f(1, .c(3));\n"
+        "endmodule\n");
+    auto* c = findCall(result.calls, "f");
+    REQUIRE(c != nullptr);
+    REQUIRE(c->args.size() == 2);
+    CHECK(c->args[0].kind == CallArgSlot::Kind::Positional);
+    CHECK(c->args[1].kind == CallArgSlot::Kind::Named);
+    CHECK(c->args[1].name == "c");
+}
+
+TEST_CASE("a call with empty parens records zero argument slots",
+          "[compiler][listener][call]") {
+    auto result = walkSource(
+        "module top;\n"
+        "  task t(); endtask\n"
+        "  initial t();\n"
+        "endmodule\n");
+    auto* c = findCall(result.calls, "t");
+    REQUIRE(c != nullptr);
+    CHECK(c->args.empty());
+}
+
+TEST_CASE("a task call with no parens at all records zero argument slots",
+          "[compiler][listener][call]") {
+    auto result = walkSource(
+        "module top;\n"
+        "  task t(int a = 1); endtask\n"
+        "  initial t;\n"
+        "endmodule\n");
+    auto* c = findCall(result.calls, "t");
+    REQUIRE(c != nullptr);
+    CHECK(c->args.empty());
+}
+
+TEST_CASE("a dotted call is never recorded as a CallRecord",
+          "[compiler][listener][call]") {
+    auto result = walkSource(
+        "module top;\n"
+        "  class Foo;\n"
+        "    function int bar(int a); bar = a; endfunction\n"
+        "  endclass\n"
+        "  Foo f_inst;\n"
+        "  initial f_inst.bar(1);\n"
+        "endmodule\n");
+    CHECK(findCall(result.calls, "bar") == nullptr);
+}
+
+TEST_CASE("a file with no calls produces an empty calls vector",
+          "[compiler][listener][call]") {
+    auto result = walkSource("module m; endmodule\n");
+    CHECK(result.calls.empty());
+}
+
+// ---------------------------------------------------------------------------
+// calleeScope extraction for Class::-qualified calls (plan.md §6.26)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("an unqualified bare call records an empty calleeScope",
+          "[compiler][listener][call]") {
+    auto result = walkSource(
+        "module top;\n"
+        "  function int f(int a); f = a; endfunction\n"
+        "  initial f(1);\n"
+        "endmodule\n");
+    auto* c = findCall(result.calls, "f");
+    REQUIRE(c != nullptr);
+    CHECK(c->calleeScope.empty());
+}
+
+TEST_CASE("a Class::-qualified call records the class name as calleeScope",
+          "[compiler][listener][call]") {
+    auto result = walkSource(
+        "module top;\n"
+        "  class Foo;\n"
+        "    static function int bar(int a); bar = a; endfunction\n"
+        "  endclass\n"
+        "  initial Foo::bar(1);\n"
+        "endmodule\n");
+    auto* c = findCall(result.calls, "bar");
+    REQUIRE(c != nullptr);
+    CHECK(c->calleeScope == "Foo");
+}
+
+TEST_CASE("a doubly-scoped call (T::type_id::create) records only the "
+          "immediate scope", "[compiler][listener][call]") {
+    auto result = walkSource(
+        "module top;\n"
+        "  class type_id;\n"
+        "    static function int create(int a); create = a; endfunction\n"
+        "  endclass\n"
+        "  class T;\n"
+        "  endclass\n"
+        "  initial T::type_id::create(1);\n"
+        "endmodule\n");
+    auto* c = findCall(result.calls, "create");
+    REQUIRE(c != nullptr);
+    CHECK(c->calleeScope == "type_id");
 }

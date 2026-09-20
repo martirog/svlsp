@@ -2,9 +2,121 @@
 #include "compiler/compiler_directive_stripper.h"
 #include "compiler/sv_preprocessor.h"
 #include "compiler/sv_tree_walker.h"
+#include <algorithm>
 #include <functional>
+#include <optional>
 #include <ostream>
 #include <unordered_map>
+
+namespace {
+
+// Same same-file-preferred tie-break lsp::pickBestSymbol
+// (src/lsp/symbol_utils.cpp) already applies for hover/definition/
+// signature-help -- duplicated here in miniature rather than shared, since
+// svlsp_db intentionally has no dependency on svlsp_lib (see this
+// repository's own CMakeLists.txt comment on svlsp_compiler/svlsp_db vs.
+// svlsp_lib). `rows` is always already filtered to Function/Task by the
+// caller, so pickBestSymbol's fuller kind-tier tie-break (declaration-like
+// vs. data-like) never applies here -- both kinds are declaration-like.
+const SymbolRow* pickCallee(const std::vector<SymbolRow>& rows, const std::string& curPath)
+{
+    for (const auto& r : rows)
+        if (r.filePath == curPath) return &r;
+    return &rows.front();
+}
+
+// True if the declared parameter at `portIndex` received a real value at
+// this call site: by position (an actual expression, not an elided slot --
+// plan.md §6.23 allows skipping a defaulted parameter positionally while
+// still supplying later ones by position or name), or by a named
+// `.portName(...)` connection anywhere in the call (named slots always
+// trail any positional ones, but are matched by name, not position).
+bool paramSupplied(size_t portIndex, const std::vector<CallArgSlot>& args,
+                    const std::string& portName)
+{
+    if (portIndex < args.size() && args[portIndex].kind == CallArgSlot::Kind::Positional)
+        return true;
+    for (const auto& a : args)
+        if (a.kind == CallArgSlot::Kind::Named && a.name == portName) return true;
+    return false;
+}
+
+// Resolves a call's callee to the exact Function/Task it invokes -- plan.md
+// §6.26. An explicitly `Class::`/`pkg::`-qualified call (`call.calleeScope`
+// non-empty) is resolved strictly within that name's own class hierarchy
+// via `resolveMethod`, and fails closed (returns nullopt) if that name
+// isn't a known class or neither it nor any ancestor declares the method --
+// deliberately never falls back to a flat whole-database name search for
+// this case, since that fallback was the majority root cause of the 349
+// UVM-corpus false positives this section fixed (dominated by the
+// `type_id::get()` factory idiom -- a typedef'd alias, not a plain class
+// name, so it resolves to nothing here and is correctly skipped rather than
+// guessed at -- resolving against an unrelated same-named method
+// elsewhere). An unqualified call first tries the call site's own enclosing
+// class hierarchy the same way (an inherited method called bare, e.g.
+// `do_write(rw)` from within a subclass's own method body); only when there
+// is no class context at all to have gotten wrong -- no enclosing class, or
+// the enclosing hierarchy doesn't declare this name -- does it fall back to
+// the pre-existing flat `findSymbolsByName` + same-file tie-break, matching
+// this check's original, still-legitimate handling of an ordinary
+// module/program-scope function call.
+std::optional<SymbolRow> resolveCallee(
+    SymbolDatabase& sdb, const CallRecord& call, const std::string& filePath)
+{
+    if (!call.calleeScope.empty())
+        return sdb.resolveMethod(call.calleeScope, call.calleeName, filePath);
+
+    std::string enclosing = sdb.enclosingClassNameAt(filePath, call.line);
+    if (!enclosing.empty()) {
+        if (auto found = sdb.resolveMethod(enclosing, call.calleeName, filePath))
+            return found;
+    }
+
+    std::vector<SymbolRow> callees;
+    for (auto& row : sdb.findSymbolsByName(call.calleeName))
+        if (row.kind == "Function" || row.kind == "Task") callees.push_back(row);
+    if (callees.empty()) return std::nullopt;
+    return *pickCallee(callees, filePath);
+}
+
+// Resolves each of `calls` (all from the same file, `filePath`) against
+// `sdb`'s Function/Task symbols (via resolveCallee, above) and flags a
+// declared parameter that received no value at the call site and has no
+// default -- plan.md §6.23. A callee that doesn't resolve to any known
+// Function/Task at all is silently skipped, not flagged: that is either a
+// typo/unresolved-reference concern (plan.md §6.21), or a scoped call this
+// section's own fail-closed design deliberately declines to guess at, not
+// this check's job either way.
+std::vector<ParseError> checkMissingArguments(
+    SymbolDatabase& sdb, const std::vector<CallRecord>& calls, const std::string& filePath)
+{
+    std::vector<ParseError> diags;
+    for (const auto& call : calls) {
+        auto resolved = resolveCallee(sdb, call, filePath);
+        if (!resolved) continue;
+
+        const std::string scope =
+            resolved->scope.empty() ? resolved->name : resolved->scope + "::" + resolved->name;
+
+        std::vector<SymbolRow> ports;
+        for (auto& row : sdb.findSymbolsInScope(scope))
+            if (row.kind == "Port") ports.push_back(row);
+        std::sort(ports.begin(), ports.end(), [](const SymbolRow& a, const SymbolRow& b) {
+            return a.line != b.line ? a.line < b.line : a.col < b.col;
+        });
+
+        for (size_t i = 0; i < ports.size(); ++i) {
+            if (paramSupplied(i, call.args, ports[i].name)) continue;
+            if (ports[i].detail.find(PARAM_DEFAULT_VALUE_SEP) != std::string::npos) continue;
+            diags.push_back({call.line, call.column,
+                "missing required argument '" + ports[i].name + "' in call to '" +
+                call.calleeName + "'"});
+        }
+    }
+    return diags;
+}
+
+} // namespace
 
 CompilationController::CompilationController(SymbolDatabase& sdb, std::ostream* logStream)
     : m_sdb{sdb}
@@ -103,11 +215,47 @@ std::vector<ParseError> CompilationController::compile(const std::string& path,
         allIncluded.push_back(filePath);
     }
 
+    // Missing-required-argument check (plan.md §6.23) -- run only once every
+    // symbol from this whole compile unit (primary + every included file)
+    // is already persisted above, so a callee declared later in the same
+    // file, or in one of its own `` `include ``s, resolves correctly
+    // regardless of AST-walk visitation order. `appendDiagnostics` (not
+    // another replaceDiagnostics) since each file's own parse-error
+    // diagnostics were already freshly replaced above in this same call --
+    // appending on top is never stale, since this whole pipeline reruns
+    // from scratch on every real recompile (a cache hit never reaches this
+    // code at all, see the early return above).
+    std::unordered_map<std::string, std::vector<CallRecord>> callsByFile;
+    for (const auto& call : walked.calls) callsByFile[call.file].push_back(call);
+
+    // The primary file's own call diagnostics must also be merged into this
+    // function's *return* value, not just persisted -- callers publish the
+    // primary URI's diagnostics straight from that return value
+    // (LanguageServer::parseDiagnostics), never by re-querying the DB the
+    // way included files' diagnostics are (LanguageServer::
+    // collectIncludedDiagnostics, which runs after this call returns and so
+    // sees appendDiagnostics' effect regardless).
+    std::vector<ParseError> primaryCallDiags;
+    for (const auto& [filePath, calls] : callsByFile) {
+        if (calls.empty()) continue;
+        auto diags = checkMissingArguments(m_sdb, calls, filePath.empty() ? path : filePath);
+        if (diags.empty()) continue;
+        if (filePath.empty()) {
+            m_sdb.appendDiagnostics(fid, diags);
+            primaryCallDiags = std::move(diags);
+        } else {
+            int64_t incFid = m_sdb.upsertFile(filePath, "");
+            m_sdb.appendDiagnostics(incFid, diags);
+        }
+    }
+
     // Always persisted (plan.md §6.4), independent of whether a caller asked
     // for `includedFiles` -- this is what lets a *different* file's own
     // didSave later find "who includes me" via SymbolDatabase::includersOf.
     m_sdb.replaceFileIncludes(fid, allIncluded);
     if (includedFiles) *includedFiles = std::move(allIncluded);
 
-    return errsByFile[""];
+    auto result = errsByFile[""];
+    result.insert(result.end(), primaryCallDiags.begin(), primaryCallDiags.end());
+    return result;
 }

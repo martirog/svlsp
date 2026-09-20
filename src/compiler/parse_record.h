@@ -97,3 +97,37 @@ struct InstantiationRecord {
     int         line{0};    // 1-based line in `file`
     std::string file{};     // empty = same as compiled file
 };
+
+// One argument slot at a bare function/task call site (plan.md §6.23): a
+// supplied positional expression, an elided positional slot (SV allows
+// skipping a defaulted parameter by position while still supplying later
+// ones, e.g. `foo(a, , c)`), or a named `.identifier(...)` connection --
+// legal for plain function/task calls too, not just module port
+// connections. `name` is populated only for Kind::Named.
+struct CallArgSlot {
+    enum class Kind { Positional, Elided, Named };
+    Kind        kind;
+    std::string name{};
+};
+
+// One bare (undotted) function/task call site: `my_func(a, .b(2))`.
+// Dotted calls (`obj.method(...)`) are never recorded here -- see
+// enterTf_call, src/compiler/sv_tree_walker.cpp. `args` is ordered exactly
+// as written; positional/elided slots always precede any named ones (the
+// grammar's own list_of_arguments rule never interleaves them).
+struct CallRecord {
+    std::string calleeName;
+    // The immediate scope name for an explicitly `Class::`/`pkg::`-qualified
+    // call (e.g. "type_id" for `type_id::create(...)`, "type_id" -- not "T"
+    // -- for the doubly-qualified `T::type_id::create(...)` idiom) -- empty
+    // for a genuinely unqualified call. Retained (not discarded) so
+    // resolution can scope the lookup to that exact name's own class
+    // hierarchy rather than searching the whole database by bare name alone
+    // (plan.md §6.26 -- this used to be dropped here, the root cause of
+    // most of that section's disclosed false positives).
+    std::string calleeScope;
+    std::vector<CallArgSlot> args;
+    int         line{0};    // 1-based line in `file`
+    int         column{0};  // 0-based
+    std::string file{};     // empty = same as compiled file
+};

@@ -386,6 +386,244 @@ TEST_CASE("compile resolves an instantiation once its type is declared elsewhere
     CHECK(std::find(unresolved.begin(), unresolved.end(), "sub") == unresolved.end());
 }
 
+// ---------------------------------------------------------------------------
+// Missing-required-argument diagnostic for bare function/task calls
+// (plan.md §6.23)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("compile flags a bare call missing a required trailing argument",
+          "[db][ctrl][call-args]") {
+    Fixture f;
+    auto errs = f.ctrl.compile("/a.sv",
+        "module top;\n"
+        "  function int my_func(int a, int b);\n"
+        "    my_func = a + b;\n"
+        "  endfunction\n"
+        "  initial my_func(1);\n"
+        "endmodule\n");
+
+    REQUIRE(errs.size() == 1);
+    CHECK(errs[0].message.find("'b'") != std::string::npos);
+    CHECK(errs[0].message.find("'my_func'") != std::string::npos);
+    CHECK(errs[0].line == 5);
+}
+
+TEST_CASE("compile does not flag a call supplying every required argument",
+          "[db][ctrl][call-args]") {
+    Fixture f;
+    auto errs = f.ctrl.compile("/a.sv",
+        "module top;\n"
+        "  function int my_func(int a, int b);\n"
+        "    my_func = a + b;\n"
+        "  endfunction\n"
+        "  initial my_func(1, 2);\n"
+        "endmodule\n");
+    CHECK(errs.empty());
+}
+
+TEST_CASE("compile does not flag an elided positional slot that falls back to a default",
+          "[db][ctrl][call-args]") {
+    Fixture f;
+    auto errs = f.ctrl.compile("/a.sv",
+        "module top;\n"
+        "  function int my_func(int a, int b = 2, int c = 3);\n"
+        "    my_func = a + b + c;\n"
+        "  endfunction\n"
+        "  initial my_func(1, , 5);\n"
+        "endmodule\n");
+    CHECK(errs.empty());
+}
+
+TEST_CASE("compile does not flag required arguments supplied entirely by name",
+          "[db][ctrl][call-args]") {
+    Fixture f;
+    auto errs = f.ctrl.compile("/a.sv",
+        "module top;\n"
+        "  function int my_func(int a, int b, int c);\n"
+        "    my_func = a + b + c;\n"
+        "  endfunction\n"
+        "  initial my_func(.c(3), .a(1), .b(2));\n"
+        "endmodule\n");
+    CHECK(errs.empty());
+}
+
+TEST_CASE("compile does not flag a call to an unresolved callee name",
+          "[db][ctrl][call-args]") {
+    Fixture f;
+    auto errs = f.ctrl.compile("/a.sv",
+        "module top;\n"
+        "  initial totally_unknown_func(1);\n"
+        "endmodule\n");
+    CHECK(errs.empty());
+}
+
+TEST_CASE("compile does not flag a dotted call — out of scope for this check",
+          "[db][ctrl][call-args]") {
+    Fixture f;
+    auto errs = f.ctrl.compile("/a.sv",
+        "module top;\n"
+        "  class Foo;\n"
+        "    function int bar(int a, int b); bar = a + b; endfunction\n"
+        "  endclass\n"
+        "  Foo f_inst;\n"
+        "  initial f_inst.bar(1);\n"
+        "endmodule\n");
+    CHECK(errs.empty());
+}
+
+TEST_CASE("compile flags a missing argument to a DPI-imported function the same as an "
+          "ordinary one", "[db][ctrl][call-args]") {
+    Fixture f;
+    auto errs = f.ctrl.compile("/a.sv",
+        "module top;\n"
+        "  import \"DPI-C\" function int dpi_func(int a, int b);\n"
+        "  initial dpi_func(1);\n"
+        "endmodule\n");
+
+    REQUIRE(errs.size() == 1);
+    CHECK(errs[0].message.find("'b'") != std::string::npos);
+    CHECK(errs[0].message.find("'dpi_func'") != std::string::npos);
+}
+
+TEST_CASE("compile flags a missing argument against a callee declared in a separate, "
+          "already-compiled file", "[db][ctrl][call-args]") {
+    Fixture f;
+    f.ctrl.compile("/decl.sv", "function int helper(int a, int b); helper = a + b; endfunction\n");
+    auto errs = f.ctrl.compile("/main.sv",
+        "module top;\n"
+        "  initial helper(1);\n"
+        "endmodule\n");
+
+    REQUIRE(errs.size() == 1);
+    CHECK(errs[0].message.find("'b'") != std::string::npos);
+}
+
+TEST_CASE("compile flags a missing argument against a sibling method declared later in "
+          "the same class", "[db][ctrl][call-args]") {
+    Fixture f;
+    auto errs = f.ctrl.compile("/a.sv",
+        "module top;\n"
+        "  class Foo;\n"
+        "    function int caller();\n"
+        "      caller = callee(1);\n"
+        "    endfunction\n"
+        "    function int callee(int a, int b);\n"
+        "      callee = a + b;\n"
+        "    endfunction\n"
+        "  endclass\n"
+        "endmodule\n");
+
+    REQUIRE(errs.size() == 1);
+    CHECK(errs[0].message.find("'b'") != std::string::npos);
+    CHECK(errs[0].message.find("'callee'") != std::string::npos);
+}
+
+TEST_CASE("compile persists a missing-argument diagnostic for an included file",
+          "[db][ctrl][call-args]") {
+    Fixture f;
+    std::string incPath = "/tmp/svlsp_test_ctrl_call_args_inc.sv";
+    { std::ofstream ofs(incPath);
+      ofs << "function int helper(int a, int b); helper = a + b; endfunction\n"
+             "module from_include;\n"
+             "  initial helper(1);\n"
+             "endmodule\n"; }
+
+    f.ctrl.compile("/main.sv", "`include \"" + incPath + "\"\nmodule main_mod; endmodule\n");
+
+    auto diags = f.sdb.diagnosticsForFile(incPath);
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].message.find("'b'") != std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// Scope/type-aware call resolution (plan.md §6.26) — regression coverage for
+// the false positives §6.23's own UVM-corpus probe surfaced: a Class::-
+// qualified or bare in-class call resolving against an unrelated same-named
+// method elsewhere instead of the actually-intended one.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a Class::-qualified call resolves to that exact class's own method, "
+          "not an unrelated same-named method elsewhere", "[db][ctrl][call-args]") {
+    Fixture f;
+    auto errs = f.ctrl.compile("/a.sv",
+        "module top;\n"
+        "  class Other;\n"
+        "    static function int add(int obj, int cb, int ordering); add = obj; endfunction\n"
+        "  endclass\n"
+        "  class Target;\n"
+        "    static function int add(int rg); add = rg; endfunction\n"
+        "  endclass\n"
+        "  initial Target::add(1);\n"
+        "endmodule\n");
+    // If this resolved against `Other::add` (3 required args) instead of
+    // `Target::add` (1 required arg, supplied), it would wrongly flag 'cb'
+    // and 'ordering' as missing -- the exact shape of the UVM-corpus
+    // `uvm_reg_read_only_cbs::add(rg)` false positive.
+    CHECK(errs.empty());
+}
+
+TEST_CASE("a Class::-qualified call still flags a genuinely missing argument "
+          "against that exact class's own method", "[db][ctrl][call-args]") {
+    Fixture f;
+    auto errs = f.ctrl.compile("/a.sv",
+        "module top;\n"
+        "  class Target;\n"
+        "    static function int add(int rg, int extra); add = rg; endfunction\n"
+        "  endclass\n"
+        "  initial Target::add(1);\n"
+        "endmodule\n");
+    REQUIRE(errs.size() == 1);
+    CHECK(errs[0].message.find("'extra'") != std::string::npos);
+    CHECK(errs[0].message.find("'add'") != std::string::npos);
+}
+
+TEST_CASE("a Class::-qualified call whose scope name isn't a known class is silently "
+          "skipped, not flagged against an unrelated same-named method",
+          "[db][ctrl][call-args]") {
+    Fixture f;
+    // Reproduces the UVM `type_id::get()` shape: `type_id` here is not a
+    // real class declaration (just an unresolved/opaque scope name from
+    // this check's point of view, the same as a typedef alias would be) --
+    // `unrelated_get` stands in for a same-named `get` elsewhere that a
+    // flat whole-database search would have wrongly matched pre-§6.26.
+    auto errs = f.ctrl.compile("/a.sv",
+        "module top;\n"
+        "  class SomeClass;\n"
+        "    static function int get(int key); get = key; endfunction\n"
+        "  endclass\n"
+        "  initial type_id::get();\n"
+        "endmodule\n");
+    CHECK(errs.empty());
+}
+
+TEST_CASE("a bare in-class call resolves to a method inherited two `extends` levels "
+          "up rather than an unrelated same-named method elsewhere",
+          "[db][ctrl][call-args]") {
+    Fixture f;
+    auto errs = f.ctrl.compile("/a.sv",
+        "module top;\n"
+        "  class Unrelated;\n"
+        "    function int do_write(int t, int accessor); do_write = t; endfunction\n"
+        "  endclass\n"
+        "  class Grandparent;\n"
+        "    virtual function int do_write(int rw); do_write = rw; endfunction\n"
+        "  endclass\n"
+        "  class Parent extends Grandparent;\n"
+        "  endclass\n"
+        "  class Child extends Parent;\n"
+        "    function int caller();\n"
+        "      caller = do_write(1);\n"
+        "    endfunction\n"
+        "  endclass\n"
+        "endmodule\n");
+    // If this resolved against `Unrelated::do_write` (2 required args)
+    // instead of the real inherited `Grandparent::do_write` (1 required
+    // arg, supplied), it would wrongly flag 'accessor' as missing -- the
+    // exact shape of the UVM-corpus `uvm_reg_indirect_data::do_write(rw)`
+    // false positive.
+    CHECK(errs.empty());
+}
+
 TEST_CASE("compile with a config define gates an ifdef", "[db][ctrl][project-config]") {
     Fixture f;
     ProjectConfig config;

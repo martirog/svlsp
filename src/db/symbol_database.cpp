@@ -641,3 +641,54 @@ std::vector<SymbolRow> SymbolDatabase::findSymbolsVisibleAt(
     });
     return rows;
 }
+
+namespace {
+// Same-file-preferred tie-break -- the simpler half of lsp::pickBestSymbol
+// (src/lsp/symbol_utils.cpp), duplicated here rather than shared since
+// svlsp_db has no dependency on svlsp_lib (matching
+// compilation_controller.cpp's own pickCallee precedent, plan.md §6.26).
+const SymbolRow* pickSameFilePreferred(const std::vector<SymbolRow>& rows, const std::string& curPath)
+{
+    for (const auto& r : rows)
+        if (r.filePath == curPath) return &r;
+    return &rows.front();
+}
+} // namespace
+
+std::vector<std::string> SymbolDatabase::baseClassChain(
+    const std::string& className, const std::string& curPath) const
+{
+    std::vector<std::string> chain;
+    std::vector<std::string> visited;
+    std::string current = className;
+    while (!current.empty()) {
+        if (std::find(visited.begin(), visited.end(), current) != visited.end())
+            break; // cycle guard: a class (in)directly naming itself as parent
+        visited.push_back(current);
+
+        std::vector<SymbolRow> classRows;
+        for (auto& row : findSymbolsByName(current))
+            if (row.kind == "Class") classRows.push_back(row);
+        if (classRows.empty()) break; // not a known class -- stop (fail closed)
+
+        const SymbolRow* best = pickSameFilePreferred(classRows, curPath);
+        chain.push_back(best->scope.empty() ? best->name : best->scope + "::" + best->name);
+        current = best->detail; // single recorded parent name, "" if none
+    }
+    return chain;
+}
+
+std::optional<SymbolRow> SymbolDatabase::resolveMethod(
+    const std::string& className, const std::string& methodName,
+    const std::string& curPath) const
+{
+    for (const auto& scope : baseClassChain(className, curPath)) {
+        std::vector<SymbolRow> candidates;
+        for (auto& row : findSymbolsInScope(scope))
+            if ((row.kind == "Function" || row.kind == "Task") && row.name == methodName)
+                candidates.push_back(row);
+        if (!candidates.empty())
+            return *pickSameFilePreferred(candidates, curPath);
+    }
+    return std::nullopt;
+}

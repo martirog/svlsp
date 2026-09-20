@@ -216,6 +216,31 @@ TEST_CASE("SignatureHelpProvider: a class method called bare from inside its own
     CHECK(result.value().signatures[0].parameters->size() == 1);
 }
 
+TEST_CASE("SignatureHelpProvider: a Class::-qualified bare call resolves to that exact "
+          "class's own method, not an unrelated same-named method elsewhere (plan.md §6.26)",
+          "[signature_help]")
+{
+    Fixture f;
+    auto fid = f.sdb.upsertFile("/t.sv", "h");
+    f.sdb.replaceSymbols(fid, {
+        {ParseRecordKind::Class,    "Other",  1, 6, "",      "",     3, ""},
+        {ParseRecordKind::Function, "get",    2, 6, "Other", "int",  0, "Other"},
+        {ParseRecordKind::Port,     "key",    2, 18, "get",  "int",  0, "Other::get"},
+        {ParseRecordKind::Class,    "type_id", 10, 6, "",     "",    12, ""},
+        {ParseRecordKind::Function, "get",    11, 6, "type_id", "int", 0, "type_id"},
+    });
+    // If this fell back to a flat whole-database search (the pre-§6.26
+    // behavior), it could just as easily resolve against `Other::get`
+    // (1 parameter) instead of `type_id::get` (0 parameters) -- the exact
+    // shape of the UVM-corpus `type_id::get()` false positive.
+    const std::string text = "x = type_id::get(";
+    auto result = SignatureHelpProvider::getSignatureHelp(
+        makeParams("/t.sv", 0, static_cast<unsigned>(text.size())), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+    REQUIRE(result.value().signatures[0].parameters.has_value());
+    CHECK(result.value().signatures[0].parameters->empty());
+}
+
 TEST_CASE("SignatureHelpProvider: zero-argument call resolves to an empty parameter list, not null",
           "[signature_help]")
 {

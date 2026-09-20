@@ -104,6 +104,100 @@ static std::vector<std::string> containerDimensionTags(SvParser::Variable_decl_a
     return tags;
 }
 
+// Ordered argument slots for one bare call site's list_of_arguments
+// (plan.md §6.23). Grammar:
+//   expression? (',' expression?)* (',' '.' IDENTIFIER '(' expression? ')')*
+// | '.' IDENTIFIER '(' expression? ')' (',' '.' IDENTIFIER '(' expression? ')')*
+// ANTLR flattens both alternatives directly onto ctx's own children (no
+// labeled subrule wraps a slot) -- the ordered list of ExpressionContext*/
+// literal-token children *is* the slot sequence, read left to right. A
+// positional slot's own expression is either present (an ExpressionContext
+// child) or elided (nothing between two commas -- the `expression?`
+// alternative simply produced no node); a named slot always has an
+// IDENTIFIER child bracketed by its own '(' ')' pair -- distinct from the
+// call's own enclosing parens, which belong to the parent Tf_callContext,
+// not this rule, so they never confuse the scan below.
+static std::vector<CallArgSlot> extractArgSlots(SvParser::List_of_argumentsContext* ctx)
+{
+    std::vector<CallArgSlot> slots;
+    if (!ctx) return slots;
+
+    bool expectingSlotStart = true; // true right after '(' or a comma
+    size_t n = ctx->children.size();
+    for (size_t i = 0; i < n; ) {
+        auto* child = ctx->children[i];
+        if (dynamic_cast<SvParser::ExpressionContext*>(child)) {
+            slots.push_back({CallArgSlot::Kind::Positional});
+            expectingSlotStart = false;
+            ++i;
+            continue;
+        }
+        auto* term = dynamic_cast<antlr4::tree::TerminalNode*>(child);
+        if (!term) { ++i; continue; } // unreachable for this grammar rule
+        const std::string text = term->getText();
+        if (text == ",") {
+            // A comma reached while still expecting a fresh slot (i.e. no
+            // expression consumed one since the last comma/'(' ) means the
+            // slot between them was elided.
+            if (expectingSlotStart) slots.push_back({CallArgSlot::Kind::Elided});
+            expectingSlotStart = true;
+            ++i;
+            continue;
+        }
+        if (text == ".") {
+            // Named slot: '.' IDENTIFIER '(' expression? ')' -- consumed as
+            // one unit so its own '(' ')' can never be mistaken for a
+            // positional slot boundary by this same loop.
+            ++i; // '.'
+            std::string name;
+            if (i < n) {
+                if (auto* idTerm = dynamic_cast<antlr4::tree::TerminalNode*>(ctx->children[i])) {
+                    name = idTerm->getText();
+                    ++i;
+                }
+            }
+            if (i < n) ++i; // '('
+            if (i < n && dynamic_cast<SvParser::ExpressionContext*>(ctx->children[i])) ++i;
+            if (i < n) ++i; // ')'
+            slots.push_back({CallArgSlot::Kind::Named, name});
+            expectingSlotStart = false;
+            continue;
+        }
+        ++i; // defensive: '(' / ')' shouldn't reach here at this loop's top level
+    }
+    // A dangling trailing comma with nothing after it (`foo(a,)`) elides the
+    // final positional slot -- the loop above only catches an elided slot
+    // that has something *after* it (a comma at both ends); this is the
+    // "nothing after" case.
+    if (expectingSlotStart && n > 0)
+        slots.push_back({CallArgSlot::Kind::Elided});
+
+    return slots;
+}
+
+// Extracts the immediate scope name from a `::`-qualified call identifier's
+// own verbatim text (plan.md §6.26), or "" if `idText` has no `::` at all.
+// "Immediate" means the segment directly before the *last* `::` -- e.g.
+// "type_id" (not "T") for the doubly-qualified `T::type_id::create` idiom
+// (`class_scope tf_identifier`, see the Sv.g4 grammar-quirks table), since
+// that is the name the call is actually being resolved against. `idText`
+// comes from the token stream (m_tokens->getText), not ctx->getText(), so
+// stray inter-token whitespace around a `::` (`Class :: method`) is
+// possible and trimmed here rather than assumed absent.
+static std::string extractCalleeScope(const std::string& idText)
+{
+    size_t lastSep = idText.rfind("::");
+    if (lastSep == std::string::npos) return "";
+    std::string scope = idText.substr(0, lastSep);
+    size_t prevSep = scope.rfind("::");
+    if (prevSep != std::string::npos) scope = scope.substr(prevSep + 2);
+
+    size_t start = scope.find_first_not_of(" \t\r\n");
+    if (start == std::string::npos) return "";
+    size_t end = scope.find_last_not_of(" \t\r\n");
+    return scope.substr(start, end - start + 1);
+}
+
 // ---------------------------------------------------------------------------
 // SvErrorListener — collects ANTLR4 syntax errors into ParseError[]
 // ---------------------------------------------------------------------------
@@ -151,6 +245,7 @@ public:
     const std::vector<ParseRecord>&  records() const { return m_records; }
     const std::vector<ImportRecord>& imports() const { return m_imports; }
     const std::vector<InstantiationRecord>& instantiations() const { return m_instantiations; }
+    const std::vector<CallRecord>&   calls() const { return m_calls; }
 
     // ---- Scope helpers ----
 
@@ -531,6 +626,46 @@ public:
         recordInstantiations(ctx->program_identifier()->IDENTIFIER(), ctx->hierarchical_instance());
     }
 
+    // ---- Function/task calls (plan.md §6.23) ----
+    // tf_call: ps_or_hierarchical_tf_identifier attribute_instance*
+    //          ('(' list_of_arguments ')')?
+    // -- reaches this same rule for both bare (`my_func(`) and dotted
+    // (`obj.method(`) calls, since ps_or_hierarchical_tf_identifier's own
+    // hierarchical_tf_identifier alternative degenerates to a bare
+    // identifier with zero '.'-separated prefix segments; distinguishing
+    // them is a property of the extracted text, not the grammar shape.
+    // Scoped to bare calls only, matching §6.22 follow-up's own signature-
+    // help scope limit -- a dotted call needs completion's own chain-
+    // resolution machinery, not this check.
+    void enterTf_call(SvParser::Tf_callContext* ctx) override {
+        auto* idCtx = ctx->ps_or_hierarchical_tf_identifier();
+        if (!idCtx) return;
+
+        // A real hierarchical/dotted reference always has a literal '.' in
+        // its own text; a bare name never does -- package-scoped
+        // ("pkg::foo(") and class-scoped ("Class::foo(") forms use "::",
+        // not ".", so they fall through to the bare-name handling below
+        // unchanged (matching signature_help.cpp's own equally permissive
+        // treatment of a package/class-qualified call).
+        const std::string idText = m_tokens->getText(idCtx);
+        if (idText.find('.') != std::string::npos) return;
+
+        // The callee's own bare name is always the last token of this
+        // subtree regardless of alternative matched -- a "pkg::"/"Class::"
+        // prefix, if present, always precedes it, never splits it.
+        std::string name = idCtx->getStop()->getText();
+        std::string scope = extractCalleeScope(idText);
+
+        auto* tok = idCtx->getStart();
+        int compiledLine = static_cast<int>(tok->getLine());
+        int compiledCol  = static_cast<int>(tok->getCharPositionInLine());
+        auto [file, line] = translateLine(compiledLine, m_sourceMap);
+        int col = translateColumn(compiledLine, compiledCol, m_sourceMap);
+
+        m_calls.push_back({std::move(name), std::move(scope),
+                            extractArgSlots(ctx->list_of_arguments()), line, col, file});
+    }
+
     // ---- Parameters ----
 
     void enterParameter_declaration(SvParser::Parameter_declarationContext* ctx) override {
@@ -548,6 +683,7 @@ private:
     std::vector<ParseRecord>  m_records;
     std::vector<ImportRecord> m_imports;
     std::vector<InstantiationRecord> m_instantiations;
+    std::vector<CallRecord>   m_calls;
     std::vector<std::string>  m_scopeStack;
     bool                      m_inExport{false};
 
@@ -640,5 +776,6 @@ WalkResult SvTreeWalker::walk(const std::string& source,
     SvRecordListener listener(sourceMap, &tokens);
     antlr4::tree::ParseTreeWalker::DEFAULT.walk(&listener, tree);
 
-    return {listener.records(), errListener.errors(), listener.imports(), listener.instantiations()};
+    return {listener.records(), errListener.errors(), listener.imports(), listener.instantiations(),
+            listener.calls()};
 }

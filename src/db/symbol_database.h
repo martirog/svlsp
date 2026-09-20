@@ -2,6 +2,7 @@
 #include "db/database.h"
 #include "compiler/parse_record.h"
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -200,6 +201,39 @@ public:
     // at that position (local → enclosing scopes) plus all top-level symbols
     // from every file.  Ordered innermost-scope-first, then by name.
     std::vector<SymbolRow> findSymbolsVisibleAt(const std::string& path, int line) const;
+
+    // `className`'s own `extends` ancestor chain (plan.md §6.26): starts
+    // with `className`'s own fully-qualified scope name ("MyPkg::MyClass"
+    // form), then walks outward one class at a time via each Class symbol's own single
+    // recorded parent name (`detail` -- see enterClass_declaration/
+    // enterInterface_class_declaration, sv_tree_walker.cpp; no dedicated
+    // inheritance-edge table exists yet). Returns {} if `className` isn't a
+    // known Class at all -- a package name, an unresolved typedef alias
+    // (e.g. UVM's own `typedef uvm_object_registry#(T) type_id;` idiom), or
+    // a genuine unknown -- callers rely on this emptiness to tell "known
+    // class, safe to walk its hierarchy" apart from "not a class, don't
+    // guess," per this section's fail-closed design. A same-named-class
+    // collision is broken by a same-file-preferred tie-break (`curPath`) --
+    // the simpler half of `lsp::pickBestSymbol`, duplicated here rather than
+    // shared since svlsp_db has no dependency on svlsp_lib (matching
+    // compilation_controller.cpp's own pickCallee precedent). A cycle guard
+    // stops the walk if a class ever (directly or transitively) names
+    // itself as its own ancestor, rather than looping forever.
+    std::vector<std::string> baseClassChain(const std::string& className,
+                                             const std::string& curPath) const;
+
+    // Resolves `methodName` as a Function/Task declared directly on
+    // `className`'s own scope or, failing that, on the nearest ancestor
+    // that declares it (walking baseClassChain outward) -- plan.md §6.26.
+    // Returns nullopt if `className` isn't a known class, or neither it nor
+    // any ancestor declares `methodName` as a Function/Task. Deliberately
+    // never falls back to a name-only search across unrelated classes on a
+    // miss -- that fallback is exactly the false-positive bug this section
+    // fixes; callers that want a flat fallback for a genuinely unscoped
+    // call do so themselves, only when there's no class context at all.
+    std::optional<SymbolRow> resolveMethod(const std::string& className,
+                                            const std::string& methodName,
+                                            const std::string& curPath) const;
 
 private:
     Database& m_db;

@@ -5,6 +5,7 @@
 #include "lsp/sv_builtin_methods.h"
 #include <algorithm>
 #include <cstdio>
+#include <unordered_set>
 #include <vector>
 
 namespace {
@@ -182,32 +183,37 @@ std::string peelDimensionLayers(const std::string& detail, int depth)
     return result;
 }
 
-// Resolves a bare class name (as stored in ParseRecord::detail --
+// Unions member rows across `className`'s own scope and every ancestor
+// reachable via `extends` (plan.md §6.26 -- SymbolDatabase::baseClassChain,
+// which resolves `className` -- as stored in ParseRecord::detail;
 // userTypeName() deliberately never produces a qualified/"::"-containing
-// name) to the fully-qualified scope chain its own members are actually
-// stored under (plan.md §6.17) -- e.g. "PolicyImpl" -> "PolicyImpl"
-// unchanged for a top-level class, or "PolicyImpl" -> "policy_pkg::PolicyImpl"
-// for one declared inside a package (or nested inside another class, at
-// any depth -- the found row's own `scope` column already carries
-// whatever full chain applies). Resolves via the class's own DB row
-// (found by name, disambiguated with the same pickBestSymbol()
-// same-file-then-first-row logic hover/definition/super already use) --
-// not by assuming `className` is already qualified, since it never is.
-// Returns "" if `className` doesn't name any real Class row (fail closed,
-// same posture as every other resolution failure in this file) -- this
-// also naturally covers container/type tags ($queue, $queue:MyClass, ...)
-// and a Function's raw built-in return-type text ("void", ...), neither of
-// which can ever be a real symbol name, so findSymbolsByName below always
-// comes back empty for them, same as before this fix existed.
-std::string qualifiedClassScope(SymbolDatabase& db, const std::string& className,
-                                 const std::string& curPath)
+// name -- to each ancestor's own fully-qualified scope chain in turn, e.g.
+// "PolicyImpl" -> "PolicyImpl" unchanged for a top-level class, or
+// "PolicyImpl" -> "policy_pkg::PolicyImpl" for one declared inside a
+// package or nested inside another class at any depth, disambiguating a
+// same-named-class collision with a same-file-preferred tie-break
+// internally). Deduped by name so a derived class's own override always
+// wins over an ancestor's same-named member (baseClassChain returns the
+// class itself first, then each ancestor outward in order, so "first
+// occurrence wins" already gives that precedence for free). Returns {} if
+// `className` doesn't name any real Class row at all (fail closed, same
+// posture as every other resolution failure in this file) -- this also
+// naturally covers container/type tags ($queue, $queue:MyClass, ...) and a
+// Function's raw built-in return-type text ("void", ...), neither of which
+// can ever be a real symbol name. Before plan.md §6.26, this file's own
+// single-hop qualifiedClassScope()+findSymbolsInScope() call only ever saw
+// `className`'s own directly-declared members -- a method declared on an
+// ancestor two or more `extends` levels up was invisible to ordinary
+// (non-`super`) dot-completion.
+std::vector<SymbolRow> membersAcrossChain(SymbolDatabase& db, const std::string& className,
+                                           const std::string& curPath)
 {
-    std::vector<SymbolRow> classRows;
-    for (auto& row : db.findSymbolsByName(className))
-        if (row.kind == "Class") classRows.push_back(row);
-    if (classRows.empty()) return "";
-    const SymbolRow* best = pickBestSymbol(classRows, curPath);
-    return best->scope.empty() ? best->name : best->scope + "::" + best->name;
+    std::vector<SymbolRow> members;
+    std::unordered_set<std::string> seen;
+    for (auto& scope : db.baseClassChain(className, curPath))
+        for (auto& row : db.findSymbolsInScope(scope))
+            if (seen.insert(row.name).second) members.push_back(row);
+    return members;
 }
 
 // Builds the candidate list for whatever a dot-completion chain resolved
@@ -235,19 +241,23 @@ std::vector<Candidate> candidatesForResolvedType(SymbolDatabase& db, const std::
     if (auto methods = builtinMethodsFor(firstLayer(detail)); !methods.empty())
         return candidatesFromMethods(methods);
 
-    // Otherwise, a real DB Class/Interface/whatever scope lookup --
-    // qualified via qualifiedClassScope() (plan.md §6.17) so a class
-    // declared inside a package (or nested inside another class) resolves
-    // correctly, not just a top-level one. A non-empty result here already
-    // proves `detail` names a genuine Class, so it doubles as the gate for
-    // unioning in the randomize-family methods below -- no separate
-    // findSymbolsByName scan needed for that anymore (this used to be two
-    // independent lookups; qualifiedClassScope's own already does the one
-    // that matters).
-    const std::string qualified = qualifiedClassScope(db, detail, curPath);
-    if (qualified.empty()) return {};
+    // Otherwise, a real DB Class/Interface/whatever scope lookup, unioned
+    // across `detail`'s own class and every ancestor via `extends`
+    // (baseClassChain, plan.md §6.26 -- also handles a class declared
+    // inside a package or nested inside another class, same as
+    // qualifiedClassScope's own §6.17 handling, since baseClassChain builds
+    // each qualified scope name the same way). A non-empty chain here
+    // already proves `detail` names a genuine Class, so it doubles as the
+    // gate for unioning in the randomize-family methods below -- no
+    // separate findSymbolsByName scan needed for that.
+    auto chain = db.baseClassChain(detail, curPath);
+    if (chain.empty()) return {};
 
-    auto memberRows = db.findSymbolsInScope(qualified);
+    std::vector<SymbolRow> memberRows;
+    std::unordered_set<std::string> seenNames;
+    for (auto& scope : chain)
+        for (auto& row : db.findSymbolsInScope(scope))
+            if (seenNames.insert(row.name).second) memberRows.push_back(row);
     auto candidates = candidatesFromRows(memberRows);
 
     // Union the randomize-family methods the LRM implicitly grants every
@@ -294,20 +304,17 @@ std::string resolveFirstSegment(SymbolDatabase& db, const std::string& path, int
     return "";
 }
 
-// Resolves a non-first chain segment as a member of `prevClass`'s scope.
-// Returns "" on failure (fail closed). Qualifies `prevClass` via
-// qualifiedClassScope() (plan.md §6.17) the same way candidatesForResolvedType
-// does -- an *intermediate* chain segment (e.g. the "child" in
-// "obj.child.greet") can resolve to a package-nested class exactly as
-// easily as the terminal one, and has the same bug independently if left
-// unqualified.
+// Resolves a non-first chain segment as a member of `prevClass`'s own class
+// or one of its ancestors via `extends` (membersAcrossChain, plan.md
+// §6.26). Returns "" on failure (fail closed) -- an *intermediate* chain
+// segment (e.g. the "child" in "obj.child.greet") can resolve to a
+// package-nested class, or to a member declared several `extends` levels
+// up, exactly as easily as the terminal one.
 std::string resolveMemberSegment(SymbolDatabase& db, const std::string& curPath,
                                   const std::string& prevClass, const ChainSegment& seg)
 {
     if (prevClass.empty()) return "";
-    const std::string qualified = qualifiedClassScope(db, prevClass, curPath);
-    if (qualified.empty()) return "";
-    auto members = db.findSymbolsInScope(qualified);
+    auto members = membersAcrossChain(db, prevClass, curPath);
     const char* wantKind = seg.isCall ? "Function" : nullptr;
     for (auto& row : members) {
         bool kindMatches = wantKind ? row.kind == wantKind
