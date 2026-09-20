@@ -5,24 +5,28 @@
 
 // SignatureHelpProvider handles textDocument/signatureHelp requests.
 //
-// Two supported call-header shapes, tried in order (plan.md §6.22 +
-// its own follow-up section):
+// Three supported call-header shapes, tried in order (plan.md §6.22 + its
+// own follow-up section, plus §6.27 for the third):
 //   1. Module/interface/program instantiation port lists
 //      (`MyModule u_inst ( ... )`) -- ParseRecordKind::Port rows recorded by
 //      enterAnsi_port_declaration (name + direction only).
 //   2. Bare (undotted) function/task calls (`my_func( ... )`, including a
-//      class method called bare from inside its own class) --
-//      ParseRecordKind::Port rows recorded by enterTf_port_item
-//      (sv_tree_walker.cpp), reusing the same kind since a function/task
-//      parameter is semantically the same shape (name + direction + type,
-//      plus an optional default value rendered after the name -- see
-//      portLabel() below and PARAM_DEFAULT_VALUE_SEP in parse_record.h).
-//
-// Disclosed scope limit: a *dotted* call (`obj.method(`) is NOT supported --
-// resolving it needs the same chain-resolution machinery dot-completion
-// already has (completion.cpp's resolveChain/resolveMemberSegment), which
-// this file's lexical scan deliberately doesn't attempt; parseCallHeader
-// fails closed for this shape rather than guessing by method name alone.
+//      class method called bare from inside its own class, and a
+//      `Class::`/`pkg::`-qualified call resolved via
+//      SymbolDatabase::resolveMethod, plan.md §6.26) -- ParseRecordKind::Port
+//      rows recorded by enterTf_port_item (sv_tree_walker.cpp), reusing the
+//      same kind since a function/task parameter is semantically the same
+//      shape (name + direction + type, plus an optional default value
+//      rendered after the name -- see portLabel() below and
+//      PARAM_DEFAULT_VALUE_SEP in parse_record.h).
+//   3. Dotted calls (`obj.method(`, or a longer chain
+//      `obj.field.method(`) -- parseDottedCallHeader (signature_help.cpp)
+//      reuses dot-completion's own chain-resolution machinery
+//      (dotCompletionContext/resolveChain, lsp/symbol_utils.h) to resolve
+//      the receiver's declared type, then SymbolDatabase::resolveMethod to
+//      find the method on that type or one of its ancestors via `extends`.
+//      Fails closed (null) if the receiver chain or the method itself
+//      doesn't resolve, same posture as every other shape here.
 class SignatureHelpProvider {
 public:
     static lsp::TextDocument_SignatureHelpResult getSignatureHelp(

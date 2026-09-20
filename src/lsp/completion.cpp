@@ -117,25 +117,6 @@ lsp::TextDocument_CompletionResult buildCompletionItems(
     return items;
 }
 
-// A container/element detail string is a ':'-delimited list of layers,
-// outermost first (plan.md §6.15 -- see containerDimensionTags() in
-// src/compiler/sv_tree_walker.cpp for how it's built). Splits on ':'.
-std::vector<std::string> splitLayers(const std::string& detail)
-{
-    std::vector<std::string> layers;
-    size_t start = 0;
-    while (start <= detail.size()) {
-        size_t colon = detail.find(':', start);
-        if (colon == std::string::npos) {
-            layers.push_back(detail.substr(start));
-            break;
-        }
-        layers.push_back(detail.substr(start, colon - start));
-        start = colon + 1;
-    }
-    return layers;
-}
-
 // The outermost layer of a (possibly layered) detail string -- what
 // container/element-tag dispatch (builtinMethodsFor) always keys off,
 // regardless of how many further layers describe the element type. A
@@ -145,75 +126,6 @@ std::string firstLayer(const std::string& detail)
 {
     const size_t colon = detail.find(':');
     return colon == std::string::npos ? detail : detail.substr(0, colon);
-}
-
-bool isContainerDimensionTag(const std::string& layer)
-{
-    return layer == CONTAINER_QUEUE || layer == CONTAINER_ASSOC ||
-           layer == CONTAINER_DYNAMIC_ARRAY || layer == CONTAINER_FIXED_ARRAY;
-}
-
-// Peels `depth` container-dimension layers off the front of a layered
-// `detail` string (plan.md §6.15), returning what's left rejoined with
-// ':' -- e.g. peeling 1 layer off "$fixed_array:$queue:MyClass" yields
-// "$queue:MyClass" (arr[i] is still a queue, not yet a MyClass); peeling 2
-// yields "MyClass" (arr[i][j] reaches the element). Only the *leading run*
-// of recognized container-dimension tags counts as indexable -- an element
-// layer (a bare class name, or $string/$event) is never itself peelable,
-// so over-indexing (depth exceeding that leading run) fails closed by
-// returning "", same posture as every other §6.14 resolution failure (see
-// candidatesForResolvedType's own doc comment for why "" specifically means
-// "nothing to offer" in this schema, never "the whole top-level scope").
-// depth <= 0 is a no-op (returns `detail` unchanged) -- every non-indexed
-// segment goes through this path too, at depth 0.
-std::string peelDimensionLayers(const std::string& detail, int depth)
-{
-    if (depth <= 0) return detail;
-    std::vector<std::string> layers = splitLayers(detail);
-    int dimCount = 0;
-    while (dimCount < static_cast<int>(layers.size()) && isContainerDimensionTag(layers[dimCount]))
-        ++dimCount;
-    if (depth > dimCount) return "";
-
-    std::string result;
-    for (size_t i = static_cast<size_t>(depth); i < layers.size(); ++i) {
-        if (i > static_cast<size_t>(depth)) result += ':';
-        result += layers[i];
-    }
-    return result;
-}
-
-// Unions member rows across `className`'s own scope and every ancestor
-// reachable via `extends` (plan.md §6.26 -- SymbolDatabase::baseClassChain,
-// which resolves `className` -- as stored in ParseRecord::detail;
-// userTypeName() deliberately never produces a qualified/"::"-containing
-// name -- to each ancestor's own fully-qualified scope chain in turn, e.g.
-// "PolicyImpl" -> "PolicyImpl" unchanged for a top-level class, or
-// "PolicyImpl" -> "policy_pkg::PolicyImpl" for one declared inside a
-// package or nested inside another class at any depth, disambiguating a
-// same-named-class collision with a same-file-preferred tie-break
-// internally). Deduped by name so a derived class's own override always
-// wins over an ancestor's same-named member (baseClassChain returns the
-// class itself first, then each ancestor outward in order, so "first
-// occurrence wins" already gives that precedence for free). Returns {} if
-// `className` doesn't name any real Class row at all (fail closed, same
-// posture as every other resolution failure in this file) -- this also
-// naturally covers container/type tags ($queue, $queue:MyClass, ...) and a
-// Function's raw built-in return-type text ("void", ...), neither of which
-// can ever be a real symbol name. Before plan.md §6.26, this file's own
-// single-hop qualifiedClassScope()+findSymbolsInScope() call only ever saw
-// `className`'s own directly-declared members -- a method declared on an
-// ancestor two or more `extends` levels up was invisible to ordinary
-// (non-`super`) dot-completion.
-std::vector<SymbolRow> membersAcrossChain(SymbolDatabase& db, const std::string& className,
-                                           const std::string& curPath)
-{
-    std::vector<SymbolRow> members;
-    std::unordered_set<std::string> seen;
-    for (auto& scope : db.baseClassChain(className, curPath))
-        for (auto& row : db.findSymbolsInScope(scope))
-            if (seen.insert(row.name).second) members.push_back(row);
-    return members;
 }
 
 // Builds the candidate list for whatever a dot-completion chain resolved
@@ -272,74 +184,6 @@ std::vector<Candidate> candidatesForResolvedType(SymbolDatabase& db, const std::
     }
 
     return candidates;
-}
-
-// Resolves a dot-completion chain's first segment against what's visible
-// at the cursor (not as a member of anything -- that's resolveMemberSegment
-// below). Returns "" on failure (fail closed).
-std::string resolveFirstSegment(SymbolDatabase& db, const std::string& path, int line1,
-                                 const ChainSegment& seg)
-{
-    if (!seg.isCall && seg.name == "this")
-        return db.enclosingClassNameAt(path, line1);
-
-    if (!seg.isCall && seg.name == "super") {
-        std::string enclosing = db.enclosingClassNameAt(path, line1);
-        if (enclosing.empty()) return "";
-        auto rows = db.findSymbolsByName(enclosing);
-        if (rows.empty()) return "";
-        if (const SymbolRow* best = pickBestSymbol(rows, path); best->kind == "Class")
-            return best->detail; // parent class name, "" if none (no extends)
-        return "";
-    }
-
-    auto visible = db.findSymbolsVisibleAt(path, line1);
-    const char* wantKind = seg.isCall ? "Function" : nullptr;
-    for (auto& row : visible) {
-        bool kindMatches = wantKind ? row.kind == wantKind
-                                     : (row.kind == "Signal" || row.kind == "Parameter");
-        if (kindMatches && row.name == seg.name)
-            return peelDimensionLayers(row.detail, seg.indexDepth);
-    }
-    return "";
-}
-
-// Resolves a non-first chain segment as a member of `prevClass`'s own class
-// or one of its ancestors via `extends` (membersAcrossChain, plan.md
-// §6.26). Returns "" on failure (fail closed) -- an *intermediate* chain
-// segment (e.g. the "child" in "obj.child.greet") can resolve to a
-// package-nested class, or to a member declared several `extends` levels
-// up, exactly as easily as the terminal one.
-std::string resolveMemberSegment(SymbolDatabase& db, const std::string& curPath,
-                                  const std::string& prevClass, const ChainSegment& seg)
-{
-    if (prevClass.empty()) return "";
-    auto members = membersAcrossChain(db, prevClass, curPath);
-    const char* wantKind = seg.isCall ? "Function" : nullptr;
-    for (auto& row : members) {
-        bool kindMatches = wantKind ? row.kind == wantKind
-                                     : (row.kind == "Signal" || row.kind == "Parameter");
-        if (kindMatches && row.name == seg.name)
-            return peelDimensionLayers(row.detail, seg.indexDepth);
-    }
-    return "";
-}
-
-// Resolves an entire dot-completion chain left to right to the type/scope
-// name backing its final segment's members. Returns nullopt if any hop
-// fails to resolve (fail closed) -- including a hop resolving to ""; see
-// candidatesForResolvedType's own doc comment for why an empty scope name
-// can never be treated as "no type" and passed through.
-std::optional<std::string> resolveChain(SymbolDatabase& db, const std::string& path, int line1,
-                                         const std::vector<ChainSegment>& segments)
-{
-    std::string current = resolveFirstSegment(db, path, line1, segments[0]);
-    if (current.empty()) return std::nullopt;
-    for (size_t i = 1; i < segments.size(); ++i) {
-        current = resolveMemberSegment(db, path, current, segments[i]);
-        if (current.empty()) return std::nullopt;
-    }
-    return current;
 }
 
 } // namespace

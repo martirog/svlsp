@@ -1,7 +1,9 @@
 #include "lsp/symbol_utils.h"
+#include "lsp/sv_builtin_methods.h"
 #include <lsp/fileuri.h>
 #include <algorithm>
 #include <cctype>
+#include <unordered_set>
 
 namespace {
 bool isDeclarationLikeKind(const std::string& kind)
@@ -265,4 +267,124 @@ std::vector<TextOccurrence> findIdentifierOccurrences(
         ++lineNo;
     }
     return result;
+}
+
+lsp::Position positionForOffset(const std::string& text, size_t offset)
+{
+    offset = std::min(offset, text.size());
+    unsigned line = 0;
+    size_t lineStart = 0;
+    for (size_t i = 0; i < offset; ++i) {
+        if (text[i] == '\n') { ++line; lineStart = i + 1; }
+    }
+    return lsp::Position{line, static_cast<unsigned>(offset - lineStart)};
+}
+
+namespace {
+// A container/element detail string is a ':'-delimited list of layers,
+// outermost first (plan.md §6.15 -- see containerDimensionTags() in
+// src/compiler/sv_tree_walker.cpp for how it's built). Splits on ':'.
+std::vector<std::string> splitLayers(const std::string& detail)
+{
+    std::vector<std::string> layers;
+    size_t start = 0;
+    while (start <= detail.size()) {
+        size_t colon = detail.find(':', start);
+        if (colon == std::string::npos) {
+            layers.push_back(detail.substr(start));
+            break;
+        }
+        layers.push_back(detail.substr(start, colon - start));
+        start = colon + 1;
+    }
+    return layers;
+}
+
+bool isContainerDimensionTag(const std::string& layer)
+{
+    return layer == CONTAINER_QUEUE || layer == CONTAINER_ASSOC ||
+           layer == CONTAINER_DYNAMIC_ARRAY || layer == CONTAINER_FIXED_ARRAY;
+}
+} // namespace
+
+std::string peelDimensionLayers(const std::string& detail, int depth)
+{
+    if (depth <= 0) return detail;
+    std::vector<std::string> layers = splitLayers(detail);
+    int dimCount = 0;
+    while (dimCount < static_cast<int>(layers.size()) && isContainerDimensionTag(layers[dimCount]))
+        ++dimCount;
+    if (depth > dimCount) return "";
+
+    std::string result;
+    for (size_t i = static_cast<size_t>(depth); i < layers.size(); ++i) {
+        if (i > static_cast<size_t>(depth)) result += ':';
+        result += layers[i];
+    }
+    return result;
+}
+
+std::vector<SymbolRow> membersAcrossChain(SymbolDatabase& db, const std::string& className,
+                                           const std::string& curPath)
+{
+    std::vector<SymbolRow> members;
+    std::unordered_set<std::string> seen;
+    for (auto& scope : db.baseClassChain(className, curPath))
+        for (auto& row : db.findSymbolsInScope(scope))
+            if (seen.insert(row.name).second) members.push_back(row);
+    return members;
+}
+
+std::string resolveFirstSegment(SymbolDatabase& db, const std::string& path, int line1,
+                                 const ChainSegment& seg)
+{
+    if (!seg.isCall && seg.name == "this")
+        return db.enclosingClassNameAt(path, line1);
+
+    if (!seg.isCall && seg.name == "super") {
+        std::string enclosing = db.enclosingClassNameAt(path, line1);
+        if (enclosing.empty()) return "";
+        auto rows = db.findSymbolsByName(enclosing);
+        if (rows.empty()) return "";
+        if (const SymbolRow* best = pickBestSymbol(rows, path); best->kind == "Class")
+            return best->detail; // parent class name, "" if none (no extends)
+        return "";
+    }
+
+    auto visible = db.findSymbolsVisibleAt(path, line1);
+    const char* wantKind = seg.isCall ? "Function" : nullptr;
+    for (auto& row : visible) {
+        bool kindMatches = wantKind ? row.kind == wantKind
+                                     : (row.kind == "Signal" || row.kind == "Parameter");
+        if (kindMatches && row.name == seg.name)
+            return peelDimensionLayers(row.detail, seg.indexDepth);
+    }
+    return "";
+}
+
+std::string resolveMemberSegment(SymbolDatabase& db, const std::string& curPath,
+                                  const std::string& prevClass, const ChainSegment& seg)
+{
+    if (prevClass.empty()) return "";
+    auto members = membersAcrossChain(db, prevClass, curPath);
+    const char* wantKind = seg.isCall ? "Function" : nullptr;
+    for (auto& row : members) {
+        bool kindMatches = wantKind ? row.kind == wantKind
+                                     : (row.kind == "Signal" || row.kind == "Parameter");
+        if (kindMatches && row.name == seg.name)
+            return peelDimensionLayers(row.detail, seg.indexDepth);
+    }
+    return "";
+}
+
+std::optional<std::string> resolveChain(SymbolDatabase& db, const std::string& path, int line1,
+                                         const std::vector<ChainSegment>& segments)
+{
+    std::string current = resolveFirstSegment(db, path, line1, segments[0]);
+    if (current.empty()) return std::nullopt;
+    for (size_t i = 1; i < segments.size(); ++i) {
+        current = resolveMemberSegment(db, path, current, segments[i]);
+        if (current.empty()) return std::nullopt;
+    }
+    return current;
 }

@@ -168,9 +168,51 @@ std::optional<CallHeader> parseCallHeader(const std::string& text, size_t parenO
     }
 
     skipWsBack(i);
-    if (i > 0 && text[i - 1] == '.') return std::nullopt; // dotted -- out of scope
+    if (i > 0 && text[i - 1] == '.') return std::nullopt; // dotted -- see parseDottedCallHeader
 
     return CallHeader{std::move(name), std::move(scope)};
+}
+
+struct DottedCall {
+    std::string calleeName;
+    SymbolRow   symbol;
+};
+
+// Resolves a dotted call (`obj.method(`, or a longer chain
+// `obj.field.method(`) -- tried only after parseCallHeader above fails,
+// i.e. only when a '.' (not '::') immediately precedes the call name
+// (plan.md §6.27). Reuses dot-completion's own chain-resolution machinery
+// (dotCompletionContext + resolveChain, lsp/symbol_utils.h) rather than
+// re-implementing chain parsing here: calling dotCompletionContext with the
+// cursor positioned right at the call name's own end (not the user's actual
+// cursor, which may be deep inside a multi-line argument list) makes it
+// return exactly the receiver chain as `segments` and the call's own name
+// as `prefix` -- precisely what's needed, for free. `resolveChain` then
+// resolves the receiver chain to its declared type, and
+// SymbolDatabase::resolveMethod (plan.md §6.26) finds `prefix` as a
+// Function/Task on that type or one of its ancestors via `extends`, the
+// same inheritance-aware resolution the bare-call and `Class::`-qualified
+// paths above already use. Returns nullopt (fail closed) if the receiver
+// chain or the method itself doesn't resolve -- an undeclared receiver, an
+// unresolvable intermediate segment, or a genuinely unknown method.
+std::optional<DottedCall> parseDottedCallHeader(
+    const std::string& text, size_t parenOffset, SymbolDatabase& db, const std::string& curPath)
+{
+    size_t nameEnd = parenOffset;
+    while (nameEnd > 0 && std::isspace(static_cast<unsigned char>(text[nameEnd - 1]))) --nameEnd;
+
+    const lsp::Position pos = positionForOffset(text, nameEnd);
+    auto dot = dotCompletionContext(text, pos.line, pos.character);
+    if (!dot) return std::nullopt;
+
+    const int line1 = static_cast<int>(pos.line) + 1;
+    auto receiverType = resolveChain(db, curPath, line1, dot->segments);
+    if (!receiverType) return std::nullopt;
+
+    auto method = db.resolveMethod(*receiverType, dot->prefix, curPath);
+    if (!method) return std::nullopt;
+
+    return DottedCall{dot->prefix, *method};
 }
 
 struct ActiveParam {
@@ -278,6 +320,10 @@ lsp::TextDocument_SignatureHelpResult SignatureHelpProvider::getSignatureHelp(
                             typeRows.push_back(row);
                 }
             }
+        } else if (auto dotted = parseDottedCallHeader(docText, *parenOffset, db, curPath)) {
+            // A '.' (not '::') precedes the call name -- plan.md §6.27.
+            calleeName = dotted->calleeName;
+            resolvedCallee = dotted->symbol;
         }
     }
     if (!resolvedCallee && typeRows.empty()) return nullptr; // fail closed

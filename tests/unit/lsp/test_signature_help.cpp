@@ -2,6 +2,7 @@
 #include "lsp/signature_help.h"
 #include "db/database.h"
 #include "db/symbol_database.h"
+#include "db/compilation_controller.h"
 #include "compiler/parse_record.h"
 
 namespace {
@@ -139,7 +140,7 @@ TEST_CASE("SignatureHelpProvider: null for a call to something that isn't a func
     REQUIRE(result.isNull());
 }
 
-TEST_CASE("SignatureHelpProvider: null for a dotted call (out of scope -- needs chain resolution)",
+TEST_CASE("SignatureHelpProvider: null for a dotted call whose receiver is undeclared",
           "[signature_help]")
 {
     Fixture f;
@@ -148,10 +149,71 @@ TEST_CASE("SignatureHelpProvider: null for a dotted call (out of scope -- needs 
         {ParseRecordKind::Function, "get_val", 1, 13, "", "int", 0, ""},
         {ParseRecordKind::Port, "x", 1, 20, "get_val", "int", 0, "get_val"},
     });
+    // `obj` itself has no Signal row anywhere -- the receiver chain fails to
+    // resolve (fail closed), same posture as every other resolution failure
+    // in this file. Since plan.md §6.27, a dotted call with a *resolvable*
+    // receiver IS supported -- see the tests below.
     const std::string text = "y = obj.get_val(";
     auto result = SignatureHelpProvider::getSignatureHelp(
         makeParams("/t.sv", 0, static_cast<unsigned>(text.size())), f.sdb, text);
-    REQUIRE(result.isNull()); // disclosed scope limitation -- see signature_help.h
+    REQUIRE(result.isNull());
+}
+
+TEST_CASE("SignatureHelpProvider: resolves a dotted call to the receiver's own declared method "
+          "(plan.md §6.27)", "[signature_help]")
+{
+    Fixture f;
+    auto fid = f.sdb.upsertFile("/t.sv", "h");
+    f.sdb.replaceSymbols(fid, {
+        {ParseRecordKind::Signal,   "obj",     1,  0, "",       "Widget", 0,  ""},
+        {ParseRecordKind::Class,    "Widget",  10, 6, "",       "",       12, ""},
+        {ParseRecordKind::Function, "get_val", 11, 6, "Widget", "int",    0,  "Widget"},
+        {ParseRecordKind::Port,     "idx",     11, 20, "get_val", "int",  0,  "Widget::get_val"},
+    });
+    const std::string text = "obj.get_val(";
+    auto result = SignatureHelpProvider::getSignatureHelp(
+        makeParams("/t.sv", 0, static_cast<unsigned>(text.size())), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+    CHECK(result.value().signatures[0].parameters->size() == 1);
+    CHECK(result.value().signatures[0].label == "get_val(int idx)");
+}
+
+TEST_CASE("SignatureHelpProvider: resolves a dotted call to a method inherited from an ancestor "
+          "class (plan.md §6.27)", "[signature_help]")
+{
+    Fixture f;
+    auto fid = f.sdb.upsertFile("/t.sv", "h");
+    f.sdb.replaceSymbols(fid, {
+        {ParseRecordKind::Signal,   "obj",   1,  0, "",      "Child", 0,  ""},
+        {ParseRecordKind::Class,    "Base",  10, 6, "",      "",      12, ""},
+        {ParseRecordKind::Function, "greet", 11, 6, "Base",  "void",  0,  "Base"},
+        {ParseRecordKind::Class,    "Child", 20, 6, "",      "Base",  22, ""},
+    });
+    const std::string text = "obj.greet(";
+    auto result = SignatureHelpProvider::getSignatureHelp(
+        makeParams("/t.sv", 0, static_cast<unsigned>(text.size())), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+    REQUIRE(result.value().signatures[0].parameters.has_value());
+    CHECK(result.value().signatures[0].parameters->empty());
+}
+
+TEST_CASE("SignatureHelpProvider: resolves a two-segment dotted chain (obj.field.method()) "
+          "(plan.md §6.27)", "[signature_help]")
+{
+    Fixture f;
+    auto fid = f.sdb.upsertFile("/t.sv", "h");
+    f.sdb.replaceSymbols(fid, {
+        {ParseRecordKind::Signal,   "obj",     1,  0, "",       "Outer",  0,  ""},
+        {ParseRecordKind::Class,    "Outer",   10, 6, "",       "",       12, ""},
+        {ParseRecordKind::Signal,   "field",   11, 6, "Outer",  "Widget", 0,  "Outer"},
+        {ParseRecordKind::Class,    "Widget",  20, 6, "",       "",       22, ""},
+        {ParseRecordKind::Function, "get_val", 21, 6, "Widget", "int",    0,  "Widget"},
+    });
+    const std::string text = "obj.field.get_val(";
+    auto result = SignatureHelpProvider::getSignatureHelp(
+        makeParams("/t.sv", 0, static_cast<unsigned>(text.size())), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+    CHECK(result.value().signatures[0].label == "get_val()");
 }
 
 // Declares function `my_func` (int a, output int b) -- as a real compile
@@ -274,4 +336,138 @@ TEST_CASE("SignatureHelpProvider: a default parameter value is rendered after th
         makeParams("/t.sv", 0, static_cast<unsigned>(text.size())), f.sdb, text);
     REQUIRE_FALSE(result.isNull());
     CHECK(result.value().signatures[0].label == "with_default(int width = 8)");
+}
+
+// ---------------------------------------------------------------------------
+// Dotted call through a package-scoped variable, driven through a real
+// compile pipeline (not hand-built SymbolRows) so real `import` statements,
+// real `::`-qualified variable declarations, and a real `extends` chain are
+// all exercised together (plan.md §6.27). Every case below deliberately
+// declares its variable with the fully package-qualified type
+// (`pkg_a::ClassB a;`) *and* an `import` on its own separate line -- the
+// import is never actually load-bearing for this resolution (baseClassChain/
+// resolveMethod resolve a bare class name across the whole database
+// regardless of import visibility, same as the qualifiedClassScope logic
+// they replaced), but real UVM-style code writes both together, and this
+// proves the combination parses and resolves correctly end to end rather
+// than assuming it from the import-free unit tests above alone.
+// ---------------------------------------------------------------------------
+
+namespace {
+struct RealCompileFixture {
+    Database              db{":memory:"};
+    SymbolDatabase         sdb{db};
+    CompilationController  ctrl{sdb};
+    RealCompileFixture() { db.initSchema(); }
+};
+} // namespace
+
+TEST_CASE("SignatureHelpProvider: dotted call to a class method resolves through a specific "
+          "import on a separate line (plan.md §6.27)", "[signature_help][real-compile]")
+{
+    RealCompileFixture f;
+    const std::string source =
+        "package pkg_a;\n"
+        "  class ClassB;\n"
+        "    function int get_something(int b, int c);\n"
+        "      get_something = b + c;\n"
+        "    endfunction\n"
+        "  endclass\n"
+        "endpackage\n"
+        "\n"
+        "import pkg_a::ClassB;\n"
+        "\n"
+        "module top;\n"
+        "  pkg_a::ClassB a;\n"
+        "  initial begin\n"
+        "    a.get_something(1, 2);\n" // line 13 (0-based)
+        "  end\n"
+        "endmodule\n";
+    f.ctrl.compile("/t.sv", source);
+
+    // Cursor right after "get_something(" on line 13: 4 leading spaces +
+    // "a.get_something(" (17 chars) = column 21... counted directly against
+    // the line's own text below rather than by hand.
+    const std::string line13 = "    a.get_something(1, 2);";
+    const unsigned col = static_cast<unsigned>(line13.find('(')) + 1;
+    auto result = SignatureHelpProvider::getSignatureHelp(
+        makeParams("/t.sv", 13, col), f.sdb, source);
+    REQUIRE_FALSE(result.isNull());
+    REQUIRE(result.value().signatures[0].parameters.has_value());
+    CHECK(result.value().signatures[0].parameters->size() == 2);
+    CHECK(result.value().signatures[0].label == "get_something(int b, int c)");
+}
+
+TEST_CASE("SignatureHelpProvider: dotted call to a class method resolves through a wildcard "
+          "import on a separate line (plan.md §6.27)", "[signature_help][real-compile]")
+{
+    RealCompileFixture f;
+    const std::string source =
+        "package pkg_a;\n"
+        "  class ClassB;\n"
+        "    function int get_something(int b, int c);\n"
+        "      get_something = b + c;\n"
+        "    endfunction\n"
+        "  endclass\n"
+        "endpackage\n"
+        "\n"
+        "import pkg_a::*;\n"
+        "\n"
+        "module top;\n"
+        "  pkg_a::ClassB a;\n"
+        "  initial begin\n"
+        "    a.get_something(1, 2);\n" // line 13 (0-based)
+        "  end\n"
+        "endmodule\n";
+    f.ctrl.compile("/t.sv", source);
+
+    const std::string line13 = "    a.get_something(1, 2);";
+    const unsigned col = static_cast<unsigned>(line13.find('(')) + 1;
+    auto result = SignatureHelpProvider::getSignatureHelp(
+        makeParams("/t.sv", 13, col), f.sdb, source);
+    REQUIRE_FALSE(result.isNull());
+    REQUIRE(result.value().signatures[0].parameters.has_value());
+    CHECK(result.value().signatures[0].parameters->size() == 2);
+    CHECK(result.value().signatures[0].label == "get_something(int b, int c)");
+}
+
+TEST_CASE("SignatureHelpProvider: dotted call resolves to a method declared on a class in a "
+          "*different* package, imported by the variable's own declaring package, not the "
+          "package the variable's class was imported from (plan.md §6.27)",
+          "[signature_help][real-compile]")
+{
+    RealCompileFixture f;
+    const std::string source =
+        "package pkg_base;\n"
+        "  class BaseClass;\n"
+        "    function int get_something(int b, int c);\n"
+        "      get_something = b + c;\n"
+        "    endfunction\n"
+        "  endclass\n"
+        "endpackage\n"
+        "\n"
+        "package pkg_a;\n"
+        "  import pkg_base::*;\n"
+        "  class ClassB extends BaseClass;\n"
+        "  endclass\n"
+        "endpackage\n"
+        "\n"
+        "import pkg_a::ClassB;\n"
+        "\n"
+        "module top;\n"
+        "  pkg_a::ClassB a;\n"
+        "  initial begin\n"
+        "    a.get_something(1, 2);\n" // line 19 (0-based)
+        "  end\n"
+        "endmodule\n";
+    f.ctrl.compile("/t.sv", source);
+
+    const std::string line19 = "    a.get_something(1, 2);";
+    const unsigned col = static_cast<unsigned>(line19.find('(')) + 1;
+    auto result = SignatureHelpProvider::getSignatureHelp(
+        makeParams("/t.sv", 19, col), f.sdb, source);
+    REQUIRE_FALSE(result.isNull());
+    REQUIRE(result.value().signatures[0].parameters.has_value());
+    CHECK(result.value().signatures[0].parameters->size() == 2);
+    CHECK(result.value().signatures[0].label == "get_something(int b, int c)");
 }

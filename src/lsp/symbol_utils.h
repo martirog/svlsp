@@ -92,6 +92,57 @@ struct DotCompletion {
 std::optional<DotCompletion> dotCompletionContext(
     const std::string& text, unsigned line, unsigned character);
 
+// Inverse of a position->offset conversion (each LSP feature provider that
+// needs one keeps its own local `toOffset`, e.g. signature_help.cpp): converts
+// a flat 0-based byte offset into `text` back to a 0-based (line, character)
+// LSP position. Used by signature_help.cpp to re-enter dotCompletionContext
+// at a call's own name (see resolveChain's own doc comment below) starting
+// from a byte offset (`findEnclosingParen`'s own coordinate system) rather
+// than a (line, character) pair. Clamps to the last valid position if
+// `offset` is beyond `text`'s end, rather than asserting -- callers here
+// always derive `offset` from a position already known to be valid, but
+// there is no reason to crash on a hypothetical off-by-one instead of
+// degrading gracefully.
+lsp::Position positionForOffset(const std::string& text, size_t offset);
+
+// Peels `depth` container-dimension layers off the front of a layered
+// `detail` string (plan.md §6.15) -- see completion.cpp's original
+// doc comment (unchanged, only relocated here in plan.md §6.27 so
+// signature_help.cpp's dotted-call resolution can share it too) for the
+// full rationale. depth <= 0 is a no-op.
+std::string peelDimensionLayers(const std::string& detail, int depth);
+
+// Unions member rows across `className`'s own scope and every ancestor
+// reachable via `extends` (plan.md §6.26 -- SymbolDatabase::baseClassChain),
+// deduped by name so a derived class's own override always wins over an
+// ancestor's same-named member. {} if `className` isn't a known class at
+// all. Shared by completion.cpp's chain resolution and (plan.md §6.27)
+// signature_help.cpp's dotted-call resolution.
+std::vector<SymbolRow> membersAcrossChain(SymbolDatabase& db, const std::string& className,
+                                           const std::string& curPath);
+
+// Resolves a dot-completion chain's first segment against what's visible at
+// the cursor (not as a member of anything -- that's resolveMemberSegment
+// below). Returns "" on failure (fail closed). See completion.cpp's
+// original doc comment for the full `this`/`super` design.
+std::string resolveFirstSegment(SymbolDatabase& db, const std::string& path, int line1,
+                                 const ChainSegment& seg);
+
+// Resolves a non-first chain segment as a member of `prevClass`'s own class
+// or one of its ancestors via `extends`. Returns "" on failure (fail closed).
+std::string resolveMemberSegment(SymbolDatabase& db, const std::string& curPath,
+                                  const std::string& prevClass, const ChainSegment& seg);
+
+// Resolves an entire dot-completion chain left to right to the type/scope
+// name backing its final segment's own members. Returns nullopt if any hop
+// fails to resolve (fail closed). Shared by completion.cpp (plan.md §6.14)
+// and, since plan.md §6.27, signature_help.cpp's dotted-call resolution --
+// the latter passes `segments` *excluding* the final call name itself (the
+// receiver chain only), so the result is the receiver's own type, not
+// whatever the call itself might return.
+std::optional<std::string> resolveChain(SymbolDatabase& db, const std::string& path, int line1,
+                                         const std::vector<ChainSegment>& segments);
+
 // A lexical hit for a whole-identifier text search (findIdentifierOccurrences
 // below) -- 0-based LSP line/character of the occurrence's first character.
 struct TextOccurrence {

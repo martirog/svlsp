@@ -68,13 +68,32 @@ TEST_CASE("signature help: bare call to a ref-direction parameter keeps the dire
     CHECK(sig.label == "get_next_child(ref string name)");
 }
 
-TEST_CASE("signature help: null for a dotted call, even against a real method with recorded parameters",
+TEST_CASE("signature help: still null for a dotted call inside an out-of-class method body, "
+          "for a different, deeper reason than before plan.md §6.27",
           "[uvm_corpus][signature_help]") {
     const std::string text = readCorpusFile("base/uvm_component.svh");
-    // Line 2532 (1-based): "      m_children[c].set_domain(domain);"
-    // -> 0-based line 2531, cursor right after "set_domain(" at column 31.
-    // Disclosed scope limitation (signature_help.h): a dotted call needs
-    // completion's own chain-resolution machinery, not this lexical scan.
+    // Line 2532 (1-based): "      m_children[c].set_domain(domain);", inside
+    // `function void uvm_component::set_domain(...); ... endfunction` (an
+    // out-of-class method body) -> 0-based line 2531, cursor right after
+    // "set_domain(" at column 31.
+    //
+    // Before plan.md §6.27, this returned null simply because dotted calls
+    // were categorically unsupported. Now that they're resolved via the
+    // same chain-resolution machinery dot-completion uses
+    // (dotCompletionContext/resolveChain, lsp/symbol_utils.h), this
+    // *specific* real corpus site still returns null, but for a genuinely
+    // different, already-disclosed reason confirmed by tracing it, not
+    // assumed: an out-of-class method body's own recorded scope isn't
+    // nested under its class at all (see this file's own header comment
+    // above, and "Dot-completion into a package-nested class's members" in
+    // handoff.md/plan.md §6.17 for the sibling gap this resembles) --
+    // `m_children` (a `protected uvm_component m_children[string]` member)
+    // is therefore never visible to `findSymbolsVisibleAt` from inside this
+    // particular body, so the receiver chain fails to resolve before
+    // `resolveMethod` is ever reached. A dotted call from *inside* an
+    // ordinary in-class method body (this file's other two cases, and every
+    // unit test in test_signature_help.cpp) is unaffected -- only an
+    // out-of-class body's own member-visibility is the gap here.
     auto result = SignatureHelpProvider::getSignatureHelp(
         makeParams("base/uvm_component.svh", 2531, 31), uvmCorpusDb(), text);
     REQUIRE(result.isNull());
