@@ -1,8 +1,276 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-09-13 (compressed from full session history — see git log for
-narrative detail if ever needed; this file now documents current-state-and-next-steps
-only).
+**Last updated:** 2026-09-20.
+
+**PICK UP HERE NEXT TIME — plan.md §6.26 (scope/type-aware method-call
+resolution) is now implemented, closing out the false positives §6.23's own
+UVM-corpus probe surfaced. Both §6.23 and §6.26 are fully done, tested, and
+green — the only remaining step is committing them, deliberately held until
+now per the user's own explicit instruction (2026-09-20: "wait until §6.26
+is done, then commit both together"):**
+1. Re-running §6.23's UVM-corpus probe after §6.26 landed:
+   **`PROBE-TOTAL` dropped from 349 to 0.** The probe `TEST_CASE` itself has
+   already been deleted from `tests/uvm_corpus/test_signature_help_uvm.cpp`
+   (its job — sanity-checking §6.23 against real-world UVM — is done; see
+   the 2026-09-20 §6.26 entry below for the full implementation writeup and
+   the 2026-09-20 investigation entry further below for the original
+   root-cause analysis).
+2. All coverage re-run clean after §6.26: full unit suite (2148
+   assertions/661 cases — 6 new `[db][symbol-db][chain]` cases for
+   `baseClassChain`/`resolveMethod`, 4 new `[call-args]` cases, 1 new
+   `[completion][dot][chain]` multi-level-inheritance case, 3 new
+   `[compiler][listener][call]` cases for `calleeScope` extraction, 1 new
+   `[signature_help]` case), full UVM-corpus suite (505 assertions/14 cases,
+   unchanged baseline, no regressions), full Emacs functional suite
+   (207/207, no regressions).
+3. **Nothing is committed yet.** Nine files carry uncommitted §6.23/§6.26
+   work: `src/compiler/parse_record.h`, `src/compiler/sv_tree_walker.cpp/.h`,
+   `src/db/compilation_controller.cpp`, `src/db/symbol_database.h/.cpp`,
+   `src/lsp/completion.cpp`, `src/lsp/signature_help.cpp`, plus their unit
+   tests and the two new integration fixtures/test script from §6.23. Commit
+   both together in one pass when asked — see plan.md §6.23/§6.26 for the
+   complete writeups to draw the commit message from.
+
+**Implemented 2026-09-20** — plan.md §6.26, closing out the false positives
+the investigation directly below found in §6.23's own UVM-corpus probe.
+Built essentially per that section's own design sketch:
+
+- **`SymbolDatabase::baseClassChain`/`resolveMethod`** (new,
+  `src/db/symbol_database.h/.cpp`) — `baseClassChain` walks a class's
+  `extends` ancestry by repeatedly resolving `symbols.detail`'s single
+  recorded parent name (no schema migration; a cycle guard stops a class
+  that names itself, directly or transitively, as its own ancestor);
+  `resolveMethod` layers a Function/Task name lookup on top, checking each
+  ancestor's own scope in turn and stopping at the first match. Both fail
+  closed (return empty/`nullopt`) if the starting name isn't a known class
+  at all. Tie-breaking duplicates `lsp::pickBestSymbol`'s simpler
+  same-file-preferred half locally, matching `compilation_controller.cpp`'s
+  own pre-existing `pickCallee` precedent (`svlsp_db` has no dependency on
+  `svlsp_lib`).
+- **`CallRecord` gained a `calleeScope` field** (`parse_record.h`);
+  `enterTf_call` (`sv_tree_walker.cpp`) now retains the *immediate*
+  `Class::`/`pkg::` segment directly before a call's name instead of
+  discarding it (a new file-local `extractCalleeScope` helper) — e.g.
+  "type_id", not "T", for the doubly-qualified `T::type_id::create(...)`
+  idiom (`class_scope tf_identifier`). `signature_help.cpp`'s
+  `parseCallHeader` gained the equivalent scan, now returning a
+  `CallHeader{name, scope}` instead of a bare name.
+- **`checkMissingArguments`** (`compilation_controller.cpp`) and signature
+  help's bare-call path both gained a new `resolveCallee`-shaped resolution
+  order: an explicitly-scoped call resolves strictly within
+  `resolveMethod(calleeScope, ...)` and is skipped entirely on any miss,
+  *never* falling back to a flat whole-database search for that case — a
+  concrete decision on the "package-qualified calls" question §6.26 had
+  left open, made because falling back would have silently reintroduced
+  this section's own bug for the actual majority case
+  (`type_id::get()`-style typedef aliases, which aren't real `Class` rows
+  and so never resolve via `baseClassChain` — correctly skipped rather than
+  guessed at). An unqualified call tries the call site's own enclosing
+  class hierarchy (`enclosingClassNameAt` + `resolveMethod`) first, and only
+  falls back to the pre-existing flat search when there's no class context
+  at all to have gotten wrong (no enclosing class, or that hierarchy simply
+  doesn't declare the name — the legitimate "calling an outer-scope free
+  function from inside a method body" case).
+- **`completion.cpp`** — `candidatesForResolvedType`/`resolveMemberSegment`
+  switched from a single-hop `qualifiedClassScope`+`findSymbolsInScope` call
+  to a new `membersAcrossChain` helper walking the full `baseClassChain`
+  (deduped by name, most-derived override winning) — a bonus fix beyond
+  §6.23's own false positives: ordinary (non-`super`) dot-completion can now
+  see a method declared two or more `extends` levels up, not just one, and
+  not just via the literal `super` keyword. `qualifiedClassScope` itself
+  became fully dead code once both call sites were switched over and was
+  deleted (no unused-function warning left behind).
+- Hover/go-to-definition deliberately untouched, exactly as §6.26 scoped.
+
+**Verification:** re-ran the exact §6.23 UVM-corpus probe —
+**`PROBE-TOTAL` dropped from 349 to 0**. Then deleted the probe `TEST_CASE`
+and its two `#include`s from `test_signature_help_uvm.cpp` (its job is
+done) and re-ran the full `uvm_corpus_tests` suite: 505 assertions/14 cases,
+unchanged from baseline, no regressions from the completion/signature-help
+resolution changes. New unit coverage: `tests/unit/db/test_symbol_database.cpp`
+(6 new `[db][symbol-db][chain]` cases — two-level `extends` walk, unknown
+name returns empty, cycle guard, resolving to a distant ancestor over an
+unrelated same-named method, unresolvable name, no-such-method-anywhere);
+`tests/unit/db/test_compilation_controller.cpp` (4 new `[call-args]` cases
+mirroring the exact UVM false-positive shapes: a `Class::` call resolving
+correctly despite an unrelated same-named collision, a `Class::` call still
+correctly flagging a genuine miss, a `type_id`-shaped unresolvable scope
+silently skipped, a two-level inherited bare call resolving correctly);
+`tests/unit/lsp/test_completion.cpp` (1 new `[completion][dot][chain]` case,
+two-level non-`super` inheritance); `tests/unit/compiler/test_sv_listener.cpp`
+(3 new `[call]` cases for `calleeScope` extraction, including the
+doubly-qualified `T::type_id::create` case); `tests/unit/lsp/test_signature_help.cpp`
+(1 new case, the `type_id::get()`-shaped regression). Full unit suite now at
+2148 assertions/661 cases, no regressions. Full Emacs functional suite
+re-run: 207/207, no regressions. **Not yet committed** — bundled with §6.23
+into a single commit per the user's own explicit instruction; only commit
+when asked.
+
+**Investigated 2026-09-20** — ran plan.md §6.23's previously-interrupted
+UVM-corpus probe to completion: `cmake --build --preset release --target
+uvm_corpus_tests && ./build/release/uvm_corpus_tests "[.probe]"` against the
+real ~170-file corpus at `/home/martin/src/verilator_test/uvm-core/src`.
+Came back `PROBE-TOTAL 349` (breakdown: `get`×334, `add`×8, `set`×6,
+`do_write`×1). Root-caused every hit category by reading the actual UVM
+source rather than assuming the already-disclosed comma-shorthand gap was
+responsible:
+- The overwhelming majority (`get`/`add`/`set`, 348 hits) are
+  `Class::method(...)` calls — e.g. `type_id::get()` (the
+  `` `uvm_object_utils ``-family macro's own factory idiom, expanded twice
+  per macro invocation, hence hits in even-numbered pairs at very high
+  columns — confirmed by reading `macros/uvm_object_defines.svh`'s
+  `` `m_uvm_object_registry_param `` definition directly: `return
+  type_id::get();` appears verbatim), `uvm_reg_read_only_cbs::add(rg)`, and
+  `uvm_coreservice_t::set(dcs)`. All resolve correctly in real SystemVerilog
+  against that exact named class's own method, but this codebase's
+  `enterTf_call` (`sv_tree_walker.cpp`) and `parseCallHeader`
+  (`signature_help.cpp`) both discard the `Class::` prefix and resolve the
+  bare trailing name alone via `findSymbolsByName` across the whole
+  database — landing on an unrelated, differently-shaped same-named method
+  (`uvm_pool::get(KEY key)`, `uvm_callback::add(T obj, uvm_callback cb,
+  ...)`, etc.) instead.
+- The remaining hit (`do_write`) is a plain bare call —
+  `uvm_reg_indirect_data extends uvm_reg` calling its own inherited
+  `do_write(rw)` with no qualifier at all — resolving against
+  `uvm_resource::do_write(T t, uvm_object accessor)` instead, since
+  resolution has no notion of which class the call site is lexically inside
+  or that class's base-class chain.
+- Commissioned a follow-up survey (a `general-purpose`/Explore-style agent,
+  not assumed) to check how deep this gap actually runs: confirmed
+  dot-completion (`obj.method(...)`, `completion.cpp`) is the *only* call
+  shape with any real declared-type-scoped resolution today
+  (`resolveFirstSegment`/`resolveMemberSegment` → `qualifiedClassScope` →
+  `findSymbolsInScope`), and even that follows inheritance only one hop,
+  only for the literal `super` keyword. `Class::` calls, bare-in-class
+  calls, hover, and go-to-definition are all flat `findSymbolsByName` +
+  same-file tie-break with zero type/scope awareness. Confirmed via
+  `grep -rn extends src/db/schema.h src/db/symbol_database.{h,cpp}` (no
+  hits) that there is no inheritance-edge table anywhere in the schema — a
+  class's parent is only ever a single string in that class's own
+  `symbols.detail` column.
+- Filed the fix as a new, separate section rather than folding it into
+  §6.23 — plan.md §6.26 ("Scope/Type-Aware Method-Call Resolution") — since
+  it's a foundational resolution-engine gap affecting five features
+  (completion, signature help, hover, definition, and §6.23's own new
+  checker), not a narrow bug in the one new checker that happened to
+  surface it. See §6.26 for the full design sketch. Not yet implemented.
+
+**Implemented 2026-09-17** — plan.md §6.23, a diagnostic for a bare (undotted)
+function/task call that omits a required (no-default) parameter, e.g.
+`my_func(a)` against `function int my_func(int a, int b);` — previously
+accepted with zero diagnostics even though every real simulator rejects it.
+Builds directly on the previous entry's per-parameter data (name, direction,
+type, default-value presence, already recorded on `Port` symbols by
+`enterTf_port_item`).
+
+**Grammar-level design, confirmed by reading `grammar/Sv.g4` directly:**
+`list_of_arguments` allows both positional args (with legal *elision* of a
+defaulted parameter mid-list, e.g. `foo(a, , c)`) and named `.identifier(...)`
+connections — legal for plain function/task calls, not just module port
+connections — and named slots always trail positional ones (never
+interleaved). A new `enterTf_call` listener (`src/compiler/sv_tree_walker.cpp`)
+extracts one `CallRecord` per bare call site: callee name and an ordered list
+of `CallArgSlot`s (`Positional`/`Elided`/`Named`, `src/compiler/parse_record.h`).
+Scoped to bare/undotted calls only, matching §6.22 follow-up's own scope
+limit — a literal `.` anywhere in `ps_or_hierarchical_tf_identifier`'s own
+text (checked via the token stream, not the grammar shape, since a dotted
+reference and a bare one share the same ambiguous grammar alternative) means
+skip; a `pkg::`/`Class::`-prefixed call is still treated as bare (matching
+`signature_help.cpp`'s own equally permissive precedent), resolving on the
+bare trailing identifier alone.
+
+**`extractArgSlots`** (`sv_tree_walker.cpp`, file-local) reads a
+`List_of_argumentsContext`'s own direct AST children left-to-right as a small
+state machine — no labeled subrule wraps a slot, so the ordered
+`ExpressionContext*`/literal-token children *are* the slot sequence. An
+elided slot is inferred from a comma reached while still "expecting a fresh
+slot" (i.e. no expression consumed one since the last comma/`(`); a trailing
+elided slot with nothing after the final comma (`foo(a,)`) needed a small
+post-loop check since the main loop only catches an elision with something
+*after* it. Chose real AST traversal over `signature_help.cpp`'s own
+text-lexing style (which the project already uses for a similar
+comma/named-slot scan) specifically to avoid inheriting that file's own
+disclosed "no string-literal awareness" gap — the AST already has this
+solved correctly.
+
+**Resolution, in `CompilationController::compile`** (`src/db/compilation_controller.cpp`),
+run once *after* every symbol from the whole compile unit (primary file +
+every `` `include ``d file) is already persisted — mirrors plan.md §6.21's
+own recommended placement, and means a callee declared later in the same
+file, or in one of its own includes, resolves correctly regardless of
+AST-walk visitation order. For each file's `CallRecord`s: resolve the callee
+name via `SymbolDatabase::findSymbolsByName` filtered to Function/Task (empty
+→ silently skip, not this check's job, matching §6.21's own scope note);
+same-file-preferred tie-break on a collision (a small duplicate of
+`lsp::pickBestSymbol`'s simpler half, `pickCallee` — `svlsp_db` intentionally
+has no dependency on `svlsp_lib`, see `CMakeLists.txt`'s own comment, so this
+couldn't just call the real one); read that symbol's own sorted `Port` list
+(same query shape `SignatureHelpProvider` already uses); for each port,
+check whether it was supplied positionally (honoring an elided slot) or by
+name anywhere in the call, and if not, whether it has a default — no default
+and no supplied value is the diagnostic (`checkMissingArguments`).
+`appendDiagnostics` (not another `replaceDiagnostics`) since each file's own
+parse-error diagnostics were already freshly replaced earlier in this same
+`compile()` call — appending on top is never stale, since the whole pipeline
+reruns from scratch on every real recompile (a cache hit never reaches this
+code path at all). **A real plumbing subtlety found implementing this:** the
+primary file's own diagnostics are published from `compile()`'s *return
+value* (`LanguageServer::parseDiagnostics`), not by re-querying the DB the
+way included files' diagnostics are (`collectIncludedDiagnostics`, which
+runs after `compile()` returns and so sees `appendDiagnostics`' effect
+regardless) — so the primary file's own call diagnostics had to be merged
+into both the DB *and* the return value, or they'd persist correctly but
+never actually reach a live client for the file that was actually edited.
+
+**Disclosed limitations, inherited or new:**
+- Same comma-shorthand parameter-ambiguity gap §6.22's follow-up already
+  disclosed for signature help (`function int add(input int a, b);` — `b`
+  silently dropped from the recorded `Port` list, since the grammar itself
+  can't tell it apart from an unnamed parameter of type `b`) — here it would
+  cause a *positional-index* misalignment between a call's argument slots and
+  the (shorter-than-real) `Port` list, not just a cosmetic label gap. Not
+  fixed, same as before; flagged again here since this check makes the
+  consequence of that gap more concrete (a wrong diagnostic, not just a
+  missing detail in a hover popup). This is the prime suspect if the
+  UVM-corpus probe above turns up any false positive.
+- `system_tf_call` (`$display`, ...), `new(...)`, `randomize()`, and
+  `super.new(...)` never reach `enterTf_call` at all (separate grammar
+  rules entirely) — excluded for free, no extra guard code needed.
+- A DPI-imported function/task **is** checked the same as an ordinary one
+  (confirmed with a real test, not assumed — see "worth testing explicitly"
+  in plan.md §6.23) — its prototype's parameters are recorded via the same
+  `tf_port_item` rule §6.16 already wired up for prototypes generally.
+- Severity is unconditionally `Error` (every `ParseError`-derived diagnostic
+  is, via `DiagnosticsPublisher::buildDiagnostic` — no per-diagnostic
+  severity field exists anywhere in this codebase yet), matching
+  `LibraryResolver`'s own "unresolved instantiation" diagnostic's severity
+  choice, not §6.21's own separate, undecided discussion of `Warning` for a
+  *different* check.
+
+New unit tests: `tests/unit/compiler/test_sv_listener.cpp` (9 new `[call]`
+cases — plain two-positional call; an elided slot between two supplied ones;
+a trailing elided slot with nothing after the last comma; named connections
+in non-declaration order; a positional prefix + named tail; an empty-parens
+call; a task call with no parens at all; a dotted call never recorded;
+a callless file yields an empty `calls` vector) and
+`tests/unit/db/test_compilation_controller.cpp` (10 new `[call-args]` cases —
+missing trailing argument; every argument supplied; an elided slot correctly
+falling back to a default; every argument supplied purely by name in
+non-declaration order; an unresolved callee name silently skipped; a dotted
+call silently skipped; a DPI-imported call flagged the same as an ordinary
+one; a callee declared in a separate, already-compiled file; a sibling class
+method declared later in the same class; an included file's own diagnostic
+persisted under its own path). Unit suite now at 2120 assertions/646 test
+cases, no regressions (full suite re-run). New functional test
+`tests/integration/test_39_missing_argument_diagnostic.sh` against two new
+fixtures (`callargs_valid.sv`/`callargs_missing.sv`) — confirms the
+diagnostic reaches a real Emacs/lsp-mode client via the normal
+`didOpen`/`publishDiagnostics` path and that its message names both the
+missing parameter and the callee. Emacs integration suite now 207/207 across
+40 files, no regressions (full suite re-run). **UVM-corpus real-world
+verification was started but interrupted — see the "PICK UP HERE NEXT TIME"
+note at the top of this document.** Not yet committed — only commit when
+asked.
 
 **Implemented 2026-09-13** — extended signature help to bare (undotted)
 function/task calls (plan.md §6.22's own follow-up section, closing "Not yet
@@ -2250,20 +2518,16 @@ Roughly in suggested priority order; none are blocking, pick based on what matte
     dotted call (`obj.method(`) still needs completion's own
     chain-resolution machinery, left as a further, separate follow-up, not
     attempted here.
-25. **Missing-required-argument diagnostic for function/task calls
-    (`plan.md §6.23`)** — not started. Builds directly on item 24's own
-    per-parameter data (name, direction, type, default-value presence) to
-    catch a call like `my_func(a)` against `function int my_func(int a, int
-    b);` (no default on `b`) — currently accepted with zero diagnostics.
-    See plan.md §6.23 for the full design: a new `enterTf_call` listener
-    recording a `CallRecord` per bare call site (argument slots — positional,
-    elided, or named — since SV allows *both* named argument association
-    and eliding a defaulted positional slot for a plain function/task call,
-    not just module port connections), resolved in a post-parse pass over
-    the completed `SymbolDatabase` (not inline during the walk, since a
-    callee may be declared later in the same file or in another file
-    entirely — same architectural reason as §6.21). Deliberately scoped to
-    bare/undotted calls only, matching item 24's own scope limit.
+25. ~~Missing-required-argument diagnostic for function/task calls
+    (`plan.md §6.23`)~~ — **implemented 2026-09-17**, following the sketch
+    essentially as designed (`enterTf_call`/`CallRecord`/`CallArgSlot`,
+    resolved against `SymbolDatabase` once the whole compile unit is
+    persisted). See the entry at the top of this document for the full
+    writeup, including its disclosed limitations and unit/functional test
+    coverage. **One real-world verification step (a full UVM-corpus
+    false-positive probe) was started but interrupted, not finished — see
+    the "PICK UP HERE NEXT TIME" note at the very top of this document
+    before considering this item fully closed.**
 26. **Audit compiler warnings from `tools/build.sh` (`plan.md §6.24`)** —
     not started. `-Wall -Wextra -Wpedantic` are already enabled for every
     first-party target, but nobody has captured and reviewed a genuinely
