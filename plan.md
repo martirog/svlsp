@@ -3764,6 +3764,111 @@ a confirmed genuine bug in the corpus itself, not a resolution failure).
 
 ---
 
+### 6.27 Dotted-Call Signature Help (`obj.method(`, `obj.field.method(`)
+
+**Status:** implemented 2026-09-20.
+
+**Motivation:** signature help's disclosed scope limit since §6.22's follow-up
+(and unchanged by §6.26) was that a *dotted* call (`obj.method(`) returned
+null unconditionally — `parseCallHeader` fails closed the moment a `.`
+precedes the call name, since resolving the receiver's type needs the same
+chain-resolution machinery dot-completion has, which this file's own lexical
+scan never attempted. A user prompt asked for tests exercising exactly this
+shape (a package-scoped class-typed variable, a dot-chained call, real
+`import` statements) — surfacing that the feature itself didn't exist yet to
+test, not just a coverage gap. Implemented before adding those tests, rather
+than writing tests against documented-null behavior.
+
+**Design — reuse dot-completion's machinery rather than reimplement it:**
+1. **Relocated, not rewritten:** `resolveChain`, `resolveFirstSegment`,
+   `resolveMemberSegment`, `membersAcrossChain`, `peelDimensionLayers`
+   (plus its own file-local `splitLayers`/`isContainerDimensionTag` helpers)
+   moved from `completion.cpp`'s anonymous namespace to `lsp/symbol_utils.h/.cpp`
+   — a header both `completion.cpp` and `signature_help.cpp` already
+   include, and the natural home given `dotCompletionContext`/`ChainSegment`/
+   `DotCompletion` already lived there. No behavior change, purely a visibility
+   change so a second file can call them; `completion.cpp` itself is
+   unaffected (same names, now free functions instead of anonymous-namespace
+   ones). A new `positionForOffset(text, offset)` (`symbol_utils.h/.cpp`) —
+   the inverse of every provider's own local `toOffset` — was added
+   alongside them, needed to convert `findEnclosingParen`'s byte-offset
+   coordinate system into the (line, character) pair `dotCompletionContext`
+   expects.
+2. **`parseDottedCallHeader`** (new, `signature_help.cpp`, file-local):
+   tried only after `parseCallHeader` fails to find an unqualified or
+   `::`-qualified name (i.e., exactly when a `.` precedes the call name).
+   Calls `dotCompletionContext` with the cursor positioned at the call
+   name's own end (not the user's actual cursor, which may be deep inside a
+   multi-line argument list) — a small but load-bearing trick: this makes
+   `dotCompletionContext` return exactly the *receiver* chain as `segments`
+   (everything before the last `.`) and the call's own name as `prefix`,
+   with zero new parsing logic. `resolveChain` then resolves the receiver
+   chain to its declared type, and `SymbolDatabase::resolveMethod` (§6.26)
+   finds `prefix` as a Function/Task on that type or one of its ancestors —
+   the same inheritance-aware resolution the bare/`Class::`-qualified paths
+   already use. Fails closed (null) if the receiver chain or the method
+   itself doesn't resolve.
+3. `signature_help.h`'s header comment rewritten to document three
+   call-header shapes instead of two.
+
+**A real, disclosed limitation found verifying this against the UVM corpus,
+not assumed:** a dotted call from *inside an out-of-class method body*
+(`function void uvm_component::set_domain(...); ... endfunction`, a real
+corpus site: `m_children[c].set_domain(domain)`) still returns null — but
+for a different, deeper reason than "dotted calls aren't supported," since
+that's no longer true. Traced (not assumed) to an already-disclosed,
+separate gap this section's own UVM-corpus test file already documented in
+its header comment: an out-of-class method body's own recorded scope isn't
+nested under its declaring class at all (the same category of gap "Dot-
+completion into a package-nested class's members," §6.17, fixed for a
+sibling case) — so `m_children` (a member of `uvm_component`) is never
+visible to `findSymbolsVisibleAt` from inside `set_domain`'s own
+out-of-class body, and the receiver chain fails before `resolveMethod` is
+ever reached. A dotted call from inside an *in-class* method body (this
+section's own new tests, and the UVM corpus's other two `do_execute_op`
+cases) is unaffected. Not fixed here — flagged as a real, separate follow-up
+(fixing it would also improve hover/completion/definition for the same
+out-of-class-body member-visibility gap, not just signature help), scoping
+this section to what dotted-call signature help itself needed.
+
+**Unit tests:** `tests/unit/lsp/test_signature_help.cpp` — a basic dotted
+call to the receiver's own declared method; a dotted call resolving to a
+method inherited from an ancestor class; a two-segment chain
+(`obj.field.method(`); the pre-existing "null for a dotted call" test
+retitled and re-commented (the receiver is genuinely undeclared in that
+fixture, which is why it's still null — not because dotted calls are
+unsupported, which is no longer accurate). Three further cases driven
+through a **real** `CompilationController::compile` pipeline rather than
+hand-built `SymbolRow`s (`RealCompileFixture`, tagged `[real-compile]`),
+specifically requested to prove the combination parses and resolves
+end-to-end, not assumed from the import-free synthetic tests alone: a
+specific import (`import pkg_a::ClassB;`) on its own line, a package-
+qualified variable declaration (`pkg_a::ClassB a;`), and a dotted call
+(`a.get_something(1, 2)`); the same with a wildcard import
+(`import pkg_a::*;`); and the same again where the called method is
+declared not on `ClassB` itself but on `BaseClass` in a *different*
+package (`pkg_base`) that `pkg_a` itself imports, exercising
+`baseClassChain`'s cross-package `extends` walk together with a real
+multi-package compile. All three passed on the first real-corpus-shaped
+run. Confirmed along the way (documented above, not assumed): the `import`
+statements in all three are cosmetically present but not actually
+load-bearing for this resolution — `baseClassChain`/`resolveMethod` resolve
+a bare class name across the whole database regardless of import
+visibility, same as the `qualifiedClassScope` logic they replaced in §6.26;
+only the receiver variable's own visibility (via `findSymbolsVisibleAt`)
+would ever depend on an import, and these tests declare `a` directly in the
+same module, not via a wildcard-imported package-level variable.
+
+UVM-corpus test updated: the third `signature help` case in
+`tests/uvm_corpus/test_signature_help_uvm.cpp` (`m_children[c].set_domain(domain)`)
+re-titled and re-commented per the disclosed limitation above — still
+asserts null, now for the traced, accurate reason. Full unit suite: 2168
+assertions/667 cases. Full UVM-corpus suite: 505 assertions/14 cases, no
+regressions. Full Emacs functional suite: 207/207, no regressions. Not yet
+committed — only commit when asked.
+
+---
+
 ## Appendix A — Technology Stack Summary
 
 | Concern | Choice | Rationale |

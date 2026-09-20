@@ -2,34 +2,120 @@
 
 **Last updated:** 2026-09-20.
 
-**PICK UP HERE NEXT TIME — plan.md §6.26 (scope/type-aware method-call
-resolution) is now implemented, closing out the false positives §6.23's own
-UVM-corpus probe surfaced. Both §6.23 and §6.26 are fully done, tested, and
-green — the only remaining step is committing them, deliberately held until
-now per the user's own explicit instruction (2026-09-20: "wait until §6.26
-is done, then commit both together"):**
-1. Re-running §6.23's UVM-corpus probe after §6.26 landed:
-   **`PROBE-TOTAL` dropped from 349 to 0.** The probe `TEST_CASE` itself has
-   already been deleted from `tests/uvm_corpus/test_signature_help_uvm.cpp`
-   (its job — sanity-checking §6.23 against real-world UVM — is done; see
-   the 2026-09-20 §6.26 entry below for the full implementation writeup and
-   the 2026-09-20 investigation entry further below for the original
-   root-cause analysis).
-2. All coverage re-run clean after §6.26: full unit suite (2148
-   assertions/661 cases — 6 new `[db][symbol-db][chain]` cases for
-   `baseClassChain`/`resolveMethod`, 4 new `[call-args]` cases, 1 new
-   `[completion][dot][chain]` multi-level-inheritance case, 3 new
-   `[compiler][listener][call]` cases for `calleeScope` extraction, 1 new
-   `[signature_help]` case), full UVM-corpus suite (505 assertions/14 cases,
-   unchanged baseline, no regressions), full Emacs functional suite
-   (207/207, no regressions).
-3. **Nothing is committed yet.** Nine files carry uncommitted §6.23/§6.26
-   work: `src/compiler/parse_record.h`, `src/compiler/sv_tree_walker.cpp/.h`,
-   `src/db/compilation_controller.cpp`, `src/db/symbol_database.h/.cpp`,
-   `src/lsp/completion.cpp`, `src/lsp/signature_help.cpp`, plus their unit
-   tests and the two new integration fixtures/test script from §6.23. Commit
-   both together in one pass when asked — see plan.md §6.23/§6.26 for the
-   complete writeups to draw the commit message from.
+**PICK UP HERE NEXT TIME — plan.md §6.23 and §6.26 are committed (two
+separate commits: code+tests, then docs, per the user's own instruction to
+commit code and documentation separately). On top of that, plan.md §6.27
+(dotted-call signature help) is now also implemented, tested, and
+documented, but is a fresh, separate, **not yet committed** chunk of work:**
+1. §6.27 extends signature help to dotted calls (`obj.method(`,
+   `obj.field.method(`) — previously unconditionally null, a disclosed scope
+   limit since §6.22's follow-up. Built by relocating dot-completion's own
+   chain-resolution helpers (`resolveChain`/`resolveFirstSegment`/
+   `resolveMemberSegment`/`membersAcrossChain`/`peelDimensionLayers`) from
+   `completion.cpp`'s anonymous namespace into the already-shared
+   `lsp/symbol_utils.h/.cpp`, plus a new `positionForOffset` helper there,
+   then wiring `signature_help.cpp`'s new `parseDottedCallHeader` through
+   them and through §6.26's own `SymbolDatabase::resolveMethod`. See the
+   "Implemented 2026-09-20" §6.27 entry directly below for the full design
+   and a real, disclosed limitation found verifying it against the UVM
+   corpus (an out-of-class method body's own scope isn't nested under its
+   class — a separate, already-known category of gap, not a new one).
+2. All coverage re-run clean: full unit suite (2168 assertions/667 cases —
+   4 new hand-built `[signature_help]` dotted-call cases plus 3 new
+   `[real-compile]` cases using a real compile pipeline with actual
+   `import` statements, per an explicit user request), full UVM-corpus
+   suite (505 assertions/14 cases, one test re-titled/re-commented to
+   reflect the newly-traced reason it's still null, no regressions), full
+   Emacs functional suite (207/207, no regressions).
+3. **Not committed.** Changed since the last commit: `src/lsp/symbol_utils.h/.cpp`
+   (new shared helpers), `src/lsp/completion.cpp` (helpers removed, now
+   calls the shared ones), `src/lsp/signature_help.cpp/.h` (new dotted-call
+   path + updated header comment), `tests/unit/lsp/test_signature_help.cpp`
+   (7 new/changed cases), `tests/uvm_corpus/test_signature_help_uvm.cpp` (1
+   case re-titled/re-commented), `plan.md`/`handoff.md`. Ask before
+   committing — and if code/docs should stay in separate commits again,
+   confirm that's still wanted rather than assuming it's a standing rule.
+
+**Implemented 2026-09-20** — plan.md §6.27, dotted-call signature help
+(`obj.method(`, `obj.field.method(`). Prompted by a request to add tests for
+signature help on a package-scoped, dot-chained, `::`-qualified call — which
+surfaced that dotted calls weren't supported by signature help at all yet
+(a disclosed scope limit dating to §6.22's follow-up, unchanged by §6.26),
+so the feature had to be built before those tests could mean anything.
+
+- **Relocated dot-completion's own chain-resolution helpers rather than
+  reimplementing them:** `resolveChain`, `resolveFirstSegment`,
+  `resolveMemberSegment`, `membersAcrossChain`, `peelDimensionLayers` (plus
+  its file-local `splitLayers`/`isContainerDimensionTag`) moved from
+  `completion.cpp`'s anonymous namespace into `lsp/symbol_utils.h/.cpp` —
+  already shared by both files, and already home to `dotCompletionContext`/
+  `ChainSegment`/`DotCompletion`, which these functions consume. Pure
+  relocation, no behavior change; `completion.cpp` calls the same names
+  unchanged. New alongside them: `positionForOffset(text, offset)` — the
+  inverse of every provider's own local `toOffset`, needed to convert
+  `findEnclosingParen`'s byte-offset coordinate system into the
+  (line, character) pair `dotCompletionContext` expects.
+- **`parseDottedCallHeader`** (new, `signature_help.cpp`): tried only when
+  `parseCallHeader` fails on a `.`-preceded name. The one real trick: calls
+  `dotCompletionContext` with the cursor positioned at the call name's own
+  *end* (not wherever the user's actual cursor is, which may be deep inside
+  a multi-line argument list) — this makes `dotCompletionContext` hand back
+  exactly the receiver chain as `segments` and the call name itself as
+  `prefix`, with zero new chain-parsing logic needed. `resolveChain`
+  resolves the receiver to its type; `SymbolDatabase::resolveMethod`
+  (§6.26) finds the method on that type or an ancestor. Fails closed (null)
+  on any unresolved hop.
+- `signature_help.h`'s header comment rewritten: three call-header shapes
+  now, not two.
+
+**A real, disclosed limitation found verifying against the UVM corpus, not
+assumed:** the existing corpus test's dotted-call case
+(`m_children[c].set_domain(domain)`, inside
+`function void uvm_component::set_domain(...); ... endfunction`, an
+out-of-class method body) was expected to start resolving — `m_children` is
+a real `uvm_component` member and `set_domain` is a real method — but still
+came back null on the first real-corpus run. Traced the actual cause rather
+than assuming the feature was broken: an out-of-class method body's own
+recorded scope isn't nested under its declaring class at all, an
+already-disclosed gap this exact corpus test file's own header comment had
+flagged previously ("Dot-completion into a package-nested class's members,"
+§6.17, for a sibling case) — so `m_children` is never visible to
+`findSymbolsVisibleAt` from inside `set_domain`'s own body, and the receiver
+chain fails before `resolveMethod` is ever reached. Re-titled and
+re-commented that test case to assert the same null result for the now-
+accurate reason, rather than leaving a stale "dotted calls unsupported"
+comment on a call shape that mostly now works. Not fixed here (the
+out-of-class-body scope-nesting gap affects hover/completion/definition too,
+not just this one signature-help case) — flagged as a real, separate
+follow-up.
+
+**Tests:** `tests/unit/lsp/test_signature_help.cpp` — a basic dotted call
+to the receiver's own method; inheritance through an ancestor class; a
+two-segment chain; the pre-existing "null for a dotted call" test
+retitled/re-commented (still null because its fixture's receiver is
+genuinely undeclared, not because dotted calls are categorically
+unsupported). Three more cases explicitly requested by the user, driven
+through a real `CompilationController::compile` (not hand-built rows) via a
+new `RealCompileFixture`, tagged `[real-compile]`: a specific import
+(`import pkg_a::ClassB;`) on its own separate line plus a package-qualified
+variable (`pkg_a::ClassB a;`) plus a dotted call; the same with a wildcard
+import (`import pkg_a::*;`); and the same again where the called method
+lives not on `ClassB` itself but on `BaseClass` in a different package
+(`pkg_base`) that `pkg_a` imports — exercising `baseClassChain`'s
+cross-package `extends` walk against a real multi-package compile. All
+three passed first try. Confirmed along the way, not assumed: the `import`
+statements in these tests are cosmetically realistic but not actually
+load-bearing for this resolution, since `baseClassChain`/`resolveMethod`
+search the whole database by bare class name regardless of import
+visibility (same property `qualifiedClassScope` already had before §6.26
+replaced it) — only the receiver variable's own visibility would ever
+depend on an import, and these tests declare it directly, not via a
+wildcard-imported package-level variable.
+
+Full unit suite: 2168 assertions/667 cases. Full UVM-corpus suite: 505
+assertions/14 cases, no regressions (one case re-titled per the disclosed
+limitation above). Full Emacs functional suite: 207/207, no regressions.
+Not yet committed — only commit when asked.
 
 **Implemented 2026-09-20** — plan.md §6.26, closing out the false positives
 the investigation directly below found in §6.23's own UVM-corpus probe.
