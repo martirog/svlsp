@@ -40,3 +40,38 @@ module rrsh_caller;
     rrsh_out = rrsh_compute(rrsh_out,
   end
 endmodule
+
+// rrsh_sh_* -- fixture for plan.md §6.27: dotted-call signature help,
+// covering different scoping rules -- own-class method, inherited method
+// (via extends), a two-segment field chain, a class resolved through a
+// specific import, and a class referenced by its full package-qualified
+// name without ever being imported at all.
+package rrsh_sh_pkg;
+  class rrsh_sh_base;
+    function int rrsh_sh_base_get(int rrsh_bx, int rrsh_by = 5);
+      return rrsh_bx + rrsh_by;
+    endfunction
+  endclass
+
+  class rrsh_sh_child extends rrsh_sh_base;
+    function int rrsh_sh_child_get(int rrsh_cx);
+      return rrsh_cx;
+    endfunction
+  endclass
+endpackage
+
+import rrsh_sh_pkg::rrsh_sh_child;
+
+class rrsh_sh_holder;
+  rrsh_sh_pkg::rrsh_sh_child rrsh_sh_field;
+endclass
+
+module rrsh_sh_caller;
+  rrsh_sh_child  rrsh_sh_obj;
+  rrsh_sh_holder rrsh_sh_holder_obj;
+  initial begin
+    rrsh_sh_obj.rrsh_sh_child_get(
+    rrsh_sh_obj.rrsh_sh_base_get(
+    rrsh_sh_holder_obj.rrsh_sh_field.rrsh_sh_child_get(
+  end
+endmodule
