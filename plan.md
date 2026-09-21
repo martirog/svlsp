@@ -3864,8 +3864,30 @@ UVM-corpus test updated: the third `signature help` case in
 re-titled and re-commented per the disclosed limitation above — still
 asserts null, now for the traced, accurate reason. Full unit suite: 2168
 assertions/667 cases. Full UVM-corpus suite: 505 assertions/14 cases, no
-regressions. Full Emacs functional suite: 207/207, no regressions. Not yet
-committed — only commit when asked.
+regressions. Full Emacs functional suite: 207/207, no regressions. Commits:
+`cb51a68` (feat + tests), `b21882c` (docs).
+
+**Functional test added 2026-09-21** (closing the gap the entry above left:
+unit and UVM-corpus coverage only, no real-client round trip) —
+`tests/integration/test_12_signature_help.sh` gained three new cases against
+a fixture addition (`rrsh_sh_*`, appended to the end of
+`fixtures/ref_rename_sighelp.sv` so the three pre-existing tests sharing that
+fixture, incl. `test_07_references.sh`/`test_11_rename.sh`, keep their
+hardcoded line numbers valid), each covering a distinct dotted-call scoping
+rule and asserting the *full* parameter list (label string, each
+`parameters[]` entry's own label, and `activeParameter`), not just
+non-null/count — the point being to actually exercise a real function's own
+input/direction/default rendering over the wire, not just call resolution:
+own-class method resolved via a specific `import rrsh_sh_pkg::rrsh_sh_child;`
+(`rrsh_sh_obj.rrsh_sh_child_get(`); a method inherited through `extends`,
+two parameters with the second defaulted, so default-value rendering is
+covered on the dotted path too (`rrsh_sh_obj.rrsh_sh_base_get(`); and a
+two-segment chain through a field declared with its full package-qualified
+type and never imported at all (`rrsh_sh_holder_obj.rrsh_sh_field.
+rrsh_sh_child_get(`) — a different scoping rule than the specific-import
+case. All three passed first run. Full Emacs functional suite re-run:
+210/210 (207 + 3 new), no regressions. Not yet committed — only commit when
+asked.
 
 ---
 

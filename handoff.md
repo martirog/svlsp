@@ -1,38 +1,32 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-09-20.
+**Last updated:** 2026-09-21.
 
-**PICK UP HERE NEXT TIME — plan.md §6.23 and §6.26 are committed (two
-separate commits: code+tests, then docs, per the user's own instruction to
-commit code and documentation separately). On top of that, plan.md §6.27
-(dotted-call signature help) is now also implemented, tested, and
-documented, but is a fresh, separate, **not yet committed** chunk of work:**
-1. §6.27 extends signature help to dotted calls (`obj.method(`,
-   `obj.field.method(`) — previously unconditionally null, a disclosed scope
-   limit since §6.22's follow-up. Built by relocating dot-completion's own
-   chain-resolution helpers (`resolveChain`/`resolveFirstSegment`/
-   `resolveMemberSegment`/`membersAcrossChain`/`peelDimensionLayers`) from
-   `completion.cpp`'s anonymous namespace into the already-shared
-   `lsp/symbol_utils.h/.cpp`, plus a new `positionForOffset` helper there,
-   then wiring `signature_help.cpp`'s new `parseDottedCallHeader` through
-   them and through §6.26's own `SymbolDatabase::resolveMethod`. See the
-   "Implemented 2026-09-20" §6.27 entry directly below for the full design
-   and a real, disclosed limitation found verifying it against the UVM
-   corpus (an out-of-class method body's own scope isn't nested under its
-   class — a separate, already-known category of gap, not a new one).
-2. All coverage re-run clean: full unit suite (2168 assertions/667 cases —
-   4 new hand-built `[signature_help]` dotted-call cases plus 3 new
-   `[real-compile]` cases using a real compile pipeline with actual
-   `import` statements, per an explicit user request), full UVM-corpus
-   suite (505 assertions/14 cases, one test re-titled/re-commented to
-   reflect the newly-traced reason it's still null, no regressions), full
-   Emacs functional suite (207/207, no regressions).
-3. **Not committed.** Changed since the last commit: `src/lsp/symbol_utils.h/.cpp`
-   (new shared helpers), `src/lsp/completion.cpp` (helpers removed, now
-   calls the shared ones), `src/lsp/signature_help.cpp/.h` (new dotted-call
-   path + updated header comment), `tests/unit/lsp/test_signature_help.cpp`
-   (7 new/changed cases), `tests/uvm_corpus/test_signature_help_uvm.cpp` (1
-   case re-titled/re-commented), `plan.md`/`handoff.md`. Ask before
+**PICK UP HERE NEXT TIME — plan.md §6.23, §6.26, and §6.27 are all
+committed (each as its own code+tests commit followed by a docs commit, per
+the user's own instruction to commit code and documentation separately).
+On top of that, a real-client functional test for §6.27 (dotted-call
+signature help) was added 2026-09-21, closing the gap that §6.27's own
+commits only had unit + UVM-corpus coverage, no round trip through a real
+LSP client — this is a fresh, separate, **not yet committed** chunk of
+work:**
+1. Three new cases in `tests/integration/test_12_signature_help.sh` against
+   a fixture addition (`rrsh_sh_*`, appended to the end of
+   `fixtures/ref_rename_sighelp.sv`), each covering a distinct dotted-call
+   scoping rule and asserting the full parameter list (signature label,
+   each `parameters[]` entry's own label, `activeParameter`) rather than
+   just non-null/count: an own-class method resolved via a specific import;
+   a method inherited through `extends` with a defaulted second parameter
+   (covers default-value rendering on the dotted path); and a two-segment
+   chain through a field declared with its full package-qualified type,
+   never imported at all. See plan.md §6.27's "Functional test added
+   2026-09-21" entry for the full writeup.
+2. All three passed on the first run. Full Emacs functional suite re-run:
+   210/210 (207 + 3 new), no regressions.
+3. **Not committed.** Changed since the last commit:
+   `tests/integration/test_12_signature_help.sh` (3 new cases + header
+   comment), `tests/integration/fixtures/ref_rename_sighelp.sv` (new
+   `rrsh_sh_*` declarations appended), `plan.md`/`handoff.md`. Ask before
    committing — and if code/docs should stay in separate commits again,
    confirm that's still wanted rather than assuming it's a standing rule.
 
