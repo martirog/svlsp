@@ -3893,7 +3893,7 @@ asked.
 
 ### 6.28 Module/Interface/Program Port Type Information in Signature Help
 
-**Status:** not started.
+**Status:** implemented 2026-09-22.
 
 **Motivation:** function/task signature help (§6.22's follow-up) renders each
 parameter as `"<direction> <type> <name>"` (e.g. `int width`, `output bit
@@ -3954,6 +3954,86 @@ done, same discipline §6.27 used; functional-test coverage via
 `tests/integration/test_12_signature_help.sh` for a real end-to-end
 `initialize`/`didOpen`/`signatureHelp` round trip against a module
 instantiation, not just the function-call cases it already has.
+
+**Implementation, following the design sketch above almost exactly, one
+decision resolved by checking real code rather than assuming:**
+`enterAnsi_port_declaration` (`sv_tree_walker.cpp`) now extracts `type` from
+whichever header matched — `nh->net_port_type()` or `vh->variable_port_type()`
+via `m_tokens->getText(...)`, same verbatim-token-stream technique
+`enterTf_port_item` already uses for the identical "preserve real inter-token
+spacing" reason (`ctx->getText()` would collapse `"var int"` to `"varint"`).
+`net_port_header`/`variable_port_header` are mutually exclusive alternatives
+of the same grammar rule (`ansi_port_declaration`, `grammar/Sv.g4:208-213`),
+so at most one of `nh`/`vh` is ever non-null — restructured as an `if`/`else
+if` rather than the pre-existing code's `dir.empty()`-gated cascade, which
+worked but obscured that mutual exclusivity. `interface_port_header` gets no
+type extraction, exactly as the design sketch called for: its own header
+text (`bus_if.master`, `interface.mp`, ...) already **is** the port's type,
+so there's no separate `data_type` to pull out — confirmed against a real
+interface-port instantiation in `examples/interfaces.sv`
+(`bus_if.master bus`), not assumed; its `detail` stays empty, matching the
+pre-existing (undirectioned) interface-port shape.
+
+**The "always show direction, don't suppress default `input`" question the
+design sketch left open was resolved by reading the pre-existing code, not
+by guessing:** `enterAnsi_port_declaration` never had `enterTf_port_item`'s
+"input is the overwhelming majority, suppress it" logic to begin with — a
+module port's explicit `input` was always kept in `detail` before this
+change (`"input"`, not `""`). Matching that existing convention (rather than
+introducing suppression as a side effect of an unrelated type-info change)
+keeps this section's diff to exactly the type/default-value gap it set out
+to close.
+
+**Default-value rendering folded in too, per the design sketch's own call:**
+`ctx->constant_expression()` (present on 3 of `ansi_port_declaration`'s 4
+grammar alternatives) is rendered the same way `enterTf_port_item` already
+renders a function parameter's default — appended after `PARAM_DEFAULT_VALUE_SEP`,
+split back apart by the same `portLabel()` (`signature_help.cpp`), confirmed
+to need zero changes for this (its `"<prefix>[ <PARAM_DEFAULT_VALUE_SEP> =
+<value>]"` split/join logic is already fully generic over which caller
+populated `detail`).
+
+**Verified against real code, not just synthetic fixtures, before calling
+this done (the design sketch's own "same discipline §6.27 used" instruction
+— the UVM corpus itself is a pure class library with no modules/interfaces
+at all to exercise this against, per §6.22's own prior finding, so
+`examples/module_params.sv` and `examples/interfaces.sv` served as the real
+corpus instead):** `module_params.sv`'s packed-dimension port
+(`input logic [WIDTH-1:0] d`) renders as `detail == "input logic [WIDTH-1:0]"`
+— bracket spacing preserved correctly, no surprises from the verbatim-token
+extraction on a multi-token, non-identifier-shaped type. `interfaces.sv`'s
+`bus_if.master bus`/`bus_if.slave bus` ports both render `detail == ""`
+exactly as designed. Confirmed via a throwaway scratch test case (added,
+inspected, then deleted — never landed in the tree) rather than assumed from
+the grammar reading alone.
+
+**Unit tests:** `tests/unit/compiler/test_sv_listener.cpp` — the three
+pre-existing "port direction in detail" cases updated in place (`"input"` →
+`"input logic"`, etc., since the port `detail` shape genuinely changed, not
+a broken assertion) plus 6 new `[phase6.28]` cases: a plain typed port
+(`int`), a user-defined-type port, a `wire`-typed port (documenting that
+`net_port_type` captures the net-type keyword itself, not truly "untyped"),
+a default value past the separator, an interface port's empty detail, and a
+`variable_port_header`/`var`-keyword port. `tests/unit/lsp/test_signature_help.cpp`
+— 3 new `[phase6.28]` cases proving `portLabel()` needed no changes: a typed
+module instantiation (`input int width`, `output bit valid`) rendering both
+parameter labels correctly, a module port default value rendering after the
+name, and a direction-only (untyped) port still falling back to its
+pre-existing `"<direction> <name>"` shape. Functional test: a new case in
+`tests/integration/test_12_signature_help.sh` (`rrsh_p28_*`, appended to the
+end of `fixtures/ref_rename_sighelp.sv` so every pre-existing hardcoded line
+number stays valid) — a real `initialize`/`didOpen`/`signatureHelp` round
+trip against `rrsh_p28_wide(input int rrsh_p28_width, output bit
+rrsh_p28_valid = 1)`, asserting the full signature label, each parameter's
+own label, and `activeParameter`, not just non-null/count.
+
+Full unit suite: 2196 assertions/676 cases (was 2168/667), no regressions.
+Full UVM-corpus suite: 505 assertions/14 cases, unchanged — this section
+touches no code path that corpus exercises (class-library-only, no
+modules/interfaces), so an unchanged count is itself the expected, correct
+result, not a "didn't run" false negative. Full Emacs functional suite:
+211/211 (210 + 1 new), no regressions. Not yet committed — only commit when
+asked.
 
 ---
 

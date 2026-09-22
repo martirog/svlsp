@@ -1,34 +1,38 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-09-21.
+**Last updated:** 2026-09-22.
 
-**PICK UP HERE NEXT TIME — plan.md §6.23, §6.26, and §6.27 are all
-committed (each as its own code+tests commit followed by a docs commit, per
-the user's own instruction to commit code and documentation separately).
-On top of that, a real-client functional test for §6.27 (dotted-call
-signature help) was added 2026-09-21, closing the gap that §6.27's own
-commits only had unit + UVM-corpus coverage, no round trip through a real
-LSP client — this is a fresh, separate, **not yet committed** chunk of
-work:**
-1. Three new cases in `tests/integration/test_12_signature_help.sh` against
-   a fixture addition (`rrsh_sh_*`, appended to the end of
-   `fixtures/ref_rename_sighelp.sv`), each covering a distinct dotted-call
-   scoping rule and asserting the full parameter list (signature label,
-   each `parameters[]` entry's own label, `activeParameter`) rather than
-   just non-null/count: an own-class method resolved via a specific import;
-   a method inherited through `extends` with a defaulted second parameter
-   (covers default-value rendering on the dotted path); and a two-segment
-   chain through a field declared with its full package-qualified type,
-   never imported at all. See plan.md §6.27's "Functional test added
-   2026-09-21" entry for the full writeup.
-2. All three passed on the first run. Full Emacs functional suite re-run:
-   210/210 (207 + 3 new), no regressions.
-3. **Not committed.** Changed since the last commit:
-   `tests/integration/test_12_signature_help.sh` (3 new cases + header
-   comment), `tests/integration/fixtures/ref_rename_sighelp.sv` (new
-   `rrsh_sh_*` declarations appended), `plan.md`/`handoff.md`. Ask before
-   committing — and if code/docs should stay in separate commits again,
-   confirm that's still wanted rather than assuming it's a standing rule.
+**PICK UP HERE NEXT TIME — plan.md §6.23, §6.26, and §6.27 (including its
+2026-09-21 functional-test follow-up) are all committed.** `03b2c5c` landed
+plan.md's own §6.28 planning-section addition as a docs-only commit
+2026-09-22; **implementing §6.28 itself is fresh, uncommitted work from the
+same session, not yet committed:**
+1. `enterAnsi_port_declaration` (`src/compiler/sv_tree_walker.cpp`) now
+   records a module/interface/program port's declared type (and default
+   value, if any) in `detail`, not just its direction — closing the gap
+   where `SignatureHelpProvider` showed function/task parameters with full
+   `"<direction> <type> <name>"` labels (§6.22 follow-up) but module
+   instantiation ports only ever showed `"<direction> <name>"`.
+   `interface_port_header` ports (`bus_if.master bus`) deliberately get no
+   type extraction — their own header text already *is* the type — verified
+   against a real interface-port instantiation in `examples/interfaces.sv`,
+   not assumed. See plan.md §6.28 for the full design/implementation
+   writeup.
+2. Verification, all green, no regressions: full unit suite 2196
+   assertions/676 cases (was 2168/667); full UVM-corpus suite 505/14,
+   unchanged (that corpus is class-library-only, no modules/interfaces, so
+   an unchanged count is the expected result, not evidence the new code
+   path went untested — `examples/module_params.sv`/`interfaces.sv` served
+   as the real-corpus check instead, confirming packed-dimension port types
+   like `logic [WIDTH-1:0]` render with correct spacing); full Emacs
+   functional suite 211/211 (210 + 1 new).
+3. **Not committed.** Changed since the last commit: `src/compiler/sv_tree_walker.cpp`,
+   `tests/unit/compiler/test_sv_listener.cpp`, `tests/unit/lsp/test_signature_help.cpp`,
+   `tests/integration/test_12_signature_help.sh`, `tests/integration/fixtures/ref_rename_sighelp.sv`,
+   `plan.md`. Ask before committing — this project's standing pattern has
+   been a code+tests commit followed by a separate docs commit; confirm
+   that's still wanted rather than assuming it silently carries forward
+   every time.
 
 **Implemented 2026-09-20** — plan.md §6.27, dotted-call signature help
 (`obj.method(`, `obj.field.method(`). Prompted by a request to add tests for
