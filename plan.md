@@ -3891,6 +3891,72 @@ asked.
 
 ---
 
+### 6.28 Module/Interface/Program Port Type Information in Signature Help
+
+**Status:** not started.
+
+**Motivation:** function/task signature help (§6.22's follow-up) renders each
+parameter as `"<direction> <type> <name>"` (e.g. `int width`, `output bit
+valid`) — the type comes from `data_type_or_implicit()` captured in
+`enterTf_port_item` (`sv_tree_walker.cpp`). Module/interface/program
+instantiation signature help (the original §6.22 shape, `<TypeName>
+<InstanceName> (`) never got the same treatment: `enterAnsi_port_declaration`
+(`sv_tree_walker.cpp:508-522`) records only the port's direction as its
+`detail` — `pushId(ParseRecordKind::Port, portId->IDENTIFIER(), ctx,
+currentScope(), dir)` — never the port's own type, so `portLabel()`
+(`signature_help.cpp`) falls through to its documented `"<direction>
+<name>"` shape for every module port, regardless of whether that port is
+typed `int`, `MyIfcClass`, or anything else. A user instantiating a module
+with a wide/typed port list currently gets no type hint at all from
+signature help — only `output my_port`, not `output logic [7:0] my_port`.
+
+**Design sketch — mirror `enterTf_port_item`'s existing prefix/suffix
+convention, don't reinvent it:**
+1. `enterAnsi_port_declaration` needs the port's data type, not just its
+   direction. The grammar (`grammar/Sv.g4:192-213`) exposes it three ways
+   depending on which alternative of `ansi_port_declaration` matched:
+   `net_port_header`'s own `net_port_type()`, `variable_port_header`'s own
+   `variable_port_type()`, or (for the bare `interface_port_header`
+   alternative) nothing to add — an interface port's "type" is the
+   interface name itself, already implicit in the port's own declared
+   shape, not a separate `data_type`. Each needs its own `m_tokens->getText(...)`
+   call, same as `enterTf_port_item` line 480's `m_tokens->getText(dtoi)`.
+2. Build `detail` the same way `enterTf_port_item` already does: type prefixed
+   before direction only when direction is non-default/informative, or
+   simplest — always `"<direction> <type>"` since module ports (unlike
+   function parameters) don't have `enterTf_port_item`'s "input is the
+   overwhelming majority, suppress it" noise concern to the same degree;
+   worth checking real corpus output before deciding, not assumed up front.
+   No default-value suffix needed here — `PARAM_DEFAULT_VALUE_SEP` already
+   exists for `ansi_port_declaration`'s own `('=' constant_expression)?tail`,
+   which today is silently dropped the same way type currently is; folding
+   default-value rendering in here too (module ports can have them, e.g.
+   `input int width = 8` on a module header) is in scope alongside type,
+   not a separate follow-up, since both are the same "detail only carries
+   direction" gap.
+3. `portLabel()` (`signature_help.cpp`) needs no changes if `detail` is built
+   to already match the `"<prefix>[ <PARAM_DEFAULT_VALUE_SEP> = <value>]"`
+   convention `enterTf_port_item` established — confirm this by reading
+   `portLabel()` again before implementing, not assumed.
+4. Non-ANSI port declarations (`enterAnsi_port_declaration`'s sibling that
+   doesn't exist yet — non-ANSI ports currently aren't recorded as `Port`
+   rows at all, confirmed by grep: only `enterTf_port_item` and
+   `enterAnsi_port_declaration` call `pushId(ParseRecordKind::Port, ...)`
+   anywhere in `sv_tree_walker.cpp`) are a pre-existing, separate gap —
+   out of scope here, not silently fixed as a side effect.
+
+**Verification plan:** unit tests in `tests/unit/lsp/test_signature_help.cpp`
+covering a module instantiation with typed ports (`logic`, `int`, a
+user-defined type/class-like port, an untyped/implicit port) and a default
+value on a module port; a real UVM-corpus check for label-formatting
+surprises (unusually wide types, parameterized ports) before calling this
+done, same discipline §6.27 used; functional-test coverage via
+`tests/integration/test_12_signature_help.sh` for a real end-to-end
+`initialize`/`didOpen`/`signatureHelp` round trip against a module
+instantiation, not just the function-call cases it already has.
+
+---
+
 ## Appendix A — Technology Stack Summary
 
 | Concern | Choice | Rationale |
