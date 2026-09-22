@@ -126,6 +126,73 @@ TEST_CASE("SignatureHelpProvider: works for an interface instantiation too",
     CHECK(result.value().signatures[0].parameters->size() == 1);
 }
 
+// ---------------------------------------------------------------------------
+// Module/interface/program port type information (plan.md §6.28) -- proves
+// portLabel() needs no changes: the type enterAnsi_port_declaration now
+// records in `detail` renders through the same "<prefix> <name>[<suffix>]"
+// path function/task parameters already use.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("SignatureHelpProvider: a typed module port shows its type in the label",
+          "[signature_help][phase6.28]")
+{
+    Fixture f;
+    auto fid = f.sdb.upsertFile("/wide.sv", "h");
+    f.sdb.replaceSymbols(fid, {
+        {ParseRecordKind::Module, "wide", 1, 7, "", "", 3, ""},
+        {ParseRecordKind::Port, "width", 2, 2, "wide", "input int", 0, "wide"},
+        {ParseRecordKind::Port, "valid", 3, 2, "wide", "output bit", 0, "wide"},
+    });
+    const std::string text = "wide u1(";
+    auto result = SignatureHelpProvider::getSignatureHelp(
+        makeParams("/t.sv", 0, static_cast<unsigned>(text.size())), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    const auto& params_ = *result.value().signatures[0].parameters;
+    REQUIRE(params_.size() == 2);
+    CHECK(std::get<std::string>(params_[0].label) == "input int width");
+    CHECK(std::get<std::string>(params_[1].label) == "output bit valid");
+}
+
+TEST_CASE("SignatureHelpProvider: a module port's default value renders after the name",
+          "[signature_help][phase6.28]")
+{
+    Fixture f;
+    auto fid = f.sdb.upsertFile("/w.sv", "h");
+    f.sdb.replaceSymbols(fid, {
+        {ParseRecordKind::Module, "w", 1, 7, "", "", 2, ""},
+        {ParseRecordKind::Port, "width", 2, 2, "w", std::string("input int") +
+            PARAM_DEFAULT_VALUE_SEP + " = 8", 0, "w"},
+    });
+    const std::string text = "w u1(";
+    auto result = SignatureHelpProvider::getSignatureHelp(
+        makeParams("/t.sv", 0, static_cast<unsigned>(text.size())), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    const auto& params_ = *result.value().signatures[0].parameters;
+    REQUIRE(params_.size() == 1);
+    CHECK(std::get<std::string>(params_[0].label) == "input int width = 8");
+}
+
+TEST_CASE("SignatureHelpProvider: an untyped module port falls back to direction only",
+          "[signature_help][phase6.28]")
+{
+    Fixture f;
+    auto fid = f.sdb.upsertFile("/plain.sv", "h");
+    f.sdb.replaceSymbols(fid, {
+        {ParseRecordKind::Module, "plain", 1, 7, "", "", 2, ""},
+        {ParseRecordKind::Port, "clk", 2, 2, "plain", "input", 0, "plain"},
+    });
+    const std::string text = "plain u1(";
+    auto result = SignatureHelpProvider::getSignatureHelp(
+        makeParams("/t.sv", 0, static_cast<unsigned>(text.size())), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+
+    const auto& params_ = *result.value().signatures[0].parameters;
+    REQUIRE(params_.size() == 1);
+    CHECK(std::get<std::string>(params_[0].label) == "input clk");
+}
+
 TEST_CASE("SignatureHelpProvider: null for a call to something that isn't a function/task/design-unit",
           "[signature_help]")
 {

@@ -75,3 +75,18 @@ module rrsh_sh_caller;
     rrsh_sh_holder_obj.rrsh_sh_field.rrsh_sh_child_get(
   end
 endmodule
+
+// rrsh_p28_* -- fixture for plan.md §6.28: module port type information in
+// signature help. rrsh_p28_wide has a typed `int` port and a defaulted
+// `bit` port, previously rendered with direction only ("input"/"output"),
+// now with each port's own declared type too.
+module rrsh_p28_wide (
+  input  int rrsh_p28_width,
+  output bit rrsh_p28_valid = 1
+);
+endmodule
+
+module rrsh_p28_caller;
+  rrsh_p28_wide rrsh_p28_u1 (
+  );
+endmodule

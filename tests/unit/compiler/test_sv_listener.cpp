@@ -745,34 +745,107 @@ TEST_CASE("top-level module has empty parent", "[compiler][listener][phase44]") 
 // Port direction in detail
 // ---------------------------------------------------------------------------
 
-TEST_CASE("input port detail is 'input'", "[compiler][listener][phase44]") {
+TEST_CASE("input port detail is 'input <type>'", "[compiler][listener][phase44]") {
     auto [recs, errs, imps, insts, calls] = walkSource(
         "module m (input logic clk);\n"
         "endmodule\n");
     REQUIRE(errs.empty());
     auto* r = findRecord(recs, ParseRecordKind::Port, "clk");
     REQUIRE(r != nullptr);
-    CHECK(r->detail == "input");
+    CHECK(r->detail == "input logic");
 }
 
-TEST_CASE("output port detail is 'output'", "[compiler][listener][phase44]") {
+TEST_CASE("output port detail is 'output <type>'", "[compiler][listener][phase44]") {
     auto [recs, errs, imps, insts, calls] = walkSource(
         "module m (output logic q);\n"
         "endmodule\n");
     REQUIRE(errs.empty());
     auto* r = findRecord(recs, ParseRecordKind::Port, "q");
     REQUIRE(r != nullptr);
-    CHECK(r->detail == "output");
+    CHECK(r->detail == "output logic");
 }
 
-TEST_CASE("inout port detail is 'inout'", "[compiler][listener][phase44]") {
+TEST_CASE("inout port detail is 'inout <type>'", "[compiler][listener][phase44]") {
     auto [recs, errs, imps, insts, calls] = walkSource(
         "module m (inout wire bus);\n"
         "endmodule\n");
     REQUIRE(errs.empty());
     auto* r = findRecord(recs, ParseRecordKind::Port, "bus");
     REQUIRE(r != nullptr);
-    CHECK(r->detail == "inout");
+    CHECK(r->detail == "inout wire");
+}
+
+// ---------------------------------------------------------------------------
+// Module/interface/program port type information (plan.md §6.28).
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a module port's declared type is recorded in detail",
+          "[compiler][listener][phase6.28]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "module m (input int width);\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    auto* r = findRecord(recs, ParseRecordKind::Port, "width");
+    REQUIRE(r != nullptr);
+    CHECK(r->detail == "input int");
+}
+
+TEST_CASE("a module port with a user-defined type is recorded in detail",
+          "[compiler][listener][phase6.28]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "module m (input MyIfcClass h);\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    auto* r = findRecord(recs, ParseRecordKind::Port, "h");
+    REQUIRE(r != nullptr);
+    CHECK(r->detail == "input MyIfcClass");
+}
+
+TEST_CASE("an untyped/implicit module port keeps only its direction",
+          "[compiler][listener][phase6.28]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "module m (input wire clk);\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    auto* r = findRecord(recs, ParseRecordKind::Port, "clk");
+    REQUIRE(r != nullptr);
+    // `wire` alone is a net_type with an implicit data_type -- net_port_type
+    // still captures the whole "wire" text, so this isn't truly untyped;
+    // included to document that shape rather than assert a blank type.
+    CHECK(r->detail == "input wire");
+}
+
+TEST_CASE("a module port's default value is appended after the separator",
+          "[compiler][listener][phase6.28]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "module m (input int width = 8);\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    auto* r = findRecord(recs, ParseRecordKind::Port, "width");
+    REQUIRE(r != nullptr);
+    CHECK(r->detail == std::string("input int") + PARAM_DEFAULT_VALUE_SEP + " = 8");
+}
+
+TEST_CASE("an interface port's detail carries no separate type",
+          "[compiler][listener][phase6.28]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "module m (my_if.mp h);\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    auto* r = findRecord(recs, ParseRecordKind::Port, "h");
+    REQUIRE(r != nullptr);
+    CHECK(r->detail == "");
+}
+
+TEST_CASE("a variable-port-header (var) module port records its type",
+          "[compiler][listener][phase6.28]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "module m (output var int q);\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    auto* r = findRecord(recs, ParseRecordKind::Port, "q");
+    REQUIRE(r != nullptr);
+    CHECK(r->detail == "output var int");
 }
 
 // ---------------------------------------------------------------------------

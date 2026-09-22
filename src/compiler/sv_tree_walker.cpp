@@ -509,16 +509,39 @@ public:
         SvParser::Ansi_port_declarationContext* ctx) override {
         auto* portId = ctx->port_identifier();
         if (!portId) return;
-        // Extract direction from whichever header is present
+        // Extract direction and type from whichever header is present --
+        // net_port_header/variable_port_header are mutually exclusive
+        // alternatives of the same rule, so at most one is ever non-null.
+        // interface_port_header carries no separate type: the header's own
+        // interface name already *is* the port's type.
         std::string dir;
-        if (auto* nh = ctx->net_port_header())
+        std::string type;
+        if (auto* nh = ctx->net_port_header()) {
             if (auto* pd = nh->port_direction()) dir = pd->getText();
-        if (dir.empty())
-            if (auto* vh = ctx->variable_port_header())
-                if (auto* pd = vh->port_direction()) dir = pd->getText();
+            if (auto* npt = nh->net_port_type()) type = m_tokens->getText(npt);
+        } else if (auto* vh = ctx->variable_port_header()) {
+            if (auto* pd = vh->port_direction()) dir = pd->getText();
+            if (auto* vpt = vh->variable_port_type()) type = m_tokens->getText(vpt);
+        }
         if (dir.empty())
             if (auto* pd = ctx->port_direction()) dir = pd->getText();
-        pushId(ParseRecordKind::Port, portId->IDENTIFIER(), ctx, currentScope(), dir);
+
+        std::string prefix = type.empty() ? dir
+                            : dir.empty() ? type
+                                          : dir + " " + type;
+
+        // A default value on a module port (`input int width = 8`) was
+        // previously silently dropped, the same "detail only ever carried
+        // direction" gap as the missing type -- rendered the same way
+        // enterTf_port_item already does (after the name, split back apart
+        // by portLabel() via PARAM_DEFAULT_VALUE_SEP).
+        std::string detail = prefix;
+        if (auto* ce = ctx->constant_expression()) {
+            detail += PARAM_DEFAULT_VALUE_SEP;
+            detail += " = " + m_tokens->getText(ce);
+        }
+
+        pushId(ParseRecordKind::Port, portId->IDENTIFIER(), ctx, currentScope(), detail);
     }
 
     // ---- Signals: variable declarations ----

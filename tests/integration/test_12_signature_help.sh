@@ -25,6 +25,13 @@
 # rrsh_sh_child_get(` (a two-segment chain through a field declared with its
 # full package-qualified type, `rrsh_sh_pkg::rrsh_sh_child`, never imported
 # at all -- a different scoping rule than the specific-import case above).
+#
+# `rrsh_p28_*` covers plan.md §6.28: module port type information in
+# signature help. `rrsh_p28_wide(input int rrsh_p28_width, output bit
+# rrsh_p28_valid = 1)` -- instantiated (empty arg list) at
+# `rrsh_p28_caller` -- checks both a plain typed port and a defaulted one
+# render their declared type, not just direction, through a real client
+# round trip.
 
 SV_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/ref_rename_sighelp.sv"
 
@@ -37,7 +44,8 @@ if [ ! -x "${SVLSP_BIN}" ]; then
         "returns rrsh_compute's parameter list for a bare function call, default value rendered" \
         "dotted call resolves an own-class method reached via a specific import" \
         "dotted call resolves a method inherited via extends, default value rendered" \
-        "two-segment dotted chain resolves through a package-qualified, never-imported field type"
+        "two-segment dotted chain resolves through a package-qualified, never-imported field type" \
+        "module instantiation port labels carry their declared type, including a default value"
     do
         skip_test "$name" "svlsp binary not found at ${SVLSP_BIN}"
     done
@@ -173,6 +181,34 @@ else
                       (string= label \"rrsh_sh_child_get(int rrsh_cx)\")
                       (eql (length params) 1)
                       (string= p0label \"int rrsh_cx\")
+                      (eql active 0))
+                 t nil))
+         (error (format \"elisp-error: %s\" (error-message-string err))))" \
+        "t"
+
+    run_test "module instantiation port labels carry their declared type, including a default value" \
+        "(condition-case err
+           (let* ((buf    (svlsp-test/open-file \"${SV_FIXTURE}\"))
+                  (ok     (with-current-buffer buf (svlsp-test/wait-for-lsp 15)))
+                  (result (when ok
+                            (with-current-buffer buf
+                              (lsp-request \"textDocument/signatureHelp\"
+                                           (list :textDocument (list :uri (lsp--buffer-uri))
+                                                 :position     (list :line 89 :character 29))))))
+                  (sig     (when result (aref (gethash \"signatures\" result) 0)))
+                  (label   (when sig (gethash \"label\" sig)))
+                  (params  (when sig (gethash \"parameters\" sig)))
+                  (p0label (when (and params (> (length params) 0))
+                             (gethash \"label\" (aref params 0))))
+                  (p1label (when (and params (> (length params) 1))
+                             (gethash \"label\" (aref params 1))))
+                  (active  (when sig (gethash \"activeParameter\" sig))))
+             (svlsp-test/close-file buf)
+             (if (and ok sig
+                      (string= label \"rrsh_p28_wide(input int rrsh_p28_width, output bit rrsh_p28_valid = 1)\")
+                      (eql (length params) 2)
+                      (string= p0label \"input int rrsh_p28_width\")
+                      (string= p1label \"output bit rrsh_p28_valid = 1\")
                       (eql active 0))
                  t nil))
          (error (format \"elisp-error: %s\" (error-message-string err))))" \
