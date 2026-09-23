@@ -3480,6 +3480,8 @@ captured and gone through line by line.
 ### 6.25 Investigate Signature Help for Macro Invocations (`` `uvm_info(...) ``-style)
 
 **Status:** not started — investigation only, not committed to implementation.
+Implementation of macro signature help is tracked as part A of §6.29; this
+investigation is its first step.
 
 **Motivation:** §6.22's follow-up extended signature help to bare function/task
 calls; macro invocations (`` `uvm_info(ID, MSG, VERBOSITY) ``,
@@ -4034,6 +4036,145 @@ modules/interfaces), so an unchanged count is itself the expected, correct
 result, not a "didn't run" false negative. Full Emacs functional suite:
 211/211 (210 + 1 new), no regressions. Not yet committed — only commit when
 asked.
+
+---
+
+### 6.29 Signature Help for Macros, SystemVerilog Keyword Constructs, and System Tasks/Functions
+
+**Status:** not started.
+
+**Motivation:** signature help today (§6.22, its follow-up, §6.26, §6.27,
+§6.28) covers exactly the call shapes that resolve to user-declared `Port`
+rows in `SymbolDatabase`: module/interface/program instantiations, bare and
+`Class::`/`pkg::`-qualified function/task calls, and dotted method calls.
+Three shapes users type constantly get nothing at all:
+1. **Macro invocations** — `` `uvm_info(ID, MSG, VERBOSITY) ``,
+   `` `uvm_error(ID, MSG) ``, user `` `define ``s with parameters.
+2. **Keyword constructs with a parenthesized header** — `if (`, `while (`,
+   `for (`, `foreach (`, `repeat (`, `case (`/`casez (`/`casex (`,
+   `wait (`, `assert (`/`assume (`/`cover (`, `disable iff (`,
+   `randomize(...) with`, `std::randomize(`.
+3. **System tasks/functions** — `$display(`, `$sformatf(`, `$fopen(`,
+   `$cast(`, `$clog2(`, `$urandom_range(`, `$fatal(`, ... — built into the
+   language, never declared anywhere a DB row could come from.
+
+**Confirmed by reading the code directly, not assumed:**
+- `isIdentChar` (`src/lsp/signature_help.cpp:10-13`) already treats `$` as
+  an identifier character, so `parseCallHeader` today *does* read
+  `$display` as the callee name — it just finds no `Function`/`Task` row for
+  it and returns null. System-task support therefore needs a lookup
+  fallback, not new header-scanning.
+- `` ` `` is **not** an identifier character there, so a macro call header
+  is currently read as the bare name without its backtick (`uvm_info`) —
+  which could in principle falsely match a same-named function. Macro
+  support must scan for the backtick explicitly and route to a separate
+  lookup before the function/task path.
+- `MacroRecord` (`src/compiler/sv_preprocessor.h:7-11`) still has no
+  parameter list, and `ParseRecordKind::Macro` is still never constructed
+  (§6.25's findings, unchanged).
+- `SignatureHelpOptions{}` (`src/lsp/server_state.cpp:27`) advertises no
+  `triggerCharacters`/`retriggerCharacters`; clients fall back to their own
+  defaults. Worth revisiting here since all three new shapes are `(`/`,`
+  driven like the existing ones.
+- Precedent for a static, LRM-derived table already exists:
+  `src/lsp/sv_builtin_methods.h` (§6.13) and `src/lsp/sv_keywords.h` (§6.9),
+  both with an explicit "reconstructed from training-time familiarity with
+  IEEE 1800-2017, not verified against an LRM copy" disclosure.
+
+**Design sketch:**
+
+*A. Macros* — builds on §6.25; §6.25's investigation questions (1)-(4) are
+the first step of this part, and its "investigated, not worth it" outcome
+remains valid for this part alone without blocking B/C.
+1. Retain the parameter list `parseMacroDefinition` already parses onto
+   `MacroRecord` (names plus optional `` `define FOO(a, b=1) `` defaults).
+2. Persist macros as `ParseRecordKind::Macro` rows (with parameters as child
+   rows or encoded in `detail`) so signature help — and, as a side effect,
+   hover/definition/workspace-symbol for macros — can find them; §6.25 (2)
+   decides DB vs a preprocessor-local table, including `` `include ``d and
+   redefined-macro semantics (last active definition wins).
+3. Signature help: detect `` `name ( `` in the *original* document text
+   (the cursor is in the unexpanded buffer the client holds, so no
+   `sourceMap` translation is needed for the call site itself — only the
+   definition's location), count top-level commas with the existing
+   `activeParameter` scanner, and render `` `name(a, b = 1) ``.
+4. Macros from files outside the open document (UVM's `uvm_macros.svh`)
+   resolve only if that file was compiled into the project DB or a
+   pre-built library DB (§6.19) — no special UVM table.
+
+*B. Keyword constructs* — a small static table (`sv_keyword_signatures.h`
+or an extension of `sv_keywords.h`) mapping each keyword to one or more
+"signatures" describing its header shape, e.g.
+`for (initialization; condition; step)`, `foreach (array[index, ...])`,
+`case (expression)`, `assert (expression) [else ...]`,
+`repeat (count)`, `wait (expression)`, `disable iff (expression)`.
+1. Header detection: the identifier before `(` is a keyword from the table
+   (checked *before* the function/task DB lookup, since keywords can never
+   be user function names).
+2. Separator-aware `activeParameter`: `for` uses top-level `;`, not `,`;
+   `foreach` highlights the loop-variable segment inside `[...]`; the
+   existing comma counter needs a per-signature separator parameter.
+3. Open question to settle before implementing: which keywords actually
+   earn signature help vs being noise (`if (` / `while (` have a single
+   obvious parameter — possibly only worth doing for `for`, `foreach`,
+   `case*`, `randomize ... with`, and the assertion forms). Decide from real
+   editor use, not up front.
+
+*C. System tasks/functions* — a static table `src/lsp/sv_system_tasks.h`
+in the same shape as `sv_builtin_methods.h`: name, parameter list (with
+optional/variadic markers), short documentation string. Initial coverage,
+grouped by IEEE 1800-2017 Clauses 20/21:
+- display/format: `$display`, `$write`, `$strobe`, `$monitor`, their
+  `b`/`h`/`o` variants, `$sformatf`, `$sformat`, `$swrite`, `$fdisplay`,
+  `$fwrite`
+- file I/O: `$fopen`, `$fclose`, `$fgets`, `$fgetc`, `$fscanf`, `$sscanf`,
+  `$feof`, `$readmemh`, `$readmemb`, `$writememh`, `$writememb`
+- simulation control / severity: `$finish`, `$stop`, `$exit`, `$fatal`,
+  `$error`, `$warning`, `$info`
+- time: `$time`, `$stime`, `$realtime`, `$timeformat`, `$printtimescale`
+- conversion / casting: `$cast`, `$signed`, `$unsigned`, `$itor`, `$rtoi`,
+  `$bitstoreal`, `$realtobits`, `$typename`
+- math: `$clog2`, `$ln`, `$log10`, `$exp`, `$sqrt`, `$pow`, `$floor`,
+  `$ceil`, trig functions
+- bit-vector / array query: `$bits`, `$countones`, `$countbits`, `$onehot`,
+  `$onehot0`, `$isunknown`, `$size`, `$dimensions`, `$left`, `$right`,
+  `$low`, `$high`, `$increment`
+- random: `$urandom`, `$urandom_range`, `$random`, `$dist_*`
+- plusargs / assertion control: `$test$plusargs`, `$value$plusargs`,
+  `$asserton`, `$assertoff`, `$assertkill`
+1. Lookup: after the DB function/task lookup fails for a `$`-prefixed
+   name, consult the table. Unknown `$names` (vendor/PLI tasks) stay null.
+2. Variadic handling: `$display(fmt, args...)` — `activeParameter` clamps
+   to the variadic tail once past the fixed parameters; `$fatal`'s leading
+   optional `finish_number` rendered as optional.
+3. Optionally reuse the same table for `$`-triggered completion (not
+   offered today) — a small follow-up, not required for this section.
+
+**Shared infrastructure:** all three parts add a lookup path to
+`SignatureHelpProvider::getSignatureHelp` ahead of / after the existing
+three shapes; order: macro (`` ` `` prefix) → keyword → instantiation →
+bare call (DB, then system-task table for `$` names) → dotted call. The
+header comment in `signature_help.h` must be updated to list the new
+shapes. Consider advertising `triggerCharacters = {"(", ","}` in
+`server_state.cpp` once all shapes land.
+
+**Verification plan:** unit tests in `tests/unit/lsp/test_signature_help.cpp`
+per part (`[phase6.29]`): macro with/without defaults, macro vs same-named
+function disambiguation, nested call inside a macro argument; `for`
+`;`-separated active index, `foreach` bracket segment, `case (`; `$display`
+variadic clamping, `$fatal` optional leading argument, unknown `$vendor_task`
+returning null. Preprocessor unit tests for the widened `MacroRecord`.
+UVM-corpus check that `` `uvm_info ``/`` `uvm_error `` resolve when
+`uvm_macros.svh` is compiled in. Functional coverage via
+`tests/integration/test_12_signature_help.sh` (append fixtures to the end of
+`fixtures/ref_rename_sighelp.sv` so existing line numbers stay valid), one
+real round trip per part.
+
+**Out of scope:** hover/completion for system tasks and keywords (possible
+follow-ups sharing the new tables); signature help for built-in container
+methods (`q.push_back(`, `mbx.put(` — `sv_builtin_methods.h` has only a
+one-line `detail`, not structured parameters; a natural later extension of
+part C's table format); parameter-override blocks (`Module #(`).
 
 ---
 
