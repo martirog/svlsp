@@ -580,14 +580,12 @@ std::vector<SymbolRow> SymbolDatabase::findSymbolsVisibleAt(
     std::string localPh;
     for (size_t i = 0; i < scopes.size(); ++i) { if (i) localPh += ','; localPh += '?'; }
 
-    // Part 2 cross-file scopes: always '' for top-level, plus wildcard packages.
-    std::vector<std::string> crossScopes = {""};
-    for (auto& pkg : wildcardPkgs) crossScopes.push_back(pkg);
-    std::string crossPh;
-    for (size_t i = 0; i < crossScopes.size(); ++i) { if (i) crossPh += ','; crossPh += '?'; }
+    // Part 2 placeholders: one ? per wildcard-imported package.
+    std::string wildPh;
+    for (size_t i = 0; i < wildcardPkgs.size(); ++i) { if (i) wildPh += ','; wildPh += '?'; }
 
     // SQLite does not allow expressions in ORDER BY after UNION ALL; sort in C++.
-    // Part 2 (cross-file top-level+wildcard scopes) and Part 3 (specific
+    // Part 2 (top-level + wildcard-package scopes) and Part 3 (specific
     // imports) also search every attached library schema (plan.md §6.19) --
     // one arm per schema, "" (main, unqualified table names) first, then
     // "lib0.", "lib1.", ... Part 1 (the local scope chain) never does: the
@@ -602,11 +600,22 @@ std::vector<SymbolRow> SymbolDatabase::findSymbolsVisibleAt(
         "FROM symbols s JOIN files f ON f.id = s.file_id "
         "WHERE f.path = ? AND s.scope IN (" + localPh + ")";
 
+    // Part 2: top-level symbols from every *other* file (this file's own are
+    // already in Part 1's chain, which always ends with ""), plus every
+    // wildcard-imported package's members from *any* file -- including this
+    // one, since a package can be declared and imported in the same file
+    // (plan.md §6.30 step 1). The one exclusion keeps a wildcard package
+    // that is also on the cursor's own scope chain (the cursor is inside the
+    // imported package itself) from returning its rows twice.
+    std::string part2Cond = "(f.path != ? AND s.scope = '')";
+    if (!wildcardPkgs.empty())
+        part2Cond += " OR (s.scope IN (" + wildPh + ") AND NOT (f.path = ? AND s.scope IN (" +
+                     localPh + ")))";
     for (const auto& schema : schemas)
         sql += " UNION ALL "
                "SELECT s.id,s.kind,s.name,s.line,s.col,s.parent,s.detail,s.end_line,s.scope,f.path "
                "FROM " + schema + "symbols s JOIN " + schema + "files f ON f.id = s.file_id "
-               "WHERE f.path != ? AND s.scope IN (" + crossPh + ")";
+               "WHERE " + part2Cond;
 
     // Part 3: one UNION ALL per specific import, per schema, filtered by scope + name.
     for (const auto& schema : schemas)
@@ -622,7 +631,10 @@ std::vector<SymbolRow> SymbolDatabase::findSymbolsVisibleAt(
     for (const auto& sc : scopes) stmt.bind(idx++, sc);
     for (size_t i = 0; i < schemas.size(); ++i) {
         stmt.bind(idx++, path);
-        for (const auto& sc : crossScopes) stmt.bind(idx++, sc);
+        if (wildcardPkgs.empty()) continue;
+        for (const auto& pkg : wildcardPkgs) stmt.bind(idx++, pkg);
+        stmt.bind(idx++, path);
+        for (const auto& sc : scopes) stmt.bind(idx++, sc);
     }
     for (size_t i = 0; i < schemas.size(); ++i) {
         for (auto& [pkg, name] : specificImports) {

@@ -659,3 +659,24 @@ TEST_CASE("compile with a config includeDir resolves a bare `include", "[db][ctr
     REQUIRE(syms.size() == 1);
     CHECK(syms[0].name == "via_config_incdir");
 }
+
+// plan.md §6.30 step 1, end to end: the package, the `import pkg::*` and the
+// importing module all live in one real compiled file.
+TEST_CASE("a wildcard import of a package declared in the same file makes its members "
+          "visible inside the importing module", "[db][ctrl][import]") {
+    Fixture f;
+    f.ctrl.compile("/a.sv",
+        "package same_file_pkg;\n"          // line 1
+        "  class SameFileCls;\n"
+        "  endclass\n"
+        "endpackage\n"
+        "import same_file_pkg::*;\n"         // line 5
+        "module same_file_top;\n"
+        "  SameFileCls obj;\n"               // line 7
+        "endmodule\n");
+
+    auto visible = f.sdb.findSymbolsVisibleAt("/a.sv", 7);
+    auto n = std::count_if(visible.begin(), visible.end(),
+                           [](const SymbolRow& r){ return r.name == "SameFileCls"; });
+    CHECK(n == 1);
+}

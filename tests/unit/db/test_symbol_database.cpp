@@ -231,6 +231,69 @@ TEST_CASE("replaceImports: specific import makes only that symbol visible",
     CHECK_FALSE(hasBar);
 }
 
+// plan.md §6.30 step 1: a wildcard-imported package declared in the *same*
+// file as the importer. Part 1 of findSymbolsVisibleAt only covers the
+// cursor's own scope chain, and Part 2 used to exclude the cursor's own file
+// for every cross-file scope, wildcard packages included -- so these rows
+// were reachable by neither arm.
+TEST_CASE("findSymbolsVisibleAt: wildcard import of a package declared in the same file",
+          "[db][symbol-db][import]") {
+    Fixture f;
+    auto fid = f.sdb.upsertFile("/a.sv", "h");
+    f.sdb.replaceImports(fid, {{"same_pkg", "*"}});
+    f.sdb.replaceSymbols(fid, {
+        {ParseRecordKind::Package, "same_pkg", 1, 8, "", "", 3, ""},
+        {ParseRecordKind::Class,   "SameCls",  2, 8, "same_pkg", "same_pkg", 2, "same_pkg"},
+        {ParseRecordKind::Module,  "top",      5, 7, "", "", 9, ""},
+    });
+
+    auto visible = f.sdb.findSymbolsVisibleAt("/a.sv", 7);
+    auto n = std::count_if(visible.begin(), visible.end(),
+                           [](const SymbolRow& r){ return r.name == "SameCls"; });
+    CHECK(n == 1);
+}
+
+TEST_CASE("findSymbolsVisibleAt: same-file wildcard import still excludes other packages",
+          "[db][symbol-db][import]") {
+    Fixture f;
+    auto fid = f.sdb.upsertFile("/a.sv", "h");
+    f.sdb.replaceImports(fid, {{"pkg_a", "*"}});
+    f.sdb.replaceSymbols(fid, {
+        {ParseRecordKind::Package, "pkg_a", 1, 8, "", "", 3, ""},
+        {ParseRecordKind::Class,   "Alpha", 2, 8, "pkg_a", "pkg_a", 2, "pkg_a"},
+        {ParseRecordKind::Package, "pkg_b", 4, 8, "", "", 6, ""},
+        {ParseRecordKind::Class,   "Beta",  5, 8, "pkg_b", "pkg_b", 5, "pkg_b"},
+        {ParseRecordKind::Module,  "top",   8, 7, "", "", 12, ""},
+    });
+
+    auto visible = f.sdb.findSymbolsVisibleAt("/a.sv", 10);
+    auto has = [&](const char* name) {
+        return std::any_of(visible.begin(), visible.end(),
+                           [&](const SymbolRow& r){ return r.name == name; });
+    };
+    CHECK(has("Alpha"));
+    CHECK_FALSE(has("Beta"));
+}
+
+TEST_CASE("findSymbolsVisibleAt: a cursor inside a package that is also wildcard-imported by "
+          "its own file sees each member once, not twice",
+          "[db][symbol-db][import]") {
+    Fixture f;
+    auto fid = f.sdb.upsertFile("/a.sv", "h");
+    f.sdb.replaceImports(fid, {{"self_pkg", "*"}});
+    f.sdb.replaceSymbols(fid, {
+        {ParseRecordKind::Package, "self_pkg", 1, 8, "", "", 6, ""},
+        {ParseRecordKind::Class,   "SelfCls",  2, 8, "self_pkg", "self_pkg", 2, "self_pkg"},
+    });
+
+    // Line 4 is inside self_pkg: SelfCls is reachable both through the
+    // local scope chain (Part 1) and through the wildcard import.
+    auto visible = f.sdb.findSymbolsVisibleAt("/a.sv", 4);
+    auto n = std::count_if(visible.begin(), visible.end(),
+                           [](const SymbolRow& r){ return r.name == "SelfCls"; });
+    CHECK(n == 1);
+}
+
 TEST_CASE("replaceImports replaces previous imports", "[db][symbol-db][import]") {
     Fixture f;
     auto fid    = f.sdb.upsertFile("/a.sv", "h");

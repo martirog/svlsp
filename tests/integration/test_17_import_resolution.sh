@@ -7,6 +7,9 @@
 #   util_pkg.sv         — package util_pkg { class DataItem; class Logger; function compute }
 #   import_wildcard.sv  — import util_pkg::*; module wildcard_user
 #   import_specific.sv  — import util_pkg::DataItem; module specific_user
+#   import_same_file.sv — packages sfwi_pkg/sfwi_other_pkg declared in the same
+#                         file as `import sfwi_pkg::*;` and module sfwi_top
+#                         (plan.md §6.30 step 1)
 #
 # util_pkg.sv (1-based line → LSP 0-based):
 #   line 3 → LSP 2  — "    class DataItem;"  (char 10 = 'D')
@@ -24,6 +27,7 @@
 PKG_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/util_pkg.sv"
 WILDCARD_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/import_wildcard.sv"
 SPECIFIC_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/import_specific.sv"
+SAME_FILE_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/import_same_file.sv"
 
 if [ ! -x "${SVLSP_BIN}" ]; then
     for name in \
@@ -36,7 +40,9 @@ if [ ! -x "${SVLSP_BIN}" ]; then
         "wildcard definition: DataItem at LSP line 2" \
         "specific completion: includes DataItem (specifically imported)" \
         "specific completion: excludes Logger (not imported)" \
-        "specific completion: excludes compute (not imported)"
+        "specific completion: excludes compute (not imported)" \
+        "same-file wildcard completion: includes the imported package's class" \
+        "same-file wildcard completion: excludes a non-imported package's class"
     do
         skip_test "$name" "svlsp binary not found at ${SVLSP_BIN}"
     done
@@ -227,3 +233,35 @@ run_test "specific completion: excludes compute (not imported)" \
          (if (and ok (not (member \"compute\" labels))) t nil))
      (error (format \"elisp-error: %s\" (error-message-string err))))" \
     "t"
+
+# ---------------------------------------------------------------------------
+section "package import resolution — wildcard import of a same-file package"
+# ---------------------------------------------------------------------------
+
+# Completion at line 16 (0-based), char 4, inside sfwi_top. Before plan.md
+# §6.30 step 1, findSymbolsVisibleAt excluded the cursor's own file from the
+# wildcard-package arm, so a package declared in the same file was invisible.
+
+same_file_completion_has() {
+    run_test "$1" \
+        "(condition-case err
+           (let* ((buf    (svlsp-test/open-file \"${SAME_FILE_FIXTURE}\"))
+                  (ok     (with-current-buffer buf (svlsp-test/wait-for-lsp 15)))
+                  (result (when ok
+                            (with-current-buffer buf
+                              (lsp-request \"textDocument/completion\"
+                                           (list :textDocument (list :uri (lsp--buffer-uri))
+                                                 :position     (list :line 16 :character 4))))))
+                  (items  (when (hash-table-p result) (gethash \"items\" result)))
+                  (labels (when (listp items)
+                            (mapcar (lambda (i) (gethash \"label\" i)) items))))
+             (svlsp-test/close-file buf)
+             (if (and ok (if (member \"$2\" labels) t nil)) \"present\" \"absent\"))
+         (error (format \"elisp-error: %s\" (error-message-string err))))" \
+        "\"$3\""
+}
+
+same_file_completion_has "same-file wildcard completion: includes the imported package's class" \
+    sfwi_Item present
+same_file_completion_has "same-file wildcard completion: excludes a non-imported package's class" \
+    sfwi_Other absent
