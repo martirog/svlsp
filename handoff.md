@@ -17,9 +17,9 @@ write-up) — read the relevant section there rather than looking for it here.
   definition/references tests; §6.30 plans the fix (see "Other open work"
   item 0).
 - Test baselines (all green at last run):
-  - unit: **726 cases** — 700 pass + 26 `[!shouldfail]` known gaps
+  - unit: **730 cases** — 704 pass + 26 `[!shouldfail]` known gaps
     (`build/debug/unit_tests`)
-  - Emacs functional: **222/222** across 41 `tests/integration/test_*.sh` files
+  - Emacs functional: **224/224** across 41 `tests/integration/test_*.sh` files
   - UVM corpus (opt-in): **505 assertions / 14 cases**
   - UVM corpus `--build-db`: **1 diagnostic** total (the known
     `data_type` ambiguity, see "Grammar quirks")
@@ -65,8 +65,10 @@ the full design; summary:
    passing cases: `tests/integration/test_40_scoped_definition_references.sh`
    (`fixtures/defref_top.sv` + `defref_inc.svh`). A fix would reuse
    §6.26/§6.27's `resolveChain`/`resolveMethod` and `findSymbolsVisibleAt`;
-   §6.30 also covers a newly found same-file wildcard-import visibility bug
-   and out-of-class method bodies (item 2).
+   §6.30 also covers out-of-class method bodies (item 2). **Step 1 (the
+   same-file wildcard-import visibility bug in `findSymbolsVisibleAt`) is
+   done** (`2b71ffb`); next is step A, the shared
+   `resolveSymbolAt` resolver.
 1. **`wordAtPosition` resolves symbols inside comments/strings — real bug, not
    in plan.md yet.** Hovering `put` in `endfunction // put`
    (`/home/martin/src/policy/policy_mixin.sv:37`) returns an unrelated

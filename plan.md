@@ -4180,7 +4180,8 @@ part C's table format); parameter-override blocks (`Module #(`).
 
 ### 6.30 Scope-Aware Symbol Resolution for Hover, Definition, References and Rename
 
-**Status:** not started. Planned 2026-09-24. The failing cases are already
+**Status:** step 1 (same-file wildcard import) implemented 2026-09-24; steps
+A–D not started. Planned 2026-09-24. The failing cases are already
 committed as `[!shouldfail]` tests (`ad85a28`).
 
 **Motivation:** `HoverProvider`/`DefinitionProvider` resolve the bare word
@@ -4240,6 +4241,32 @@ a name-only lookup would pick and an exact file/line/column assertion:
   and so didn't catch it. Add a failing test first, then fix: drop the path
   filter for the wildcard-package scopes only, keeping it for `""` so the
   file's own top-level rows aren't duplicated by Part 1.
+
+  **Implemented 2026-09-24 (step 1).** Part 2's condition is now
+  `(f.path != ? AND s.scope = '') OR (s.scope IN (<wildcard pkgs>) AND NOT
+  (f.path = ? AND s.scope IN (<local chain>)))`. The wildcard arm has no
+  path filter; the `NOT (...)` guard stops a package that is also on the
+  cursor's own scope chain from returning its rows twice (cursor inside the
+  imported package in its own file). The wildcard arm is omitted entirely
+  when there are no wildcard imports. Part 3 (specific imports) already had
+  no path filter and is unchanged. Tests, each confirmed failing before the
+  fix:
+  - `tests/unit/db/test_symbol_database.cpp`: the same-file package is
+    visible exactly once; a same-file non-imported package stays excluded.
+    A third case guards against duplicates when the cursor is inside the
+    imported package; it passed before the fix too and is kept as a
+    regression guard.
+  - `tests/unit/db/test_compilation_controller.cpp`: the same case through
+    a real compile.
+  - `tests/integration/test_17_import_resolution.sh` + new fixture
+    `fixtures/import_same_file.sv` (`sfwi_` prefix): completion includes
+    the imported package's class and excludes the other package's class.
+    The positive case was confirmed failing against a binary built without
+    the fix.
+
+  None of the `[!shouldfail]` scoped tests flip here (they keep their
+  packages in a separate file). Unit suite: 730 cases, 704 pass + 26 known
+  gaps. Emacs suite: 224/224.
 - Out-of-class method bodies are recorded with the enclosing
   *package's* scope, not the class's. `function void Item::ext();` inside
   `pkg_b` gives Function `ext` scoped `pkg_b`, and its locals `pkg_b::ext`,
@@ -4346,7 +4373,7 @@ already picks the first of duplicates by same-file/earliest line (the
 This also closes the known §6.27 dotted-call gap
 (`m_children[c].set_domain(...)`).
 
-**Ordering:** wildcard-import same-file fix (with its own test) → A → B
+**Ordering:** wildcard-import same-file fix (with its own test, done) → A → B
 (hover/definition first, then references + rename) → C → D. After each
 step, remove the `[!shouldfail]` tag from every test that now passes:
 Catch2 reports a `[!shouldfail]` test that passes as a failure, so each flip
