@@ -4178,6 +4178,222 @@ part C's table format); parameter-override blocks (`Module #(`).
 
 ---
 
+### 6.30 Scope-Aware Symbol Resolution for Hover, Definition, References and Rename
+
+**Status:** not started. Planned 2026-09-24. The failing cases are already
+committed as `[!shouldfail]` tests (`ad85a28`).
+
+**Motivation:** `HoverProvider`/`DefinitionProvider` resolve the bare word
+under the cursor with `findSymbolsByName` + `pickBestSymbol` (same file
+first, then declaration-like kind, then `path, line` order), and
+`ReferencesProvider`/`RenameProvider` do a lexical whole-word search gated
+only on the name existing *somewhere*. None of them looks at `::`, `.`,
+imports, or the lexical scope. They are correct only when a name is
+unique. §6.26/§6.27 already made signature help and completion
+scope/type-aware. These four features are what's left, and they're the ones
+users hit most.
+
+The gap is pinned down by committed tests, each with a same-named decoy
+a name-only lookup would pick and an exact file/line/column assertion:
+- `tests/unit/lsp/test_definition_scoped.cpp`: 23 cases, 17
+  `[!shouldfail]`:
+  - `::`: `pkg_b::Item`, `pkg_b::make()`, `pkg_b::Item::stat()`,
+    `Class::method()`, and `p::Shadowed` hijacked by a same-named class in the
+    primary file
+  - imports: `import pkg_b::*`, `import pkg_b::Item`, a bare call via a
+    wildcard import
+  - `.`: `obj.get()`, `obj.val`, an inherited method, `a.inner.get()`,
+    `this.field`, `super.method()`
+  - lexical: a signal in another module, a local variable shadowing a
+    class field, an argument shadowing a module signal
+- `tests/unit/lsp/test_references_scoped.cpp`: 27 cases, 9
+  `[!shouldfail]`:
+  - 4 scope cases (same-named signal/local/field/method elsewhere wrongly
+    included)
+  - 5 names never recorded as symbols (typedef, enum literal, struct
+    member, genvar, `` `define ``), so references returns null
+- `tests/integration/test_40_scoped_definition_references.sh`: real-client
+  round trips for the cases that already pass. The fix must keep these
+  green.
+
+**Confirmed by reading the code / a probe DB, not assumed:**
+- Every symbol row already carries its fully-qualified scope, and function/
+  task locals and arguments are scoped to the function (`m2::f` for `int a`
+  and `int t` in `function int f(int a); int t;`). Scope rows carry
+  `end_line`. So lexical resolution needs no new data:
+  `findSymbolsVisibleAt(path, line)` already returns the local scope chain
+  innermost-first.
+- `begin … end` blocks and generate blocks are **not** scopes (a variable in
+  `initial begin int blk; end` is scoped to the module). Two same-named
+  variables in sibling blocks of one module stay indistinguishable. This is a
+  disclosed limit here, not fixed.
+- Scope containment is **line-granular** (`scopeAtPosition(path, line)`).
+  Two scopes opening on one physical line can't be told apart. The fixtures
+  put each scope on its own line. Also disclosed, not fixed.
+- **A second, independent gap:** `findSymbolsVisibleAt` never sees a
+  wildcard-imported package declared *in the same file*. Part 1 (local
+  scope chain) only covers the cursor's own chain; Part 2 (cross-file
+  top-level + wildcard packages) filters `f.path != ?`; only Part 3
+  (specific imports) has no path filter. So `package p; … endpackage
+  import p::*; module top; X x;` can't see `p::X`. This affects completion
+  today as well. The definition tests put the packages in a separate file
+  and so didn't catch it. Add a failing test first, then fix: drop the path
+  filter for the wildcard-package scopes only, keeping it for `""` so the
+  file's own top-level rows aren't duplicated by Part 1.
+- Out-of-class method bodies are recorded with the enclosing
+  *package's* scope, not the class's. `function void Item::ext();` inside
+  `pkg_b` gives Function `ext` scoped `pkg_b`, and its locals `pkg_b::ext`,
+  so the class's members are invisible inside the body (already disclosed in
+  §6.27). This is pervasive in UVM.
+- Signature help already resolves `.` chains
+  (`dotCompletionContext` → `resolveChain` → `SymbolDatabase::resolveMethod`,
+  `parseDottedCallHeader`), and `Class::`/`pkg::` calls (`parseCallHeader`'s
+  scope scan + `resolveMethod`). `membersAcrossChain` gives fields and
+  methods across the `extends` chain.
+- Named connections look like `.` but aren't member access:
+  `.port(sig)` / `.P(8)` inside an instantiation's `( … )` or `#( … )`.
+  `signature_help.cpp` already tells them apart (`isNamedConnectionParen`,
+  `parseInstantiationHeader`). The committed references tests for ports and
+  parameters (lexical, passing today) cover exactly this shape.
+
+**Design sketch:**
+
+*A. One shared resolver.* New `src/lsp/symbol_resolution.h/.cpp` (in
+`svlsp_lib`):
+`resolveSymbolAt(db, path, text, position) -> std::optional<Resolved>`,
+with `Resolved { SymbolRow row; bool exact; }`. `exact=false` marks a
+name-only fallback (below). Steps, on the identifier under the cursor:
+1. **`::`-qualified** (`A::B::name`): scan the qualifier segments leftward.
+   Resolve the first segment as a Package (by name), a visible Class (via
+   step 4's lookup), or `$unit` (scope `""`). Then walk each later segment
+   inside the previous scope. The final lookup is `findSymbolsInScope`,
+   or `membersAcrossChain` when the scope is a class (inherited static
+   members).
+2. **`.` member access:** first rule out a named connection. If the `.`
+   is preceded (ignoring whitespace) by `(` or `,` inside an instantiation's
+   port or `#(` parameter list, resolve to the instantiated
+   module/interface/program's Port or Parameter of that name
+   (reuse/move `isNamedConnectionParen`/`parseInstantiationHeader` from
+   `signature_help.cpp`). Otherwise call `dotCompletionContext` at the
+   word's end (§6.27's trick) → `resolveChain` → `membersAcrossChain` on the
+   receiver type → the field or method named `word`. `this`/`super` already
+   work through `resolveFirstSegment`.
+3. **Declaration under the cursor:** falls out of step 4. The declaring
+   row is visible from its own line.
+4. **Bare name:** walk `findSymbolsVisibleAt(path, line1)` innermost-first
+   and take the first row whose name matches. Two extra rules:
+   - when inside a class (`enclosingClassNameAt`), inherited members
+     (`membersAcrossChain`) outrank everything outside the class chain;
+   - an explicit specific import outranks a wildcard import (LRM 26.3).
+5. **Fallback, `exact=false`:** if a `::`/`.` qualifier or receiver
+   can't be understood at all, fall back to today's
+   `findSymbolsByName` + `pickBestSymbol`. Cases: an unknown package or
+   class, or a receiver whose type isn't a class — a struct, interface or
+   virtual interface, a hierarchical instance path like `u_dut.sig`, or a
+   Port-typed receiver. Same for a bare name nothing visible declares
+   (e.g. a UVM class used without `import uvm_pkg::*`). This is a
+   deliberate departure from §6.26's "fail closed": hover/definition on
+   those shapes work by luck today, and dropping them would be a
+   regression. But when the qualifier or receiver **is** understood and the
+   name isn't found there, return null rather than guessing (§6.26's own
+   rule, same reason).
+
+*B. Providers.*
+- **Hover and definition:** call `resolveSymbolAt`, render `row`.
+  `pickBestSymbol` stays as the fallback's tie-break only.
+- **References:** resolve the cursor to `target`. If it's null, return
+  null as today. Otherwise keep today's lexical candidate scan
+  (`findIdentifierOccurrences` over `allFilePaths()`), then resolve each
+  candidate occurrence and keep it if:
+  - it resolves `exact` to the same row (compare by `id`), or
+  - it resolves only by fallback (`exact=false`) and `target` is among
+    that name's candidates.
+
+  The second rule keeps uses we can't type-resolve (struct fields,
+  hierarchical paths) instead of silently dropping real references.
+  Over-inclusion there matches today's behavior; no new error. Declaration
+  exclusion then uses `target` itself, not "any row with this name at this
+  position".
+- **Rename:** use exactly the filtered occurrence set from references
+  (today `rename.cpp` has its own copy of the lexical scan). Rename is where
+  a name-only match does real damage, since it edits the unrelated symbol too.
+
+*C. Record the missing kinds* (flips the 4 non-macro "unrecorded"
+references tests; independent of A/B and can land separately). New
+`ParseRecordKind`s, with no schema change since `kind` is a string column:
+- `Typedef` (plain `typedef`). A forward `typedef class Foo;` must not
+  become a definition target that outranks the real class.
+- `EnumLiteral`, scoped like the enum's own declaration.
+- `Member` for struct/union fields, scoped
+  `<enclosing>::<typedef-or-variable name>`.
+- `Genvar`.
+
+Each needs a mapping in `symbolKindFor`/`completionKindFor` and a check of
+what documentSymbol/workspace-symbol should show. Dot-resolution into a
+struct type stays out of scope; the `s.refs_hi` use is kept by B's
+fallback rule. Macros are §6.25/§6.29 part A, so the macro test stays
+`[!shouldfail]` until that lands.
+
+*D. Out-of-class method bodies* (separable, but the UVM-corpus check
+below depends on it). In `sv_tree_walker.cpp`, a
+`function/task C::m(...)` body should push scope `…::C::m` (and resolve
+`C` to its qualified class scope), so the body's locals and arguments
+nest under the class and the class's members become visible. Then decide
+whether the body's own Function row is recorded under the class, and how
+it de-duplicates against the `extern` prototype row. `resolveMethod`
+already picks the first of duplicates by same-file/earliest line (the
+§6.22 corpus test relies on the prototype winning, so re-check that test).
+This also closes the known §6.27 dotted-call gap
+(`m_children[c].set_domain(...)`).
+
+**Ordering:** wildcard-import same-file fix (with its own test) → A → B
+(hover/definition first, then references + rename) → C → D. After each
+step, remove the `[!shouldfail]` tag from every test that now passes:
+Catch2 reports a `[!shouldfail]` test that passes as a failure, so each flip
+is forced, not optional.
+
+**Performance:** references now resolves every lexical hit instead of just
+listing it. That's one visible-set query and possibly a chain resolution
+per occurrence. For a common name across the UVM corpus (`get`, `name`)
+that's thousands of resolutions. Cache per request:
+- the visible set per `(path, line1)`
+- the scope chain per `(path, line1)`
+- resolved receiver types per `(path, line1, chain text)`
+
+Measure on the UVM corpus (release build) before and after, and record
+the numbers here. If it's still too slow, resolve only occurrences whose
+file contains a declaration or import that could reach `target`.
+
+**Verification plan:**
+- every `[!shouldfail]` in the two scoped test files flips (except the
+  macro case), tags removed;
+- new unit cases: the same-file wildcard import; specific-over-wildcard
+  import precedence; an inherited field used bare inside a derived class; a
+  named port / `#(.P())` connection resolving to the module's Port /
+  Parameter; the fallback path (struct field, hierarchical `u_dut.sig`)
+  still returning today's answer; `this.`/`super.` inside an out-of-class
+  body (D);
+- existing hover/definition/references/rename unit tests unchanged;
+- `test_40` gains the `pkg_b` decoy cases (appended to the end of
+  `fixtures/defref_top.sv` so existing positions stay valid) plus a rename
+  round trip;
+- UVM corpus: definition/hover on a method called from an out-of-class
+  body, and references on a commonly-overloaded method name (e.g. a class's
+  own `get`), checked against a hand-verified count, not just non-null.
+  Record the timing.
+
+**Out of scope:**
+- block-level (`begin`/`end`, generate block) scopes;
+- column-granular scope containment;
+- hierarchical references (`top.u0.sig`) and interface/virtual-interface
+  member resolution — these use the fallback;
+- `bind`;
+- references into attached library DBs beyond what `allFilePaths()`
+  already covers;
+- macros (§6.25/§6.29).
+
+---
+
 ## Appendix A — Technology Stack Summary
 
 | Concern | Choice | Rationale |

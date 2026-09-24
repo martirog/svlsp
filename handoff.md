@@ -11,12 +11,15 @@ write-up) — read the relevant section there rather than looking for it here.
 
 ## Current state
 
-- `main` is clean; everything through plan.md **§6.28** is committed
+- Everything through plan.md **§6.28** is committed
   (`4378a29` code+tests, `6d63659` docs). `a01acb4` added the **§6.29** plan
-  (docs only, nothing implemented).
+  (docs only, nothing implemented). `ad85a28` added scope-strict
+  definition/references tests; §6.30 plans the fix (see "Other open work"
+  item 0).
 - Test baselines (all green at last run):
-  - unit: **2196 assertions / 676 cases** (`build/debug/unit_tests`)
-  - Emacs functional: **211/211** across 40 `tests/integration/test_*.sh` files
+  - unit: **726 cases** — 700 pass + 26 `[!shouldfail]` known gaps
+    (`build/debug/unit_tests`)
+  - Emacs functional: **222/222** across 41 `tests/integration/test_*.sh` files
   - UVM corpus (opt-in): **505 assertions / 14 cases**
   - UVM corpus `--build-db`: **1 diagnostic** total (the known
     `data_type` ambiguity, see "Grammar quirks")
@@ -45,6 +48,25 @@ the full design; summary:
 
 ## Other open work (priority roughly top-down)
 
+0. **Definition and references aren't scope-aware — fix planned as
+   plan.md §6.30 (tests committed `ad85a28`).** `DefinitionProvider` is `wordAtPosition` →
+   `findSymbolsByName` → `pickBestSymbol`; `ReferencesProvider` is a
+   lexical whole-word search. New real-compile suites pin this down with
+   same-named decoys and exact locations:
+   `tests/unit/lsp/test_definition_scoped.cpp` (23 cases; 17 known gaps:
+   `pkg_b::X`, `Class::m()`, imports, `obj.m()`/`obj.f`, inheritance,
+   chains, `this.`/`super.`, local shadowing) and
+   `tests/unit/lsp/test_references_scoped.cpp` (27 cases; every recorded
+   kind passes exactly, 9 known gaps: same-named decoys in other
+   modules/classes, and typedef / enum literal / struct member / genvar /
+   macro, which aren't recorded as symbols at all so references return
+   null). Known gaps are tagged `[!shouldfail]` — they flip to failures
+   once fixed, so drop the tag then. Functional round trips for the
+   passing cases: `tests/integration/test_40_scoped_definition_references.sh`
+   (`fixtures/defref_top.sv` + `defref_inc.svh`). A fix would reuse
+   §6.26/§6.27's `resolveChain`/`resolveMethod` and `findSymbolsVisibleAt`;
+   §6.30 also covers a newly found same-file wildcard-import visibility bug
+   and out-of-class method bodies (item 2).
 1. **`wordAtPosition` resolves symbols inside comments/strings — real bug, not
    in plan.md yet.** Hovering `put` in `endfunction // put`
    (`/home/martin/src/policy/policy_mixin.sv:37`) returns an unrelated
