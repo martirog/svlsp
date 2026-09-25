@@ -4181,8 +4181,9 @@ part C's table format); parameter-override blocks (`Module #(`).
 ### 6.30 Scope-Aware Symbol Resolution for Hover, Definition, References and Rename
 
 **Status:** step 1 (same-file wildcard import) implemented 2026-09-24;
-step A (shared resolver) and step B (hover, definition, references,
-rename wired to it) implemented 2026-09-25; steps C–D not started.
+step A (shared resolver), step B (hover, definition, references,
+rename wired to it) and step C (typedef / enum literal / struct member /
+genvar recorded) implemented 2026-09-25; step D not started.
 Planned 2026-09-24. The failing cases are already
 committed as `[!shouldfail]` tests (`ad85a28`).
 
@@ -4511,6 +4512,64 @@ what documentSymbol/workspace-symbol should show. Dot-resolution into a
 struct type stays out of scope; the `s.refs_hi` use is kept by B's
 fallback rule. Macros are §6.25/§6.29 part A, so the macro test stays
 `[!shouldfail]` until that lands.
+
+**Implemented 2026-09-25 (step C).** `sv_tree_walker.cpp`:
+- `enterType_declaration` records a `Typedef` for `typedef <data_type>
+  name;` (detail: the aliased named type via the new `dataTypeName`, e.g.
+  `Item`; `userTypeName` now delegates to it) and for `typedef intf.T
+  name;` (detail `T`). The forward form (`typedef [class|enum|struct|
+  union|interface class] name;`) is not recorded.
+- `enterEnum_name_declaration` records an `EnumLiteral` in the current
+  scope; detail is the enum's typedef name when it has one.
+- `enterStruct_union_member` records a `Member` per declarator, scoped
+  `<current chain>::<owner>`. `structOwnerPath` gives the owner: the
+  typedef name, the first variable of an inline `struct {...} v;`, or
+  `<outer owner>::<member>` for a nested struct. Members of a struct type
+  written anywhere else (a port or parameter type) aren't recorded. The
+  owner scope is never on a cursor's lexical chain, so members never leak
+  into bare-name lookup or completion; `s.hi` reaches the member through
+  the resolver's name-only fallback (struct receivers stay out of scope).
+  New helper `pushIdInScope` records with an explicit scope.
+- `enterGenvar_declaration` and `enterGenvar_initialization` (only when
+  written `for (genvar g = ...)`) record a `Genvar`.
+
+LSP kinds: Typedef → TypeParameter, EnumLiteral → EnumMember, Member →
+Field, Genvar → Variable (both `symbolKindFor` and `completionKindFor`).
+documentSymbol is a flat list, so the new rows just appear with those
+kinds; workspace/symbol likewise. Checked every kind-string comparison in
+`src/`: the resolver's type lookups filter to Package/Class, so a visible
+Typedef never stands in for a class, and `pickBestSymbol` ranks the new
+kinds in its data-like tier.
+
+Not done (possible follow-up): the resolver doesn't follow a Typedef to
+the class it aliases, so `typedef Item alias_t; alias_t x; x.get()` still
+resolves `get` by name only.
+
+Tests (the definition, completion and `test_40` cases were confirmed
+failing against the pre-step-C compiler/binary; the listener cases use
+the new kinds and can't exist without them):
+- `test_sv_listener.cpp`: 5 `[phase6.30]` cases (typedef + detail,
+  forward typedef not recorded, enum literals incl. typedef'd enum, struct
+  / nested struct / union members and their scopes, genvar declarations
+  and inline loop genvars).
+- The 4 non-macro "unrecorded" `[!shouldfail]` references cases pass;
+  tags removed. The macro case stays tagged.
+- `test_definition_scoped.cpp`: typedef / enum literal / genvar uses
+  with same-named decoys in another module, and `s.member` via fallback.
+- `test_completion.cpp`: typedef, enum literals and genvar are offered;
+  struct members aren't offered as bare names.
+- `test_symbol_utils.cpp`: the kind mappings.
+- `test_40`: a `defref_kinds` module appended to the fixture; definition
+  and references on a typedef and an enum literal (4 cases, all failing
+  on the pre-step-C binary).
+
+Unit suite: 784 cases, 783 pass + 1 known gap (macro). Emacs suite:
+235/235. UVM corpus: 499 assertions / 18 cases, all pass (493 before; the
+empty-prefix completion case runs one CHECK per item and now also sees the
+new typedef/enum-literal rows). UVM `--build-db`: still 1 diagnostic;
+14798 → 15327 rows (+310 Typedef, +189 EnumLiteral, +30 Member, no
+genvars in UVM), and no recorded Typedef shares a name with a Class, so
+UVM's many forward `typedef class …;` lines were all skipped.
 
 *D. Out-of-class method bodies* (separable, but the UVM-corpus check
 below depends on it). In `sv_tree_walker.cpp`, a

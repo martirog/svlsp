@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-09-25 (§6.30 step B done).
+**Last updated:** 2026-09-25 (§6.30 step C done).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -11,23 +11,23 @@ write-up) — read the relevant section there rather than looking for it here.
 
 ## Current state
 
-**PICK UP HERE NEXT TIME — plan.md §6.30 step C** (record typedef / enum
-literal / struct member / genvar as symbols), then step D (out-of-class
-method bodies under their class). Steps 1, A and B are done; each has an
-"Implemented …" write-up in plan.md §6.30.
+**PICK UP HERE NEXT TIME — plan.md §6.30 step D** (out-of-class method
+bodies `function void C::m(); … endfunction` scoped under their class, so
+C's members are visible inside; see §6.30 "D." and open-work item 2).
+Steps 1, A, B and C are done; each has an "Implemented …" write-up in
+plan.md §6.30.
 
 - Committed on `main`: everything through §6.28; §6.29 plan; §6.30 plan,
-  step 1, step A (`0e3c43c`, docs `f2da749`) and step B (see `git log`).
-- Test baselines (with step B):
-  - unit: **775 cases** — 770 pass + 5 `[!shouldfail]` known gaps (the
-    "unrecorded kind" references cases: typedef, enum literal, struct
-    member, genvar, macro)
-  - Emacs functional: **231/231**
-  - UVM corpus (opt-in): **493 assertions / 18 cases** (new
-    `test_references_uvm.cpp`; references on `get_name` = 304 locations in
-    ~321 ms release)
+  step 1, step A (`0e3c43c`, docs `f2da749`), step B (`1aa04f7`, docs
+  `d9d13cb`) and step C (see `git log`).
+- Test baselines (with step C):
+  - unit: **784 cases** — 783 pass + 1 `[!shouldfail]` known gap
+    (references on a `` `define `` macro name, waits for §6.25)
+  - Emacs functional: **235/235**
+  - UVM corpus (opt-in): **499 assertions / 18 cases** (references on
+    `get_name` = 304 locations in ~320 ms release)
   - UVM corpus `--build-db`: **1 diagnostic** total (the known
-    `data_type` ambiguity, see "Grammar quirks")
+    `data_type` ambiguity, see "Grammar quirks"); 15327 symbol rows
 
 **What §6.30 changed that other work must know about:**
 - Hover/definition/references/rename all go through
@@ -42,8 +42,13 @@ method bodies under their class). Steps 1, A and B are done; each has an
 - A block's leading assignment (`x = 1;`) is no longer recorded as a local
   Signal declaration (`isMisparsedAssignment`) — 2514 phantom rows gone
   from UVM.
-- `fixtures/defref_top.sv` has a second half of same-named decoys
-  (`defref_pkg_b`, `defref_top_b`); append new cases after it.
+- New symbol kinds (step C): `Typedef`, `EnumLiteral`, `Member` (struct/
+  union field, scoped `<chain>::<variable-or-typedef>` — never on a lexical
+  chain), `Genvar`. Anything that switches on kind strings must consider
+  them.
+- `fixtures/defref_top.sv` has appended sections of same-named decoys
+  (`defref_pkg_b`, `defref_top_b`) and step-C kinds (`defref_kinds`);
+  append new cases after them.
 
 ## Next up — plan.md §6.29 (not started)
 
@@ -69,11 +74,10 @@ the full design; summary:
 
 ## Other open work (priority roughly top-down)
 
-0. **§6.30 steps C and D** (scope-aware resolution; A, B and step 1 are
-   done). C: record typedef / enum literal / struct member / genvar as
-   symbols — flips 4 of the 5 remaining `[!shouldfail]` references cases in
-   `tests/unit/lsp/test_references_scoped.cpp` (the macro one waits for
-   §6.25). D: scope out-of-class method bodies under their class (item 2).
+0. **§6.30 step D** (the last step): scope out-of-class method bodies
+   under their class (item 2). Small follow-up noted in §6.30 step C: the
+   resolver doesn't follow a Typedef to the class it aliases
+   (`alias_t x; x.get()` resolves `get` by name only).
 1. **Completion still uses `wordAtPosition`, which ignores comments/
    strings.** Hover/definition/references/rename are fixed (they use the
    resolver, which blanks comments and strings; unit-tested in
