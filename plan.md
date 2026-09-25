@@ -4181,7 +4181,8 @@ part C's table format); parameter-override blocks (`Module #(`).
 ### 6.30 Scope-Aware Symbol Resolution for Hover, Definition, References and Rename
 
 **Status:** step 1 (same-file wildcard import) implemented 2026-09-24;
-step A (shared resolver) implemented 2026-09-25; steps B–D not started.
+step A (shared resolver) and step B (hover, definition, references,
+rename wired to it) implemented 2026-09-25; steps C–D not started.
 Planned 2026-09-24. The failing cases are already
 committed as `[!shouldfail]` tests (`ad85a28`).
 
@@ -4427,6 +4428,73 @@ known `data_type` ambiguity).
 - **Rename:** use exactly the filtered occurrence set from references
   (today `rename.cpp` has its own copy of the lexical scan). Rename is where
   a name-only match does real damage, since it edits the unrelated symbol too.
+
+**Implemented 2026-09-25 (step B).**
+- `HoverProvider`/`DefinitionProvider` call `resolveSymbolAt` and render
+  its `row`; `wordAtPosition`/`findSymbolsByName` are gone from both. A
+  cursor inside a comment or string now hovers/jumps to nothing.
+- New `resolveSymbolsAt(db, path, text, positions)` resolves many
+  positions in one file with one comment/string-blanked copy of the text
+  (references resolves every lexical hit; `resolveSymbolAt` re-blanks the
+  whole file per call).
+- `ReferencesProvider::findOccurrences` is the filtered occurrence set;
+  `getReferences` and `RenameProvider::getRename` both use it, so rename
+  edits exactly what references reports. Rules, differing from the sketch
+  in three ways:
+  - **Override families.** An exact hit is kept if it resolves to the
+    target's row *or, for a class method, the same override family*
+    (`overrideFamilyId`: the id of the same-named Function/Task in the
+    topmost `extends` ancestor that declares one). Comparing plain row ids
+    broke the committed references test for a virtual method: `d.run()`
+    on a derived handle and `this.run()` in the derived class resolve to
+    the override, not the base declaration, yet they are references to
+    the method (and renaming the base without its overrides silently
+    breaks overriding). Sibling overrides share the base's family; an
+    unrelated class's same-named method doesn't. Fields keep the plain
+    id rule (they shadow, not override).
+  - The "`target` among the fallback's candidates" condition is always
+    true (the candidates are every row with the target's own name), so it
+    reduces to "keep every `exact=false` hit".
+  - If the cursor itself only resolves by fallback, `target` is only a
+    name-only guess, so no exact hit is dropped (the pre-step-B
+    behavior). Hits resolving to nullopt are always dropped.
+  - Declaration exclusion keeps the old rule ("a declaration row of this
+    name sits exactly here"), applied to the filtered set, so an extern
+    prototype and its out-of-class body both count as declarations.
+
+Tests:
+- The 17 definition and 4 scope-related references `[!shouldfail]` cases
+  now pass; their tags are removed. The 5 "unrecorded" references cases
+  stay `[!shouldfail]` (step C / §6.25).
+- `test_hover.cpp`: `pkg_b::Item` with a `pkg_a::Item` decoy, and
+  comment/string cursors → null (open-work item 1 in handoff.md). Both
+  confirmed failing on the old hover.
+- `test_rename.cpp`: two real-compile `[rename][scoped]` cases -- a
+  same-named signal in another module is left alone; renaming a derived
+  override also renames the base declaration, the `super.` call and a
+  call through a derived handle, but not an unrelated class's same-named
+  method. Both confirmed failing on the old lexical rename.
+- `test_40_scoped_definition_references.sh`: `fixtures/defref_top.sv`
+  gains an appended `defref_pkg_b` + `defref_top_b` that redeclare every
+  name, so the original references cases also check decoy exclusion. 4 new
+  definition cases, 2 new references cases, and a rename case that
+  collects edit positions without applying them. 9 of the 18 cases fail
+  against the step-A binary; all pass now.
+- New `tests/uvm_corpus/test_references_uvm.cpp`, each expected set
+  hand-checked against `grep -rnw`: `uvm_barrier::cancel` is exactly its
+  declaration (the lexical search also returned `uvm_event_base::cancel`
+  and `m_event.cancel()`, which dispatches through `uvm_event#(uvm_object)`
+  to `uvm_event_base`); `uvm_event_base::cancel` is its declaration plus
+  that call; `uvm_comparer::set_threshold` is its extern prototype plus
+  the `uvm_comparer::set_threshold` out-of-class body, not
+  `uvm_barrier`'s. Plus a timing case for `uvm_object::get_name`.
+
+Unit suite: 775 cases, 770 pass + 5 known gaps. Emacs suite: 231/231.
+UVM corpus: 493 assertions / 18 cases, all pass. **Timing** (release):
+references on `uvm_object::get_name`, resolving every lexical hit across
+the corpus, returns 304 locations in 321 ms. That's fast enough that the
+per-request caches sketched under "Performance" below are not
+implemented; revisit if a real workspace is slower.
 
 *C. Record the missing kinds* (flips the 4 non-macro "unrecorded"
 references tests; independent of A/B and can land separately). New

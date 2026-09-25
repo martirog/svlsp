@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-09-25 (§6.30 step A verified, ready to commit).
+**Last updated:** 2026-09-25 (§6.30 step B done).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -11,27 +11,30 @@ write-up) — read the relevant section there rather than looking for it here.
 
 ## Current state
 
-**PICK UP HERE NEXT TIME — plan.md §6.30 step B** (wire hover/definition,
-then references/rename, to `resolveSymbolAt`). Step A (the shared resolver
-plus its compiler/DB prerequisites) is done and fully verified; its full
-write-up is in plan.md §6.30 ("Implemented 2026-09-25 (step A)").
+**PICK UP HERE NEXT TIME — plan.md §6.30 step C** (record typedef / enum
+literal / struct member / genvar as symbols), then step D (out-of-class
+method bodies under their class). Steps 1, A and B are done; each has an
+"Implemented …" write-up in plan.md §6.30.
 
-- Committed on `main`: everything through §6.28; §6.29 plan (`a01acb4`);
-  scope-strict definition/references tests (`ad85a28`); §6.30 plan
-  (`6badbce`); §6.30 step 1, same-file wildcard import (`2b71ffb`, docs
-  `52a13e4`). §6.30 step A: see `git log` (commit pending at time of
-  writing if the log doesn't show it).
-- Test baselines (with step A):
-  - unit: **771 cases** — 745 pass + 26 `[!shouldfail]` known gaps
-  - Emacs functional: **224/224**
-  - UVM corpus (opt-in): **487 assertions / 14 cases** (was 505; the drop
-    is 18 phantom rows that the misparsed-assignment fix removed from a
-    per-item completion loop — explained in plan.md §6.30)
+- Committed on `main`: everything through §6.28; §6.29 plan; §6.30 plan,
+  step 1, step A (`0e3c43c`, docs `f2da749`) and step B (see `git log`).
+- Test baselines (with step B):
+  - unit: **775 cases** — 770 pass + 5 `[!shouldfail]` known gaps (the
+    "unrecorded kind" references cases: typedef, enum literal, struct
+    member, genvar, macro)
+  - Emacs functional: **231/231**
+  - UVM corpus (opt-in): **493 assertions / 18 cases** (new
+    `test_references_uvm.cpp`; references on `get_name` = 304 locations in
+    ~321 ms release)
   - UVM corpus `--build-db`: **1 diagnostic** total (the known
     `data_type` ambiguity, see "Grammar quirks")
 
-**What step A changed that other work must know about:**
-- `symbols.detail` for Signal/Parameter/Class now keeps type qualifiers:
+**What §6.30 changed that other work must know about:**
+- Hover/definition/references/rename all go through
+  `src/lsp/symbol_resolution.h` (`resolveSymbolAt`, `resolveSymbolsAt`,
+  `overrideFamilyId`). References and rename share
+  `ReferencesProvider::findOccurrences`.
+- `symbols.detail` for Signal/Parameter/Class keeps type qualifiers:
   `pkg_b::Item`, `base_p::Base`, `p::Outer::Inner`, `$unit::T`
   (`#(...)` dropped). Split layered details with `splitLayers`/
   `firstTypeLayer` (single `:` only), never a naive `:` split.
@@ -39,19 +42,8 @@ write-up is in plan.md §6.30 ("Implemented 2026-09-25 (step A)").
 - A block's leading assignment (`x = 1;`) is no longer recorded as a local
   Signal declaration (`isMisparsedAssignment`) — 2514 phantom rows gone
   from UVM.
-- `isNamedConnectionParen`/`findEnclosingParen` now live in
-  `symbol_utils`; `importsForFile(path)` is public.
-
-**Step B plan (plan.md §6.30 "B. Providers"):** hover/definition call
-`resolveSymbolAt` and render `row` (`pickBestSymbol` only as the fallback's
-tie-break). Then references/rename: resolve the cursor to `target`, keep
-the lexical scan, keep a hit if it resolves `exact` to the same row id, or
-`exact=false` with `target` among that name's candidates; rename uses the
-same filtered set. The 17 definition and 4 scope-related references
-`[!shouldfail]` tests should flip — remove their tags. Add `test_40`
-decoy cases at the end of `fixtures/defref_top.sv` plus a rename round
-trip; measure references timing on the UVM corpus (see §6.30
-"Performance").
+- `fixtures/defref_top.sv` has a second half of same-named decoys
+  (`defref_pkg_b`, `defref_top_b`); append new cases after it.
 
 ## Next up — plan.md §6.29 (not started)
 
@@ -77,37 +69,18 @@ the full design; summary:
 
 ## Other open work (priority roughly top-down)
 
-0. **Definition and references aren't scope-aware — fix planned as
-   plan.md §6.30 (tests committed `ad85a28`).** `DefinitionProvider` is `wordAtPosition` →
-   `findSymbolsByName` → `pickBestSymbol`; `ReferencesProvider` is a
-   lexical whole-word search. New real-compile suites pin this down with
-   same-named decoys and exact locations:
-   `tests/unit/lsp/test_definition_scoped.cpp` (23 cases; 17 known gaps:
-   `pkg_b::X`, `Class::m()`, imports, `obj.m()`/`obj.f`, inheritance,
-   chains, `this.`/`super.`, local shadowing) and
-   `tests/unit/lsp/test_references_scoped.cpp` (27 cases; every recorded
-   kind passes exactly, 9 known gaps: same-named decoys in other
-   modules/classes, and typedef / enum literal / struct member / genvar /
-   macro, which aren't recorded as symbols at all so references return
-   null). Known gaps are tagged `[!shouldfail]` — they flip to failures
-   once fixed, so drop the tag then. Functional round trips for the
-   passing cases: `tests/integration/test_40_scoped_definition_references.sh`
-   (`fixtures/defref_top.sv` + `defref_inc.svh`). A fix would reuse
-   §6.26/§6.27's `resolveChain`/`resolveMethod` and `findSymbolsVisibleAt`;
-   §6.30 also covers out-of-class method bodies (item 2). **Step 1 (the
-   same-file wildcard-import visibility bug in `findSymbolsVisibleAt`) is
-   done** (`2b71ffb`). **Step A (the shared `resolveSymbolAt` resolver) is
-   done**; step B (wiring the providers) is next.
-1. **`wordAtPosition` resolves symbols inside comments/strings — real bug, not
-   in plan.md yet.** (The new resolver already ignores comments/strings;
-   this is fixed for hover/definition/references/rename once §6.30 step B
-   wires them to it. Completion still uses `wordAtPosition` directly.) Hovering `put` in `endfunction // put`
-   (`/home/martin/src/policy/policy_mixin.sv:37`) returns an unrelated
-   `uvm_cache` method. `wordAtPosition` (`src/lsp/symbol_utils.cpp`) has no
-   comment/string awareness, unlike `findIdentifierOccurrences` in the same
-   file. Affects hover, definition, completion, references, rename. Needs unit
-   tests for `//`, `/* */`, and string-literal cursors (each → nothing) plus a
-   functional test.
+0. **§6.30 steps C and D** (scope-aware resolution; A, B and step 1 are
+   done). C: record typedef / enum literal / struct member / genvar as
+   symbols — flips 4 of the 5 remaining `[!shouldfail]` references cases in
+   `tests/unit/lsp/test_references_scoped.cpp` (the macro one waits for
+   §6.25). D: scope out-of-class method bodies under their class (item 2).
+1. **Completion still uses `wordAtPosition`, which ignores comments/
+   strings.** Hover/definition/references/rename are fixed (they use the
+   resolver, which blanks comments and strings; unit-tested in
+   `test_hover.cpp`). Completion typed inside a comment or string still
+   offers symbols. Original report: hovering `put` in `endfunction // put`
+   (`/home/martin/src/policy/policy_mixin.sv:37`) returned an unrelated
+   `uvm_cache` method. No functional (Emacs) test for the comment case yet.
 2. **Out-of-class method bodies aren't scoped under their class**
    (`function void C::m(); … endfunction`) — members of `C` are invisible to
    `findSymbolsVisibleAt` inside the body. Affects hover/completion/definition/
@@ -240,9 +213,9 @@ Compiler **g++-13** (pinned in `CMakePresets.json`). Debug has ASan+UBSan
 
 | Provider | Resolution |
 |---|---|
-| Hover / Definition | `wordAtPosition` → `findSymbolsByName` → `pickBestSymbol` (same file, then declaration-like kind, then `path,line`) |
+| Hover / Definition | `resolveSymbolAt` (`src/lsp/symbol_resolution.h`, plan.md §6.30): `::` qualifiers, named connections, `.` receiver chains, bare names innermost-scope-first; `exact=false` name-only fallback (`findSymbolsByName` + `pickBestSymbol`) when the qualifier/receiver isn't understood |
 | Completion | `findSymbolsVisibleAt` + keywords (`sv_keywords.h`, scope-kind legality) → fuzzy scoring (toggle: `initializationOptions.svlsp.fuzzyCompletion`). Dot-completion: `dotCompletionContext` → `resolveChain` → `membersAcrossChain` (full `extends` walk), builtin container methods via `sv_builtin_methods.h` |
-| References / Rename | lexical cross-file `findIdentifierOccurrences` — not scope-aware |
+| References / Rename | `ReferencesProvider::findOccurrences`: lexical cross-file `findIdentifierOccurrences`, each hit resolved with `resolveSymbolsAt` and kept if it lands on the target row / same method override family (`overrideFamilyId`), or only resolves by fallback. Rename edits exactly that set |
 | Signature help | instantiation ports; bare / `Class::` / `pkg::` calls (`resolveMethod` in enclosing class hierarchy, then flat fallback for unscoped only); dotted calls (`parseDottedCallHeader` → `resolveChain` → `resolveMethod`). Labels from `Port.detail` (`"<dir> <type>"`, optional `\x1F<default>` suffix) |
 
 Chain-resolution helpers (`resolveChain`, `membersAcrossChain`,
