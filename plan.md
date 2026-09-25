@@ -4180,8 +4180,9 @@ part C's table format); parameter-override blocks (`Module #(`).
 
 ### 6.30 Scope-Aware Symbol Resolution for Hover, Definition, References and Rename
 
-**Status:** step 1 (same-file wildcard import) implemented 2026-09-24; steps
-A–D not started. Planned 2026-09-24. The failing cases are already
+**Status:** step 1 (same-file wildcard import) implemented 2026-09-24;
+step A (shared resolver) implemented 2026-09-25; steps B–D not started.
+Planned 2026-09-24. The failing cases are already
 committed as `[!shouldfail]` tests (`ad85a28`).
 
 **Motivation:** `HoverProvider`/`DefinitionProvider` resolve the bare word
@@ -4324,6 +4325,88 @@ name-only fallback (below). Steps, on the identifier under the cursor:
    regression. But when the qualifier or receiver **is** understood and the
    name isn't found there, return null rather than guessing (§6.26's own
    rule, same reason).
+
+**Implemented 2026-09-25 (step A).** `src/lsp/symbol_resolution.h/.cpp`
+(in `svlsp_lib`): `resolveSymbolAt(db, path, text, line, character) ->
+std::optional<ResolvedSymbol{row, exact}>`. The header comment documents
+the shapes. Differences from the sketch above:
+- Named connections also cover a called function/task's arguments
+  (`f(.a(1))` → `f`'s Port) and `Mod #(..) inst (.p())`.
+- A bare name followed by `::` only matches a Package or Class.
+- Types are resolved **in the context of their own declaration**
+  (the receiver's declaring file and line), so an imported or
+  `pkg::`-qualified type means what it meant there, not at the cursor. A
+  bare type name nothing visible declares still resolves if exactly one
+  class in the DB has that name.
+- The resolver scans a copy of the text with comments and string bodies
+  blanked (same offsets). A cursor inside a comment or string resolves to
+  nothing, which fixes the `wordAtPosition` comment/string bug for every
+  provider that moves to the resolver. A comment between `)` and an
+  instance name no longer breaks the backward scan.
+
+Prerequisites the sketch didn't anticipate, each with its own tests:
+1. **The compiler keeps type qualifiers** (`sv_tree_walker.cpp`:
+   `packageScopeName`, `classTypeName`, `userTypeName`, both class
+   `extends` sites). `pkg_b::Item x;` now records detail `pkg_b::Item`
+   instead of `Item`; `extends base_p::Base` records `base_p::Base`; a
+   nested class gives `p::Outer::Inner`; `$unit::T` is kept; `#(...)`
+   parameter values are dropped. Before this, `pkg_a::Item` and
+   `pkg_b::Item` receivers were indistinguishable.
+2. `SymbolDatabase::baseClassChain` accepts a qualified name. It matches
+   only a class whose scope equals the qualifier or ends with it on a `::`
+   boundary (`Outer::Inner` written inside package `p` is scope
+   `p::Outer`); `$unit` means top level.
+3. `symbol_utils`: `splitLayers` and the new `firstTypeLayer` split
+   layered details on a single `:` only, so `::` stays inside a layer.
+   `completion.cpp`'s private `firstLayer` is replaced by
+   `firstTypeLayer`. A new completion test shows a `pkg_b::Item` receiver
+   now offers pkg_b's members (it offered pkg_a's before; confirmed
+   failing without the compiler change).
+4. **A pre-existing compiler bug, fixed.** A block's leading assignment
+   statement (`function void f(); level = 2; …`) matched
+   `data_declaration`'s implicit-type alternative and was recorded as a
+   local Signal declaration at the use site, shadowing the real one in any
+   scoped lookup. `isMisparsedAssignment` now skips a data_declaration
+   with an implicit type and no `var`, signing or packed dimension (the
+   LRM requires `var` for an implicit-typed data declaration). Two
+   listener tests cover it; the first was confirmed failing before the
+   fix.
+5. `SymbolDatabase::importsForFile(path)` is public, so the resolver can
+   rank a specific import above a wildcard one.
+6. `isNamedConnectionParen`/`findEnclosingParen` moved from
+   `signature_help.cpp` to `symbol_utils.h/.cpp` (shared, no behavior
+   change).
+
+Tests:
+- `tests/unit/lsp/test_symbol_resolution.cpp` (`[resolution]`, 25
+  cases): `::` (`pkg::Class`, `pkg::f`, `pkg::Class::static_method`,
+  `Class::method`, the qualifier itself), specific and wildcard
+  imports and their precedence, `.` (inherited member, chain, queue
+  element, `this`/`super`), named port / parameter / argument
+  connections, lexical shadowing, an inherited field used bare,
+  declaration under the cursor, both fallbacks (`exact=false` and
+  understood-but-missing → nullopt), comment/string cursors, and a type
+  from an `` `include ``d file.
+- `test_sv_listener.cpp`: 8 `[phase6.30]` cases (qualified type details,
+  qualified `extends`, misparsed assignments).
+- `test_symbol_database.cpp`: 4 `[chain][qualified]` cases plus
+  `importsForFile`.
+- `test_symbol_utils.cpp`: 2 `[layers]` cases.
+- `test_completion.cpp`: the qualified-receiver case above.
+
+No provider calls the resolver yet (that's step B), so no `[!shouldfail]`
+test flips. Unit suite: 771 cases, 745 pass + 26 known gaps. Emacs suite:
+224/224. UVM corpus: 487 assertions / 14 cases, all pass (505 before).
+The drop is explained, not a lost check. Diffing the symbol tables of
+the UVM `--build-db` output before and after step A: the only changes are
+2514 phantom `Signal` rows removed (17312 → 14798 rows; every sampled one
+is an assignment such as `common = uvm_domain::get_common_domain();`,
+often right under the real `uvm_domain common;`) and 709 Signal details
+that gained their qualifier (`uvm_report_object` →
+`uvm_pkg::uvm_report_object`). 18 of the removed rows were visible at
+`uvm_pkg` level, the exact set the empty-prefix completion case iterates
+with one CHECK per item. `--build-db` still reports 1 diagnostic (the
+known `data_type` ambiguity).
 
 *B. Providers.*
 - **Hover and definition:** call `resolveSymbolAt`, render `row`.

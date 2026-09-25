@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-09-24.
+**Last updated:** 2026-09-25 (§6.30 step A verified, ready to commit).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -11,18 +11,47 @@ write-up) — read the relevant section there rather than looking for it here.
 
 ## Current state
 
-- Everything through plan.md **§6.28** is committed
-  (`4378a29` code+tests, `6d63659` docs). `a01acb4` added the **§6.29** plan
-  (docs only, nothing implemented). `ad85a28` added scope-strict
-  definition/references tests; §6.30 plans the fix (see "Other open work"
-  item 0).
-- Test baselines (all green at last run):
-  - unit: **730 cases** — 704 pass + 26 `[!shouldfail]` known gaps
-    (`build/debug/unit_tests`)
-  - Emacs functional: **224/224** across 41 `tests/integration/test_*.sh` files
-  - UVM corpus (opt-in): **505 assertions / 14 cases**
+**PICK UP HERE NEXT TIME — plan.md §6.30 step B** (wire hover/definition,
+then references/rename, to `resolveSymbolAt`). Step A (the shared resolver
+plus its compiler/DB prerequisites) is done and fully verified; its full
+write-up is in plan.md §6.30 ("Implemented 2026-09-25 (step A)").
+
+- Committed on `main`: everything through §6.28; §6.29 plan (`a01acb4`);
+  scope-strict definition/references tests (`ad85a28`); §6.30 plan
+  (`6badbce`); §6.30 step 1, same-file wildcard import (`2b71ffb`, docs
+  `52a13e4`). §6.30 step A: see `git log` (commit pending at time of
+  writing if the log doesn't show it).
+- Test baselines (with step A):
+  - unit: **771 cases** — 745 pass + 26 `[!shouldfail]` known gaps
+  - Emacs functional: **224/224**
+  - UVM corpus (opt-in): **487 assertions / 14 cases** (was 505; the drop
+    is 18 phantom rows that the misparsed-assignment fix removed from a
+    per-item completion loop — explained in plan.md §6.30)
   - UVM corpus `--build-db`: **1 diagnostic** total (the known
     `data_type` ambiguity, see "Grammar quirks")
+
+**What step A changed that other work must know about:**
+- `symbols.detail` for Signal/Parameter/Class now keeps type qualifiers:
+  `pkg_b::Item`, `base_p::Base`, `p::Outer::Inner`, `$unit::T`
+  (`#(...)` dropped). Split layered details with `splitLayers`/
+  `firstTypeLayer` (single `:` only), never a naive `:` split.
+- `baseClassChain` accepts qualified names.
+- A block's leading assignment (`x = 1;`) is no longer recorded as a local
+  Signal declaration (`isMisparsedAssignment`) — 2514 phantom rows gone
+  from UVM.
+- `isNamedConnectionParen`/`findEnclosingParen` now live in
+  `symbol_utils`; `importsForFile(path)` is public.
+
+**Step B plan (plan.md §6.30 "B. Providers"):** hover/definition call
+`resolveSymbolAt` and render `row` (`pickBestSymbol` only as the fallback's
+tie-break). Then references/rename: resolve the cursor to `target`, keep
+the lexical scan, keep a hit if it resolves `exact` to the same row id, or
+`exact=false` with `target` among that name's candidates; rename uses the
+same filtered set. The 17 definition and 4 scope-related references
+`[!shouldfail]` tests should flip — remove their tags. Add `test_40`
+decoy cases at the end of `fixtures/defref_top.sv` plus a rename round
+trip; measure references timing on the UVM corpus (see §6.30
+"Performance").
 
 ## Next up — plan.md §6.29 (not started)
 
@@ -67,10 +96,12 @@ the full design; summary:
    §6.26/§6.27's `resolveChain`/`resolveMethod` and `findSymbolsVisibleAt`;
    §6.30 also covers out-of-class method bodies (item 2). **Step 1 (the
    same-file wildcard-import visibility bug in `findSymbolsVisibleAt`) is
-   done** (`2b71ffb`); next is step A, the shared
-   `resolveSymbolAt` resolver.
+   done** (`2b71ffb`). **Step A (the shared `resolveSymbolAt` resolver) is
+   done**; step B (wiring the providers) is next.
 1. **`wordAtPosition` resolves symbols inside comments/strings — real bug, not
-   in plan.md yet.** Hovering `put` in `endfunction // put`
+   in plan.md yet.** (The new resolver already ignores comments/strings;
+   this is fixed for hover/definition/references/rename once §6.30 step B
+   wires them to it. Completion still uses `wordAtPosition` directly.) Hovering `put` in `endfunction // put`
    (`/home/martin/src/policy/policy_mixin.sv:37`) returns an unrelated
    `uvm_cache` method. `wordAtPosition` (`src/lsp/symbol_utils.cpp`) has no
    comment/string awareness, unlike `findIdentifierOccurrences` in the same
