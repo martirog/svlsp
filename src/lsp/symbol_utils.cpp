@@ -47,6 +47,10 @@ lsp::SymbolKind symbolKindFor(const std::string& kind)
     if (kind == "Signal")    return lsp::SymbolKind::Variable;
     if (kind == "Parameter") return lsp::SymbolKind::Constant;
     if (kind == "Macro")     return lsp::SymbolKind::Constant;
+    if (kind == "Typedef")     return lsp::SymbolKind::TypeParameter;
+    if (kind == "EnumLiteral") return lsp::SymbolKind::EnumMember;
+    if (kind == "Member")      return lsp::SymbolKind::Field;
+    if (kind == "Genvar")      return lsp::SymbolKind::Variable;
     return lsp::SymbolKind::Variable;
 }
 
@@ -62,6 +66,10 @@ lsp::CompletionItemKind completionKindFor(const std::string& kind)
     if (kind == "Signal")    return lsp::CompletionItemKind::Variable;
     if (kind == "Parameter") return lsp::CompletionItemKind::Constant;
     if (kind == "Macro")     return lsp::CompletionItemKind::Keyword;
+    if (kind == "Typedef")     return lsp::CompletionItemKind::TypeParameter;
+    if (kind == "EnumLiteral") return lsp::CompletionItemKind::EnumMember;
+    if (kind == "Member")      return lsp::CompletionItemKind::Field;
+    if (kind == "Genvar")      return lsp::CompletionItemKind::Variable;
     return lsp::CompletionItemKind::Variable;
 }
 

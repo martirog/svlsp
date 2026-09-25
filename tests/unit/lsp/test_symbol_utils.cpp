@@ -69,6 +69,19 @@ TEST_CASE("symbolKindFor: maps all known kinds", "[symbol_utils]")
     CHECK(symbolKindFor("Signal")    == lsp::SymbolKind::Variable);
     CHECK(symbolKindFor("Parameter") == lsp::SymbolKind::Constant);
     CHECK(symbolKindFor("Macro")     == lsp::SymbolKind::Constant);
+    CHECK(symbolKindFor("Typedef")     == lsp::SymbolKind::TypeParameter);
+    CHECK(symbolKindFor("EnumLiteral") == lsp::SymbolKind::EnumMember);
+    CHECK(symbolKindFor("Member")      == lsp::SymbolKind::Field);
+    CHECK(symbolKindFor("Genvar")      == lsp::SymbolKind::Variable);
+}
+
+TEST_CASE("completionKindFor: maps the kinds recorded since plan.md §6.30 step C",
+          "[symbol_utils]")
+{
+    CHECK(completionKindFor("Typedef")     == lsp::CompletionItemKind::TypeParameter);
+    CHECK(completionKindFor("EnumLiteral") == lsp::CompletionItemKind::EnumMember);
+    CHECK(completionKindFor("Member")      == lsp::CompletionItemKind::Field);
+    CHECK(completionKindFor("Genvar")      == lsp::CompletionItemKind::Variable);
 }
 
 TEST_CASE("symbolKindFor: unknown kind falls back to Variable", "[symbol_utils]")

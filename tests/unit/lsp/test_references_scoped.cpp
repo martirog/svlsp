@@ -13,11 +13,11 @@
 //
 // The second half asserts scope-correct results: an unrelated same-named
 // declaration elsewhere must not contribute its uses (fixed by §6.30 step
-// B), and names the compiler doesn't record at all (typedef, enum literal,
-// struct member, macro, genvar) should still have references. Those still
-// fail and are tagged [!shouldfail] so the suite stays green while the gap
-// stays visible -- remove the tag once §6.30 step C (or §6.25 for macros)
-// records them.
+// B), and names that used to have no symbol row at all -- typedef, enum
+// literal, struct member, genvar (recorded since §6.30 step C) and macro
+// -- still have references. Macros are still unrecorded (§6.25): that case
+// is tagged [!shouldfail] so the suite stays green while the gap stays
+// visible -- remove the tag once it passes.
 //
 // Fixture convention: the expected result is every whole-word occurrence of
 // the searched name on lines tagged `// @ref`; any other occurrence is a
@@ -496,8 +496,8 @@ TEST_CASE("References: result is the same whichever occurrence the cursor starts
 }
 
 // ===========================================================================
-// Part 2 -- scope-correct results; unrecorded kinds are known gaps
-// ([!shouldfail])
+// Part 2 -- scope-correct results, and kinds recorded since step C (the
+// macro case is still a known gap, [!shouldfail])
 // ===========================================================================
 
 TEST_CASE("References: a signal's uses do not include a same-named signal in another module",
@@ -578,7 +578,7 @@ TEST_CASE("References: a class method's uses do not include an unrelated class's
     requireExactRefs(f, "/c.sv", "refs_go");
 }
 
-TEST_CASE("References: typedef name", "[references][scoped][unrecorded][!shouldfail]")
+TEST_CASE("References: typedef name", "[references][scoped][unrecorded]")
 {
     RealCompileFixture f;
     f.add("/m.sv",
@@ -590,7 +590,7 @@ TEST_CASE("References: typedef name", "[references][scoped][unrecorded][!shouldf
     requireExactRefs(f, "/m.sv", "refs_byte_t");
 }
 
-TEST_CASE("References: enum literal", "[references][scoped][unrecorded][!shouldfail]")
+TEST_CASE("References: enum literal", "[references][scoped][unrecorded]")
 {
     RealCompileFixture f;
     f.add("/m.sv",
@@ -602,7 +602,7 @@ TEST_CASE("References: enum literal", "[references][scoped][unrecorded][!shouldf
     requireExactRefs(f, "/m.sv", "REFS_IDLE");
 }
 
-TEST_CASE("References: struct member", "[references][scoped][unrecorded][!shouldfail]")
+TEST_CASE("References: struct member", "[references][scoped][unrecorded]")
 {
     RealCompileFixture f;
     f.add("/m.sv",
@@ -614,7 +614,7 @@ TEST_CASE("References: struct member", "[references][scoped][unrecorded][!should
     requireExactRefs(f, "/m.sv", "refs_hi");
 }
 
-TEST_CASE("References: genvar", "[references][scoped][unrecorded][!shouldfail]")
+TEST_CASE("References: genvar", "[references][scoped][unrecorded]")
 {
     RealCompileFixture f;
     f.add("/m.sv",

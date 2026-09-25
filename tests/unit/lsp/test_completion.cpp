@@ -1211,3 +1211,35 @@ TEST_CASE("CompletionProvider: dot-completion on a pkg::-qualified receiver offe
         CHECK_FALSE(hasItem(items, "only_in_a"));
     }
 }
+
+TEST_CASE("CompletionProvider: typedefs, enum literals and genvars are offered; struct members "
+          "are not offered as bare names",
+          "[completion][phase6.30]")
+{
+    // plan.md §6.30 step C records these kinds. A struct member is only
+    // reachable through its variable (`s.cmp_hi`), so it must not show up
+    // among the bare names visible in the module.
+    Fixture f;
+    CompilationController ctrl{f.sdb};
+    const std::string text =
+        "module cmp_m;\n"
+        "  typedef logic [7:0] cmp_byte_t;\n"
+        "  enum {CMP_IDLE, CMP_BUSY} st;\n"
+        "  struct packed { logic [3:0] cmp_hi; logic [3:0] cmp_lo; } s;\n"
+        "  genvar cmp_g;\n"
+        "  initial begin\n"
+        "    cmp\n"   // line 6
+        "  end\n"
+        "endmodule\n";
+    ctrl.compile("/cmp.sv", text);
+
+    auto result = CompletionProvider::getCompletion(makeParams("/cmp.sv", 6, 7), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+    const auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "cmp_byte_t"));
+    CHECK(hasItem(items, "CMP_IDLE"));
+    CHECK(hasItem(items, "CMP_BUSY"));
+    CHECK(hasItem(items, "cmp_g"));
+    CHECK_FALSE(hasItem(items, "cmp_hi"));
+    CHECK_FALSE(hasItem(items, "cmp_lo"));
+}

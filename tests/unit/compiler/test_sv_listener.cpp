@@ -1523,3 +1523,116 @@ TEST_CASE("implicit-typed declarations that really are declarations are still re
     CHECK(findRecord(recs, ParseRecordKind::Signal, "v2") != nullptr);
     CHECK(findRecord(recs, ParseRecordKind::Signal, "v3") != nullptr);
 }
+
+// ---------------------------------------------------------------------------
+// plan.md §6.30 step C: typedefs, enum literals, struct/union members and
+// genvars are recorded as symbols (previously references/hover/definition
+// found nothing for them).
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a typedef is recorded as a Typedef, with its aliased type in detail",
+          "[compiler][listener][phase6.30][typedef]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "package p;\n"
+        "  class Item; endclass\n"
+        "  typedef logic [7:0] byte_t;\n"
+        "  typedef Item item_alias_t;\n"
+        "endpackage\n");
+    REQUIRE(errs.empty());
+    auto* b = findRecord(recs, ParseRecordKind::Typedef, "byte_t");
+    REQUIRE(b != nullptr);
+    CHECK(b->scope == "p");
+    CHECK(b->line == 3);
+    CHECK(b->column == 22);
+    auto* a = findRecord(recs, ParseRecordKind::Typedef, "item_alias_t");
+    REQUIRE(a != nullptr);
+    CHECK(a->detail == "Item");
+}
+
+TEST_CASE("a forward typedef is not recorded (it must never outrank the real class)",
+          "[compiler][listener][phase6.30][typedef]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "typedef class Fwd;\n"
+        "class Fwd; endclass\n");
+    REQUIRE(errs.empty());
+    CHECK(countKind(recs, ParseRecordKind::Typedef) == 0);
+    CHECK(findRecord(recs, ParseRecordKind::Class, "Fwd") != nullptr);
+}
+
+TEST_CASE("enum literals are recorded in the enum's own scope",
+          "[compiler][listener][phase6.30][enum]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "module m;\n"
+        "  enum {IDLE, BUSY = 3} st;\n"
+        "  typedef enum logic [1:0] {RED, GREEN} color_t;\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    CHECK(countKind(recs, ParseRecordKind::EnumLiteral) == 4);
+    auto* idle = findRecord(recs, ParseRecordKind::EnumLiteral, "IDLE");
+    REQUIRE(idle != nullptr);
+    CHECK(idle->scope == "m");
+    CHECK(idle->line == 2);
+    CHECK(idle->column == 8);
+    auto* green = findRecord(recs, ParseRecordKind::EnumLiteral, "GREEN");
+    REQUIRE(green != nullptr);
+    CHECK(green->scope == "m");
+    CHECK(green->detail == "color_t");
+    // The enum-typed variable and the typedef are still recorded.
+    CHECK(findRecord(recs, ParseRecordKind::Signal, "st") != nullptr);
+    CHECK(findRecord(recs, ParseRecordKind::Typedef, "color_t") != nullptr);
+}
+
+TEST_CASE("struct/union members are scoped under their variable or typedef",
+          "[compiler][listener][phase6.30][struct]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "module m;\n"
+        "  struct packed { logic [3:0] hi; logic [3:0] lo; } s;\n"
+        "  typedef struct { int a; struct { int deep; } inner; } pair_t;\n"
+        "  typedef union packed { logic [7:0] u8; logic [7:0] raw; } word_t;\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    auto* hi = findRecord(recs, ParseRecordKind::Member, "hi");
+    REQUIRE(hi != nullptr);
+    CHECK(hi->scope == "m::s");
+    CHECK(hi->line == 2);
+    CHECK(hi->column == 30);
+    auto* a = findRecord(recs, ParseRecordKind::Member, "a");
+    REQUIRE(a != nullptr);
+    CHECK(a->scope == "m::pair_t");
+    auto* inner = findRecord(recs, ParseRecordKind::Member, "inner");
+    REQUIRE(inner != nullptr);
+    CHECK(inner->scope == "m::pair_t");
+    auto* deep = findRecord(recs, ParseRecordKind::Member, "deep");
+    REQUIRE(deep != nullptr);
+    CHECK(deep->scope == "m::pair_t::inner");
+    auto* u8 = findRecord(recs, ParseRecordKind::Member, "u8");
+    REQUIRE(u8 != nullptr);
+    CHECK(u8->scope == "m::word_t");
+    // Members are not Signals of the module.
+    CHECK(findRecord(recs, ParseRecordKind::Signal, "hi") == nullptr);
+    CHECK(findRecord(recs, ParseRecordKind::Signal, "s") != nullptr);
+}
+
+TEST_CASE("genvars are recorded from genvar declarations and inline loop genvars",
+          "[compiler][listener][phase6.30][genvar]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "module m;\n"
+        "  logic [3:0] v;\n"
+        "  genvar g, h;\n"
+        "  for (g = 0; g < 4; g++) begin : blk\n"
+        "    assign v[g] = 1'b0;\n"
+        "  end\n"
+        "  for (genvar k = 0; k < 2; k++) begin : blk2 end\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    CHECK(countKind(recs, ParseRecordKind::Genvar) == 3);
+    auto* g = findRecord(recs, ParseRecordKind::Genvar, "g");
+    REQUIRE(g != nullptr);
+    CHECK(g->scope == "m");
+    CHECK(g->line == 3);
+    CHECK(g->column == 9);
+    auto* k = findRecord(recs, ParseRecordKind::Genvar, "k");
+    REQUIRE(k != nullptr);
+    CHECK(k->line == 7);
+    CHECK(k->column == 14);
+}

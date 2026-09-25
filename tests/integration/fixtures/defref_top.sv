@@ -41,3 +41,10 @@ module defref_top_b;
     b.defref_val = defref_sig;
   end
 endmodule
+// Appended for plan.md §6.30 step C: kinds recorded since then.
+module defref_kinds;
+  typedef logic [3:0] defref_nib_t;
+  enum {DEFREF_OFF, DEFREF_ON} defref_st;
+  defref_nib_t n;
+  initial defref_st = DEFREF_ON;
+endmodule

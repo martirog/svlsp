@@ -118,6 +118,8 @@ DEF_TESTS=(
     "definition: dotted call on a pkg_b receiver lands on pkg_b's method"
     "definition: dotted field on a pkg_b receiver lands on pkg_b's field"
     "definition: a signal lands on its own module's declaration"
+    "definition: a typedef use lands on the typedef"
+    "definition: an enum literal use lands on the literal"
 )
 REF_TESTS=(
     "references: signal -- declaration + both named-connection uses"
@@ -127,6 +129,8 @@ REF_TESTS=(
     "references: class field -- declaration, own-method use, dotted use"
     "references: pkg_b's field -- excludes pkg_a's same-named field"
     "references: second module's signal -- excludes the first module's"
+    "references: typedef -- declaration and use"
+    "references: enum literal -- declaration and use"
 )
 RENAME_TESTS=(
     "rename: edits only the cursor module's signal, not a same-named one"
@@ -155,6 +159,10 @@ else
     # "    b.defref_val = defref_sig;" (line 40)
     def_test "${DEF_TESTS[8]}" 40 6  defref_top.sv 30 8
     def_test "${DEF_TESTS[9]}" 40 19 defref_top.sv 36 8
+    # defref_kinds (plan.md §6.30 step C): "  defref_nib_t n;" (line 47) and
+    # "  initial defref_st = DEFREF_ON;" (line 48)
+    def_test "${DEF_TESTS[10]}" 47 2  defref_top.sv 45 22
+    def_test "${DEF_TESTS[11]}" 48 22 defref_top.sv 46 20
 
     # "  logic defref_sig;" (line 16)
     refs_test "${REF_TESTS[0]}" 16 8 \
@@ -174,6 +182,10 @@ else
     # "  logic defref_sig;" in defref_top_b (line 36)
     refs_test "${REF_TESTS[6]}" 36 8 \
         "defref_top.sv:36:8 defref_top.sv:40:19"
+    refs_test "${REF_TESTS[7]}" 45 22 \
+        "defref_top.sv:45:22 defref_top.sv:47:2"
+    refs_test "${REF_TESTS[8]}" 46 20 \
+        "defref_top.sv:46:20 defref_top.sv:48:22"
 
     rename_test "${RENAME_TESTS[0]}" 36 8 defref_sig_b \
         "defref_top.sv:36:8 defref_top.sv:40:19"

@@ -19,6 +19,10 @@ static std::string kindStr(ParseRecordKind k)
     case ParseRecordKind::Parameter: return "Parameter";
     case ParseRecordKind::Macro:     return "Macro";
     case ParseRecordKind::Program:   return "Program";
+    case ParseRecordKind::Typedef:     return "Typedef";
+    case ParseRecordKind::EnumLiteral: return "EnumLiteral";
+    case ParseRecordKind::Member:      return "Member";
+    case ParseRecordKind::Genvar:      return "Genvar";
     }
     return "Unknown";
 }

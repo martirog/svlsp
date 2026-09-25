@@ -582,3 +582,58 @@ TEST_CASE("Definition: a function argument shadows a same-named module-level sig
     decl.col += 4;  // skip "int " to land on the parameter name
     requireDefinitionAt(f.sdb, "/t.sv", src, posOf(src, "@use", "a +"), "/t.sv", decl);
 }
+
+// ---------------------------------------------------------------------------
+// Kinds recorded since plan.md §6.30 step C: typedef, enum literal, struct
+// member, genvar. Each has a same-named decoy in another module.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("Definition: typedef, enum literal and genvar uses land on their own module's "
+          "declarations",
+          "[definition][scoped][stepc]")
+{
+    RealCompileFixture f;
+    const std::string src =
+        "module dk_m1;\n"
+        "  typedef logic [3:0] dk_t;\n"          // decoys, declared first
+        "  enum {DK_A, DK_B} e1;\n"
+        "  genvar dk_g;\n"
+        "endmodule\n"
+        "module dk_m2;\n"
+        "  typedef logic [7:0] dk_t; // @tdecl\n"
+        "  enum {DK_A, DK_B} e2; // @edecl\n"
+        "  genvar dk_g; // @gdecl\n"
+        "  logic [3:0] v;\n"
+        "  dk_t x; // @tuse\n"
+        "  initial e2 = DK_B; // @euse\n"
+        "  for (dk_g = 0; dk_g < 4; dk_g++) begin : blk // @guse\n"
+        "    assign v[dk_g] = 1'b0;\n"
+        "  end\n"
+        "endmodule\n";
+    f.ctrl.compile("/dk.sv", src);
+
+    requireDefinitionAt(f.sdb, "/dk.sv", src, posOf(src, "@tuse", "dk_t"),
+                        "/dk.sv", posOf(src, "@tdecl", "dk_t"));
+    requireDefinitionAt(f.sdb, "/dk.sv", src, posOf(src, "@euse", "DK_B"),
+                        "/dk.sv", posOf(src, "@edecl", "DK_B"));
+    requireDefinitionAt(f.sdb, "/dk.sv", src, posOf(src, "@guse", "dk_g"),
+                        "/dk.sv", posOf(src, "@gdecl", "dk_g"));
+}
+
+TEST_CASE("Definition: a struct member access lands on the member declaration",
+          "[definition][scoped][stepc]")
+{
+    // Dot-resolution into struct types is out of scope (plan.md §6.30 C):
+    // this lands through the name-only fallback, which only works because
+    // the member is recorded at all now.
+    RealCompileFixture f;
+    const std::string src =
+        "module dk_s;\n"
+        "  struct packed { logic [3:0] dk_hi; logic [3:0] dk_lo; } s; // @decl\n"
+        "  initial s.dk_hi = 4'h1; // @use\n"
+        "endmodule\n";
+    f.ctrl.compile("/dks.sv", src);
+
+    requireDefinitionAt(f.sdb, "/dks.sv", src, posOf(src, "@use", "dk_hi"),
+                        "/dks.sv", posOf(src, "@decl", "dk_hi"));
+}

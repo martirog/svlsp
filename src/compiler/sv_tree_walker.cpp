@@ -3,6 +3,7 @@
 #include "SvLexer.h"
 #include "SvParser.h"
 #include <antlr4-runtime.h>
+#include <optional>
 
 // ---------------------------------------------------------------------------
 // Source map translation helper
@@ -74,15 +75,13 @@ static std::string classTypeName(SvParser::Class_typeContext* ct)
     return name;
 }
 
-// The declared user type of a data_type_or_implicit, *with* any
-// `pkg::`/`Class::`/`$unit::` qualifier the source wrote (plan.md §6.30
-// step A -- previously only the bare trailing identifier was kept, so
-// pkg_a::Item and pkg_b::Item were indistinguishable). "" for every
-// built-in type and anything that isn't a named type reference.
-static std::string userTypeName(SvParser::Data_type_or_implicitContext* dtoi)
+// The declared user type of a data_type, *with* any `pkg::`/`Class::`/
+// `$unit::` qualifier the source wrote (plan.md §6.30 step A -- previously
+// only the bare trailing identifier was kept, so pkg_a::Item and
+// pkg_b::Item were indistinguishable). "" for every built-in type and
+// anything that isn't a named type reference.
+static std::string dataTypeName(SvParser::Data_typeContext* dt)
 {
-    if (!dtoi) return "";
-    auto* dt = dtoi->data_type();
     if (!dt) return "";
     if (auto* ti = dt->type_identifier()) {
         if (!ti->IDENTIFIER()) return "";
@@ -97,6 +96,12 @@ static std::string userTypeName(SvParser::Data_type_or_implicitContext* dtoi)
     if (auto* ct = dt->class_type())
         return classTypeName(ct);
     return "";
+}
+
+// dataTypeName of a data_type_or_implicit ("" for an implicit type).
+static std::string userTypeName(SvParser::Data_type_or_implicitContext* dtoi)
+{
+    return dtoi ? dataTypeName(dtoi->data_type()) : "";
 }
 
 // True for a data_declaration that is really an assignment statement the
@@ -116,6 +121,48 @@ static bool isMisparsedAssignment(SvParser::Data_declarationContext* ctx)
         if (auto* term = dynamic_cast<antlr4::tree::TerminalNode*>(child))
             if (term->getText() == "var") return false;
     return true;
+}
+
+// Name of the first variable a variable_decl_assignment list declares, or
+// "" -- the owner a struct/union type declared inline in that declaration
+// belongs to (`struct {...} s, t;` scopes its members under `s`).
+static std::string firstVariableName(SvParser::List_of_variable_decl_assignmentsContext* list)
+{
+    if (!list || list->variable_decl_assignment().empty()) return "";
+    auto* vi = list->variable_decl_assignment(0)->variable_identifier();
+    return vi && vi->IDENTIFIER() ? vi->IDENTIFIER()->getText() : "";
+}
+
+// The `::`-joined owner path of a struct/union data_type (plan.md §6.30
+// step C): the typedef name for `typedef struct {...} name;`, the variable
+// for `struct {...} v;`, and `<outer owner>::<member>` for a struct nested
+// as a member of another. std::nullopt for any other position (a port or
+// parameter type, a cast), where the members aren't recorded.
+static std::optional<std::string> structOwnerPath(SvParser::Data_typeContext* dt)
+{
+    if (!dt) return std::nullopt;
+    auto* parent = dt->parent;
+    if (auto* td = dynamic_cast<SvParser::Type_declarationContext*>(parent)) {
+        if (td->type_identifier().empty() || !td->type_identifier(0)->IDENTIFIER())
+            return std::nullopt;
+        return td->type_identifier(0)->IDENTIFIER()->getText();
+    }
+    if (auto* dtoi = dynamic_cast<SvParser::Data_type_or_implicitContext*>(parent)) {
+        auto* decl = dynamic_cast<SvParser::Data_declarationContext*>(dtoi->parent);
+        if (!decl) return std::nullopt;
+        auto name = firstVariableName(decl->list_of_variable_decl_assignments());
+        if (name.empty()) return std::nullopt;
+        return name;
+    }
+    if (auto* dtov = dynamic_cast<SvParser::Data_type_or_voidContext*>(parent)) {
+        auto* member = dynamic_cast<SvParser::Struct_union_memberContext*>(dtov->parent);
+        if (!member) return std::nullopt;
+        auto outer = structOwnerPath(dynamic_cast<SvParser::Data_typeContext*>(member->parent));
+        auto name  = firstVariableName(member->list_of_variable_decl_assignments());
+        if (!outer || name.empty()) return std::nullopt;
+        return *outer + "::" + name;
+    }
+    return std::nullopt;
 }
 
 // Detail tag for a bare-literal data_type alternative that has its own
@@ -667,6 +714,63 @@ public:
         }
     }
 
+    // ---- Typedefs, enum literals, struct/union members, genvars (§6.30 step C) ----
+
+    void enterType_declaration(SvParser::Type_declarationContext* ctx) override {
+        const auto ids = ctx->type_identifier();
+        if (ctx->data_type()) { // typedef <data_type> name;
+            if (!ids.empty())
+                pushId(ParseRecordKind::Typedef, ids[0]->IDENTIFIER(), ctx, currentScope(),
+                       dataTypeName(ctx->data_type()));
+        } else if (ctx->interface_instance_identifier()) { // typedef intf.T name;
+            if (ids.size() >= 2)
+                pushId(ParseRecordKind::Typedef, ids[1]->IDENTIFIER(), ctx, currentScope(),
+                       ids[0]->getText());
+        }
+        // A forward `typedef [class|enum|...] name;` is deliberately not
+        // recorded: it would compete with the real declaration.
+    }
+
+    void enterEnum_name_declaration(SvParser::Enum_name_declarationContext* ctx) override {
+        auto* ei = ctx->enum_identifier();
+        if (!ei) return;
+        // detail: the enum's typedef name, if it has one.
+        std::string typeName;
+        if (auto* dt = dynamic_cast<SvParser::Data_typeContext*>(ctx->parent))
+            if (auto* td = dynamic_cast<SvParser::Type_declarationContext*>(dt->parent))
+                if (!td->type_identifier().empty())
+                    typeName = td->type_identifier(0)->getText();
+        pushId(ParseRecordKind::EnumLiteral, ei->IDENTIFIER(), ctx, currentScope(), typeName);
+    }
+
+    void enterStruct_union_member(SvParser::Struct_union_memberContext* ctx) override {
+        auto owner = structOwnerPath(dynamic_cast<SvParser::Data_typeContext*>(ctx->parent));
+        if (!owner) return;
+        const std::string chain = currentScopeChain();
+        const std::string scope = chain.empty() ? *owner : chain + "::" + *owner;
+        const std::string typeName =
+            ctx->data_type_or_void() ? dataTypeName(ctx->data_type_or_void()->data_type()) : "";
+        auto* list = ctx->list_of_variable_decl_assignments();
+        if (!list) return;
+        for (auto* vda : list->variable_decl_assignment())
+            if (auto* vi = vda->variable_identifier())
+                pushIdInScope(ParseRecordKind::Member, vi->IDENTIFIER(), scope, currentScope(),
+                              typeName);
+    }
+
+    void enterGenvar_declaration(SvParser::Genvar_declarationContext* ctx) override {
+        if (auto* list = ctx->list_of_genvar_identifiers())
+            for (auto* gi : list->genvar_identifier())
+                pushId(ParseRecordKind::Genvar, gi->IDENTIFIER(), ctx, currentScope());
+    }
+
+    void enterGenvar_initialization(SvParser::Genvar_initializationContext* ctx) override {
+        // Only `for (genvar g = ...)` declares; `for (g = ...)` uses a genvar.
+        if (ctx->children.empty() || ctx->children[0]->getText() != "genvar") return;
+        if (auto* gi = ctx->genvar_identifier())
+            pushId(ParseRecordKind::Genvar, gi->IDENTIFIER(), ctx, currentScope());
+    }
+
     // ---- Package imports / exports ----
 
     void enterPackage_export_declaration(
@@ -778,13 +882,7 @@ private:
                 antlr4::ParserRuleContext* /*ctx*/,
                 const std::string& parent = "", const std::string& detail = "") {
         if (!id) return;
-        auto* tok = id->getSymbol();
-        int compiledLine = static_cast<int>(tok->getLine());
-        int compiledCol  = static_cast<int>(tok->getCharPositionInLine());
-        auto [file, line] = translateLine(compiledLine, m_sourceMap);
-        int col = translateColumn(compiledLine, compiledCol, m_sourceMap);
-        m_records.push_back({kind, id->getText(), line, col,
-                              parent, detail, 0, currentScopeChain(), file});
+        pushIdInScope(kind, id, currentScopeChain(), parent, detail);
         // Push this record's name onto the scope stack so nested declarations
         // have it as their parent. Only top-level named scopes push here.
         if (kind == ParseRecordKind::Module   ||
@@ -796,6 +894,21 @@ private:
             kind == ParseRecordKind::Program) {
             pushScope(id->getText());
         }
+    }
+
+    // Records `id` with an explicit `scope` instead of the scope stack's
+    // chain (struct members live in a scope named after their owner, which
+    // is never on the stack). Never pushes a scope.
+    void pushIdInScope(ParseRecordKind kind, antlr4::tree::TerminalNode* id,
+                       const std::string& scope, const std::string& parent = "",
+                       const std::string& detail = "") {
+        if (!id) return;
+        auto* tok = id->getSymbol();
+        int compiledLine = static_cast<int>(tok->getLine());
+        int compiledCol  = static_cast<int>(tok->getCharPositionInLine());
+        auto [file, line] = translateLine(compiledLine, m_sourceMap);
+        int col = translateColumn(compiledLine, compiledCol, m_sourceMap);
+        m_records.push_back({kind, id->getText(), line, col, parent, detail, 0, scope, file});
     }
 
     void extractParams(SvParser::List_of_param_assignmentsContext* list,
