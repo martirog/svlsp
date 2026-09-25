@@ -789,3 +789,71 @@ TEST_CASE("includersOf returns empty for a path with no known file row",
     Fixture f;
     CHECK(f.sdb.includersOf("/never_seen.sv").empty());
 }
+
+// plan.md §6.30 step A: class names reaching baseClassChain may now carry a
+// `pkg::`/`Outer::`/`$unit::` qualifier (userTypeName and a class's own
+// `extends` detail keep it). A qualified name must pick the class in exactly
+// that scope, never a same-named class elsewhere.
+TEST_CASE("baseClassChain resolves a package-qualified name to that package's class",
+          "[db][symbol-db][chain][qualified]") {
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/pkgs.sv", "h"), {
+        {ParseRecordKind::Class, "Item", 2, 8, "pkg_a", "", 3, "pkg_a"},
+        {ParseRecordKind::Class, "Item", 6, 8, "pkg_b", "", 7, "pkg_b"},
+    });
+    auto chain = f.sdb.baseClassChain("pkg_b::Item", "/top.sv");
+    REQUIRE(chain.size() == 1);
+    CHECK(chain[0] == "pkg_b::Item");
+}
+
+TEST_CASE("baseClassChain follows a package-qualified extends into the right package",
+          "[db][symbol-db][chain][qualified]") {
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/pkgs.sv", "h"), {
+        {ParseRecordKind::Class, "Base",  2, 8, "pkg_a", "",             3,  "pkg_a"},
+        {ParseRecordKind::Class, "Base",  6, 8, "pkg_b", "",             7,  "pkg_b"},
+        {ParseRecordKind::Class, "Child", 9, 6, "",      "pkg_b::Base", 10, ""},
+    });
+    auto chain = f.sdb.baseClassChain("Child", "/pkgs.sv");
+    REQUIRE(chain.size() == 2);
+    CHECK(chain[1] == "pkg_b::Base");
+}
+
+TEST_CASE("baseClassChain resolves a nested-class and a $unit-qualified name",
+          "[db][symbol-db][chain][qualified]") {
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/a.sv", "h"), {
+        {ParseRecordKind::Class, "Outer", 1, 8, "p",        "", 6, "p"},
+        {ParseRecordKind::Class, "Inner", 2, 10, "Outer",   "", 3, "p::Outer"},
+        {ParseRecordKind::Class, "Inner", 8, 6, "",         "", 9, ""},
+    });
+    auto nested = f.sdb.baseClassChain("p::Outer::Inner", "/a.sv");
+    REQUIRE(nested.size() == 1);
+    CHECK(nested[0] == "p::Outer::Inner");
+    auto unit = f.sdb.baseClassChain("$unit::Inner", "/a.sv");
+    REQUIRE(unit.size() == 1);
+    CHECK(unit[0] == "Inner");
+}
+
+TEST_CASE("baseClassChain returns empty for a qualified name whose scope has no such class",
+          "[db][symbol-db][chain][qualified]") {
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/a.sv", "h"), {
+        {ParseRecordKind::Class, "Item", 2, 8, "pkg_a", "", 3, "pkg_a"},
+    });
+    CHECK(f.sdb.baseClassChain("pkg_b::Item", "/a.sv").empty());
+}
+
+TEST_CASE("importsForFile returns a file's imports and {} for an unknown path",
+          "[db][symbol-db][import]") {
+    Fixture f;
+    auto fid = f.sdb.upsertFile("/a.sv", "h");
+    f.sdb.replaceImports(fid, {{"pkg_a", "*"}, {"pkg_b", "Item"}});
+    auto imps = f.sdb.importsForFile("/a.sv");
+    REQUIRE(imps.size() == 2);
+    CHECK(std::any_of(imps.begin(), imps.end(),
+                      [](const ImportRow& i){ return i.pkgName == "pkg_a" && i.item == "*"; }));
+    CHECK(std::any_of(imps.begin(), imps.end(),
+                      [](const ImportRow& i){ return i.pkgName == "pkg_b" && i.item == "Item"; }));
+    CHECK(f.sdb.importsForFile("/none.sv").empty());
+}

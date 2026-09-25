@@ -191,6 +191,7 @@ add_library(svlsp_lib STATIC
     src/lsp/signature_help.cpp
     src/lsp/server_state.cpp
     src/lsp/symbol_utils.cpp
+    src/lsp/symbol_resolution.cpp
     src/lsp/workspace_symbols.cpp
     src/lsp/project_manifest_parser.cpp
     src/lsp/project_registry.cpp
@@ -223,6 +224,7 @@ add_executable(unit_tests
     tests/unit/lsp/test_server_diagnostics_visibility.cpp
     tests/unit/lsp/test_server_cross_file_invalidation.cpp
     tests/unit/lsp/test_symbol_utils.cpp
+    tests/unit/lsp/test_symbol_resolution.cpp
     tests/unit/lsp/test_fuzzy_match.cpp
     tests/unit/lsp/test_completion.cpp
     tests/unit/lsp/test_completion_library_attach.cpp

@@ -46,18 +46,76 @@ static int translateColumn(int compiledLine, int compiledCol,
 // Ignores any trailing packed_dimension/parameter_value_assignment: `foo` is
 // what SymbolDatabase::findSymbolsInScope keys a class/interface's member
 // scope by, not `foo [7:0]` or `foo#(...)`.
+// "pkg" for `pkg::`, "$unit" for `$unit::`, "" when there's no package scope.
+static std::string packageScopeName(SvParser::Package_scopeContext* ps)
+{
+    if (!ps) return "";
+    if (auto* pi = ps->package_identifier())
+        return pi->IDENTIFIER() ? pi->IDENTIFIER()->getText() : "";
+    return "$unit";
+}
+
+// The `::`-joined name path of a class_type -- `[pkg::]C[::Nested...]` --
+// with every parameter value assignment (`#(...)`) dropped: only the name
+// path matters for resolving which class is meant (plan.md §6.30 step A).
+// "" if the class_type has no identifier.
+static std::string classTypeName(SvParser::Class_typeContext* ct)
+{
+    if (!ct) return "";
+    auto* psci = ct->ps_class_identifier();
+    if (!psci || !psci->class_identifier() || !psci->class_identifier()->IDENTIFIER())
+        return "";
+    std::string name;
+    if (auto pkg = packageScopeName(psci->package_scope()); !pkg.empty())
+        name = pkg + "::";
+    name += psci->class_identifier()->IDENTIFIER()->getText();
+    for (auto* nested : ct->class_identifier())
+        if (nested->IDENTIFIER()) name += "::" + nested->IDENTIFIER()->getText();
+    return name;
+}
+
+// The declared user type of a data_type_or_implicit, *with* any
+// `pkg::`/`Class::`/`$unit::` qualifier the source wrote (plan.md §6.30
+// step A -- previously only the bare trailing identifier was kept, so
+// pkg_a::Item and pkg_b::Item were indistinguishable). "" for every
+// built-in type and anything that isn't a named type reference.
 static std::string userTypeName(SvParser::Data_type_or_implicitContext* dtoi)
 {
     if (!dtoi) return "";
     auto* dt = dtoi->data_type();
     if (!dt) return "";
-    if (auto* ti = dt->type_identifier())
-        return ti->IDENTIFIER() ? ti->IDENTIFIER()->getText() : "";
+    if (auto* ti = dt->type_identifier()) {
+        if (!ti->IDENTIFIER()) return "";
+        std::string qualifier;
+        if (auto* cs = dt->class_scope())
+            qualifier = classTypeName(cs->class_type());
+        else
+            qualifier = packageScopeName(dt->package_scope());
+        const std::string name = ti->IDENTIFIER()->getText();
+        return qualifier.empty() ? name : qualifier + "::" + name;
+    }
     if (auto* ct = dt->class_type())
-        if (auto* psci = ct->ps_class_identifier())
-            if (auto* ci = psci->class_identifier())
-                return ci->IDENTIFIER() ? ci->IDENTIFIER()->getText() : "";
+        return classTypeName(ct);
     return "";
+}
+
+// True for a data_declaration that is really an assignment statement the
+// grammar misparsed: its first alternative accepts an implicit type, so a
+// block's leading `x = expr;` matches it as a declaration of `x`. The LRM
+// only allows an implicit-typed data declaration with `var`, so an implicit
+// type with no `var`, no signing and no packed dimension can't be a real
+// declaration (plan.md §6.30 step A -- these phantom locals shadowed the
+// real declarations in every scoped lookup).
+static bool isMisparsedAssignment(SvParser::Data_declarationContext* ctx)
+{
+    auto* dtoi = ctx->data_type_or_implicit();
+    if (!dtoi || dtoi->data_type()) return false;
+    if (auto* imp = dtoi->implicit_data_type())
+        if (imp->signing() || !imp->packed_dimension().empty()) return false;
+    for (auto* child : ctx->children)
+        if (auto* term = dynamic_cast<antlr4::tree::TerminalNode*>(child))
+            if (term->getText() == "var") return false;
+    return true;
 }
 
 // Detail tag for a bare-literal data_type alternative that has its own
@@ -344,12 +402,7 @@ public:
     void enterClass_declaration(SvParser::Class_declarationContext* ctx) override {
         if (ctx->class_identifier().empty()) return;
         auto* id = ctx->class_identifier(0)->IDENTIFIER();
-        std::string parentClass;
-        if (auto* ct = ctx->class_type())
-            if (auto* pci = ct->ps_class_identifier())
-                if (auto* ci = pci->class_identifier())
-                    if (auto* pid = ci->IDENTIFIER())
-                        parentClass = pid->getText();
+        const std::string parentClass = classTypeName(ctx->class_type());
         pushId(ParseRecordKind::Class, id, ctx, currentScope(), parentClass);
     }
 
@@ -374,8 +427,10 @@ public:
         if (!ctx->interface_class_type().empty())
             if (auto* pci = ctx->interface_class_type(0)->ps_class_identifier())
                 if (auto* ci = pci->class_identifier())
-                    if (auto* pid = ci->IDENTIFIER())
-                        parentClass = pid->getText();
+                    if (auto* pid = ci->IDENTIFIER()) {
+                        const auto pkg = packageScopeName(pci->package_scope());
+                        parentClass = pkg.empty() ? pid->getText() : pkg + "::" + pid->getText();
+                    }
         pushId(ParseRecordKind::Class, id, ctx, currentScope(), parentClass);
     }
 
@@ -549,6 +604,7 @@ public:
     void enterData_declaration(SvParser::Data_declarationContext* ctx) override {
         auto* list = ctx->list_of_variable_decl_assignments();
         if (!list) return;
+        if (isMisparsedAssignment(ctx)) return;
         const std::string typeName = userTypeName(ctx->data_type_or_implicit());
         const std::string bareTag  = builtinBareTypeTag(ctx->data_type_or_implicit());
         // Element tag/type text to append after any container-dimension

@@ -112,6 +112,12 @@ lsp::Position positionForOffset(const std::string& text, size_t offset);
 // full rationale. depth <= 0 is a no-op.
 std::string peelDimensionLayers(const std::string& detail, int depth);
 
+// The outermost layer of a (possibly layered) detail string -- what
+// container/element-tag dispatch (builtinMethodsFor) keys off. Splits on a
+// single ':' only, so a `pkg::`-qualified type name (plan.md §6.30 step A)
+// is one layer. A single-layer detail is returned unchanged.
+std::string firstTypeLayer(const std::string& detail);
+
 // Unions member rows across `className`'s own scope and every ancestor
 // reachable via `extends` (plan.md §6.26 -- SymbolDatabase::baseClassChain),
 // deduped by name so a derived class's own override always wins over an
@@ -162,3 +168,15 @@ struct TextOccurrence {
 // an empty `name` returns {}.
 std::vector<TextOccurrence> findIdentifierOccurrences(
     const std::string& text, const std::string& name);
+
+// True if the '(' at `parenPos` opens a named port/parameter connection's
+// own parens (`.name(` where the '.' starts a fresh argument, i.e. follows
+// '(' or ',' or the start of text), as opposed to a nested call like
+// `obj.get(`. Moved here from signature_help.cpp for plan.md §6.30's
+// resolver, which needs the same distinction.
+bool isNamedConnectionParen(const std::string& text, size_t parenPos);
+
+// The enclosing '(' of the argument list `offset` sits inside, walking
+// backward with a paren-depth counter and skipping named connections' own
+// parens (see isNamedConnectionParen). Not comment/string-aware.
+std::optional<size_t> findEnclosingParen(const std::string& text, size_t offset);

@@ -281,15 +281,29 @@ lsp::Position positionForOffset(const std::string& text, size_t offset)
 }
 
 namespace {
+// Position of the next single ':' layer separator at or after `from`,
+// skipping every "::" (a `pkg::`/`Outer::` qualifier inside one layer's
+// type name, plan.md §6.30 step A). npos if there is none.
+size_t nextLayerSeparator(const std::string& detail, size_t from)
+{
+    for (size_t i = from; i < detail.size(); ++i) {
+        if (detail[i] != ':') continue;
+        if (i + 1 < detail.size() && detail[i + 1] == ':') { ++i; continue; }
+        return i;
+    }
+    return std::string::npos;
+}
+
 // A container/element detail string is a ':'-delimited list of layers,
 // outermost first (plan.md §6.15 -- see containerDimensionTags() in
-// src/compiler/sv_tree_walker.cpp for how it's built). Splits on ':'.
+// src/compiler/sv_tree_walker.cpp for how it's built). Splits on single
+// ':' only; a qualified type name's "::" stays inside its layer.
 std::vector<std::string> splitLayers(const std::string& detail)
 {
     std::vector<std::string> layers;
     size_t start = 0;
     while (start <= detail.size()) {
-        size_t colon = detail.find(':', start);
+        size_t colon = nextLayerSeparator(detail, start);
         if (colon == std::string::npos) {
             layers.push_back(detail.substr(start));
             break;
@@ -306,6 +320,12 @@ bool isContainerDimensionTag(const std::string& layer)
            layer == CONTAINER_DYNAMIC_ARRAY || layer == CONTAINER_FIXED_ARRAY;
 }
 } // namespace
+
+std::string firstTypeLayer(const std::string& detail)
+{
+    const size_t colon = nextLayerSeparator(detail, 0);
+    return colon == std::string::npos ? detail : detail.substr(0, colon);
+}
 
 std::string peelDimensionLayers(const std::string& detail, int depth)
 {
@@ -387,4 +407,63 @@ std::optional<std::string> resolveChain(SymbolDatabase& db, const std::string& p
         if (current.empty()) return std::nullopt;
     }
     return current;
+}
+
+// True if the '(' at `parenPos` opens a named port connection ("
+// .portName(" -- ubiquitous in real SV instantiations), i.e. an identifier
+// immediately precedes it and a '.' that starts a fresh argument (preceded
+// by '(' or ',', or the start of text) immediately precedes *that*. Without
+// this check, a cursor positioned to type the connected signal (right after
+// ".a(") would make findEnclosingParen stop at *this* paren instead of
+// continuing out to the instantiation's own -- which is what active-
+// parameter tracking below actually needs. Deliberately narrower than
+// "any identifier followed by '('", so a genuine dotted method call like
+// `obj.get_val(` -- where an identifier, not '(' or ',', precedes the '.'
+// -- is correctly left alone (and simply fails to resolve later, since no
+// per-parameter data exists for arbitrary calls; see this file's own header
+// comment).
+bool isNamedConnectionParen(const std::string& text, size_t parenPos)
+{
+    auto skipWsBack = [&](size_t& i) {
+        while (i > 0 && std::isspace(static_cast<unsigned char>(text[i - 1]))) --i;
+    };
+
+    size_t i = parenPos;
+    skipWsBack(i);
+    size_t idEnd = i;
+    while (i > 0 && isIdChar(text[i - 1])) --i;
+    if (i == idEnd) return false; // no identifier immediately before '('
+
+    skipWsBack(i);
+    if (i == 0 || text[i - 1] != '.') return false;
+    --i; // consume the '.'
+    skipWsBack(i);
+    return i == 0 || text[i - 1] == '(' || text[i - 1] == ',';
+}
+
+// The enclosing `(` of the argument list `offset` sits inside, found by
+// walking backward with a paren-depth counter -- skipping past a named port
+// connection's own parens (see isNamedConnectionParen) rather than stopping
+// there, since those belong to the *same* argument list, not a nested one.
+// A simple lexical scan -- deliberately not comment/string-aware (unlike
+// findIdentifierOccurrences), since a comment or string literal inside a
+// port-connection list is rare enough for this feature that the added
+// complexity wasn't justified; see this file's own header comment for the
+// feature's overall disclosed scope.
+std::optional<size_t> findEnclosingParen(const std::string& text, size_t offset)
+{
+    int depth = 0;
+    for (size_t i = offset; i-- > 0; ) {
+        char c = text[i];
+        if (c == ')') {
+            ++depth;
+        } else if (c == '(') {
+            if (depth == 0) {
+                if (isNamedConnectionParen(text, i)) continue;
+                return i;
+            }
+            --depth;
+        }
+    }
+    return std::nullopt;
 }

@@ -124,6 +124,11 @@ public:
     // lexical, cross-file text search over this file set.
     std::vector<std::string> allFilePaths() const;
 
+    // The `import`/`export` rows recorded for `path` (main schema only), in
+    // no particular order; {} for an unknown path. Lets the LSP-layer
+    // resolver (plan.md §6.30) rank a specific import above a wildcard one.
+    std::vector<ImportRow> importsForFile(const std::string& path) const;
+
     // Delete all symbols for `fileId` then insert `records` in a single
     // transaction.
     void replaceSymbols(int64_t fileId, const std::vector<ParseRecord>& records);

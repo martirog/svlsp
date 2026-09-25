@@ -361,3 +361,27 @@ TEST_CASE("dotCompletionContext: '[...]' with no identifier before it fails clos
 {
     CHECK_FALSE(dotCompletionContext("[i].c", 0, 5).has_value());
 }
+
+// ---------------------------------------------------------------------------
+// Layered type details with `::`-qualified names (plan.md §6.30 step A)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("firstTypeLayer: a qualified class name is one layer, not split at '::'",
+          "[symbol_utils][layers]")
+{
+    CHECK(firstTypeLayer("pkg_b::Item") == "pkg_b::Item");
+    CHECK(firstTypeLayer("$unit::Top") == "$unit::Top");
+    CHECK(firstTypeLayer("$queue:pkg_b::Item") == "$queue");
+    CHECK(firstTypeLayer("Item") == "Item");
+    CHECK(firstTypeLayer("") == "");
+}
+
+TEST_CASE("peelDimensionLayers: keeps a qualified element type intact",
+          "[symbol_utils][layers]")
+{
+    CHECK(peelDimensionLayers("$queue:pkg_b::Item", 1) == "pkg_b::Item");
+    CHECK(peelDimensionLayers("$fixed_array:$queue:p::Outer::Inner", 1) == "$queue:p::Outer::Inner");
+    CHECK(peelDimensionLayers("$fixed_array:$queue:p::Outer::Inner", 2) == "p::Outer::Inner");
+    // A qualified name is an element layer, never an indexable dimension.
+    CHECK(peelDimensionLayers("pkg_b::Item", 1) == "");
+}

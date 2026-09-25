@@ -28,65 +28,6 @@ std::optional<size_t> toOffset(const std::string& text, unsigned line, unsigned 
     return offset <= text.size() ? std::optional<size_t>(offset) : std::nullopt;
 }
 
-// True if the '(' at `parenPos` opens a named port connection ("
-// .portName(" -- ubiquitous in real SV instantiations), i.e. an identifier
-// immediately precedes it and a '.' that starts a fresh argument (preceded
-// by '(' or ',', or the start of text) immediately precedes *that*. Without
-// this check, a cursor positioned to type the connected signal (right after
-// ".a(") would make findEnclosingParen stop at *this* paren instead of
-// continuing out to the instantiation's own -- which is what active-
-// parameter tracking below actually needs. Deliberately narrower than
-// "any identifier followed by '('", so a genuine dotted method call like
-// `obj.get_val(` -- where an identifier, not '(' or ',', precedes the '.'
-// -- is correctly left alone (and simply fails to resolve later, since no
-// per-parameter data exists for arbitrary calls; see this file's own header
-// comment).
-bool isNamedConnectionParen(const std::string& text, size_t parenPos)
-{
-    auto skipWsBack = [&](size_t& i) {
-        while (i > 0 && std::isspace(static_cast<unsigned char>(text[i - 1]))) --i;
-    };
-
-    size_t i = parenPos;
-    skipWsBack(i);
-    size_t idEnd = i;
-    while (i > 0 && isIdentChar(static_cast<unsigned char>(text[i - 1]))) --i;
-    if (i == idEnd) return false; // no identifier immediately before '('
-
-    skipWsBack(i);
-    if (i == 0 || text[i - 1] != '.') return false;
-    --i; // consume the '.'
-    skipWsBack(i);
-    return i == 0 || text[i - 1] == '(' || text[i - 1] == ',';
-}
-
-// The enclosing `(` of the argument list `offset` sits inside, found by
-// walking backward with a paren-depth counter -- skipping past a named port
-// connection's own parens (see isNamedConnectionParen) rather than stopping
-// there, since those belong to the *same* argument list, not a nested one.
-// A simple lexical scan -- deliberately not comment/string-aware (unlike
-// findIdentifierOccurrences), since a comment or string literal inside a
-// port-connection list is rare enough for this feature that the added
-// complexity wasn't justified; see this file's own header comment for the
-// feature's overall disclosed scope.
-std::optional<size_t> findEnclosingParen(const std::string& text, size_t offset)
-{
-    int depth = 0;
-    for (size_t i = offset; i-- > 0; ) {
-        char c = text[i];
-        if (c == ')') {
-            ++depth;
-        } else if (c == '(') {
-            if (depth == 0) {
-                if (isNamedConnectionParen(text, i)) continue;
-                return i;
-            }
-            --depth;
-        }
-    }
-    return std::nullopt;
-}
-
 struct InstantiationHeader {
     std::string typeName;
     std::string instanceName;
@@ -226,7 +167,7 @@ struct ActiveParam {
 // starts with a named port connection (`.portName(` -- ubiquitous in real
 // SV verification code) so that can be resolved by name instead of
 // position. No string-literal awareness (same disclosed simplification as
-// findEnclosingParen above).
+// findEnclosingParen, lsp/symbol_utils.h).
 ActiveParam computeActiveParam(const std::string& text, size_t parenOffset, size_t cursorOffset)
 {
     int index = 0;

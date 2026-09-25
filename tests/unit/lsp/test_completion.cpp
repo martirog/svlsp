@@ -3,6 +3,7 @@
 #include "db/database.h"
 #include "db/symbol_database.h"
 #include "compiler/parse_record.h"
+#include "db/compilation_controller.h"
 #include <algorithm>
 
 namespace {
@@ -1171,5 +1172,42 @@ TEST_CASE("CompletionProvider: keyword fuzzy-prefix match still respects context
     if (!result.isNull()) {
         auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
         CHECK_FALSE(hasItem(items, "module"));
+    }
+}
+
+// plan.md §6.30 step A: a receiver declared with a package-qualified type
+// completes on *that* package's class. Before the type's qualifier was kept
+// in `detail`, `pkg_b::Item x;` recorded plain "Item", which resolved to the
+// first-declared pkg_a::Item and offered its members instead.
+TEST_CASE("CompletionProvider: dot-completion on a pkg::-qualified receiver offers that "
+          "package's class members", "[completion][dot][phase6.30]")
+{
+    Fixture f;
+    CompilationController ctrl{f.sdb};
+    ctrl.compile("/pkgs.sv",
+        "package pkg_a;\n"
+        "  class Item; int only_in_a; endclass\n"
+        "endpackage\n"
+        "package pkg_b;\n"
+        "  class Item; int only_in_b; endclass\n"
+        "endpackage\n");
+    const std::string text =
+        "module top;\n"
+        "  pkg_b::Item x;\n"
+        "  pkg_b::Item q[$];\n"
+        "  initial begin\n"
+        "    x.\n"      // line 4
+        "    q[0].\n"   // line 5
+        "  end\n"
+        "endmodule\n";
+    ctrl.compile("/top.sv", text);
+
+    for (unsigned line : {4u, 5u}) {
+        const unsigned col = line == 4 ? 6 : 9;
+        auto result = CompletionProvider::getCompletion(makeParams("/top.sv", line, col), f.sdb, text);
+        REQUIRE_FALSE(result.isNull());
+        const auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+        CHECK(hasItem(items, "only_in_b"));
+        CHECK_FALSE(hasItem(items, "only_in_a"));
     }
 }

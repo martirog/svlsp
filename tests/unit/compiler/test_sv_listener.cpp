@@ -1398,3 +1398,128 @@ TEST_CASE("a doubly-scoped call (T::type_id::create) records only the "
     REQUIRE(c != nullptr);
     CHECK(c->calleeScope == "type_id");
 }
+
+// ---------------------------------------------------------------------------
+// plan.md §6.30 step A: a `pkg::`/`Class::`-qualified type keeps its
+// qualifier in `detail`, so resolution can tell pkg_a::Item from
+// pkg_b::Item. Parameter value assignments (`#(...)`) are dropped -- only
+// the name path matters for resolution.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("package-qualified class-typed signal keeps the package in detail",
+          "[compiler][listener][phase6.30]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "package pkg_b; class Item; endclass endpackage\n"
+        "module m;\n"
+        "  pkg_b::Item x;\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    auto* r = findRecord(recs, ParseRecordKind::Signal, "x");
+    REQUIRE(r != nullptr);
+    CHECK(r->detail == "pkg_b::Item");
+}
+
+TEST_CASE("package-qualified queue element keeps the package after the container tag",
+          "[compiler][listener][phase6.30]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "package pkg_b; class Item; endclass endpackage\n"
+        "module m;\n"
+        "  pkg_b::Item q[$];\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    auto* r = findRecord(recs, ParseRecordKind::Signal, "q");
+    REQUIRE(r != nullptr);
+    CHECK(r->detail == std::string(CONTAINER_QUEUE) + ":pkg_b::Item");
+}
+
+TEST_CASE("a nested class type keeps every qualifier; parameters are dropped",
+          "[compiler][listener][phase6.30]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "package p;\n"
+        "  class Outer #(type T = int); class Inner; endclass endclass\n"
+        "endpackage\n"
+        "module m;\n"
+        "  p::Outer#(int)::Inner n;\n"
+        "  p::Outer#(int) o;\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    auto* n = findRecord(recs, ParseRecordKind::Signal, "n");
+    REQUIRE(n != nullptr);
+    CHECK(n->detail == "p::Outer::Inner");
+    auto* o = findRecord(recs, ParseRecordKind::Signal, "o");
+    REQUIRE(o != nullptr);
+    CHECK(o->detail == "p::Outer");
+}
+
+TEST_CASE("a $unit-qualified type keeps the $unit qualifier",
+          "[compiler][listener][phase6.30]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "class Top; endclass\n"
+        "module m;\n"
+        "  $unit::Top t;\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    auto* r = findRecord(recs, ParseRecordKind::Signal, "t");
+    REQUIRE(r != nullptr);
+    CHECK(r->detail == "$unit::Top");
+}
+
+TEST_CASE("a package-qualified extends keeps the package in the class's detail",
+          "[compiler][listener][phase6.30]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "package base_p; class Base; endclass endpackage\n"
+        "class Child extends base_p::Base; endclass\n");
+    REQUIRE(errs.empty());
+    auto* r = findRecord(recs, ParseRecordKind::Class, "Child");
+    REQUIRE(r != nullptr);
+    CHECK(r->detail == "base_p::Base");
+}
+
+TEST_CASE("a parameterized extends records only the base class name",
+          "[compiler][listener][phase6.30]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "class Base #(type T = int); endclass\n"
+        "class Child extends Base #(int); endclass\n");
+    REQUIRE(errs.empty());
+    auto* r = findRecord(recs, ParseRecordKind::Class, "Child");
+    REQUIRE(r != nullptr);
+    CHECK(r->detail == "Base");
+}
+
+// plan.md §6.30 step A, found building the resolver: data_declaration's
+// first alternative accepts an implicit type, so a block's leading
+// assignment statement `x = expr;` parses as a declaration of `x` (the LRM
+// only allows an implicit-typed declaration with `var`). Those must not be
+// recorded -- they'd shadow the real declaration in every scoped lookup.
+TEST_CASE("a leading assignment statement in a function body is not recorded as a declaration",
+          "[compiler][listener][phase6.30]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "class Base; int level; endclass\n"
+        "class Derived extends Base;\n"
+        "  int idx;\n"
+        "  function void f(); level = 2; idx = level; endfunction\n"
+        "endclass\n");
+    REQUIRE(errs.empty());
+    for (const auto& r : recs) {
+        INFO(r.name << " at line " << r.line << " scope " << r.scope);
+        CHECK_FALSE(r.scope == "Derived::f");
+    }
+}
+
+TEST_CASE("implicit-typed declarations that really are declarations are still recorded",
+          "[compiler][listener][phase6.30]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "module m;\n"
+        "  initial begin\n"
+        "    var v1 = 1;\n"
+        "  end\n"
+        "  function void f();\n"
+        "    var [3:0] v2;\n"
+        "    int v3;\n"
+        "  endfunction\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    CHECK(findRecord(recs, ParseRecordKind::Signal, "v1") != nullptr);
+    CHECK(findRecord(recs, ParseRecordKind::Signal, "v2") != nullptr);
+    CHECK(findRecord(recs, ParseRecordKind::Signal, "v3") != nullptr);
+}

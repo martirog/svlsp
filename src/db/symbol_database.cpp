@@ -1,6 +1,7 @@
 #include "db/symbol_database.h"
 #include "compiler/parse_record.h"
 #include <algorithm>
+#include <optional>
 #include <ctime>
 
 // Stringify ParseRecordKind for storage.
@@ -244,6 +245,12 @@ void SymbolDatabase::replaceImports(int64_t fileId,
         ins.step();
     }
     m_db.execute("COMMIT");
+}
+
+std::vector<ImportRow> SymbolDatabase::importsForFile(const std::string& path) const
+{
+    const int64_t fid = fileIdFor(path);
+    return fid < 0 ? std::vector<ImportRow>{} : importsForFileId(fid);
 }
 
 std::vector<ImportRow> SymbolDatabase::importsForFileId(int64_t fileId) const
@@ -678,9 +685,31 @@ std::vector<std::string> SymbolDatabase::baseClassChain(
             break; // cycle guard: a class (in)directly naming itself as parent
         visited.push_back(current);
 
+        // A `pkg::`/`Outer::`/`$unit::`-qualified name (plan.md §6.30 step A
+        // -- userTypeName and a class's own `extends` detail keep the
+        // qualifier) only matches a class declared in exactly that scope.
+        // The qualifier may omit leading enclosing scopes (`Outer::Inner`
+        // written inside package p is scope "p::Outer"), so a suffix match on
+        // whole `::` segments is accepted too.
+        std::string bare = current;
+        std::optional<std::string> qualifier;
+        if (auto sep = current.rfind("::"); sep != std::string::npos) {
+            qualifier = current.substr(0, sep);
+            bare      = current.substr(sep + 2);
+            if (*qualifier == "$unit") qualifier = "";
+        }
+        auto inQualifier = [&](const SymbolRow& row) {
+            if (!qualifier) return true;
+            if (row.scope == *qualifier) return true;
+            return !qualifier->empty() && row.scope.size() > qualifier->size() + 2 &&
+                   row.scope.compare(row.scope.size() - qualifier->size(), qualifier->size(),
+                                     *qualifier) == 0 &&
+                   row.scope.compare(row.scope.size() - qualifier->size() - 2, 2, "::") == 0;
+        };
+
         std::vector<SymbolRow> classRows;
-        for (auto& row : findSymbolsByName(current))
-            if (row.kind == "Class") classRows.push_back(row);
+        for (auto& row : findSymbolsByName(bare))
+            if (row.kind == "Class" && inQualifier(row)) classRows.push_back(row);
         if (classRows.empty()) break; // not a known class -- stop (fail closed)
 
         const SymbolRow* best = pickSameFilePreferred(classRows, curPath);

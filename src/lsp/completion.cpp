@@ -117,17 +117,6 @@ lsp::TextDocument_CompletionResult buildCompletionItems(
     return items;
 }
 
-// The outermost layer of a (possibly layered) detail string -- what
-// container/element-tag dispatch (builtinMethodsFor) always keys off,
-// regardless of how many further layers describe the element type. A
-// single-layer detail (a bare class name, or any pre-§6.15 detail) is
-// unaffected: its "first layer" is just itself.
-std::string firstLayer(const std::string& detail)
-{
-    const size_t colon = detail.find(':');
-    return colon == std::string::npos ? detail : detail.substr(0, colon);
-}
-
 // Builds the candidate list for whatever a dot-completion chain resolved
 // to -- shared by every chain length (a 1-segment chain reproduces
 // §6.10/§6.13's original single-hop behavior exactly; this is the only
@@ -150,7 +139,7 @@ std::vector<Candidate> candidatesForResolvedType(SymbolDatabase& db, const std::
     // only -- a container's own method set doesn't depend on its element
     // type (§6.15's "q." on "MyClass q[$]" still means the queue's own
     // methods, not MyClass's).
-    if (auto methods = builtinMethodsFor(firstLayer(detail)); !methods.empty())
+    if (auto methods = builtinMethodsFor(firstTypeLayer(detail)); !methods.empty())
         return candidatesFromMethods(methods);
 
     // Otherwise, a real DB Class/Interface/whatever scope lookup, unioned
