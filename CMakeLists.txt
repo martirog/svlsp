@@ -285,6 +285,7 @@ add_executable(uvm_corpus_tests
     tests/uvm_corpus/test_workspace_symbols_uvm.cpp
     tests/uvm_corpus/test_completion_uvm.cpp
     tests/uvm_corpus/test_signature_help_uvm.cpp
+    tests/uvm_corpus/test_references_uvm.cpp
 )
 target_include_directories(uvm_corpus_tests PRIVATE tests/uvm_corpus)
 target_link_libraries(uvm_corpus_tests PRIVATE svlsp_lib svlsp_antlr4 svlsp_db Catch2::Catch2WithMain)

@@ -24,3 +24,20 @@ module defref_top;
     inc.defref_hello();
   end
 endmodule
+// Appended for plan.md §6.30 step B: same-named decoys of everything above
+// (existing positions above must stay valid -- append only).
+package defref_pkg_b;
+  class defref_Item;
+    int defref_val;
+    function int defref_get(); return defref_val; endfunction
+  endclass
+endpackage
+module defref_top_b;
+  defref_pkg_b::defref_Item b;
+  logic defref_sig;
+  int r;
+  initial begin
+    r = b.defref_get();
+    b.defref_val = defref_sig;
+  end
+endmodule

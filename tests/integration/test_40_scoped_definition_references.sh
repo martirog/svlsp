@@ -4,10 +4,10 @@
 # find-references per declaration kind.
 #
 # Complements the unit suites tests/unit/lsp/test_definition_scoped.cpp and
-# test_references_scoped.cpp. Only cases that resolve correctly today are
-# exercised here (the suite must stay green); the scope-strict cases the
-# name-only resolution still gets wrong live in those unit files, tagged
-# [!shouldfail].
+# test_references_scoped.cpp (and test_rename.cpp's [scoped] cases). The
+# fixture's second half (plan.md §6.30 step B) redeclares every name in a
+# second package/module, so every case here -- including the original
+# references ones -- also checks that a same-named decoy is excluded.
 #
 # Fixtures: fixtures/defref_top.sv `include`s fixtures/defref_inc.svh.
 # Positions below are 0-based (line, character), as sent/returned over LSP.
@@ -75,6 +75,38 @@ refs_test() {
         "\"$4\""
 }
 
+# rename_test <name> <line> <char> <new-name> <expected edit starts, as refs_test>
+# Collects the edit positions without applying them (the fixture buffer is
+# shared with every other test here).
+rename_test() {
+    run_test "$1" \
+        "(condition-case err
+           (let* ((lsp-response-timeout 60)
+                  (buf    (svlsp-test/open-file \"${TOP_FIXTURE}\"))
+                  (ok     (with-current-buffer buf (svlsp-test/wait-for-lsp 15)))
+                  (edit   (when ok
+                            (with-current-buffer buf
+                              (lsp-request \"textDocument/rename\"
+                                           (list :textDocument (list :uri (lsp--buffer-uri))
+                                                 :position     (list :line $2 :character $3)
+                                                 :newName      \"$4\")))))
+                  (got    nil))
+             (when edit
+               (maphash (lambda (uri edits)
+                          (seq-doseq (te edits)
+                            (let ((start (gethash \"start\" (gethash \"range\" te))))
+                              (push (format \"%s:%s:%s\"
+                                            (file-name-nondirectory (lsp--uri-to-path uri))
+                                            (gethash \"line\" start)
+                                            (gethash \"character\" start))
+                                    got))))
+                        (gethash \"changes\" edit)))
+             (svlsp-test/close-file buf)
+             (mapconcat #'identity (sort got #'string<) \" \"))
+         (error (format \"elisp-error: %s\" (error-message-string err))))" \
+        "\"$5\""
+}
+
 DEF_TESTS=(
     "definition: package half of pkg::Class lands on the package"
     "definition: class half of pkg::Class lands on the class"
@@ -82,6 +114,10 @@ DEF_TESTS=(
     "definition: dotted call into an included class lands in the included file"
     "definition: dotted method call lands on the receiver class's method"
     "definition: dotted field access lands on the receiver class's field"
+    "definition: pkg_b::Class lands on pkg_b's class, not pkg_a's"
+    "definition: dotted call on a pkg_b receiver lands on pkg_b's method"
+    "definition: dotted field on a pkg_b receiver lands on pkg_b's field"
+    "definition: a signal lands on its own module's declaration"
 )
 REF_TESTS=(
     "references: signal -- declaration + both named-connection uses"
@@ -89,10 +125,15 @@ REF_TESTS=(
     "references: port -- declaration + both named connections"
     "references: class from an included file -- both files"
     "references: class field -- declaration, own-method use, dotted use"
+    "references: pkg_b's field -- excludes pkg_a's same-named field"
+    "references: second module's signal -- excludes the first module's"
+)
+RENAME_TESTS=(
+    "rename: edits only the cursor module's signal, not a same-named one"
 )
 
 if [ ! -x "${SVLSP_BIN}" ]; then
-    for name in "${DEF_TESTS[@]}" "${REF_TESTS[@]}"; do
+    for name in "${DEF_TESTS[@]}" "${REF_TESTS[@]}" "${RENAME_TESTS[@]}"; do
         skip_test "$name" "svlsp binary not found at ${SVLSP_BIN}"
     done
 else
@@ -107,6 +148,13 @@ else
     def_test "${DEF_TESTS[4]}" 21 10 defref_top.sv 8 17
     # "    r = a.defref_val;" (line 22)
     def_test "${DEF_TESTS[5]}" 22 10 defref_top.sv 7 8
+    # "  defref_pkg_b::defref_Item b;" (line 35) -> pkg_b's class (line 29)
+    def_test "${DEF_TESTS[6]}" 35 16 defref_top.sv 29 8
+    # "    r = b.defref_get();" (line 39)
+    def_test "${DEF_TESTS[7]}" 39 10 defref_top.sv 31 17
+    # "    b.defref_val = defref_sig;" (line 40)
+    def_test "${DEF_TESTS[8]}" 40 6  defref_top.sv 30 8
+    def_test "${DEF_TESTS[9]}" 40 19 defref_top.sv 36 8
 
     # "  logic defref_sig;" (line 16)
     refs_test "${REF_TESTS[0]}" 16 8 \
@@ -120,4 +168,13 @@ else
         "defref_inc.svh:2:6 defref_top.sv:15:2"
     refs_test "${REF_TESTS[4]}" 7 8 \
         "defref_top.sv:22:10 defref_top.sv:7:8 defref_top.sv:8:38"
+    # "    int defref_val;" in defref_pkg_b (line 30)
+    refs_test "${REF_TESTS[5]}" 30 8 \
+        "defref_top.sv:30:8 defref_top.sv:31:38 defref_top.sv:40:6"
+    # "  logic defref_sig;" in defref_top_b (line 36)
+    refs_test "${REF_TESTS[6]}" 36 8 \
+        "defref_top.sv:36:8 defref_top.sv:40:19"
+
+    rename_test "${RENAME_TESTS[0]}" 36 8 defref_sig_b \
+        "defref_top.sv:36:8 defref_top.sv:40:19"
 fi

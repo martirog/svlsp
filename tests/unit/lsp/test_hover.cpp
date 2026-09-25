@@ -119,3 +119,53 @@ TEST_CASE("HoverProvider: prefers a declaration-like kind over an alphabetically
     CHECK(val.find("Class")  != std::string::npos);
     CHECK(val.find("Signal") == std::string::npos);
 }
+
+TEST_CASE("HoverProvider: a pkg::-qualified name shows the named package's symbol, not a "
+          "same-named decoy",
+          "[hover][scoped]")
+{
+    // Two packages in /pkgs.sv each declare a class `Item`; a name-only
+    // lookup picks pkg_a's (earlier line). `pkg_b::Item` must show pkg_b's.
+    Fixture f;
+    int64_t pk = f.sdb.upsertFile("/pkgs.sv", "h");
+    f.sdb.replaceSymbols(pk, {
+        {ParseRecordKind::Package, "pkg_a", 1, 8, "", "", 3, ""},
+        {ParseRecordKind::Class,   "Item",  2, 8, "pkg_a", "", 2, "pkg_a"},
+        {ParseRecordKind::Package, "pkg_b", 4, 8, "", "", 6, ""},
+        {ParseRecordKind::Class,   "Item",  5, 8, "pkg_b", "", 5, "pkg_b"},
+    });
+    int64_t top = f.sdb.upsertFile("/top.sv", "h");
+    f.sdb.replaceSymbols(top, {
+        {ParseRecordKind::Module, "top", 1, 7, "", "", 3, ""},
+    });
+
+    const std::string text = "module top;\n  pkg_b::Item x;\nendmodule\n";
+    auto result = HoverProvider::getHover(makeParams("/top.sv", 1, 10), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+    const std::string val{std::get<lsp::MarkupContent>(result->contents).value};
+    CHECK(val.find("pkg_b") != std::string::npos);
+    CHECK(val.find("pkg_a") == std::string::npos);
+    CHECK(result->range->start.line == 4);
+}
+
+TEST_CASE("HoverProvider: null for a cursor inside a comment or string literal",
+          "[hover][scoped]")
+{
+    // A name mentioned in `// put` or "put" is not a use of anything
+    // (handoff open-work item 1: this used to hover an unrelated `put`).
+    Fixture f;
+    int64_t fid = f.sdb.upsertFile("/c.sv", "h");
+    f.sdb.replaceSymbols(fid, {
+        {ParseRecordKind::Function, "put", 1, 16, "", "", 2, ""},
+    });
+
+    const std::string text =
+        "function void put();\n"
+        "endfunction // put\n"
+        "/* put */ string s = \"put\";\n";
+    CHECK(HoverProvider::getHover(makeParams("/c.sv", 1, 16), f.sdb, text).isNull());
+    CHECK(HoverProvider::getHover(makeParams("/c.sv", 2, 4), f.sdb, text).isNull());
+    CHECK(HoverProvider::getHover(makeParams("/c.sv", 2, 23), f.sdb, text).isNull());
+    // ...while the real declaration still hovers.
+    CHECK_FALSE(HoverProvider::getHover(makeParams("/c.sv", 0, 15), f.sdb, text).isNull());
+}

@@ -2,21 +2,22 @@
 // real CompilationController::compile (not hand-built rows), asserting the
 // *exact* set of returned locations rather than just a count.
 //
-// ReferencesProvider is a lexical, cross-file whole-word search for the
-// identifier under the cursor (plan.md §6.22), gated only on that name
-// existing as *some* declaration in the DB. The first half of this file
-// pins down that it finds every real use for each declaration kind the
-// compiler records (module, interface, program, package, class, function,
-// task, port, parameter, localparam, signal, variable, class field,
-// function argument) across `::`, `.`, `include and named-connection
-// shapes.
+// ReferencesProvider takes every lexical whole-word hit of the name across
+// the DB's files and keeps those that resolve (resolveSymbolAt, plan.md
+// §6.30) to the same declaration as the cursor, or to the same override
+// family for a class method. The first half of this file pins down that it
+// finds every real use for each declaration kind the compiler records
+// (module, interface, program, package, class, function, task, port,
+// parameter, localparam, signal, variable, class field, function argument)
+// across `::`, `.`, `include and named-connection shapes.
 //
 // The second half asserts scope-correct results: an unrelated same-named
-// declaration elsewhere must not contribute its uses, and names the
-// compiler doesn't record at all (typedef, enum literal, struct member,
-// macro, genvar) should still have references. Those fail today and are
-// tagged [!shouldfail] so the suite stays green while the gap stays
-// visible -- remove the tag when references become scope-aware.
+// declaration elsewhere must not contribute its uses (fixed by §6.30 step
+// B), and names the compiler doesn't record at all (typedef, enum literal,
+// struct member, macro, genvar) should still have references. Those still
+// fail and are tagged [!shouldfail] so the suite stays green while the gap
+// stays visible -- remove the tag once §6.30 step C (or §6.25 for macros)
+// records them.
 //
 // Fixture convention: the expected result is every whole-word occurrence of
 // the searched name on lines tagged `// @ref`; any other occurrence is a
@@ -495,11 +496,12 @@ TEST_CASE("References: result is the same whichever occurrence the cursor starts
 }
 
 // ===========================================================================
-// Part 2 -- scope-correct results (known gaps, [!shouldfail])
+// Part 2 -- scope-correct results; unrecorded kinds are known gaps
+// ([!shouldfail])
 // ===========================================================================
 
 TEST_CASE("References: a signal's uses do not include a same-named signal in another module",
-          "[references][scoped][lexical][!shouldfail]")
+          "[references][scoped][lexical]")
 {
     RealCompileFixture f;
     f.add("/m.sv",
@@ -516,7 +518,7 @@ TEST_CASE("References: a signal's uses do not include a same-named signal in ano
 }
 
 TEST_CASE("References: a local variable's uses do not include a same-named class field",
-          "[references][scoped][lexical][!shouldfail]")
+          "[references][scoped][lexical]")
 {
     RealCompileFixture f;
     f.add("/c.sv",
@@ -533,7 +535,7 @@ TEST_CASE("References: a local variable's uses do not include a same-named class
 }
 
 TEST_CASE("References: pkg_b::Item's field uses do not include pkg_a::Item's same-named field",
-          "[references][scoped][dot][!shouldfail]")
+          "[references][scoped][dot]")
 {
     RealCompileFixture f;
     f.add("/pkgs.sv",
@@ -559,7 +561,7 @@ TEST_CASE("References: pkg_b::Item's field uses do not include pkg_a::Item's sam
 
 TEST_CASE("References: a class method's uses do not include an unrelated class's same-named "
           "method",
-          "[references][scoped][dot][!shouldfail]")
+          "[references][scoped][dot]")
 {
     RealCompileFixture f;
     f.add("/c.sv",

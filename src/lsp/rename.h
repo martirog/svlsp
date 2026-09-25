@@ -8,17 +8,17 @@
 
 // RenameProvider handles textDocument/rename requests.
 //
-// Built on the same lexical, name-based search ReferencesProvider uses (see
-// its own doc comment for the scope this implies) -- renaming replaces
-// every occurrence of the name across every file the DB knows about,
-// including ones outside the intended symbol's actual scope if another,
-// unrelated declaration happens to share the name.
+// Edits exactly the occurrence set ReferencesProvider reports
+// (ReferencesProvider::findOccurrences, plan.md §6.30 step B): every hit
+// that resolves to the cursor's declaration -- or, for a class method, its
+// override family -- plus hits only resolvable by name (see references.h
+// for the rules). A same-named but unrelated declaration is left alone.
 class RenameProvider {
 public:
     // `textForPath(path)` returns the current text for `path` (an open
     // buffer's live text, or disk content for a closed file), or
     // std::nullopt if unavailable. `docText` is the requesting file's own
-    // current text, used only to resolve the word under the cursor.
+    // current text, used to resolve the identifier under the cursor.
     //
     // Throws lsp::RequestError (InvalidParams) if `params.newName` isn't a
     // legal SystemVerilog identifier, per the LSP spec's own requirement

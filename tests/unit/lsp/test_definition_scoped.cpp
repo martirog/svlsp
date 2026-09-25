@@ -1,19 +1,15 @@
 // Scope-strict go-to-definition tests, driven through a real
 // CompilationController::compile (not hand-built rows).
 //
-// DefinitionProvider resolves the bare word under the cursor via
-// findSymbolsByName + pickBestSymbol (same file first, then a
-// declaration-like kind, then path/line order). The older tests in
-// test_definition.cpp only ever had one candidate per name, so they could
-// not tell a scoped resolution from a lucky first-row pick. Every case here
-// deliberately declares a same-named *decoy* that a name-only lookup would
-// find first, and asserts the exact target line/column -- never just
-// "non-null".
-//
-// Cases the current name-only resolution gets wrong are tagged
-// [!shouldfail] (Catch2 reports them as passing while they fail, and as a
-// failure the moment they start passing) so the suite stays green while the
-// gap stays visible. Remove the tag when definition becomes scope-aware.
+// DefinitionProvider resolves the identifier under the cursor with
+// resolveSymbolAt (plan.md §6.30): `::` qualifiers, imports, `.` receiver
+// chains and the lexical scope. Before that it used findSymbolsByName +
+// pickBestSymbol (same file first, then a declaration-like kind, then
+// path/line order). The older tests in test_definition.cpp only ever had
+// one candidate per name, so they could not tell a scoped resolution from
+// a lucky first-row pick. Every case here deliberately declares a
+// same-named *decoy* that a name-only lookup would find first, and asserts
+// the exact target line/column -- never just "non-null".
 
 #include <catch2/catch_test_macros.hpp>
 #include "lsp/definition.h"
@@ -151,7 +147,7 @@ TEST_CASE("Definition: pkg_a::Item resolves to pkg_a's class, not pkg_b's",
 }
 
 TEST_CASE("Definition: pkg_b::Item resolves to pkg_b's class, not the first-declared pkg_a one",
-          "[definition][scoped][scope-op][!shouldfail]")
+          "[definition][scoped][scope-op]")
 {
     RealCompileFixture f;
     f.ctrl.compile("/pkgs.sv", kPkgs);
@@ -166,7 +162,7 @@ TEST_CASE("Definition: pkg_b::Item resolves to pkg_b's class, not the first-decl
 }
 
 TEST_CASE("Definition: pkg_b::make() resolves to pkg_b's package function",
-          "[definition][scoped][scope-op][!shouldfail]")
+          "[definition][scoped][scope-op]")
 {
     RealCompileFixture f;
     f.ctrl.compile("/pkgs.sv", kPkgs);
@@ -182,7 +178,7 @@ TEST_CASE("Definition: pkg_b::make() resolves to pkg_b's package function",
 }
 
 TEST_CASE("Definition: pkg_b::Item::stat() resolves to pkg_b's static method",
-          "[definition][scoped][scope-op][!shouldfail]")
+          "[definition][scoped][scope-op]")
 {
     RealCompileFixture f;
     f.ctrl.compile("/pkgs.sv", kPkgs);
@@ -199,7 +195,7 @@ TEST_CASE("Definition: pkg_b::Item::stat() resolves to pkg_b's static method",
 
 TEST_CASE("Definition: Class::method() picks the named class's method over an earlier "
           "same-named method on another class in the same file",
-          "[definition][scoped][scope-op][!shouldfail]")
+          "[definition][scoped][scope-op]")
 {
     RealCompileFixture f;
     const std::string src =
@@ -224,7 +220,7 @@ TEST_CASE("Definition: Class::method() picks the named class's method over an ea
 // ---------------------------------------------------------------------------
 
 TEST_CASE("Definition: bare Item after `import pkg_b::*;` resolves to pkg_b's class",
-          "[definition][scoped][import][!shouldfail]")
+          "[definition][scoped][import]")
 {
     RealCompileFixture f;
     f.ctrl.compile("/pkgs.sv", kPkgs);
@@ -240,7 +236,7 @@ TEST_CASE("Definition: bare Item after `import pkg_b::*;` resolves to pkg_b's cl
 }
 
 TEST_CASE("Definition: bare Item after `import pkg_b::Item;` resolves to pkg_b's class",
-          "[definition][scoped][import][!shouldfail]")
+          "[definition][scoped][import]")
 {
     RealCompileFixture f;
     f.ctrl.compile("/pkgs.sv", kPkgs);
@@ -256,7 +252,7 @@ TEST_CASE("Definition: bare Item after `import pkg_b::Item;` resolves to pkg_b's
 }
 
 TEST_CASE("Definition: a bare call after `import pkg_b::*;` resolves to pkg_b's function",
-          "[definition][scoped][import][!shouldfail]")
+          "[definition][scoped][import]")
 {
     RealCompileFixture f;
     f.ctrl.compile("/pkgs.sv", kPkgs);
@@ -359,7 +355,7 @@ TEST_CASE("Definition: a class `include`d inside a package (UVM layout) lands in
 
 TEST_CASE("Definition: a same-named class in the primary file does not hijack a use that "
           "the `include`d package's class should resolve to",
-          "[definition][scoped][include][scope-op][!shouldfail]")
+          "[definition][scoped][include][scope-op]")
 {
     RealCompileFixture f;
     const std::string inc =
@@ -405,7 +401,7 @@ TEST_CASE("Definition: obj.get() on the first-declared class resolves to its own
 
 TEST_CASE("Definition: obj.get() resolves to the method on obj's declared class, not an "
           "earlier same-named method on an unrelated class",
-          "[definition][scoped][dot][!shouldfail]")
+          "[definition][scoped][dot]")
 {
     RealCompileFixture f;
     f.ctrl.compile("/pkgs.sv", kPkgs);
@@ -422,7 +418,7 @@ TEST_CASE("Definition: obj.get() resolves to the method on obj's declared class,
 }
 
 TEST_CASE("Definition: obj.val resolves to the field on obj's declared class",
-          "[definition][scoped][dot][!shouldfail]")
+          "[definition][scoped][dot]")
 {
     RealCompileFixture f;
     f.ctrl.compile("/pkgs.sv", kPkgs);
@@ -440,7 +436,7 @@ TEST_CASE("Definition: obj.val resolves to the field on obj's declared class",
 
 TEST_CASE("Definition: a method reached through inheritance resolves to the ancestor's "
           "declaration, not an unrelated same-named method declared earlier",
-          "[definition][scoped][dot][!shouldfail]")
+          "[definition][scoped][dot]")
 {
     RealCompileFixture f;
     const std::string src =
@@ -463,7 +459,7 @@ TEST_CASE("Definition: a method reached through inheritance resolves to the ance
 }
 
 TEST_CASE("Definition: a two-segment chain a.inner.get() resolves through the field's type",
-          "[definition][scoped][dot][!shouldfail]")
+          "[definition][scoped][dot]")
 {
     RealCompileFixture f;
     const std::string src =
@@ -488,7 +484,7 @@ TEST_CASE("Definition: a two-segment chain a.inner.get() resolves through the fi
 }
 
 TEST_CASE("Definition: this.field inside a method resolves to the enclosing class's field",
-          "[definition][scoped][dot][!shouldfail]")
+          "[definition][scoped][dot]")
 {
     RealCompileFixture f;
     const std::string src =
@@ -506,7 +502,7 @@ TEST_CASE("Definition: this.field inside a method resolves to the enclosing clas
 }
 
 TEST_CASE("Definition: super.method() resolves to the parent's method, not the override",
-          "[definition][scoped][dot][!shouldfail]")
+          "[definition][scoped][dot]")
 {
     RealCompileFixture f;
     // Parent lives in its own file so the override is the same-file
@@ -534,7 +530,7 @@ TEST_CASE("Definition: super.method() resolves to the parent's method, not the o
 
 TEST_CASE("Definition: a signal resolves to the declaration in its own module, not a "
           "same-named signal in an earlier module of the same file",
-          "[definition][scoped][lexical][!shouldfail]")
+          "[definition][scoped][lexical]")
 {
     RealCompileFixture f;
     const std::string src =
@@ -552,7 +548,7 @@ TEST_CASE("Definition: a signal resolves to the declaration in its own module, n
 }
 
 TEST_CASE("Definition: a function's local variable shadows a same-named class field",
-          "[definition][scoped][lexical][!shouldfail]")
+          "[definition][scoped][lexical]")
 {
     RealCompileFixture f;
     const std::string src =
@@ -570,7 +566,7 @@ TEST_CASE("Definition: a function's local variable shadows a same-named class fi
 }
 
 TEST_CASE("Definition: a function argument shadows a same-named module-level signal",
-          "[definition][scoped][lexical][!shouldfail]")
+          "[definition][scoped][lexical]")
 {
     RealCompileFixture f;
     const std::string src =

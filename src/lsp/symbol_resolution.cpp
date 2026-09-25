@@ -149,6 +149,7 @@ public:
         : m_db(db), m_path(path), m_text(blankCommentsAndStrings(text)) {}
 
     std::optional<ResolvedSymbol> resolveAt(size_t offset, int depth);
+    int64_t overrideFamilyId(const SymbolRow& row) const;
 
 private:
     SymbolDatabase&    m_db;
@@ -224,6 +225,24 @@ std::vector<SymbolRow> Resolver::classChainRows(const SymbolRow& cls) const
         chain.push_back(*parent);
     }
     return chain;
+}
+
+// The id of the topmost ancestor's same-named Function/Task for a class
+// method (the root of its override family), else `row.id`.
+int64_t Resolver::overrideFamilyId(const SymbolRow& row) const
+{
+    if (!isCallable(row)) return row.id;
+    auto cls = classRowForScope(row.scope);
+    if (!cls) return row.id;
+    int64_t root = row.id;
+    const auto chain = classChainRows(*cls);
+    for (size_t i = 1; i < chain.size(); ++i)
+        for (const auto& r : m_db.findSymbolsInScope(qualifiedScopeOf(chain[i])))
+            if (r.name == row.name && isCallable(r)) {
+                root = r.id;
+                break;
+            }
+    return root;
 }
 
 std::optional<SymbolRow> Resolver::lookupBare(const std::string& path, int line1,
@@ -590,4 +609,24 @@ std::optional<ResolvedSymbol> resolveSymbolAt(SymbolDatabase& db, const std::str
     auto offset = offsetOf(text, line, character);
     if (!offset) return std::nullopt;
     return Resolver(db, path, text).resolveAt(*offset, 0);
+}
+
+std::vector<std::optional<ResolvedSymbol>> resolveSymbolsAt(
+    SymbolDatabase& db, const std::string& path, const std::string& text,
+    const std::vector<std::pair<unsigned, unsigned>>& positions)
+{
+    Resolver resolver(db, path, text);
+    std::vector<std::optional<ResolvedSymbol>> results;
+    results.reserve(positions.size());
+    for (auto [line, character] : positions) {
+        auto offset = offsetOf(text, line, character);
+        results.push_back(offset ? resolver.resolveAt(*offset, 0) : std::nullopt);
+    }
+    return results;
+}
+
+int64_t overrideFamilyId(SymbolDatabase& db, const SymbolRow& row)
+{
+    const std::string noText;
+    return Resolver(db, row.filePath, noText).overrideFamilyId(row);
 }

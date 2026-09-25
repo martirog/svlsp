@@ -1,4 +1,5 @@
 #include "rename.h"
+#include "lsp/references.h"
 #include "lsp/symbol_utils.h"
 #include <lsp/error.h>
 #include <cctype>
@@ -30,28 +31,18 @@ lsp::TextDocument_RenameResult RenameProvider::getRename(
             "'" + params.newName + "' is not a valid SystemVerilog identifier");
     }
 
-    const std::string word = wordAtPosition(docText,
-                                            params.position.line,
-                                            params.position.character);
-    if (word.empty()) return nullptr;
-    if (db.findSymbolsByName(word).empty()) return nullptr; // not a known symbol
+    std::string word;
+    const auto occurrences = ReferencesProvider::findOccurrences(
+        db, std::string{params.textDocument.uri.path()}, params.position.line,
+        params.position.character, docText, textForPath, &word);
+    if (!occurrences) return nullptr; // not a known symbol
 
     lsp::Map<lsp::DocumentUri, lsp::Array<lsp::TextEdit>> changes;
-    for (const auto& path : db.allFilePaths()) {
-        auto text = textForPath(path);
-        if (!text) continue;
-
-        auto occurrences = findIdentifierOccurrences(*text, word);
-        if (occurrences.empty()) continue;
-
-        lsp::Array<lsp::TextEdit> edits;
-        for (const auto& occ : occurrences) {
-            lsp::TextEdit edit;
-            edit.range   = makeRange(occ.line + 1, occ.character, static_cast<int>(word.size()));
-            edit.newText = params.newName;
-            edits.push_back(std::move(edit));
-        }
-        changes[pathToUri(path)] = std::move(edits);
+    for (const auto& occ : *occurrences) {
+        lsp::TextEdit edit;
+        edit.range   = makeRange(occ.line + 1, occ.character, static_cast<int>(word.size()));
+        edit.newText = params.newName;
+        changes[pathToUri(occ.path)].push_back(std::move(edit));
     }
 
     if (changes.empty()) return nullptr;

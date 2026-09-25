@@ -2,6 +2,8 @@
 #include "db/symbol_database.h"
 #include <optional>
 #include <string>
+#include <vector>
+#include <utility>
 
 // Scope-aware resolution of the identifier under the cursor to the single
 // declaration it refers to (plan.md §6.30 step A). Shared by hover,
@@ -42,3 +44,19 @@ struct ResolvedSymbol {
 std::optional<ResolvedSymbol> resolveSymbolAt(SymbolDatabase& db, const std::string& path,
                                               const std::string& text, unsigned line,
                                               unsigned character);
+
+// resolveSymbolAt for many positions in one file, sharing a single
+// comment/string-blanked copy of `text` -- references and rename resolve
+// every lexical hit of a name. Each position is a 0-based (line,
+// character); result[i] is the resolution of positions[i].
+std::vector<std::optional<ResolvedSymbol>> resolveSymbolsAt(
+    SymbolDatabase& db, const std::string& path, const std::string& text,
+    const std::vector<std::pair<unsigned, unsigned>>& positions);
+
+// Identifies `row`'s override family: for a class method (Function/Task
+// scoped to a class), the id of the same-named Function/Task declared by
+// the topmost `extends` ancestor that declares one (the method's own id if
+// no ancestor does); for anything else, `row.id`. Two rows with equal ids
+// are the same symbol for references and rename -- a virtual method, its
+// overrides and calls dispatched to either must be renamed together.
+int64_t overrideFamilyId(SymbolDatabase& db, const SymbolRow& row);
