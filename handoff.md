@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-09-26 (§6.29 parts C and B done; part A next).
+**Last updated:** 2026-09-26 (§6.29 complete; no section queued).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -11,22 +11,22 @@ write-up) — read the relevant section there rather than looking for it here.
 
 ## Current state
 
-**PICK UP HERE NEXT TIME — plan.md §6.29 part A (macros).** Parts C
-(system tasks/functions) and B (keyword constructs) are done. §6.30 is
-complete (steps 1, A–D).
+**PICK UP HERE NEXT TIME — no section is queued; pick from "Next up"
+below with the user.** §6.29 (signature help for system tasks, keyword
+constructs and macros) and §6.30 are complete.
 
-- Committed on `main`: everything through §6.30; §6.29 plan and parts C and B.
+- Committed on `main`: everything through §6.30 and §6.29.
 - Test baselines:
-  - unit: **805 cases** — 804 pass + 1 `[!shouldfail]` known gap
+  - unit: **820 cases** — 819 pass + 1 `[!shouldfail]` known gap
     (references on a `` `define `` macro name, waits for §6.25)
-  - Emacs functional: **239/239**
-  - UVM corpus (opt-in, last run at §6.30 step D): **388 assertions / 19 cases**, all passing.
-    (Down from 499 at step C: the empty-prefix completion case checks
-    each item, and step D's (name, kind) dedup removed 124 duplicate
-    items; see plan.md §6.30 step D.)
-  - UVM corpus `--build-db`: **1 diagnostic, 15327 symbol rows**
-    (~17 min, ~7 GB RSS; don't run it at the same time as the corpus
-    tests)
+  - Emacs functional: **240/240**
+  - UVM corpus (opt-in): **398 assertions / 20 cases**, all passing.
+    (499 at §6.30 step C → 388 at step D: the empty-prefix completion
+    case checks each item and step D's (name, kind) dedup removed 124
+    duplicates; +10 for §6.29 part A's macro case.)
+  - UVM corpus `--build-db`: **1 diagnostic, 15327 symbol rows, 553
+    macro rows, 163 files** (~17 min, ~7 GB RSS; don't run it at the same
+    time as the corpus tests, and a laptop suspend pauses either)
 
 **What §6.30 changed that other work must know about:**
 - Hover/definition/references/rename all go through
@@ -56,28 +56,29 @@ complete (steps 1, A–D).
   (`defref_pkg_b`, `defref_top_b`), step-C kinds (`defref_kinds`) and an
   out-of-class body (`defref_ooc_p`); append new cases after them.
 
-## Next up — plan.md §6.29 part A (macros)
+## Next up — candidates
 
-Signature help for macro calls (`` `uvm_info(ID, MSG, VERB) ``) still
-returns null. See §6.29 for the full design; parts C (system tasks,
-`src/lsp/sv_system_tasks.h`) and B (keywords,
-`src/lsp/sv_keyword_signatures.h`) are done.
+- **Macro hover / definition / references / workspace symbols.** §6.29
+  part A added a `macros` table (schema v9; `SymbolDatabase::findMacros`,
+  one row per active `define with its file, line, column and parameters),
+  so these are now reachable. It would close the one `[!shouldfail]`
+  unit test (references on a `` `define `` name). Keep macros out of
+  `symbols`: they are a separate namespace (see plan.md §6.29 part A).
+- **Advertise `triggerCharacters = {"(", ","}`** for signature help in
+  `server_state.cpp` (plan.md §6.29 "Shared infrastructure"; every shape
+  is `(`/`,`-driven). Not done yet.
+- Or the "Other open work" list below.
 
-- Depends on §6.25's investigation: retain `MacroRecord`'s parameter list,
-  persist `ParseRecordKind::Macro` rows, detect `` `name( `` in the
-  unexpanded buffer. Note `` ` `` is not an ident char in
-  `signature_help.cpp`, so today a macro call is read as a bare name and
-  could falsely match a same-named function. (The keyword table already
-  rejects a backtick-prefixed keyword.)
-- Lookup order once it lands: macro → keyword → instantiation → bare call
-  (DB, then `$` table) → dotted call; keep `signature_help.h`'s header
-  comment current; consider advertising `triggerCharacters = {"(", ","}`
-  in `server_state.cpp`.
+What §6.29 changed that other work must know about:
+- Signature-help lookup order: macro (`` `name( ``, never falls through)
+  → keyword table (`sv_keyword_signatures.h`) → instantiation → bare call
+  (DB, then the `$` table in `sv_system_tasks.h`) → dotted call.
+- A `define-only header now gets a `files` row and is listed in
+  `includedFiles`/`file_includes`, so editing it recompiles includers.
 - Emacs fixtures: `ref_rename_sighelp.sv` is slow to compile in the ASan
   build (~9 s) and near test_12's first-request timeout — put new
   signature-help cases in their own small fixture (as
-  `fixtures/sighelp_systask.sv`/`sighelp_keywords.sv` do), not appended
-  there.
+  `fixtures/sighelp_*.sv` do), not appended there.
 
 ## Other open work (priority roughly top-down)
 
@@ -138,12 +139,13 @@ phased plan.
 src/lsp/           server, server_state, document_store, diagnostics, change_debouncer,
                    hover, definition, references, rename, completion, fuzzy_match,
                    signature_help, document_symbols, workspace_symbols, symbol_utils,
-                   sv_keywords.h, sv_builtin_methods.h, project_manifest_parser,
+                   sv_keywords.h, sv_builtin_methods.h, sv_system_tasks.h,
+                   sv_keyword_signatures.h, project_manifest_parser,
                    project_registry, library_db_builder
 src/compiler/      compiler_directive_stripper, sv_preprocessor, sv_tree_walker,
                    parse_record, parse_cache, filelist_parser, project_config, file_utils
 src/db/            database, symbol_database, compilation_controller,
-                   library_resolver, project_compiler, schema (v8)
+                   library_resolver, project_compiler, schema (v9)
 src/main.cpp       entry point (--version, --log-files, --build-db/--output)
 tests/unit/        Catch2 unit tests
 tests/integration/ Emacs functional tests + fixtures/

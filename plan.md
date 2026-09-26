@@ -3479,9 +3479,9 @@ captured and gone through line by line.
 
 ### 6.25 Investigate Signature Help for Macro Invocations (`` `uvm_info(...) ``-style)
 
-**Status:** not started — investigation only, not committed to implementation.
-Implementation of macro signature help is tracked as part A of §6.29; this
-investigation is its first step.
+**Status:** settled 2026-09-26 as the first step of §6.29 part A (findings
+and the implementation are recorded there). Macro hover, definition,
+references and workspace symbols are still not done.
 
 **Motivation:** §6.22's follow-up extended signature help to bare function/task
 calls; macro invocations (`` `uvm_info(ID, MSG, VERBOSITY) ``,
@@ -4041,8 +4041,8 @@ asked.
 
 ### 6.29 Signature Help for Macros, SystemVerilog Keyword Constructs, and System Tasks/Functions
 
-**Status:** parts C (system tasks/functions) and B (keyword constructs)
-implemented 2026-09-26; part A (macros) not started.
+**Status:** implemented 2026-09-26 — parts C (system tasks/functions),
+B (keyword constructs) and A (macros).
 
 **Motivation:** signature help today (§6.22, its follow-up, §6.26, §6.27,
 §6.28) covers exactly the call shapes that resolve to user-declared `Port`
@@ -4264,6 +4264,88 @@ fixture, `fixtures/sighelp_keywords.sv`.
 Unit suite: 805 cases, 804 pass + 1 known gap (macro). Emacs suite:
 239/239. UVM corpus not re-run: no corpus signature-help case sits in a
 keyword header or a `randomize(` call.
+
+**Implemented 2026-09-26 (part A).** §6.25's questions, answered:
+1. *Parameter list:* `parseMacroDefinition` already parsed names and
+   defaults into `MacroDef`; `MacroRecord` now keeps them
+   (`isFunctionLike`, `params`, `defaults`), plus the name's `column` and
+   the defining `file` (empty = the compiled file, the same convention as
+   `SourceLine`/`ParseRecord`).
+2. *DB or preprocessor-local table:* a DB table of its own, `macros`
+   (schema v9, `MIGRATION_V8_TO_V9`) -- not `Macro`-kind `symbols` rows. SV
+   macro names are a separate namespace (`` `define WIDTH `` next to
+   `localparam WIDTH` is routine); in `symbols` they would have reached
+   every name lookup (resolver, completion, references, ~25 call sites)
+   and needed filtering in each. A DB table (not a preprocessor-local one)
+   is what makes macros from `` `include ``d headers and attached library
+   DBs available. Redefinitions: every `define in an active branch is
+   stored; the call site picks one (below). `ParseRecordKind::Macro` stays
+   unused.
+3. *Call site:* the cursor is in the client's unexpanded buffer, so the
+   `` `name( `` header is read straight from the document text -- no
+   `sourceMap` involved; only the definition's position comes from the
+   preprocessor.
+4. *Argument shapes:* macro actual arguments are positional only (no
+   named-argument form); defaults exist (`` `define M(A, B=1) ``). So only
+   the positional comma count is needed.
+
+Implementation:
+- `SvPreprocessor`: `MacroRecord` gains `column`, `file`,
+  `isFunctionLike`, `params`, `defaults`, filled from the parsed
+  definition.
+- `SymbolDatabase::replaceMacros(fileId, records)` and
+  `findMacros(name)` (this DB plus every attached library DB, ordered by
+  path and line; a library built before schema v9 has no `macros` table
+  and is skipped). `params` is stored as one U+001F-separated string of
+  `NAME` / `NAME=default` entries.
+- `CompilationController::compile` partitions `preprocessed.macros` by file
+  and persists them next to the other per-file rows. A `define-only header
+  (UVM's `uvm_macros.svh` tree) has no records or errors, so it used to get
+  no file row and wasn't listed as included; it now gets both, so editing
+  it also recompiles its includers.
+- `SignatureHelpProvider`: checked first -- a `(` whose identifier is
+  directly preceded by a backtick is a macro call and never falls through
+  (an unknown or object-like macro gets null, never a same-named function
+  or keyword). `pickMacro`: the last definition before the cursor in the
+  same file, else the first from another file (path order -- which of
+  several other files' definitions is active isn't tracked), else a
+  same-file one after the cursor. Label `` `name(A, B = 1) ``; the active
+  parameter is the top-level comma count, unset past the last parameter.
+  Part B's backtick guard in `findKeywordHeader` became unreachable and
+  was removed.
+- Not done: macro hover/definition/references/workspace symbols (the
+  table now makes them possible; the `[!shouldfail]` references test is
+  still a known gap), stale macros of an included file that later has no
+  records, errors or macros at all (its rows aren't cleared), and
+  `triggerCharacters` (still not advertised).
+
+Tests (`[phase6.29]`): preprocessor -- parameters, defaults (a nested-
+paren default), column, `` `define Z() ``, and an included file's
+records naming that file; DB -- the migration, the `replaceMacros`/
+`findMacros` round trip (macros never appear as symbols), per-file
+replacement, a default containing `==` and commas, an attached library DB
+with macros and one without the table; controller -- macros from the
+primary file and a `define-only include persisted under their files, that
+include listed as included, a removed define dropped on recompile;
+signature help -- parameters and active index, defaults, a macro vs a
+same-named function (and a backtick call never reaching a function), an
+unknown and an object-like macro, a macro named `assert`, a call nested
+in a macro argument, and the redefinition rule. The six signature-help
+cases that expect a result failed before the provider change. `test_12`:
+a round trip on `fixtures/sighelp_macros.sv`, whose macro lives in the
+`define-only `fixtures/sighelp_macros.svh`. UVM corpus: `` `uvm_error ``
+(MSG active), a `$sformatf(` nested in it, and a multi-line
+`` `uvm_info ``, all in `base/uvm_component.svh`.
+
+Unit suite: 820 cases, 819 pass + 1 known gap (macro references).
+Emacs suite: 240/240. UVM corpus: 398 assertions / 20 cases, all pass
+(388 / 19 before; the new case adds 10). `--build-db`: 1 diagnostic,
+15327 symbol rows (both unchanged), 553 macro rows (425 function-like),
+16m38s, 6.96 GB max RSS. `files` grew from 141 to 163 rows and
+`file_includes` from 140 to 162: the 22 new ones are all `define-only
+headers (`uvm_macros.svh`, the `macros/*_defines.svh` files, and headers
+such as `base/uvm_base.svh` whose only directive outside `include`s is
+their include guard).
 
 ---
 
