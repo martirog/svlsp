@@ -27,6 +27,10 @@
 //      find the method on that type or one of its ancestors via `extends`.
 //      Fails closed (null) if the receiver chain or the method itself
 //      doesn't resolve, same posture as every other shape here.
+//   4. System tasks/functions (`$display(`, `$clog2(`, plan.md §6.29 part
+//      C) -- an unqualified `$name(` bare call that finds no Function/Task
+//      row falls back to the static table in lsp/sv_system_tasks.h. A name
+//      not in the table (a vendor/PLI task) stays null.
 class SignatureHelpProvider {
 public:
     static lsp::TextDocument_SignatureHelpResult getSignatureHelp(

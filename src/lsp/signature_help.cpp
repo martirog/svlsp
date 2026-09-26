@@ -1,6 +1,7 @@
 #include "signature_help.h"
 #include "lsp/symbol_utils.h"
 #include "compiler/parse_record.h"
+#include "lsp/sv_system_tasks.h"
 #include <algorithm>
 #include <cctype>
 #include <optional>
@@ -207,6 +208,52 @@ std::string portLabel(const SymbolRow& port)
     return label;
 }
 
+// A system task/function call (`$display(`, plan.md §6.29 part C), from the
+// static table in sv_system_tasks.h. activeParameter clamps to a variadic
+// tail (`args...`) once past the fixed parameters. `$fatal([finish_number],
+// format, ...)`'s leading optional parameter is taken as omitted when the
+// first argument is a string literal, so the format string is highlighted.
+lsp::SignatureHelp systemTaskHelp(const SystemTask& task, const std::string& text,
+                                  size_t parenOffset, size_t cursorOffset)
+{
+    const std::vector<std::string> params = systemTaskParams(task);
+    int index = computeActiveParam(text, parenOffset, cursorOffset).index;
+
+    if (params.size() > 1 && params[0].front() == '[' && params[1] == "format") {
+        size_t j = parenOffset + 1;
+        while (j < text.size() && std::isspace(static_cast<unsigned char>(text[j]))) ++j;
+        if (j < text.size() && text[j] == '"') ++index;
+    }
+    const auto isVariadic = [](const std::string& p) {
+        return p.ends_with("...") || p.ends_with("...]");
+    };
+    if (!params.empty() && index >= static_cast<int>(params.size()) && isVariadic(params.back()))
+        index = static_cast<int>(params.size()) - 1;
+
+    lsp::SignatureInformation sig;
+    std::string label = std::string(task.name) + "(";
+    lsp::Array<lsp::ParameterInformation> params_;
+    for (std::size_t i = 0; i < params.size(); ++i) {
+        if (i > 0) label += ", ";
+        label += params[i];
+        lsp::ParameterInformation p;
+        p.label = params[i];
+        params_.push_back(std::move(p));
+    }
+    label += ")";
+
+    sig.label         = std::move(label);
+    sig.documentation = std::string(task.doc);
+    sig.parameters    = std::move(params_);
+    if (index >= 0 && static_cast<std::size_t>(index) < params.size())
+        sig.activeParameter = static_cast<unsigned>(index);
+
+    lsp::SignatureHelp help;
+    help.signatures.push_back(std::move(sig));
+    help.activeSignature = 0u;
+    return help;
+}
+
 } // namespace
 
 lsp::TextDocument_SignatureHelpResult SignatureHelpProvider::getSignatureHelp(
@@ -229,6 +276,7 @@ lsp::TextDocument_SignatureHelpResult SignatureHelpProvider::getSignatureHelp(
     std::string calleeName;
     std::vector<SymbolRow> typeRows;
     std::optional<SymbolRow> resolvedCallee;
+    std::string systemTaskName; // an unqualified `$name(` call
     if (auto header = parseInstantiationHeader(docText, *parenOffset)) {
         for (auto& row : db.findSymbolsByName(header->typeName))
             if (row.kind == "Module" || row.kind == "Interface" || row.kind == "Program")
@@ -238,6 +286,7 @@ lsp::TextDocument_SignatureHelpResult SignatureHelpProvider::getSignatureHelp(
     if (typeRows.empty()) {
         if (auto callee = parseCallHeader(docText, *parenOffset)) {
             calleeName = callee->name;
+            if (callee->scope.empty() && calleeName.front() == '$') systemTaskName = calleeName;
             if (!callee->scope.empty()) {
                 // Explicitly `Class::`/`pkg::`-qualified -- resolve
                 // strictly within that name's own class hierarchy, and fail
@@ -267,7 +316,12 @@ lsp::TextDocument_SignatureHelpResult SignatureHelpProvider::getSignatureHelp(
             resolvedCallee = dotted->symbol;
         }
     }
-    if (!resolvedCallee && typeRows.empty()) return nullptr; // fail closed
+    if (!resolvedCallee && typeRows.empty()) {
+        // Built-in system task/function -- only after the DB lookup fails.
+        if (const SystemTask* task = findSystemTask(systemTaskName))
+            return systemTaskHelp(*task, docText, *parenOffset, *cursorOffset);
+        return nullptr; // fail closed
+    }
 
     const SymbolRow best = resolvedCallee ? *resolvedCallee : *pickBestSymbol(typeRows, curPath);
     const std::string scope =

@@ -4,6 +4,7 @@
 #include "db/symbol_database.h"
 #include "db/compilation_controller.h"
 #include "compiler/parse_record.h"
+#include "lsp/sv_system_tasks.h"
 
 namespace {
 
@@ -569,4 +570,114 @@ TEST_CASE("SignatureHelpProvider: inside an out-of-class body, a dotted call thr
     REQUIRE(result.value().signatures[0].parameters.has_value());
     CHECK(result.value().signatures[0].parameters->size() == 2);
     CHECK(result.value().signatures[0].label == "set_domain(int domain, int hier = 1)");
+}
+
+// ---------------------------------------------------------------------------
+// plan.md §6.29 part C: system tasks/functions from sv_system_tasks.h.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+lsp::TextDocument_SignatureHelpResult helpAtEnd(SymbolDatabase& sdb, const std::string& text)
+{
+    return SignatureHelpProvider::getSignatureHelp(
+        makeParams("/t.sv", 0, static_cast<unsigned>(text.size())), sdb, text);
+}
+
+} // namespace
+
+TEST_CASE("SignatureHelpProvider: system function with fixed parameters",
+          "[signature_help][phase6.29]")
+{
+    Fixture f;
+    auto result = helpAtEnd(f.sdb, "x = $urandom_range(10, ");
+    REQUIRE_FALSE(result.isNull());
+    const auto& sig = result.value().signatures[0];
+    CHECK(sig.label == "$urandom_range(maxval, [minval])");
+    REQUIRE(sig.parameters.has_value());
+    CHECK(sig.parameters->size() == 2);
+    REQUIRE(sig.activeParameter.has_value());
+    CHECK(*sig.activeParameter == 1);
+    CHECK(sig.documentation.has_value());
+}
+
+TEST_CASE("SignatureHelpProvider: $display clamps activeParameter to its variadic tail",
+          "[signature_help][phase6.29]")
+{
+    Fixture f;
+    auto result = helpAtEnd(f.sdb, "initial $display(\"%0d %0d\", a, ");
+    REQUIRE_FALSE(result.isNull());
+    const auto& sig = result.value().signatures[0];
+    CHECK(sig.label == "$display(args...)");
+    REQUIRE(sig.activeParameter.has_value());
+    CHECK(*sig.activeParameter == 0);
+
+    auto sf = helpAtEnd(f.sdb, "s = $sformatf(\"%0d %0d\", a, ");
+    REQUIRE_FALSE(sf.isNull());
+    const auto& sfSig = sf.value().signatures[0];
+    CHECK(sfSig.label == "$sformatf(format, args...)");
+    REQUIRE(sfSig.activeParameter.has_value());
+    CHECK(*sfSig.activeParameter == 1);
+}
+
+TEST_CASE("SignatureHelpProvider: $fatal's optional leading finish_number",
+          "[signature_help][phase6.29]")
+{
+    Fixture f;
+    // With finish_number given, positions map directly.
+    auto withNum = helpAtEnd(f.sdb, "$fatal(1, ");
+    REQUIRE_FALSE(withNum.isNull());
+    CHECK(withNum.value().signatures[0].label == "$fatal([finish_number], format, args...)");
+    CHECK(withNum.value().signatures[0].activeParameter.value_or(99) == 1);
+
+    // A leading string literal is the format: finish_number was omitted.
+    auto noNum = helpAtEnd(f.sdb, "$fatal(\"bad\"");
+    REQUIRE_FALSE(noNum.isNull());
+    CHECK(noNum.value().signatures[0].activeParameter.value_or(99) == 1);
+    auto noNumArgs = helpAtEnd(f.sdb, "$fatal(\"bad %0d\", x");
+    REQUIRE_FALSE(noNumArgs.isNull());
+    CHECK(noNumArgs.value().signatures[0].activeParameter.value_or(99) == 2);
+}
+
+TEST_CASE("SignatureHelpProvider: no-argument system function and unknown $task",
+          "[signature_help][phase6.29]")
+{
+    Fixture f;
+    auto t = helpAtEnd(f.sdb, "t = $time(");
+    REQUIRE_FALSE(t.isNull());
+    CHECK(t.value().signatures[0].label == "$time()");
+    CHECK(t.value().signatures[0].parameters->empty());
+    CHECK_FALSE(t.value().signatures[0].activeParameter.has_value());
+
+    // A vendor/PLI task not in the table stays null.
+    CHECK(helpAtEnd(f.sdb, "$vendor_task(").isNull());
+    // A qualified name is never a system task.
+    CHECK(helpAtEnd(f.sdb, "pkg::$display(").isNull());
+}
+
+TEST_CASE("SignatureHelpProvider: a nested system call inside another call's arguments",
+          "[signature_help][phase6.29]")
+{
+    Fixture f;
+    auto result = helpAtEnd(f.sdb, "$display(\"%0d\", $clog2(");
+    REQUIRE_FALSE(result.isNull());
+    CHECK(result.value().signatures[0].label == "$clog2(n)");
+}
+
+TEST_CASE("SignatureHelpProvider: every system task table entry is well formed",
+          "[signature_help][phase6.29]")
+{
+    for (const auto& t : SYSTEM_TASKS) {
+        INFO(t.name);
+        CHECK(t.name.front() == '$');
+        CHECK_FALSE(t.doc.empty());
+        CHECK(findSystemTask(t.name) == &t); // no duplicate names
+        const auto params = systemTaskParams(t);
+        for (std::size_t i = 0; i < params.size(); ++i) {
+            CHECK_FALSE(params[i].empty());
+            // A variadic tail is always last.
+            if (params[i].ends_with("...") || params[i].ends_with("...]"))
+                CHECK(i + 1 == params.size());
+        }
+    }
 }

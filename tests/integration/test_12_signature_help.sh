@@ -32,8 +32,14 @@
 # `rrsh_p28_caller` -- checks both a plain typed port and a defaulted one
 # render their declared type, not just direction, through a real client
 # round trip.
+#
+# Fixture: fixtures/sighelp_systask.sv -- plan.md §6.29 part C: a
+# `$sformatf(` call with the cursor after its second comma resolves from the
+# static system-task table (no DB row exists), with activeParameter clamped
+# to the variadic `args...` tail.
 
 SV_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/ref_rename_sighelp.sv"
+SYSTASK_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/sighelp_systask.sv"
 
 section "signature help (textDocument/signatureHelp)"
 
@@ -45,7 +51,8 @@ if [ ! -x "${SVLSP_BIN}" ]; then
         "dotted call resolves an own-class method reached via a specific import" \
         "dotted call resolves a method inherited via extends, default value rendered" \
         "two-segment dotted chain resolves through a package-qualified, never-imported field type" \
-        "module instantiation port labels carry their declared type, including a default value"
+        "module instantiation port labels carry their declared type, including a default value" \
+        "system function signature from the static table, variadic tail active"
     do
         skip_test "$name" "svlsp binary not found at ${SVLSP_BIN}"
     done
@@ -210,6 +217,28 @@ else
                       (string= p0label \"input int rrsh_p28_width\")
                       (string= p1label \"output bit rrsh_p28_valid = 1\")
                       (eql active 0))
+                 t nil))
+         (error (format \"elisp-error: %s\" (error-message-string err))))" \
+        "t"
+
+    run_test "system function signature from the static table, variadic tail active" \
+        "(condition-case err
+           (let* ((buf    (svlsp-test/open-file \"${SYSTASK_FIXTURE}\"))
+                  (ok     (with-current-buffer buf (svlsp-test/wait-for-lsp 15)))
+                  (result (when ok
+                            (with-current-buffer buf
+                              (lsp-request \"textDocument/signatureHelp\"
+                                           (list :textDocument (list :uri (lsp--buffer-uri))
+                                                 :position     (list :line 10 :character 42))))))
+                  (sig     (when result (aref (gethash \"signatures\" result) 0)))
+                  (label   (when sig (gethash \"label\" sig)))
+                  (params  (when sig (gethash \"parameters\" sig)))
+                  (active  (when sig (gethash \"activeParameter\" sig))))
+             (svlsp-test/close-file buf)
+             (if (and ok sig
+                      (string= label \"\$sformatf(format, args...)\")
+                      (eql (length params) 2)
+                      (eql active 1))
                  t nil))
          (error (format \"elisp-error: %s\" (error-message-string err))))" \
         "t"
