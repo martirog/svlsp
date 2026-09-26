@@ -251,6 +251,25 @@ void SymbolDatabase::replaceImports(int64_t fileId,
     m_db.execute("COMMIT");
 }
 
+std::vector<SymbolRow> SymbolDatabase::portsOf(const std::string& scope) const
+{
+    std::vector<SymbolRow> ports;
+    for (auto& row : findSymbolsInScope(scope))
+        if (row.kind == "Port") ports.push_back(row);
+    std::sort(ports.begin(), ports.end(), [](const SymbolRow& a, const SymbolRow& b) {
+        if (a.filePath != b.filePath) return a.filePath < b.filePath;
+        return a.line != b.line ? a.line < b.line : a.col < b.col;
+    });
+    std::vector<SymbolRow> first;
+    for (auto& p : ports) {
+        const bool repeated = std::any_of(first.begin(), first.end(),
+                                          [&](const SymbolRow& q) { return q.name == p.name; });
+        if (repeated) break;
+        first.push_back(std::move(p));
+    }
+    return first;
+}
+
 std::vector<ImportRow> SymbolDatabase::importsForFile(const std::string& path) const
 {
     const int64_t fid = fileIdFor(path);
@@ -528,7 +547,8 @@ std::string SymbolDatabase::enclosingClassNameAt(
 {
     // Same shape as scopeAtPosition/scopeKindAtPosition, but filtered to
     // Class specifically -- finds the nearest enclosing class even when the
-    // innermost scope at `line` is one of its Function/Task members.
+    // innermost scope at `line` is one of its Function/Task members. Falls
+    // back to the scope chain for an out-of-class method body (below).
     auto stmt = m_db.prepare(
         "SELECT s.name "
         "FROM symbols s JOIN files f ON f.id = s.file_id "
@@ -539,6 +559,19 @@ std::string SymbolDatabase::enclosingClassNameAt(
         "LIMIT 1");
     stmt.bind(1, path).bind(2, line).bind(3, line);
     if (stmt.step()) return stmt.columnText(0);
+
+    // An out-of-class method body (plan.md §6.30 step D) lies outside its
+    // class's line range but is scoped under it: the innermost scope is
+    // "<class scope>::m", so find the nearest class on the scope chain.
+    std::string cur = scopeAtPosition(path, line);
+    for (auto sep = cur.rfind("::"); sep != std::string::npos; sep = cur.rfind("::")) {
+        cur = cur.substr(0, sep);
+        const auto nameSep = cur.rfind("::");
+        const std::string name  = nameSep == std::string::npos ? cur : cur.substr(nameSep + 2);
+        const std::string scope = nameSep == std::string::npos ? "" : cur.substr(0, nameSep);
+        for (const auto& r : findSymbolsByName(name))
+            if (r.kind == "Class" && r.scope == scope) return name;
+    }
     return {};
 }
 

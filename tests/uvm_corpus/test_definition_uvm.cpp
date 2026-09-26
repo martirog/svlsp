@@ -56,3 +56,32 @@ TEST_CASE("definition: uvm_transaction base-class reference resolves correctly (
     // Line 139 (1-based) -> 0-based 138.
     CHECK(loc.range.start.line == 138u);
 }
+
+TEST_CASE("definition: inside an out-of-class method body, a class field and a bare method call "
+          "land on uvm_component's own declarations (plan.md §6.30 step D)",
+          "[uvm_corpus][definition]") {
+    const std::string text = readCorpusFile("base/uvm_component.svh");
+
+    // Line 2532 (1-based) "      m_children[c].set_domain(domain);" inside
+    // `function void uvm_component::set_domain(...)` (out-of-class body) ->
+    // the field at line 1585 "  protected     uvm_component m_children[string];"
+    // (col 30), not uvm_printer's same-named field.
+    auto field = DefinitionProvider::getDefinition(makeParams("base/uvm_component.svh", 2531, 6),
+                                                   uvmCorpusDb(), text);
+    REQUIRE_FALSE(field.isNull());
+    const auto& floc = std::get<lsp::Location>(field.get<lsp::Definition>());
+    CHECK(std::string(floc.uri.path()) == expectedUriPath("base/uvm_component.svh"));
+    CHECK(floc.range.start.line == 1584u);
+    CHECK(floc.range.start.character == 30u);
+
+    // Line 3505 (1-based) "          child_comp = get_child(name);" inside
+    // uvm_component::do_execute_op's out-of-class body -> the extern
+    // prototype at line 122 (col 32), not the out-of-class definition.
+    auto call = DefinitionProvider::getDefinition(makeParams("base/uvm_component.svh", 3504, 23),
+                                                  uvmCorpusDb(), text);
+    REQUIRE_FALSE(call.isNull());
+    const auto& cloc = std::get<lsp::Location>(call.get<lsp::Definition>());
+    CHECK(std::string(cloc.uri.path()) == expectedUriPath("base/uvm_component.svh"));
+    CHECK(cloc.range.start.line == 121u);
+    CHECK(cloc.range.start.character == 32u);
+}

@@ -48,3 +48,14 @@ module defref_kinds;
   defref_nib_t n;
   initial defref_st = DEFREF_ON;
 endmodule
+// Appended for plan.md §6.30 step D: an out-of-class method body.
+package defref_ooc_p;
+  int defref_cnt;
+  class defref_Ooc;
+    int defref_cnt;
+    extern function void defref_run();
+  endclass
+  function void defref_Ooc::defref_run();
+    defref_cnt = 1;
+  endfunction
+endpackage

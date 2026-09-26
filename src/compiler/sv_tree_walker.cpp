@@ -496,11 +496,14 @@ public:
         std::string retType;
         if (auto* fdt = ctx->function_data_type_or_implicit())
             retType = fdt->getText();
-        pushId(ParseRecordKind::Function, id, ctx, currentScope(), retType);
+        if (auto* cs = ctx->class_scope())
+            pushOutOfClassBody(ParseRecordKind::Function, id, cs, retType);
+        else
+            pushId(ParseRecordKind::Function, id, ctx, currentScope(), retType);
     }
 
     void exitFunction_body_declaration(SvParser::Function_body_declarationContext* ctx) override {
-        backpatchEndLine(currentScope(), translatedEndLine(ctx->stop));
+        backpatchEndLine(lastScopeSegment(currentScope()), translatedEndLine(ctx->stop));
         popScope();
     }
 
@@ -538,11 +541,14 @@ public:
         SvParser::Task_body_declarationContext* ctx) override {
         if (ctx->task_identifier().empty()) return;
         auto* id = ctx->task_identifier(0)->IDENTIFIER();
-        pushId(ParseRecordKind::Task, id, ctx, currentScope());
+        if (auto* cs = ctx->class_scope())
+            pushOutOfClassBody(ParseRecordKind::Task, id, cs);
+        else
+            pushId(ParseRecordKind::Task, id, ctx, currentScope());
     }
 
     void exitTask_body_declaration(SvParser::Task_body_declarationContext* ctx) override {
-        backpatchEndLine(currentScope(), translatedEndLine(ctx->stop));
+        backpatchEndLine(lastScopeSegment(currentScope()), translatedEndLine(ctx->stop));
         popScope();
     }
 
@@ -894,6 +900,49 @@ private:
             kind == ParseRecordKind::Program) {
             pushScope(id->getText());
         }
+    }
+
+    // An out-of-class method body, `function/task C::m(...)` (plan.md §6.30
+    // step D): the row is recorded in the class's own scope (next to the
+    // extern prototype) and the body's scope frame is "C::m", so its locals
+    // and arguments nest under `<class scope>::m` and the class's members are
+    // on their lexical scope chain. The written qualifier is taken relative to
+    // the current scope chain (`Outer::Inner` inside package p is
+    // p::Outer::Inner); leading segments that restate the enclosing frames
+    // are dropped (`p::C` written inside package p is p::C).
+    void pushOutOfClassBody(ParseRecordKind kind, antlr4::tree::TerminalNode* id,
+                            SvParser::Class_scopeContext* cs, const std::string& detail = "") {
+        if (!id) return;
+        std::vector<std::string> segs;
+        const std::string written = classTypeName(cs->class_type());
+        for (size_t start = 0;;) {
+            size_t sep = written.find("::", start);
+            segs.push_back(written.substr(start, sep == std::string::npos ? std::string::npos
+                                                                          : sep - start));
+            if (sep == std::string::npos) break;
+            start = sep + 2;
+        }
+        if (segs.empty() || segs.back().empty()) {
+            pushId(kind, id, nullptr, currentScope(), detail);
+            return;
+        }
+        // Drop leading qualifier segments that restate the enclosing frames.
+        size_t skip = 0;
+        while (skip < m_scopeStack.size() && skip + 1 < segs.size() &&
+               segs[skip] == m_scopeStack[skip])
+            ++skip;
+        std::string rel;
+        for (size_t i = skip; i < segs.size(); ++i) rel += (rel.empty() ? "" : "::") + segs[i];
+
+        const std::string chain      = currentScopeChain();
+        const std::string classScope = chain.empty() ? rel : chain + "::" + rel;
+        pushIdInScope(kind, id, classScope, segs.back(), detail);
+        pushScope(rel + "::" + id->getText());
+    }
+
+    static std::string lastScopeSegment(const std::string& frame) {
+        auto sep = frame.rfind("::");
+        return sep == std::string::npos ? frame : frame.substr(sep + 2);
     }
 
     // Records `id` with an explicit `scope` instead of the scope stack's

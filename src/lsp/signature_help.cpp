@@ -273,12 +273,7 @@ lsp::TextDocument_SignatureHelpResult SignatureHelpProvider::getSignatureHelp(
     const std::string scope =
         best.scope.empty() ? best.name : best.scope + "::" + best.name;
 
-    std::vector<SymbolRow> ports;
-    for (auto& row : db.findSymbolsInScope(scope))
-        if (row.kind == "Port") ports.push_back(row);
-    std::sort(ports.begin(), ports.end(), [](const SymbolRow& a, const SymbolRow& b) {
-        return a.line != b.line ? a.line < b.line : a.col < b.col;
-    });
+    const std::vector<SymbolRow> ports = db.portsOf(scope);
 
     const auto active = computeActiveParam(docText, *parenOffset, *cursorOffset);
 

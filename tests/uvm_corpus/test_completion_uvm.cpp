@@ -91,11 +91,12 @@ TEST_CASE("completion: empty prefix at real scope returns the full unranked cand
 
     CHECK(items.size() > 20); // sanity: real file scale, not a handful of rows
     CHECK(hasItem(items, "uvm_component"));
-    // "get_children" only exists as an out-of-class-body definition
-    // (`function void uvm_component::get_children(...)`), textually after
-    // `endclass` but still inside the enclosing `package uvm_pkg` -- proves
-    // those out-of-body member definitions are visible too, not just the
-    // class declaration itself.
+    // "get_children" is an extern method: prototype at line 117, body
+    // `function void uvm_component::get_children(...)` at line 1847, after
+    // `endclass`. Since plan.md §6.30 step D both rows are scoped
+    // uvm_pkg::uvm_component (the body used to be recorded at uvm_pkg
+    // level), and this anchor line is the class header, inside the class's
+    // own range -- so this checks the class's members are visible here.
     CHECK(hasItem(items, "get_children"));
     // No typed prefix -> no ranking, so sortText must be left unset.
     for (const auto& item : items) {

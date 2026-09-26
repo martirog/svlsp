@@ -5,6 +5,7 @@
 #include "lsp/sv_builtin_methods.h"
 #include <algorithm>
 #include <cstdio>
+#include <set>
 #include <unordered_set>
 #include <vector>
 
@@ -19,12 +20,17 @@ struct Candidate {
     std::string              detail; // empty = omit item.detail
 };
 
+// One candidate per (name, kind): an extern method's prototype and its
+// out-of-class body are both visible inside the class (plan.md §6.30 step
+// D), and a shadowed name would otherwise be offered once per scope.
 std::vector<Candidate> candidatesFromRows(const std::vector<SymbolRow>& rows)
 {
     std::vector<Candidate> out;
     out.reserve(rows.size());
+    std::set<std::pair<std::string, std::string>> seen;
     for (auto& row : rows)
-        out.push_back({row.name, completionKindFor(row.kind), row.detail});
+        if (seen.emplace(row.name, row.kind).second)
+            out.push_back({row.name, completionKindFor(row.kind), row.detail});
     return out;
 }
 

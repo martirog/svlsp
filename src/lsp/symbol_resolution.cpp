@@ -143,6 +143,20 @@ const SymbolRow* earliest(const std::vector<const SymbolRow*>& rows)
     return best;
 }
 
+// The last of `rows` declared at or before `line1`, else the earliest: the
+// nearest preceding declaration in a non-class scope -- an out-of-class
+// body's own argument rather than the extern prototype's same-named one,
+// both in scope `C::m` (plan.md §6.30 step D).
+const SymbolRow* closestBefore(const std::vector<const SymbolRow*>& rows, int line1)
+{
+    const SymbolRow* best = nullptr;
+    for (auto* r : rows)
+        if (r->line <= line1 && (!best || r->line > best->line ||
+                                 (r->line == best->line && r->col > best->col)))
+            best = r;
+    return best ? best : earliest(rows);
+}
+
 class Resolver {
 public:
     Resolver(SymbolDatabase& db, const std::string& path, const std::string& text)
@@ -259,15 +273,29 @@ std::optional<SymbolRow> Resolver::lookupBare(const std::string& path, int line1
         for (const auto& r : visible)
             if (r.filePath == path && r.scope == scope && r.name == name && kindMatches(r, filter))
                 hits.push_back(&r);
-        if (!hits.empty()) return *earliest(hits);
-
-        if (!withInherited) continue;
-        if (auto cls = classRowForScope(scope)) {
-            auto ancestors = classChainRows(*cls);
-            for (size_t i = 1; i < ancestors.size(); ++i)
-                for (auto& r : m_db.findSymbolsInScope(qualifiedScopeOf(ancestors[i])))
-                    if (r.name == name && kindMatches(r, filter)) return r;
+        auto cls = classRowForScope(scope);
+        // Class members are order-independent, and a method's extern
+        // prototype (earliest) must win over its out-of-class body so every
+        // call resolves to the same row; elsewhere the nearest preceding
+        // declaration wins.
+        if (!hits.empty()) return cls ? *earliest(hits) : *closestBefore(hits, line1);
+        if (!cls) continue;
+        // The class's own members from any file: an out-of-class body
+        // (plan.md §6.30 step D) may live in a different file than its class,
+        // and the visible set's local chain only covers the cursor's file.
+        {
+            std::vector<SymbolRow> own;
+            for (auto& r : m_db.findSymbolsInScope(scope))
+                if (r.name == name && kindMatches(r, filter)) own.push_back(r);
+            std::vector<const SymbolRow*> ptrs;
+            for (auto& r : own) ptrs.push_back(&r);
+            if (!ptrs.empty()) return *earliest(ptrs);
         }
+        if (!withInherited) continue;
+        auto ancestors = classChainRows(*cls);
+        for (size_t i = 1; i < ancestors.size(); ++i)
+            for (auto& r : m_db.findSymbolsInScope(qualifiedScopeOf(ancestors[i])))
+                if (r.name == name && kindMatches(r, filter)) return r;
     }
 
     auto isLocal = [&](const SymbolRow& r) {
@@ -423,7 +451,12 @@ std::optional<SymbolRow> Resolver::enclosingClassRow(int line1) const
         if (r.kind == "Class" && r.filePath == m_path && r.line <= line1 && line1 <= r.endLine &&
             (!best || r.line > best->line))
             best = r;
-    return best;
+    if (best) return best;
+    // An out-of-class method body (plan.md §6.30 step D): outside the
+    // class's lines, but the class is on the body's scope chain.
+    for (const auto& scope : scopeChain(m_path, line1))
+        if (auto cls = classRowForScope(scope)) return cls;
+    return std::nullopt;
 }
 
 std::optional<SymbolRow> Resolver::resolveReceiver(const std::vector<ChainSegment>& segs,

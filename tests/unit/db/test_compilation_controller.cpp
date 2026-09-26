@@ -680,3 +680,28 @@ TEST_CASE("a wildcard import of a package declared in the same file makes its me
                            [](const SymbolRow& r){ return r.name == "SameFileCls"; });
     CHECK(n == 1);
 }
+
+TEST_CASE("compile checks a bare call inside an out-of-class body against the class's extern "
+          "prototype, once per parameter (plan.md §6.30 step D)",
+          "[db][ctrl][call-args][outofclass]") {
+    // The prototype carries the default; the body repeats the parameters
+    // without it. Both sit in scope C::m, so the check must use one
+    // declaration's parameters (not both), and the prototype's default
+    // must count.
+    Fixture f;
+    auto errs = f.ctrl.compile("/a.sv",
+        "class C;\n"
+        "  extern function void m(int a, int b = 1);\n"
+        "  extern function void go();\n"
+        "endclass\n"
+        "function void C::m(int a, int b);\n"
+        "endfunction\n"
+        "function void C::go();\n"
+        "  m(1);\n"
+        "  m();\n"
+        "endfunction\n");
+
+    REQUIRE(errs.size() == 1);
+    CHECK(errs[0].message.find("'a'") != std::string::npos);
+    CHECK(errs[0].line == 9);
+}

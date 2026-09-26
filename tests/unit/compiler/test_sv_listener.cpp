@@ -1636,3 +1636,75 @@ TEST_CASE("genvars are recorded from genvar declarations and inline loop genvars
     CHECK(k->line == 7);
     CHECK(k->column == 14);
 }
+
+// ---------------------------------------------------------------------------
+// plan.md §6.30 step D: an out-of-class method body (`function void
+// C::m(); ... endfunction`) is recorded under its class, and its locals and
+// arguments nest under `<class scope>::m`, so the class's members are
+// visible inside it.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("an out-of-class function body is scoped under its class, with its locals and "
+          "arguments nested under it",
+          "[compiler][listener][phase6.30][outofclass]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "package p;\n"
+        "  class C;\n"
+        "    extern function void m(int a);\n"
+        "  endclass\n"
+        "  function void C::m(int a);\n"
+        "    int t;\n"
+        "  endfunction\n"
+        "  int after;\n"
+        "endpackage\n");
+    REQUIRE(errs.empty());
+    std::vector<const ParseRecord*> fns;
+    for (const auto& r : recs)
+        if (r.kind == ParseRecordKind::Function && r.name == "m") fns.push_back(&r);
+    REQUIRE(fns.size() == 2); // the prototype and the body
+    const ParseRecord* body = fns[0]->line == 5 ? fns[0] : fns[1];
+    CHECK(body->line == 5);
+    CHECK(body->scope == "p::C");
+    CHECK(body->parent == "C");
+    CHECK(body->endLine == 7);
+    for (const auto& r : recs) {
+        if (r.kind == ParseRecordKind::Signal && r.name == "t") CHECK(r.scope == "p::C::m");
+        if (r.kind == ParseRecordKind::Port && r.name == "a" && r.line == 5)
+            CHECK(r.scope == "p::C::m");
+    }
+    // The scope stack is restored after the body.
+    auto* after = findRecord(recs, ParseRecordKind::Signal, "after");
+    REQUIRE(after != nullptr);
+    CHECK(after->scope == "p");
+}
+
+TEST_CASE("out-of-class task bodies, nested-class qualifiers and top-level classes",
+          "[compiler][listener][phase6.30][outofclass]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "package p;\n"
+        "  class Outer;\n"
+        "    class Inner; extern task run(); endclass\n"
+        "  endclass\n"
+        "  task Outer::Inner::run();\n"
+        "    int local_r;\n"
+        "  endtask\n"
+        "endpackage\n"
+        "class Top; extern function int get(); endclass\n"
+        "function int Top::get();\n"
+        "  int local_g;\n"
+        "  return 0;\n"
+        "endfunction\n");
+    REQUIRE(errs.empty());
+    for (const auto& r : recs) {
+        if (r.kind == ParseRecordKind::Task && r.name == "run" && r.line == 5)
+            CHECK(r.scope == "p::Outer::Inner");
+        if (r.kind == ParseRecordKind::Function && r.name == "get" && r.line == 10)
+            CHECK(r.scope == "Top");
+    }
+    auto* lr = findRecord(recs, ParseRecordKind::Signal, "local_r");
+    REQUIRE(lr != nullptr);
+    CHECK(lr->scope == "p::Outer::Inner::run");
+    auto* lg = findRecord(recs, ParseRecordKind::Signal, "local_g");
+    REQUIRE(lg != nullptr);
+    CHECK(lg->scope == "Top::get");
+}

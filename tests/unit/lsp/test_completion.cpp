@@ -1243,3 +1243,33 @@ TEST_CASE("CompletionProvider: typedefs, enum literals and genvars are offered; 
     CHECK_FALSE(hasItem(items, "cmp_hi"));
     CHECK_FALSE(hasItem(items, "cmp_lo"));
 }
+
+TEST_CASE("CompletionProvider: inside an out-of-class body, the class's own fields are "
+          "offered and an extern method is listed once",
+          "[completion][phase6.30][outofclass]")
+{
+    Fixture f;
+    CompilationController ctrl{f.sdb};
+    const std::string text =
+        "package occ_p;\n"
+        "  class OccBase; int occ_inh; endclass\n"
+        "  class OccC extends OccBase;\n"
+        "    int occ_fld;\n"
+        "    extern function void occ_run();\n"
+        "  endclass\n"
+        "  function void OccC::occ_run();\n"
+        "    occ\n"   // line 7
+        "  endfunction\n"
+        "endpackage\n";
+    ctrl.compile("/occ.sv", text);
+
+    auto result = CompletionProvider::getCompletion(makeParams("/occ.sv", 7, 7), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+    const auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "occ_fld"));
+    // Inherited members (occ_inh) aren't offered as bare names anywhere,
+    // not just here -- a separate, pre-existing completion gap.
+    CHECK(std::count_if(items.begin(), items.end(), [](const lsp::CompletionItem& i) {
+              return std::string(i.label) == "occ_run";
+          }) == 1);
+}

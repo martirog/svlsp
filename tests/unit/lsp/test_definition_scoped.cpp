@@ -637,3 +637,54 @@ TEST_CASE("Definition: a struct member access lands on the member declaration",
     requireDefinitionAt(f.sdb, "/dks.sv", src, posOf(src, "@use", "dk_hi"),
                         "/dks.sv", posOf(src, "@decl", "dk_hi"));
 }
+
+// ---------------------------------------------------------------------------
+// Out-of-class method bodies (plan.md §6.30 step D): inside `function void
+// C::m(); ... endfunction` the class's own and inherited members are
+// visible, `this.`/`super.` work, and an argument resolves to the body's
+// own declaration rather than the extern prototype's.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("Definition: inside an out-of-class body, bare names resolve to the class's own and "
+          "inherited members, this./super. work, and arguments are the body's own",
+          "[definition][scoped][outofclass]")
+{
+    RealCompileFixture f;
+    const std::string src =
+        "package ooc_p;\n"
+        "  int ooc_cnt;\n"                                      // decoy: package-level
+        "  function void ooc_helper(); endfunction\n"           // decoy: package-level
+        "  class OocBase;\n"
+        "    int ooc_inh; // @inhdecl\n"
+        "    virtual function void ooc_hook(); endfunction // @basehook\n"
+        "  endclass\n"
+        "  class OocC extends OocBase;\n"
+        "    int ooc_cnt; // @flddecl\n"
+        "    extern function void ooc_helper(); // @helperdecl\n"
+        "    extern virtual function void ooc_hook();\n"
+        "    extern function void ooc_m(int ooc_arg);\n"
+        "  endclass\n"
+        "  function void OocC::ooc_helper(); endfunction\n"
+        "  function void OocC::ooc_hook(); endfunction\n"
+        "  function void OocC::ooc_m(int ooc_arg); // @argdecl\n"
+        "    ooc_cnt = ooc_arg; // @use1\n"
+        "    ooc_helper(); // @use2\n"
+        "    this.ooc_cnt = ooc_inh; // @use3\n"
+        "    super.ooc_hook(); // @use4\n"
+        "  endfunction\n"
+        "endpackage\n";
+    f.ctrl.compile("/ooc.sv", src);
+
+    auto use1 = posOf(src, "@use1", "ooc_cnt");
+    requireDefinitionAt(f.sdb, "/ooc.sv", src, use1, "/ooc.sv", posOf(src, "@flddecl", "ooc_cnt"));
+    requireDefinitionAt(f.sdb, "/ooc.sv", src, posOf(src, "@use1", "ooc_arg"),
+                        "/ooc.sv", posOf(src, "@argdecl", "ooc_arg"));
+    requireDefinitionAt(f.sdb, "/ooc.sv", src, posOf(src, "@use2", "ooc_helper"),
+                        "/ooc.sv", posOf(src, "@helperdecl", "ooc_helper"));
+    requireDefinitionAt(f.sdb, "/ooc.sv", src, posOf(src, "@use3", "ooc_cnt"),
+                        "/ooc.sv", posOf(src, "@flddecl", "ooc_cnt"));
+    requireDefinitionAt(f.sdb, "/ooc.sv", src, posOf(src, "@use3", "ooc_inh"),
+                        "/ooc.sv", posOf(src, "@inhdecl", "ooc_inh"));
+    requireDefinitionAt(f.sdb, "/ooc.sv", src, posOf(src, "@use4", "ooc_hook"),
+                        "/ooc.sv", posOf(src, "@basehook", "ooc_hook"));
+}

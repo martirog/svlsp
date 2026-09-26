@@ -98,12 +98,7 @@ std::vector<ParseError> checkMissingArguments(
         const std::string scope =
             resolved->scope.empty() ? resolved->name : resolved->scope + "::" + resolved->name;
 
-        std::vector<SymbolRow> ports;
-        for (auto& row : sdb.findSymbolsInScope(scope))
-            if (row.kind == "Port") ports.push_back(row);
-        std::sort(ports.begin(), ports.end(), [](const SymbolRow& a, const SymbolRow& b) {
-            return a.line != b.line ? a.line < b.line : a.col < b.col;
-        });
+        const std::vector<SymbolRow> ports = sdb.portsOf(scope);
 
         for (size_t i = 0; i < ports.size(); ++i) {
             if (paramSupplied(i, call.args, ports[i].name)) continue;

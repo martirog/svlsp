@@ -120,6 +120,7 @@ DEF_TESTS=(
     "definition: a signal lands on its own module's declaration"
     "definition: a typedef use lands on the typedef"
     "definition: an enum literal use lands on the literal"
+    "definition: a field used in an out-of-class body lands on the class's field"
 )
 REF_TESTS=(
     "references: signal -- declaration + both named-connection uses"
@@ -131,6 +132,7 @@ REF_TESTS=(
     "references: second module's signal -- excludes the first module's"
     "references: typedef -- declaration and use"
     "references: enum literal -- declaration and use"
+    "references: class field -- includes the out-of-class body's use, not the package var"
 )
 RENAME_TESTS=(
     "rename: edits only the cursor module's signal, not a same-named one"
@@ -163,6 +165,10 @@ else
     # "  initial defref_st = DEFREF_ON;" (line 48)
     def_test "${DEF_TESTS[10]}" 47 2  defref_top.sv 45 22
     def_test "${DEF_TESTS[11]}" 48 22 defref_top.sv 46 20
+    # defref_ooc_p (plan.md §6.30 step D): "    defref_cnt = 1;" (line 58) in
+    # defref_Ooc::defref_run's out-of-class body; the package-level decoy
+    # defref_cnt is on line 52, the class field on line 54.
+    def_test "${DEF_TESTS[12]}" 58 4  defref_top.sv 54 8
 
     # "  logic defref_sig;" (line 16)
     refs_test "${REF_TESTS[0]}" 16 8 \
@@ -186,6 +192,8 @@ else
         "defref_top.sv:45:22 defref_top.sv:47:2"
     refs_test "${REF_TESTS[8]}" 46 20 \
         "defref_top.sv:46:20 defref_top.sv:48:22"
+    refs_test "${REF_TESTS[9]}" 54 8 \
+        "defref_top.sv:54:8 defref_top.sv:58:4"
 
     rename_test "${RENAME_TESTS[0]}" 36 8 defref_sig_b \
         "defref_top.sv:36:8 defref_top.sv:40:19"

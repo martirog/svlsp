@@ -538,3 +538,35 @@ TEST_CASE("SignatureHelpProvider: dotted call resolves to a method declared on a
     CHECK(result.value().signatures[0].parameters->size() == 2);
     CHECK(result.value().signatures[0].label == "get_something(int b, int c)");
 }
+
+TEST_CASE("SignatureHelpProvider: inside an out-of-class body, a dotted call through a class "
+          "field resolves, and an extern method's parameters are listed once (plan.md §6.30 "
+          "step D)", "[signature_help][real-compile][outofclass]")
+{
+    // The UVM shape from plan.md §6.27: uvm_component::set_domain's
+    // out-of-class body calls m_children[c].set_domain(...), where
+    // m_children is a field of the class. The prototype and the body both
+    // declare the parameters in the same scope; they must not be doubled.
+    RealCompileFixture f;
+    const std::string source =
+        "package sd_p;\n"
+        "  class SdComp;\n"
+        "    SdComp m_children[string];\n"
+        "    extern function void set_domain(int domain, int hier = 1);\n"
+        "  endclass\n"
+        "  function void SdComp::set_domain(int domain, int hier);\n"
+        "    foreach (m_children[c])\n"
+        "      m_children[c].set_domain(domain);\n" // line 7 (0-based)
+        "  endfunction\n"
+        "endpackage\n";
+    f.ctrl.compile("/sd.sv", source);
+
+    const std::string line7 = "      m_children[c].set_domain(domain);";
+    const unsigned col = static_cast<unsigned>(line7.find('(')) + 1;
+    auto result = SignatureHelpProvider::getSignatureHelp(makeParams("/sd.sv", 7, col), f.sdb,
+                                                          source);
+    REQUIRE_FALSE(result.isNull());
+    REQUIRE(result.value().signatures[0].parameters.has_value());
+    CHECK(result.value().signatures[0].parameters->size() == 2);
+    CHECK(result.value().signatures[0].label == "set_domain(int domain, int hier = 1)");
+}

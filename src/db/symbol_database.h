@@ -177,6 +177,16 @@ public:
     // (pass "" for top-level symbols).  Ordered by name.
     std::vector<SymbolRow> findSymbolsInScope(const std::string& scope) const;
 
+    // The Port rows declared directly in `scope` (a module/interface/
+    // program or a function/task's qualified scope), in declaration order
+    // (file, line, column). An extern method's prototype and its
+    // out-of-class body declare the same parameters in the same scope
+    // (plan.md §6.30 step D); only the first declaration's ports are kept
+    // -- the list stops at the first repeated name -- so callers never see
+    // each parameter twice, and a default written only on the prototype
+    // (which precedes the body in the same file) still applies.
+    std::vector<SymbolRow> portsOf(const std::string& scope) const;
+
     // Cross-file prefix search: symbols whose name starts with `prefix`.
     // Used for workspace/symbol queries and completion filtering.
     std::vector<SymbolRow> findSymbolsByNamePrefix(const std::string& prefix) const;
@@ -198,8 +208,10 @@ public:
     // (which report the innermost scope of *any* kind), this specifically
     // finds the nearest Class ancestor even when the cursor is nested inside
     // one of its methods (innermost scope kind there is Function, not
-    // Class). "" when no enclosing class exists. Powers `this`/`super`
-    // resolution in chained dot-completion (plan.md §6.14).
+    // Class). Inside an out-of-class method body (`function void C::m();`
+    // after `endclass`, plan.md §6.30 step D) it's the class named on the
+    // body's scope chain. "" when no enclosing class exists. Powers
+    // `this`/`super` resolution in chained dot-completion (plan.md §6.14).
     std::string enclosingClassNameAt(const std::string& path, int line) const;
 
     // All symbols visible from `(path, line)`: every symbol in the scope chain

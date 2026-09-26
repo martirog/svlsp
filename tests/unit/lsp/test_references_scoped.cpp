@@ -578,6 +578,30 @@ TEST_CASE("References: a class method's uses do not include an unrelated class's
     requireExactRefs(f, "/c.sv", "refs_go");
 }
 
+TEST_CASE("References: a class field's uses include an out-of-class body's, not a same-named "
+          "package variable's",
+          "[references][scoped][outofclass]")
+{
+    // plan.md §6.30 step D: the out-of-class body of `OocR::run` sees the
+    // class's field, so its use belongs to the field -- not to the
+    // package-level decoy it used to resolve to.
+    RealCompileFixture f;
+    f.add("/c.sv",
+          "package refs_ooc_p;\n"
+          "  int refs_cnt;\n"
+          "  class OocR;\n"
+          "    int refs_cnt; // @ref @cursor\n"
+          "    extern function void run();\n"
+          "  endclass\n"
+          "  function void OocR::run();\n"
+          "    refs_cnt = 1; // @ref\n"
+          "  endfunction\n"
+          "  function void pkg_f(); refs_cnt = 2; endfunction\n"
+          "endpackage\n");
+
+    requireExactRefs(f, "/c.sv", "refs_cnt");
+}
+
 TEST_CASE("References: typedef name", "[references][scoped][unrecorded]")
 {
     RealCompileFixture f;

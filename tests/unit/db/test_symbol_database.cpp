@@ -559,6 +559,45 @@ TEST_CASE("enclosingClassNameAt returns empty string outside any class",
     CHECK(f.sdb.enclosingClassNameAt("/a.sv", 2) == "");
 }
 
+TEST_CASE("enclosingClassNameAt finds the class of an out-of-class method body",
+          "[db][symbol-db][chain][outofclass]") {
+    // plan.md §6.30 step D: `function void C::m(); ... endfunction` after
+    // `endclass` is recorded in scope "p::C" -- outside the class's own line
+    // range, so only the scope chain says which class it belongs to.
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/a.sv", "h"), {
+        {ParseRecordKind::Package,  "p", 1, 8, "",  "",     20, ""},
+        {ParseRecordKind::Class,    "C", 2, 8, "p", "",      4, "p"},
+        {ParseRecordKind::Function, "m", 3, 25, "C", "void", 0, "p::C"},
+        {ParseRecordKind::Function, "m", 6, 22, "C", "void", 9, "p::C"},
+    });
+    CHECK(f.sdb.enclosingClassNameAt("/a.sv", 7) == "C");
+    CHECK(f.sdb.enclosingClassNameAt("/a.sv", 12) == "");
+}
+
+TEST_CASE("portsOf lists one declaration's ports in order when a prototype and its body share "
+          "the scope",
+          "[db][symbol-db][ports][outofclass]") {
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/a.sv", "h"), {
+        {ParseRecordKind::Class,    "C", 1, 6, "",  "",       3, ""},
+        {ParseRecordKind::Function, "m", 2, 23, "C", "void",   0, "C"},
+        {ParseRecordKind::Port,     "a", 2, 29, "m", "int",    0, "C::m"},
+        {ParseRecordKind::Port,     "b", 2, 36, "m", std::string("int") + PARAM_DEFAULT_VALUE_SEP + " = 1", 0, "C::m"},
+        {ParseRecordKind::Function, "m", 4, 17, "C", "void",   6, "C"},
+        {ParseRecordKind::Port,     "a", 4, 23, "C::m", "int", 0, "C::m"},
+        {ParseRecordKind::Port,     "b", 4, 30, "C::m", "int", 0, "C::m"},
+        {ParseRecordKind::Signal,   "t", 5, 8, "C::m", "",     0, "C::m"},
+    });
+    const auto ports = f.sdb.portsOf("C::m");
+    REQUIRE(ports.size() == 2);
+    CHECK(ports[0].name == "a");
+    CHECK(ports[0].line == 2);
+    CHECK(ports[1].name == "b");
+    CHECK(ports[1].line == 2);
+    CHECK(f.sdb.portsOf("C::nope").empty());
+}
+
 // ---------------------------------------------------------------------------
 // baseClassChain / resolveMethod (plan.md §6.26 -- scope/type-aware
 // method-call resolution, fixing the false positives §6.23's own
