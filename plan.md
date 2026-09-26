@@ -4041,7 +4041,8 @@ asked.
 
 ### 6.29 Signature Help for Macros, SystemVerilog Keyword Constructs, and System Tasks/Functions
 
-**Status:** not started.
+**Status:** part C (system tasks/functions) implemented 2026-09-26; parts
+B (keywords) and A (macros) not started.
 
 **Motivation:** signature help today (§6.22, its follow-up, §6.26, §6.27,
 §6.28) covers exactly the call shapes that resolve to user-declared `Port`
@@ -4175,6 +4176,50 @@ follow-ups sharing the new tables); signature help for built-in container
 methods (`q.push_back(`, `mbx.put(` — `sv_builtin_methods.h` has only a
 one-line `detail`, not structured parameters; a natural later extension of
 part C's table format); parameter-override blocks (`Module #(`).
+
+**Implemented 2026-09-26 (part C).**
+- `src/lsp/sv_system_tasks.h`: `SYSTEM_TASKS`, a static table of
+  `{name, params, doc}` covering the groups listed above, plus the
+  display/write/strobe/monitor/fdisplay/fwrite radix variants, `$fflush`,
+  `$fread`/`$fseek`/`$ftell`/`$rewind`/`$ferror`/`$ungetc`, the
+  shortreal conversions, `$isunbounded`, `$unpacked_dimensions`,
+  hyperbolic trig, the sampled-value functions (`$rose`, `$fell`,
+  `$stable`, `$changed`, `$past`, `$sampled`), `$assertcontrol`,
+  `$monitoron`/`$monitoroff`, `$psprintf` (non-standard, widely used) and
+  the coverage-DB functions. Same LRM-not-verified disclosure as
+  `sv_builtin_methods.h`. `params` is one `", "`-separated string:
+  `[name]` is optional, `name...` is a variadic tail (always last).
+- `signature_help.cpp`: an unqualified `$name(` bare call that finds no
+  Function/Task row (after the enclosing-class and flat DB lookups) falls
+  back to `findSystemTask`; `pkg::$name(` never does. `systemTaskHelp`
+  renders the label and parameters as written in the table, sets
+  `documentation` to the table's one-line doc, and clamps
+  `activeParameter` to a variadic tail once past the fixed parameters.
+  `$fatal([finish_number], format, args...)`: when the first argument is
+  a string literal, the optional `finish_number` is taken as omitted and
+  the index shifts by one (the rule applies to any table entry whose
+  optional first parameter is followed by `format`; only `$fatal` today).
+- Not done: `$`-triggered completion from the same table and hover (both
+  out of scope above); string-literal commas still count as separators
+  (the existing `computeActiveParam` simplification).
+
+Tests (`[phase6.29]`, each failing without the fallback except the table
+check): fixed parameters with an optional one (`$urandom_range`),
+variadic clamping (`$display`, `$sformatf`), `$fatal` with and without
+`finish_number`, a no-argument function (`$time()`, no activeParameter),
+an unknown `$vendor_task` and `pkg::$display` staying null, a nested
+`$clog2(` inside `$display`'s arguments, and a table-integrity check (`$`
+prefix, doc present, unique names, variadic only last). `test_12`: a
+`$sformatf(` round trip on a new fixture, `fixtures/sighelp_systask.sv`.
+Appending it to `ref_rename_sighelp.sv` instead (as the verification plan
+said) slowed that file's first compile in the ASan build from 8.9 s to
+11.7 s (its deliberately unfinished calls make it slow to parse), which
+pushed test_12's first request past the client's timeout -- so the case
+got its own file.
+
+Unit suite: 799 cases, 798 pass + 1 known gap (macro). Emacs suite:
+238/238. UVM corpus not re-run: the fallback only runs for a `$name(` call
+that would otherwise return null, and no corpus case makes one.
 
 ---
 
