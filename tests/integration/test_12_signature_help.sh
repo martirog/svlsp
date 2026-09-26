@@ -41,10 +41,16 @@
 # Fixture: fixtures/sighelp_keywords.sv -- plan.md §6.29 part B: the cursor
 # after the second `;` of a `for (` header gets the keyword table's
 # `for (initialization; condition; step)` signature with the step active.
+#
+# Fixture: fixtures/sighelp_macros.sv -- plan.md §6.29 part A: a
+# `` `SH29M_LOG( `` call whose macro is defined in an included, `define-only
+# header (sighelp_macros.svh), with the cursor on its defaulted third
+# parameter.
 
 SV_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/ref_rename_sighelp.sv"
 SYSTASK_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/sighelp_systask.sv"
 KEYWORD_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/sighelp_keywords.sv"
+MACRO_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/sighelp_macros.sv"
 
 section "signature help (textDocument/signatureHelp)"
 
@@ -58,7 +64,8 @@ if [ ! -x "${SVLSP_BIN}" ]; then
         "two-segment dotted chain resolves through a package-qualified, never-imported field type" \
         "module instantiation port labels carry their declared type, including a default value" \
         "system function signature from the static table, variadic tail active" \
-        "for header signature from the keyword table, semicolon-separated"
+        "for header signature from the keyword table, semicolon-separated" \
+        "macro signature from an included define-only header, default rendered"
     do
         skip_test "$name" "svlsp binary not found at ${SVLSP_BIN}"
     done
@@ -265,6 +272,28 @@ else
              (svlsp-test/close-file buf)
              (if (and ok sig
                       (string= label \"for (initialization; condition; step)\")
+                      (eql (length params) 3)
+                      (eql active 2))
+                 t nil))
+         (error (format \"elisp-error: %s\" (error-message-string err))))" \
+        "t"
+
+    run_test "macro signature from an included define-only header, default rendered" \
+        "(condition-case err
+           (let* ((buf    (svlsp-test/open-file \"${MACRO_FIXTURE}\"))
+                  (ok     (with-current-buffer buf (svlsp-test/wait-for-lsp 15)))
+                  (result (when ok
+                            (with-current-buffer buf
+                              (lsp-request \"textDocument/signatureHelp\"
+                                           (list :textDocument (list :uri (lsp--buffer-uri))
+                                                 :position     (list :line 7 :character 33))))))
+                  (sig     (when result (aref (gethash \"signatures\" result) 0)))
+                  (label   (when sig (gethash \"label\" sig)))
+                  (params  (when sig (gethash \"parameters\" sig)))
+                  (active  (when sig (gethash \"activeParameter\" sig))))
+             (svlsp-test/close-file buf)
+             (if (and ok sig
+                      (string= label \"\`SH29M_LOG(ID, MSG, VERB = 1)\")
                       (eql (length params) 3)
                       (eql active 2))
                  t nil))

@@ -896,3 +896,62 @@ TEST_CASE("importsForFile returns a file's imports and {} for an unknown path",
                       [](const ImportRow& i){ return i.pkgName == "pkg_b" && i.item == "Item"; }));
     CHECK(f.sdb.importsForFile("/none.sv").empty());
 }
+
+// ---------------------------------------------------------------------------
+// Macros (plan.md §6.29 part A): a separate table, never mixed into symbols
+// ---------------------------------------------------------------------------
+
+TEST_CASE("replaceMacros / findMacros round trip", "[db][symbol-db][phase6.29]") {
+    Fixture f;
+    auto fid = f.sdb.upsertFile("/m.svh", "h");
+    MacroRecord fn{"M", "A+B", 3, 8, "", true, {"A", "B"}, {std::nullopt, std::string("1")}};
+    MacroRecord obj{"W", "8", 1, 8, "", false, {}, {}};
+    f.sdb.replaceMacros(fid, {fn, obj});
+
+    auto rows = f.sdb.findMacros("M");
+    REQUIRE(rows.size() == 1);
+    CHECK(rows[0].name == "M");
+    CHECK(rows[0].filePath == "/m.svh");
+    CHECK(rows[0].line == 3);
+    CHECK(rows[0].col == 8);
+    CHECK(rows[0].isFunctionLike);
+    CHECK(rows[0].params == std::vector<std::string>{"A", "B"});
+    REQUIRE(rows[0].defaults.size() == 2);
+    CHECK_FALSE(rows[0].defaults[0].has_value());
+    CHECK(rows[0].defaults[1] == std::optional<std::string>{"1"});
+
+    auto w = f.sdb.findMacros("W");
+    REQUIRE(w.size() == 1);
+    CHECK_FALSE(w[0].isFunctionLike);
+    CHECK(w[0].params.empty());
+
+    // Macros never show up as symbols.
+    CHECK(f.sdb.findSymbolsByName("M").empty());
+    CHECK(f.sdb.findMacros("nope").empty());
+}
+
+TEST_CASE("replaceMacros replaces a file's previous macros only", "[db][symbol-db][phase6.29]") {
+    Fixture f;
+    auto a = f.sdb.upsertFile("/a.svh", "h");
+    auto b = f.sdb.upsertFile("/b.svh", "h");
+    f.sdb.replaceMacros(a, {MacroRecord{"M", "1", 1, 8}});
+    f.sdb.replaceMacros(b, {MacroRecord{"M", "2", 5, 8}});
+    CHECK(f.sdb.findMacros("M").size() == 2);
+
+    f.sdb.replaceMacros(a, {MacroRecord{"N", "1", 1, 8}});
+    auto m = f.sdb.findMacros("M");
+    REQUIRE(m.size() == 1);
+    CHECK(m[0].filePath == "/b.svh");
+    CHECK(f.sdb.findMacros("N").size() == 1);
+}
+
+TEST_CASE("a default value containing '=' and commas survives the round trip",
+          "[db][symbol-db][phase6.29]") {
+    Fixture f;
+    auto fid = f.sdb.upsertFile("/m.svh", "h");
+    f.sdb.replaceMacros(fid, {MacroRecord{"M", "", 1, 8, "", true, {"C"},
+                                          {std::string("f(a == b, c)")}}});
+    auto rows = f.sdb.findMacros("M");
+    REQUIRE(rows.size() == 1);
+    CHECK(rows[0].defaults[0] == std::optional<std::string>{"f(a == b, c)"});
+}

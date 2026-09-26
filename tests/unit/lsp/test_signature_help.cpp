@@ -787,3 +787,132 @@ TEST_CASE("SignatureHelpProvider: a call nested in a for header gets its own hel
     Fixture f;
     CHECK(kw(f.sdb, "for (int i = 0; i < $clog2(").first == "$clog2(n)");
 }
+
+// ---------------------------------------------------------------------------
+// plan.md §6.29 part A: macro invocations, from the macros table.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+MacroRecord fnMacro(std::string name, int line, std::vector<std::string> params,
+                    std::vector<std::optional<std::string>> defaults = {})
+{
+    defaults.resize(params.size());
+    return MacroRecord{std::move(name), "", line, 8, "", true, std::move(params),
+                       std::move(defaults)};
+}
+
+// Label and activeParameter (-1 = unset) at (line, col) of `text` in /t.sv.
+std::pair<std::string, int> at(SymbolDatabase& sdb, const std::string& text,
+                               unsigned line, unsigned col)
+{
+    auto r = SignatureHelpProvider::getSignatureHelp(makeParams("/t.sv", line, col), sdb, text);
+    if (r.isNull()) return {"<null>", -1};
+    const auto& sig = r.value().signatures[0];
+    return {std::string(sig.label),
+            sig.activeParameter ? static_cast<int>(*sig.activeParameter) : -1};
+}
+
+} // namespace
+
+TEST_CASE("SignatureHelpProvider: macro invocation lists the macro's parameters",
+          "[signature_help][phase6.29]")
+{
+    Fixture f;
+    f.sdb.replaceMacros(f.sdb.upsertFile("/uvm_macros.svh", "h"),
+                        {fnMacro("uvm_info", 155, {"ID", "MSG", "VERBOSITY"})});
+
+    auto r = helpAtEnd(f.sdb, "`uvm_info(\"ID\", ");
+    REQUIRE_FALSE(r.isNull());
+    const auto& sig = r.value().signatures[0];
+    CHECK(sig.label == "`uvm_info(ID, MSG, VERBOSITY)");
+    REQUIRE(sig.parameters.has_value());
+    CHECK(sig.parameters->size() == 3);
+    CHECK(sig.activeParameter.value_or(99) == 1);
+
+    // Past the last parameter: no active parameter.
+    CHECK(kw(f.sdb, "`uvm_info(a, b, c, ").second == -1);
+}
+
+TEST_CASE("SignatureHelpProvider: macro defaults are rendered", "[signature_help][phase6.29]")
+{
+    Fixture f;
+    f.sdb.replaceMacros(f.sdb.upsertFile("/m.svh", "h"),
+                        {fnMacro("M", 1, {"A", "B", "RO"},
+                                 {std::nullopt, std::string("1"), std::string("get_obj()")})});
+    CHECK(kw(f.sdb, "`M(x, ") == std::pair<std::string, int>{"`M(A, B = 1, RO = get_obj())", 1});
+}
+
+TEST_CASE("SignatureHelpProvider: a macro and a same-named function stay apart",
+          "[signature_help][phase6.29]")
+{
+    Fixture f;
+    auto fid = f.sdb.upsertFile("/f.sv", "h");
+    f.sdb.replaceSymbols(fid, {
+        {ParseRecordKind::Function, "twin", 1, 9, "", "", 3, ""},
+        {ParseRecordKind::Port, "int_arg", 1, 20, "twin", "input int", 0, "twin"},
+        {ParseRecordKind::Function, "only_fn", 5, 9, "", "", 7, ""},
+        {ParseRecordKind::Port, "x", 5, 20, "only_fn", "input int", 0, "only_fn"},
+    });
+    f.sdb.replaceMacros(f.sdb.upsertFile("/m.svh", "h"), {fnMacro("twin", 1, {"MAC_ARG"})});
+
+    CHECK(kw(f.sdb, "`twin(").first == "`twin(MAC_ARG)");
+    CHECK(kw(f.sdb, "x = twin(").first == "twin(input int int_arg)");
+    // No macro named only_fn: a backtick call never falls back to the function.
+    CHECK(kw(f.sdb, "`only_fn(").first == "<null>");
+}
+
+TEST_CASE("SignatureHelpProvider: unknown and object-like macros stay null",
+          "[signature_help][phase6.29]")
+{
+    Fixture f;
+    f.sdb.replaceMacros(f.sdb.upsertFile("/m.svh", "h"),
+                        {MacroRecord{"OBJ", "foo", 1, 8, "", false, {}, {}}});
+    CHECK(kw(f.sdb, "`nope(").first == "<null>");
+    CHECK(kw(f.sdb, "`OBJ(").first == "<null>");
+}
+
+TEST_CASE("SignatureHelpProvider: a macro named like a keyword is the macro",
+          "[signature_help][phase6.29]")
+{
+    Fixture f;
+    f.sdb.replaceMacros(f.sdb.upsertFile("/m.svh", "h"), {fnMacro("assert", 1, {"COND", "MSG"})});
+    CHECK(kw(f.sdb, "`assert(a, ") == std::pair<std::string, int>{"`assert(COND, MSG)", 1});
+    CHECK(kw(f.sdb, "assert (").first == "assert (expression)");
+}
+
+TEST_CASE("SignatureHelpProvider: a call nested in a macro argument, and the macro after it",
+          "[signature_help][phase6.29]")
+{
+    Fixture f;
+    f.sdb.replaceMacros(f.sdb.upsertFile("/m.svh", "h"),
+                        {fnMacro("uvm_info", 1, {"ID", "MSG", "VERBOSITY"})});
+    CHECK(kw(f.sdb, "`uvm_info(\"ID\", $sformatf(").first == "$sformatf(format, args...)");
+    CHECK(kw(f.sdb, "`uvm_info(\"ID\", $sformatf(\"%0d\", x), ") ==
+          std::pair<std::string, int>{"`uvm_info(ID, MSG, VERBOSITY)", 2});
+}
+
+TEST_CASE("SignatureHelpProvider: which definition of a redefined macro is used",
+          "[signature_help][phase6.29]")
+{
+    Fixture f;
+    f.sdb.replaceMacros(f.sdb.upsertFile("/other.svh", "h"),
+                        {fnMacro("R", 1, {"OTHER"}), fnMacro("ONLY_OTHER", 1, {"O"}),
+                         fnMacro("LATE", 1, {"FROM_OTHER"})});
+    f.sdb.replaceMacros(f.sdb.upsertFile("/t.sv", "h"),
+                        {fnMacro("R", 1, {"FIRST"}), fnMacro("R", 5, {"SECOND"}),
+                         fnMacro("LATE", 9, {"FROM_SELF"}), fnMacro("SELF_LATE", 9, {"S"})});
+
+    const std::string text = std::string(10, '\n') + "`R(";
+    // Cursor at line 3 (0-based 2): the definition at line 1 is the latest before it.
+    const std::string early = "\n\n`R(";
+    CHECK(at(f.sdb, early, 2, 3).first == "`R(FIRST)");
+    // Cursor at line 11: the line-5 redefinition is the latest before it.
+    CHECK(at(f.sdb, text, 10, 3).first == "`R(SECOND)");
+    // Not defined in this file: another file's definition.
+    CHECK(at(f.sdb, "`ONLY_OTHER(", 0, 12).first == "`ONLY_OTHER(O)");
+    // Defined in this file only after the cursor: another file's wins...
+    CHECK(at(f.sdb, "`LATE(", 0, 6).first == "`LATE(FROM_OTHER)");
+    // ...and with no other file, the later same-file definition is used.
+    CHECK(at(f.sdb, "`SELF_LATE(", 0, 11).first == "`SELF_LATE(S)");
+}

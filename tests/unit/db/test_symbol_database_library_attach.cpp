@@ -195,3 +195,35 @@ TEST_CASE("ProjectCompiler::loadProject attaches config.libraryDbs before compil
     CHECK(f.sdb.findSymbolsByName("uvm_object").size() == 1);
     CHECK(f.sdb.findSymbolsByName("top").size() == 1);
 }
+
+TEST_CASE("attachLibraryDbs: findMacros sees an attached DB's macros, and skips a library "
+          "built before the macros table existed (plan.md §6.29 part A)",
+          "[db][symbol-db][library-attach][phase6.29]")
+{
+    std::string libPath = kRoot + "/macros/lib.db";
+    std::string oldLibPath = kRoot + "/macros/old_lib.db";
+    buildLibraryDb(libPath, "/lib/uvm_macros.svh", {});
+    {
+        Database db(libPath);
+        SymbolDatabase sdb(db);
+        sdb.replaceMacros(sdb.upsertFile("/lib/uvm_macros.svh", "h"),
+                          {MacroRecord{"uvm_info", "", 155, 8, "", true,
+                                       {"ID", "MSG", "VERBOSITY"}, {std::nullopt, std::nullopt,
+                                                                    std::nullopt}}});
+    }
+    buildLibraryDb(oldLibPath, "/old/x.sv", {});
+    {
+        Database db(oldLibPath);
+        db.execute("DROP TABLE macros");
+    }
+
+    ProjectFixture f;
+    f.sdb.replaceMacros(f.sdb.upsertFile("/p/top.sv", "h"), {MacroRecord{"TOP", "1", 1, 8}});
+    f.sdb.attachLibraryDbs({oldLibPath, libPath});
+
+    auto rows = f.sdb.findMacros("uvm_info");
+    REQUIRE(rows.size() == 1);
+    CHECK(rows[0].filePath == "/lib/uvm_macros.svh");
+    CHECK(rows[0].params.size() == 3);
+    CHECK(f.sdb.findMacros("TOP").size() == 1);
+}

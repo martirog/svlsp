@@ -4,7 +4,7 @@ namespace db {
 
 // Current schema version.  Increment and add a migration in Database::initSchema
 // whenever the schema changes.
-inline constexpr int SCHEMA_VERSION = 8;
+inline constexpr int SCHEMA_VERSION = 9;
 
 // DDL executed on a fresh (version-0) database — always reflects the latest schema.
 inline constexpr const char* SCHEMA_DDL = R"sql(
@@ -123,6 +123,48 @@ CREATE TABLE file_includes (
 
 CREATE INDEX idx_file_includes_includer ON file_includes(includer_file_id);
 CREATE INDEX idx_file_includes_included ON file_includes(included_file_id);
+
+-- `define macros (plan.md §6.29 part A). A table of their own, not symbols
+-- rows: SV macro names are a separate namespace (`` `define WIDTH `` and
+-- `localparam WIDTH` routinely coexist), so keeping them out of symbols
+-- keeps every existing name lookup unaffected. One row per `define in an
+-- active branch, attributed to the file it's written in. `params` holds
+-- one entry per parameter, "NAME" or "NAME=default", separated by U+001F.
+CREATE TABLE macros (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id          INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    name             TEXT    NOT NULL,
+    line             INTEGER NOT NULL,
+    col              INTEGER NOT NULL,
+    is_function_like INTEGER NOT NULL DEFAULT 0,
+    params           TEXT    NOT NULL DEFAULT ''
+);
+
+CREATE INDEX idx_macros_name    ON macros(name);
+CREATE INDEX idx_macros_file_id ON macros(file_id);
+)sql";
+
+// SQL applied when migrating an existing v8 database to v9.
+inline constexpr const char* MIGRATION_V8_TO_V9 = R"sql(
+-- `define macros (plan.md §6.29 part A). A table of their own, not symbols
+-- rows: SV macro names are a separate namespace (`` `define WIDTH `` and
+-- `localparam WIDTH` routinely coexist), so keeping them out of symbols
+-- keeps every existing name lookup unaffected. One row per `define in an
+-- active branch, attributed to the file it's written in. `params` holds
+-- one entry per parameter, "NAME" or "NAME=default", separated by U+001F.
+CREATE TABLE IF NOT EXISTS macros (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id          INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    name             TEXT    NOT NULL,
+    line             INTEGER NOT NULL,
+    col              INTEGER NOT NULL,
+    is_function_like INTEGER NOT NULL DEFAULT 0,
+    params           TEXT    NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_macros_name    ON macros(name);
+CREATE INDEX IF NOT EXISTS idx_macros_file_id ON macros(file_id);
+UPDATE schema_version SET version = 9;
 )sql";
 
 // SQL applied when migrating an existing v7 database to v8.

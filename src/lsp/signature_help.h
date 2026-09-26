@@ -5,9 +5,15 @@
 
 // SignatureHelpProvider handles textDocument/signatureHelp requests.
 //
-// A keyword construct's header (`for (`, `foreach (`, `case (`, assertion
-// forms, `randomize(`; plan.md §6.29 part B) is checked first, from the
-// static table in lsp/sv_keyword_signatures.h -- a keyword is never a
+// A macro invocation (`` `uvm_info( ``, plan.md §6.29 part A) is checked
+// first: the macro's parameters come from SymbolDatabase::findMacros (the
+// macros table, filled from the preprocessor's `define records). It never
+// falls through -- an unknown or object-like macro gets null, never a
+// same-named function or keyword.
+//
+// Next, a keyword construct's header (`for (`, `foreach (`, `case (`,
+// assertion forms, `randomize(`; plan.md §6.29 part B), from the static
+// table in lsp/sv_keyword_signatures.h -- a keyword is never a
 // user-declared name. Otherwise, these call-header shapes, tried in order
 // (plan.md §6.22 + its own follow-up section, plus §6.27 for the third):
 //   1. Module/interface/program instantiation port lists

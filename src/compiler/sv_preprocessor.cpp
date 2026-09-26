@@ -311,7 +311,14 @@ static std::string expandStr(const std::string& src, const MacroMap& macros,
 // `define parsing
 // ---------------------------------------------------------------------------
 
-struct ParsedMacro { std::string name; std::string body; };
+struct ParsedMacro {
+    std::string name;
+    std::string body;
+    size_t      nameOffset; // offset of the name within `rest`
+    bool        isFunctionLike;
+    std::vector<std::string> params;
+    std::vector<std::optional<std::string>> defaults;
+};
 
 // `rest` is everything after "`define". Returns {name, body} on success, nullopt on error.
 static std::optional<ParsedMacro> parseMacroDefinition(std::string_view rest, MacroMap& macros,
@@ -319,6 +326,7 @@ static std::optional<ParsedMacro> parseMacroDefinition(std::string_view rest, Ma
     std::string line(rest);
     size_t i = 0;
     skipSpaces(line, i);
+    const size_t nameOffset = i;
     std::string name = readIdent(line, i);
     if (name.empty()) { errors.push_back("`define: missing macro name"); return std::nullopt; }
 
@@ -364,9 +372,9 @@ static std::optional<ParsedMacro> parseMacroDefinition(std::string_view rest, Ma
     }
     skipSpaces(line, i);
     def.body = std::string(stripLineComment(std::string_view(line).substr(i)));
-    std::string body = def.body;
+    ParsedMacro parsed{name, def.body, nameOffset, def.isFunctionLike, def.params, def.defaults};
     macros[name] = std::move(def);
-    return ParsedMacro{std::move(name), std::move(body)};
+    return parsed;
 }
 
 // ---------------------------------------------------------------------------
@@ -653,8 +661,12 @@ static void processSource(const std::string& source, const std::string& filepath
                 mergedRest += contLine;
                 emitBlank();
             }
-            if (auto opt = parseMacroDefinition(mergedRest, ctx.macros, ctx.errors))
-                ctx.macroRecords.push_back({opt->name, opt->body, defineLine});
+            if (auto opt = parseMacroDefinition(mergedRest, ctx.macros, ctx.errors)) {
+                const int column = static_cast<int>(i + opt->nameOffset);
+                ctx.macroRecords.push_back({opt->name, opt->body, defineLine, column, mapFile,
+                                            opt->isFunctionLike, std::move(opt->params),
+                                            std::move(opt->defaults)});
+            }
         } else if (dir == "undef") {
             ctx.macros.erase(std::string(trimSV(stripLineComment(rest))));
             emitBlank();

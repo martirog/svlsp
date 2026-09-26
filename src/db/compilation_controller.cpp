@@ -174,6 +174,8 @@ std::vector<ParseError> CompilationController::compile(const std::string& path,
     for (const auto& err : walked.parseErrors) errsByFile[err.file].push_back(err);
     for (const auto& imp : walked.imports)     importsByFile[imp.file].push_back(imp);
     for (const auto& inst : walked.instantiations) instsByFile[inst.file].push_back(inst);
+    std::unordered_map<std::string, std::vector<MacroRecord>> macrosByFile;
+    for (const auto& mac : preprocessed.macros) macrosByFile[mac.file].push_back(mac);
 
     // Persist primary file.
     int64_t fid = m_sdb.upsertFile(path, hash);
@@ -181,6 +183,7 @@ std::vector<ParseError> CompilationController::compile(const std::string& path,
     m_sdb.replaceDiagnostics(fid,    errsByFile[""]  );
     m_sdb.replaceImports(fid,        importsByFile[""]);
     m_sdb.replaceInstantiations(fid, instsByFile[""]  );
+    m_sdb.replaceMacros(fid,         macrosByFile[""]);
 
     // Persist records/errors/imports/instantiations attributed to included files.
     // (The "[parsed]   included: <path>" progress line for each of these is
@@ -196,6 +199,7 @@ std::vector<ParseError> CompilationController::compile(const std::string& path,
         m_sdb.replaceDiagnostics(incFid,    errsByFile[filePath]  );
         m_sdb.replaceImports(incFid,        importsByFile[filePath]);
         m_sdb.replaceInstantiations(incFid, instsByFile[filePath]  );
+        m_sdb.replaceMacros(incFid,         macrosByFile[filePath] );
         allIncluded.push_back(filePath);
     }
 
@@ -207,6 +211,17 @@ std::vector<ParseError> CompilationController::compile(const std::string& path,
         if (filePath.empty() || recsByFile.count(filePath)) continue;
         int64_t incFid = m_sdb.upsertFile(filePath, "");
         m_sdb.replaceDiagnostics(incFid, errs);
+        m_sdb.replaceMacros(incFid, macrosByFile[filePath]);
+        allIncluded.push_back(filePath);
+    }
+
+    // A header holding only `define`s (UVM's uvm_macros.svh and friends)
+    // has neither records nor errors: persist its macros, and list it as
+    // included so editing it recompiles its includers (plan.md §6.29 A).
+    for (const auto& [filePath, macs] : macrosByFile) {
+        if (filePath.empty() || recsByFile.count(filePath) || errsByFile.count(filePath)) continue;
+        int64_t incFid = m_sdb.upsertFile(filePath, "");
+        m_sdb.replaceMacros(incFid, macs);
         allIncluded.push_back(filePath);
     }
 

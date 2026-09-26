@@ -251,6 +251,87 @@ void SymbolDatabase::replaceImports(int64_t fileId,
     m_db.execute("COMMIT");
 }
 
+namespace {
+constexpr char kMacroParamSep = '\x1f';
+}
+
+void SymbolDatabase::replaceMacros(int64_t fileId, const std::vector<MacroRecord>& macros)
+{
+    m_db.execute("BEGIN");
+    auto del = m_db.prepare("DELETE FROM macros WHERE file_id = ?");
+    del.bind(1, fileId);
+    del.step();
+
+    auto ins = m_db.prepare(
+        "INSERT INTO macros (file_id, name, line, col, is_function_like, params) "
+        "VALUES (?,?,?,?,?,?)");
+    for (const auto& m : macros) {
+        std::string params;
+        for (size_t i = 0; i < m.params.size(); ++i) {
+            if (i > 0) params += kMacroParamSep;
+            params += m.params[i];
+            if (i < m.defaults.size() && m.defaults[i]) params += "=" + *m.defaults[i];
+        }
+        ins.reset();
+        ins.bind(1, fileId)
+           .bind(2, m.name)
+           .bind(3, m.line)
+           .bind(4, m.column)
+           .bind(5, m.isFunctionLike ? 1 : 0)
+           .bind(6, params);
+        ins.step();
+    }
+    m_db.execute("COMMIT");
+}
+
+std::vector<MacroRow> SymbolDatabase::findMacros(const std::string& name) const
+{
+    static constexpr const char* kSelect =
+        "SELECT m.name, m.line, m.col, m.is_function_like, m.params, f.path FROM ";
+    std::string sql = std::string(kSelect) +
+        "macros m JOIN files f ON f.id = m.file_id WHERE m.name = ?";
+    int binds = 1;
+    for (size_t i = 0; i < m_attachedLibraryPaths.size(); ++i) {
+        const std::string alias = "lib" + std::to_string(i);
+        auto chk = m_db.prepare("SELECT COUNT(*) FROM " + alias +
+                                ".sqlite_master WHERE type='table' AND name='macros'");
+        if (!chk.step() || chk.columnInt(0) == 0) continue;
+        sql += " UNION ALL " + std::string(kSelect) + alias + ".macros m JOIN " + alias +
+               ".files f ON f.id = m.file_id WHERE m.name = ?";
+        ++binds;
+    }
+
+    auto stmt = m_db.prepare(sql);
+    for (int i = 1; i <= binds; ++i) stmt.bind(i, name);
+
+    std::vector<MacroRow> rows;
+    while (stmt.step()) {
+        MacroRow row{stmt.columnText(0), static_cast<int>(stmt.columnInt(1)),
+                     static_cast<int>(stmt.columnInt(2)), stmt.columnInt(3) != 0,
+                     {}, {}, stmt.columnText(5)};
+        const std::string params = stmt.columnText(4);
+        if (row.isFunctionLike && !params.empty()) {
+            for (size_t start = 0;;) {
+                size_t sep = params.find(kMacroParamSep, start);
+                std::string p = params.substr(start, sep == std::string::npos ? std::string::npos
+                                                                              : sep - start);
+                size_t eq = p.find('=');
+                row.params.push_back(p.substr(0, eq));
+                row.defaults.push_back(eq == std::string::npos
+                                           ? std::nullopt
+                                           : std::optional<std::string>(p.substr(eq + 1)));
+                if (sep == std::string::npos) break;
+                start = sep + 1;
+            }
+        }
+        rows.push_back(std::move(row));
+    }
+    std::stable_sort(rows.begin(), rows.end(), [](const MacroRow& a, const MacroRow& b) {
+        return a.filePath != b.filePath ? a.filePath < b.filePath : a.line < b.line;
+    });
+    return rows;
+}
+
 std::vector<SymbolRow> SymbolDatabase::portsOf(const std::string& scope) const
 {
     std::vector<SymbolRow> ports;

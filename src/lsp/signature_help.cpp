@@ -258,9 +258,8 @@ lsp::SignatureHelp systemTaskHelp(const SystemTask& task, const std::string& tex
 // A keyword construct's header (`for (`, `assert property (`, plan.md §6.29
 // part B): the identifier directly before `(` is a KEYWORD_SIGNATURES
 // keyword, and for an entry with a prefix, the identifier before it is that
-// prefix. An entry with a matching prefix wins over one without. A
-// backtick before the keyword makes it a macro call (`` `assert( ``), not
-// the keyword.
+// prefix. An entry with a matching prefix wins over one without. (A
+// backtick call, `` `assert( ``, never gets here: macros are checked first.)
 const KeywordSignature* findKeywordHeader(const std::string& text, size_t parenOffset)
 {
     auto skipWsBack = [&](size_t& i) {
@@ -275,7 +274,7 @@ const KeywordSignature* findKeywordHeader(const std::string& text, size_t parenO
     size_t i = parenOffset;
     skipWsBack(i);
     const std::string keyword = readIdentBack(i);
-    if (keyword.empty() || (i > 0 && text[i - 1] == '`')) return nullptr;
+    if (keyword.empty()) return nullptr;
     skipWsBack(i);
     const std::string before = readIdentBack(i);
 
@@ -345,6 +344,67 @@ lsp::SignatureHelp keywordHelp(const KeywordSignature& kw, const std::string& te
     return help;
 }
 
+// A macro invocation's name (plan.md §6.29 part A): the identifier directly
+// before `(`, itself directly preceded by a backtick. Empty if it isn't one.
+std::string macroCallName(const std::string& text, size_t parenOffset)
+{
+    size_t i = parenOffset;
+    while (i > 0 && std::isspace(static_cast<unsigned char>(text[i - 1]))) --i;
+    const size_t end = i;
+    while (i > 0 && isIdentChar(static_cast<unsigned char>(text[i - 1]))) --i;
+    if (i == end || i == 0 || text[i - 1] != '`') return {};
+    return text.substr(i, end - i);
+}
+
+// Which of a (possibly redefined) macro's definitions a call in `curPath`
+// at `line1` sees: the last one before it in the same file, else the first
+// from another file (path order -- which of several other files' `define`s
+// is active isn't tracked), else a same-file one after it.
+std::optional<MacroRow> pickMacro(std::vector<MacroRow> rows, const std::string& curPath,
+                                  int line1)
+{
+    std::optional<MacroRow> before, other, after;
+    for (auto& r : rows) {
+        if (r.filePath == curPath) {
+            if (r.line <= line1) before = r;
+            else if (!after) after = r;
+        } else if (!other) {
+            other = r;
+        }
+    }
+    return before ? before : other ? other : after;
+}
+
+lsp::SignatureHelp macroHelp(const MacroRow& macro, const std::string& text,
+                             size_t parenOffset, size_t cursorOffset)
+{
+    const int index = computeActiveParam(text, parenOffset, cursorOffset).index;
+
+    lsp::SignatureInformation sig;
+    std::string label = "`" + macro.name + "(";
+    lsp::Array<lsp::ParameterInformation> params_;
+    for (std::size_t i = 0; i < macro.params.size(); ++i) {
+        std::string plabel = macro.params[i];
+        if (i < macro.defaults.size() && macro.defaults[i]) plabel += " = " + *macro.defaults[i];
+        if (i > 0) label += ", ";
+        label += plabel;
+        lsp::ParameterInformation p;
+        p.label = plabel;
+        params_.push_back(std::move(p));
+    }
+    label += ")";
+
+    sig.label      = std::move(label);
+    sig.parameters = std::move(params_);
+    if (index >= 0 && static_cast<std::size_t>(index) < macro.params.size())
+        sig.activeParameter = static_cast<unsigned>(index);
+
+    lsp::SignatureHelp help;
+    help.signatures.push_back(std::move(sig));
+    help.activeSignature = 0u;
+    return help;
+}
+
 } // namespace
 
 lsp::TextDocument_SignatureHelpResult SignatureHelpProvider::getSignatureHelp(
@@ -357,13 +417,23 @@ lsp::TextDocument_SignatureHelpResult SignatureHelpProvider::getSignatureHelp(
     auto parenOffset = findEnclosingParen(docText, *cursorOffset);
     if (!parenOffset) return nullptr;
 
-    // A keyword construct's header -- checked first: a keyword is never a
-    // user-declared name.
-    if (const KeywordSignature* kw = findKeywordHeader(docText, *parenOffset))
-        return keywordHelp(*kw, docText, *parenOffset, *cursorOffset);
-
     const std::string curPath{params.textDocument.uri.path()};
     const int line1 = static_cast<int>(params.position.line) + 1;
+
+    // A macro invocation -- checked first, and never falls through: a
+    // backtick call is never a function, task or keyword. An unknown or
+    // object-like macro gets nothing.
+    const std::string macroName = macroCallName(docText, *parenOffset);
+    if (!macroName.empty()) {
+        auto macro = pickMacro(db.findMacros(macroName), curPath, line1);
+        if (!macro || !macro->isFunctionLike) return nullptr;
+        return macroHelp(*macro, docText, *parenOffset, *cursorOffset);
+    }
+
+    // A keyword construct's header -- a keyword is never a user-declared
+    // name.
+    if (const KeywordSignature* kw = findKeywordHeader(docText, *parenOffset))
+        return keywordHelp(*kw, docText, *parenOffset, *cursorOffset);
 
     // Try the module/interface/program instantiation shape first
     // (`<TypeName> <InstanceName> (`); only if that fails to resolve to a

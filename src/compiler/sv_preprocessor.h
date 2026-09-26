@@ -1,13 +1,20 @@
 #pragma once
 #include "compiler/parse_record.h"
 #include <iosfwd>
+#include <optional>
 #include <string>
 #include <vector>
 
 struct MacroRecord {
     std::string name;
     std::string body;  // macro body text (trailing comment already stripped)
-    int         line;  // 1-based line number in the original source file
+    int         line;  // 1-based line number in `file`
+    int         column{0};          // 0-based column of the name on `line`
+    std::string file{};             // defining file; empty = the compiled file
+    bool        isFunctionLike{false};
+    std::vector<std::string> params{};
+    // Parallel to `params`; nullopt = no default (`define M(A, B=1)).
+    std::vector<std::optional<std::string>> defaults{};
 };
 
 struct PreprocessorResult {

@@ -950,3 +950,56 @@ TEST_CASE("token-pasting reproduces the real UVM `uvm_register_cb pattern",
         "uvm_callbacks#(uvm_report_object,uvm_report_catcher)::m_register_pair("
         "\"uvm_report_object\",\"uvm_report_catcher\");") != std::string::npos);
 }
+
+// ---------------------------------------------------------------------------
+// Macro records carry parameters, defaults, column and file (plan.md §6.29
+// part A)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("macro record keeps a function-like macro's parameters and defaults",
+          "[compiler][preprocessor][phase6.29]") {
+    SvPreprocessor pp;
+    auto result = pp.process(
+        "`define PLAIN 8\n"
+        "  `define M(A, B=1, RO=get_obj(x, y)) A+B\n"
+        "`define Z() 0\n", "f.sv");
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.macros.size() == 3);
+
+    const auto& plain = result.macros[0];
+    CHECK_FALSE(plain.isFunctionLike);
+    CHECK(plain.params.empty());
+    CHECK(plain.column == 8);
+    CHECK(plain.file.empty()); // primary file
+
+    const auto& m = result.macros[1];
+    CHECK(m.name == "M");
+    CHECK(m.isFunctionLike);
+    CHECK(m.line == 2);
+    CHECK(m.column == 10);
+    REQUIRE(m.params == std::vector<std::string>{"A", "B", "RO"});
+    REQUIRE(m.defaults.size() == 3);
+    CHECK_FALSE(m.defaults[0].has_value());
+    CHECK(m.defaults[1] == std::optional<std::string>{"1"});
+    CHECK(m.defaults[2] == std::optional<std::string>{"get_obj(x, y)"});
+
+    const auto& z = result.macros[2];
+    CHECK(z.isFunctionLike);
+    CHECK(z.params.empty());
+}
+
+TEST_CASE("macro record from an included file names that file",
+          "[compiler][preprocessor][phase6.29]") {
+    std::string tmpPath = "/tmp/svlsp_test_inc_p29.svh";
+    { std::ofstream f(tmpPath); f << "// header\n`define INC_M(X) X\n"; }
+
+    SvPreprocessor pp;
+    auto result = pp.process("`include \"" + tmpPath + "\"\n`define TOP_M 1\n", "test.sv");
+    REQUIRE(result.errors.empty());
+    REQUIRE(result.macros.size() == 2);
+    CHECK(result.macros[0].name == "INC_M");
+    CHECK(result.macros[0].file == tmpPath);
+    CHECK(result.macros[0].line == 2);
+    CHECK(result.macros[1].name == "TOP_M");
+    CHECK(result.macros[1].file.empty());
+}

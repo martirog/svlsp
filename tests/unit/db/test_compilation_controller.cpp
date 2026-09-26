@@ -705,3 +705,40 @@ TEST_CASE("compile checks a bare call inside an out-of-class body against the cl
     CHECK(errs[0].message.find("'a'") != std::string::npos);
     CHECK(errs[0].line == 9);
 }
+
+// ---------------------------------------------------------------------------
+// Macros persisted per defining file (plan.md §6.29 part A)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("compile persists macros under the file that defines them, including a "
+          "macro-only include", "[db][ctrl][phase6.29]") {
+    Fixture f;
+    std::string incPath = "/tmp/svlsp_test_ctrl_macros_only.svh";
+    { std::ofstream ofs(incPath); ofs << "`define CTRL_INC_M(ID, MSG=\"\") ID\n"; }
+
+    std::string src = "`include \"" + incPath + "\"\n"
+                      "`define CTRL_TOP_W 8\n"
+                      "module ctrl_macro_m; endmodule\n";
+    std::vector<std::string> included;
+    f.ctrl.compile("/main.sv", src, nullptr, &included);
+
+    auto inc = f.sdb.findMacros("CTRL_INC_M");
+    REQUIRE(inc.size() == 1);
+    CHECK(inc[0].filePath == incPath);
+    CHECK(inc[0].line == 1);
+    CHECK(inc[0].params == std::vector<std::string>{"ID", "MSG"});
+    CHECK(inc[0].defaults[1] == std::optional<std::string>{"\"\""});
+
+    auto top = f.sdb.findMacros("CTRL_TOP_W");
+    REQUIRE(top.size() == 1);
+    CHECK(top[0].filePath == "/main.sv");
+    CHECK(top[0].line == 2);
+
+    // A header holding only `define`s is still an included file.
+    CHECK(std::find(included.begin(), included.end(), incPath) != included.end());
+
+    // Recompiling with the define removed drops it.
+    f.ctrl.compile("/main.sv", "`include \"" + incPath + "\"\nmodule ctrl_macro_m; endmodule\n");
+    CHECK(f.sdb.findMacros("CTRL_TOP_W").empty());
+    CHECK(f.sdb.findMacros("CTRL_INC_M").size() == 1);
+}

@@ -86,3 +86,35 @@ TEST_CASE("signature help: a dotted call through a class field inside an out-of-
     REQUIRE(sig.activeParameter.has_value());
     CHECK(*sig.activeParameter == 0);
 }
+
+TEST_CASE("signature help: UVM message macros resolve through uvm_macros.svh's includes "
+          "(plan.md §6.29 part A)",
+          "[uvm_corpus][signature_help]") {
+    const std::string text = readCorpusFile("base/uvm_component.svh");
+
+    // Line 1935 (1-based): `    `uvm_error("INVSTNM", $sformatf("...", name))`
+    // -> cursor right after `"INVSTNM", ` (column 26) is on MSG.
+    auto err = SignatureHelpProvider::getSignatureHelp(
+        makeParams("base/uvm_component.svh", 1934, 26), uvmCorpusDb(), text);
+    REQUIRE_FALSE(err.isNull());
+    const auto& esig = err.value().signatures[0];
+    CHECK(esig.label == "`uvm_error(ID, MSG)");
+    REQUIRE(esig.activeParameter.has_value());
+    CHECK(*esig.activeParameter == 1);
+
+    // Same line, inside `$sformatf(` (column 36): the system function's help.
+    auto fmt = SignatureHelpProvider::getSignatureHelp(
+        makeParams("base/uvm_component.svh", 1934, 36), uvmCorpusDb(), text);
+    REQUIRE_FALSE(fmt.isNull());
+    CHECK(fmt.value().signatures[0].label == "$sformatf(format, args...)");
+
+    // Line 1745: `    `uvm_info("NEWCOMP", {"Creating ",` -- a multi-line
+    // invocation; cursor right after `uvm_info(` (column 14) is on ID.
+    auto info = SignatureHelpProvider::getSignatureHelp(
+        makeParams("base/uvm_component.svh", 1744, 14), uvmCorpusDb(), text);
+    REQUIRE_FALSE(info.isNull());
+    const auto& isig = info.value().signatures[0];
+    CHECK(isig.label == "`uvm_info(ID, MSG, VERBOSITY)");
+    REQUIRE(isig.activeParameter.has_value());
+    CHECK(*isig.activeParameter == 0);
+}

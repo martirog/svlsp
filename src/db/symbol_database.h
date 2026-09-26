@@ -1,6 +1,7 @@
 #pragma once
 #include "db/database.h"
 #include "compiler/parse_record.h"
+#include "compiler/sv_preprocessor.h"
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -37,6 +38,17 @@ struct InstantiationRow {
     int64_t     fileId;
     std::string filePath;
     int         line;
+};
+
+// One `define (plan.md §6.29 part A), from the macros table.
+struct MacroRow {
+    std::string name;
+    int         line; // 1-based
+    int         col;  // 0-based column of the name
+    bool        isFunctionLike;
+    std::vector<std::string> params;
+    std::vector<std::optional<std::string>> defaults; // parallel to params
+    std::string filePath;
 };
 
 // Typed access layer over the svlsp SQLite schema.
@@ -138,6 +150,16 @@ public:
 
     // Delete all imports for `fileId` then insert `imports`.
     void replaceImports(int64_t fileId, const std::vector<ImportRecord>& imports);
+
+    // Replaces every macro recorded for `fileId` (plan.md §6.29 part A).
+    // Only each record's name/line/column/parameters are stored; `file` is
+    // ignored (the caller has already partitioned by file).
+    void replaceMacros(int64_t fileId, const std::vector<MacroRecord>& macros);
+
+    // Every recorded `define of `name`, in this DB and every attached
+    // library DB, ordered by (file path, line). An attached DB built before
+    // the macros table existed (schema < 9) is skipped.
+    std::vector<MacroRow> findMacros(const std::string& name) const;
 
     // Delete all instantiations for `fileId` then insert `insts`.
     void replaceInstantiations(int64_t fileId, const std::vector<InstantiationRecord>& insts);
