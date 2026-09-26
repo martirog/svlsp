@@ -3481,7 +3481,8 @@ captured and gone through line by line.
 
 **Status:** settled 2026-09-26 as the first step of §6.29 part A (findings
 and the implementation are recorded there). Macro hover, definition,
-references and workspace symbols are still not done.
+references and rename followed the same day (§6.29 "Follow-up"); workspace
+symbols for macros are still not done.
 
 **Motivation:** §6.22's follow-up extended signature help to bare function/task
 calls; macro invocations (`` `uvm_info(ID, MSG, VERBOSITY) ``,
@@ -4346,6 +4347,67 @@ Emacs suite: 240/240. UVM corpus: 398 assertions / 20 cases, all pass
 headers (`uvm_macros.svh`, the `macros/*_defines.svh` files, and headers
 such as `base/uvm_base.svh` whose only directive outside `include`s is
 their include guard).
+
+**Follow-up 2026-09-26: macro hover, definition, references and rename.**
+- Schema v10 (`MIGRATION_V9_TO_V10`): `macros.body`, for hover.
+  `findMacros` reads an attached schema-9 library with an empty body.
+- `src/lsp/macro_resolution.{h,cpp}`: shared by all five providers.
+  `macroNameAt` / `isMacroOccurrence` decide from the text alone
+  (comments and strings blanked) whether a position is a macro name: an
+  identifier directly after a backtick, unless it is a compiler-directive
+  keyword (`` `define ``, `` `include ``, `` `timescale ``, ...), or the
+  first operand of `` `define ``/`` `undef ``/`` `ifdef ``/`` `ifndef ``/
+  `` `elsif ``. `pickMacro` (moved from `signature_help.cpp`) and
+  `macroSignature` (`` `NAME(A, B = 1) ``). `blankCommentsAndStrings`
+  moved from `symbol_resolution.cpp` into `symbol_utils` so both share it.
+- Hover: `**Macro** `` `NAME(...) `` `, the body in a code block (cut at
+  400 characters with `…` -- UVM bodies are whole class skeletons joined
+  onto one line), and `defined at *path:line*`. The range is the name
+  under the cursor.
+- Definition: the picked `define's name.
+- References (and so rename, which shares `findOccurrences`): every
+  macro-shaped occurrence of the name in every file the DB knows; a
+  `define recorded exactly there is the declaration. Macros are one
+  namespace per compile unit, so there is no per-definition filtering
+  (two unrelated same-named `define`s in different files are merged).
+  Null when no `define of the name is recorded (command-line macros).
+- Every one of these checks for a macro name first and never falls
+  through to the symbol resolver, so an unknown macro is null. And a
+  non-macro symbol's references now drop macro-shaped hits: with
+  `parameter WIDTH` and `` `define WIDTH `` in one file, a `` `WIDTH ``
+  use used to be counted among the parameter's references (it resolved
+  as a bare `WIDTH`).
+- Disclosed: a token-paste operand (`` a``NAME ``) reads as a macro use;
+  a macro used inside a stringification (`` `"...`" ``) is inside a string
+  and isn't found; workspace symbols don't list macros.
+
+Tests: `test_macro_resolution.cpp` (new: uses, the backtick itself,
+directive operands, directive keywords, parameters and values in a define
+body, comments, strings, `macroSignature`); hover (signature, body,
+location and range; an object-like value; a cut body; a macro and a
+same-named parameter; an unknown macro next to a same-named module);
+definition (into an included header, a directive operand, the same-named
+parameter still resolving to itself, a redefinition after `` `undef ``, an
+unknown macro); references (the formerly `[!shouldfail]` `` `define ``
+case, now passing and untagged; a header macro's uses, nested uses and
+directive operands without the same-named localparam, with and without
+the declaration; a localparam's references without the macro's uses);
+rename (define, use and `` `ifdef `` operand, not the parameter); DB (the
+v10 migration, `body` round trip, a schema-9 attached library). With the
+provider hooks disabled, all 11 new provider cases fail. `test_41` (new):
+hover, definition and references on `fixtures/macro_nav.sv`, whose macro
+lives in the `define-only `fixtures/macro_nav.svh`, plus the same-named
+parameter's references. UVM corpus: definition of `` `uvm_error `` into
+`macros/uvm_message_defines.svh`, and its references across the corpus
+(every hit is exactly `uvm_error`, never `uvm_error_begin`/`_context`).
+
+Unit suite: 837 cases, all pass (no known gaps left). Emacs suite:
+244/244. UVM corpus: 1031 assertions / 22 cases, all pass (398 / 20
+before: +4 for the definition case, +629 for the references case, which
+checks each of its 313 locations). References on `` `uvm_error ``: 313
+locations in 17 ms (`get_name`: 318 in ~630 ms). `--build-db`: 1
+diagnostic, 15327 symbol rows, 553 macro rows (509 with a non-empty body,
+the rest include guards and flags), 163 files.
 
 ---
 
