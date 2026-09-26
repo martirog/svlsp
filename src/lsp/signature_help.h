@@ -5,8 +5,11 @@
 
 // SignatureHelpProvider handles textDocument/signatureHelp requests.
 //
-// Three supported call-header shapes, tried in order (plan.md §6.22 + its
-// own follow-up section, plus §6.27 for the third):
+// A keyword construct's header (`for (`, `foreach (`, `case (`, assertion
+// forms, `randomize(`; plan.md §6.29 part B) is checked first, from the
+// static table in lsp/sv_keyword_signatures.h -- a keyword is never a
+// user-declared name. Otherwise, these call-header shapes, tried in order
+// (plan.md §6.22 + its own follow-up section, plus §6.27 for the third):
 //   1. Module/interface/program instantiation port lists
 //      (`MyModule u_inst ( ... )`) -- ParseRecordKind::Port rows recorded by
 //      enterAnsi_port_declaration (name + direction only).

@@ -37,9 +37,14 @@
 # `$sformatf(` call with the cursor after its second comma resolves from the
 # static system-task table (no DB row exists), with activeParameter clamped
 # to the variadic `args...` tail.
+#
+# Fixture: fixtures/sighelp_keywords.sv -- plan.md §6.29 part B: the cursor
+# after the second `;` of a `for (` header gets the keyword table's
+# `for (initialization; condition; step)` signature with the step active.
 
 SV_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/ref_rename_sighelp.sv"
 SYSTASK_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/sighelp_systask.sv"
+KEYWORD_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/sighelp_keywords.sv"
 
 section "signature help (textDocument/signatureHelp)"
 
@@ -52,7 +57,8 @@ if [ ! -x "${SVLSP_BIN}" ]; then
         "dotted call resolves a method inherited via extends, default value rendered" \
         "two-segment dotted chain resolves through a package-qualified, never-imported field type" \
         "module instantiation port labels carry their declared type, including a default value" \
-        "system function signature from the static table, variadic tail active"
+        "system function signature from the static table, variadic tail active" \
+        "for header signature from the keyword table, semicolon-separated"
     do
         skip_test "$name" "svlsp binary not found at ${SVLSP_BIN}"
     done
@@ -239,6 +245,28 @@ else
                       (string= label \"\$sformatf(format, args...)\")
                       (eql (length params) 2)
                       (eql active 1))
+                 t nil))
+         (error (format \"elisp-error: %s\" (error-message-string err))))" \
+        "t"
+
+    run_test "for header signature from the keyword table, semicolon-separated" \
+        "(condition-case err
+           (let* ((buf    (svlsp-test/open-file \"${KEYWORD_FIXTURE}\"))
+                  (ok     (with-current-buffer buf (svlsp-test/wait-for-lsp 15)))
+                  (result (when ok
+                            (with-current-buffer buf
+                              (lsp-request \"textDocument/signatureHelp\"
+                                           (list :textDocument (list :uri (lsp--buffer-uri))
+                                                 :position     (list :line 6 :character 39))))))
+                  (sig     (when result (aref (gethash \"signatures\" result) 0)))
+                  (label   (when sig (gethash \"label\" sig)))
+                  (params  (when sig (gethash \"parameters\" sig)))
+                  (active  (when sig (gethash \"activeParameter\" sig))))
+             (svlsp-test/close-file buf)
+             (if (and ok sig
+                      (string= label \"for (initialization; condition; step)\")
+                      (eql (length params) 3)
+                      (eql active 2))
                  t nil))
          (error (format \"elisp-error: %s\" (error-message-string err))))" \
         "t"

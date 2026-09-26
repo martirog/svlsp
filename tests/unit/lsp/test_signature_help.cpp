@@ -681,3 +681,109 @@ TEST_CASE("SignatureHelpProvider: every system task table entry is well formed",
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// plan.md §6.29 part B: keyword constructs from sv_keyword_signatures.h.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Label and activeParameter (-1 = unset) of the help at the end of `text`,
+// or {"<null>", -1}.
+std::pair<std::string, int> kw(SymbolDatabase& sdb, const std::string& text)
+{
+    auto r = helpAtEnd(sdb, text);
+    if (r.isNull()) return {"<null>", -1};
+    const auto& sig = r.value().signatures[0];
+    return {std::string(sig.label),
+            sig.activeParameter ? static_cast<int>(*sig.activeParameter) : -1};
+}
+
+} // namespace
+
+TEST_CASE("SignatureHelpProvider: for header counts top-level semicolons",
+          "[signature_help][phase6.29]")
+{
+    Fixture f;
+    const std::string label = "for (initialization; condition; step)";
+    CHECK(kw(f.sdb, "for (") == std::pair<std::string, int>{label, 0});
+    CHECK(kw(f.sdb, "for (int i = 0; i < n; ") == std::pair<std::string, int>{label, 2});
+    // Commas (multiple initializers) and a nested call's parens don't count.
+    CHECK(kw(f.sdb, "for (int i = 0, j = f(a; b); ") == std::pair<std::string, int>{label, 1});
+
+    auto r = helpAtEnd(f.sdb, "for (");
+    REQUIRE_FALSE(r.isNull());
+    REQUIRE(r.value().signatures[0].parameters.has_value());
+    CHECK(r.value().signatures[0].parameters->size() == 3);
+    CHECK(r.value().signatures[0].documentation.has_value());
+}
+
+TEST_CASE("SignatureHelpProvider: foreach header highlights the index list inside brackets",
+          "[signature_help][phase6.29]")
+{
+    Fixture f;
+    const std::string label = "foreach (array[index, ...])";
+    CHECK(kw(f.sdb, "foreach (arr") == std::pair<std::string, int>{label, 0});
+    CHECK(kw(f.sdb, "foreach (arr[i, ") == std::pair<std::string, int>{label, 1});
+    // A bracket inside a nested call's argument isn't the index list.
+    CHECK(kw(f.sdb, "foreach (get(m[0]).q") == std::pair<std::string, int>{label, 0});
+}
+
+TEST_CASE("SignatureHelpProvider: case and assertion headers",
+          "[signature_help][phase6.29]")
+{
+    Fixture f;
+    CHECK(kw(f.sdb, "unique case (") == std::pair<std::string, int>{"case (expression)", 0});
+    CHECK(kw(f.sdb, "casez (").first == "casez (expression)");
+    CHECK(kw(f.sdb, "priority casex (").first == "casex (expression)");
+
+    CHECK(kw(f.sdb, "a1: assert (").first == "assert (expression)");
+    CHECK(kw(f.sdb, "assume (").first == "assume (expression)");
+    CHECK(kw(f.sdb, "cover (").first == "cover (expression)");
+    CHECK(kw(f.sdb, "assert final (").first == "assert final (expression)");
+    CHECK(kw(f.sdb, "assert property (").first == "assert property (property_spec)");
+    CHECK(kw(f.sdb, "assume  property (").first == "assume property (property_spec)");
+    CHECK(kw(f.sdb, "cover property (").first == "cover property (property_spec)");
+    CHECK(kw(f.sdb, "cover sequence (").first == "cover sequence (sequence_expr)");
+    CHECK(kw(f.sdb, "@(posedge clk) disable iff (").first == "disable iff (expression)");
+}
+
+TEST_CASE("SignatureHelpProvider: randomize, bare, std:: and dotted",
+          "[signature_help][phase6.29]")
+{
+    Fixture f;
+    const std::string label = "randomize([variable, ...])";
+    CHECK(kw(f.sdb, "void'(randomize(") == std::pair<std::string, int>{label, 0});
+    CHECK(kw(f.sdb, "ok = std::randomize(x, ") == std::pair<std::string, int>{label, 0});
+    CHECK(kw(f.sdb, "ok = tr.randomize(a, ") == std::pair<std::string, int>{label, 0});
+    CHECK(kw(f.sdb, "ok = env.cfg.randomize(") == std::pair<std::string, int>{label, 0});
+}
+
+TEST_CASE("SignatureHelpProvider: keywords outside the chosen set, and a keyword needing a "
+          "prefix without it, stay null",
+          "[signature_help][phase6.29]")
+{
+    Fixture f;
+    CHECK(kw(f.sdb, "if (").first == "<null>");
+    CHECK(kw(f.sdb, "while (").first == "<null>");
+    CHECK(kw(f.sdb, "repeat (").first == "<null>");
+    CHECK(kw(f.sdb, "wait (").first == "<null>");
+    // `with (identifier_list)` after randomize() is not handled.
+    CHECK(kw(f.sdb, "tr.randomize() with (").first == "<null>");
+    // `iff` without `disable`, `property`/`final` without an assertion keyword.
+    CHECK(kw(f.sdb, "@(posedge clk iff (").first == "<null>");
+    CHECK(kw(f.sdb, "x property (").first == "<null>");
+    CHECK(kw(f.sdb, "x final (").first == "<null>");
+    // A keyword-looking suffix of a longer identifier is not the keyword.
+    CHECK(kw(f.sdb, "my_for (").first == "<null>");
+    // A macro named like a keyword is a macro call, not the keyword.
+    CHECK(kw(f.sdb, "`assert(").first == "<null>");
+    CHECK(kw(f.sdb, "`for (").first == "<null>");
+}
+
+TEST_CASE("SignatureHelpProvider: a call nested in a for header gets its own help",
+          "[signature_help][phase6.29]")
+{
+    Fixture f;
+    CHECK(kw(f.sdb, "for (int i = 0; i < $clog2(").first == "$clog2(n)");
+}

@@ -1,6 +1,7 @@
 #include "signature_help.h"
 #include "lsp/symbol_utils.h"
 #include "compiler/parse_record.h"
+#include "lsp/sv_keyword_signatures.h"
 #include "lsp/sv_system_tasks.h"
 #include <algorithm>
 #include <cctype>
@@ -254,6 +255,96 @@ lsp::SignatureHelp systemTaskHelp(const SystemTask& task, const std::string& tex
     return help;
 }
 
+// A keyword construct's header (`for (`, `assert property (`, plan.md §6.29
+// part B): the identifier directly before `(` is a KEYWORD_SIGNATURES
+// keyword, and for an entry with a prefix, the identifier before it is that
+// prefix. An entry with a matching prefix wins over one without. A
+// backtick before the keyword makes it a macro call (`` `assert( ``), not
+// the keyword.
+const KeywordSignature* findKeywordHeader(const std::string& text, size_t parenOffset)
+{
+    auto skipWsBack = [&](size_t& i) {
+        while (i > 0 && std::isspace(static_cast<unsigned char>(text[i - 1]))) --i;
+    };
+    auto readIdentBack = [&](size_t& i) {
+        size_t end = i;
+        while (i > 0 && isIdentChar(static_cast<unsigned char>(text[i - 1]))) --i;
+        return text.substr(i, end - i);
+    };
+
+    size_t i = parenOffset;
+    skipWsBack(i);
+    const std::string keyword = readIdentBack(i);
+    if (keyword.empty() || (i > 0 && text[i - 1] == '`')) return nullptr;
+    skipWsBack(i);
+    const std::string before = readIdentBack(i);
+
+    const KeywordSignature* unprefixed = nullptr;
+    for (const auto& k : KEYWORD_SIGNATURES) {
+        if (k.keyword != keyword) continue;
+        if (k.prefix.empty()) unprefixed = &k;
+        else if (k.prefix == before) return &k;
+    }
+    return unprefixed;
+}
+
+lsp::SignatureHelp keywordHelp(const KeywordSignature& kw, const std::string& text,
+                               size_t parenOffset, size_t cursorOffset)
+{
+    std::vector<std::string> params;
+    for (size_t start = 0;;) {
+        size_t sep = kw.params.find("; ", start);
+        params.emplace_back(kw.params.substr(
+            start, sep == std::string_view::npos ? std::string_view::npos : sep - start));
+        if (sep == std::string_view::npos) break;
+        start = sep + 2;
+    }
+
+    // Top-level `;` count (for) or whether a top-level `[` was typed (foreach).
+    int index = 0;
+    int depth = 0;
+    for (size_t i = parenOffset + 1; i < cursorOffset && i < text.size(); ++i) {
+        const char c = text[i];
+        if (c == '[' && depth == 0 && kw.separator == KeywordSeparator::Bracket) index = 1;
+        if (c == '(' || c == '[' || c == '{') ++depth;
+        else if (c == ')' || c == ']' || c == '}') --depth;
+        else if (c == ';' && depth == 0 && kw.separator == KeywordSeparator::Semicolon) ++index;
+    }
+
+    std::string head = kw.prefix.empty() ? std::string(kw.keyword)
+                                         : std::string(kw.prefix) + " " + std::string(kw.keyword);
+    std::string label;
+    switch (kw.separator) {
+    case KeywordSeparator::Bracket:
+        label = head + " (" + params[0] + "[" + params[1] + "])";
+        break;
+    case KeywordSeparator::Comma:
+        label = head + "(" + params[0] + ")";
+        break;
+    default:
+        label = head + " (";
+        for (size_t i = 0; i < params.size(); ++i) label += (i ? "; " : "") + params[i];
+        label += ")";
+    }
+
+    lsp::SignatureInformation sig;
+    lsp::Array<lsp::ParameterInformation> params_;
+    for (auto& p : params) {
+        lsp::ParameterInformation pi;
+        pi.label = p;
+        params_.push_back(std::move(pi));
+    }
+    sig.label         = std::move(label);
+    sig.documentation = std::string(kw.doc);
+    sig.parameters    = std::move(params_);
+    if (index < static_cast<int>(params.size())) sig.activeParameter = static_cast<unsigned>(index);
+
+    lsp::SignatureHelp help;
+    help.signatures.push_back(std::move(sig));
+    help.activeSignature = 0u;
+    return help;
+}
+
 } // namespace
 
 lsp::TextDocument_SignatureHelpResult SignatureHelpProvider::getSignatureHelp(
@@ -265,6 +356,11 @@ lsp::TextDocument_SignatureHelpResult SignatureHelpProvider::getSignatureHelp(
 
     auto parenOffset = findEnclosingParen(docText, *cursorOffset);
     if (!parenOffset) return nullptr;
+
+    // A keyword construct's header -- checked first: a keyword is never a
+    // user-declared name.
+    if (const KeywordSignature* kw = findKeywordHeader(docText, *parenOffset))
+        return keywordHelp(*kw, docText, *parenOffset, *cursorOffset);
 
     const std::string curPath{params.textDocument.uri.path()};
     const int line1 = static_cast<int>(params.position.line) + 1;
