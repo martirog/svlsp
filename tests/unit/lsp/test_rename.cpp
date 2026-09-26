@@ -221,3 +221,25 @@ TEST_CASE("RenameProvider: renames a virtual method with its overrides and calls
                                                      {"/c.sv", 5, 10},
                                                      {"/use.sv", 3, 6}});
 }
+
+TEST_CASE("RenameProvider: renames a macro's define, uses and directive operands, not a "
+          "same-named parameter",
+          "[rename][scoped][macro][phase6.29]")
+{
+    RealCompileFixture f;
+    f.add("/rm.sv",
+          "`define RN_M(X) X\n"
+          "module rn_mm;\n"
+          "  parameter RN_M = 1;\n"
+          "  int a = `RN_M(RN_M);\n"
+          "`ifdef RN_M\n"
+          "`endif\n"
+          "endmodule\n");
+
+    // Cursor on the use after the backtick.
+    auto result = RenameProvider::getRename(makeParams("/rm.sv", 3, 11, "RN_LOG"), f.sdb,
+                                            f.files.at("/rm.sv"), textMapLookup(f.files));
+    CHECK(editPositions(result, 4) == std::set<Edit>{{"/rm.sv", 0, 8},
+                                                     {"/rm.sv", 3, 11},
+                                                     {"/rm.sv", 4, 7}});
+}

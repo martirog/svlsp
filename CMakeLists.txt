@@ -186,6 +186,7 @@ add_library(svlsp_lib STATIC
     src/lsp/document_store.cpp
     src/lsp/fuzzy_match.cpp
     src/lsp/hover.cpp
+    src/lsp/macro_resolution.cpp
     src/lsp/references.cpp
     src/lsp/rename.cpp
     src/lsp/signature_help.cpp
@@ -240,6 +241,7 @@ add_executable(unit_tests
     tests/unit/lsp/test_references_scoped.cpp
     tests/unit/lsp/test_rename.cpp
     tests/unit/lsp/test_signature_help.cpp
+    tests/unit/lsp/test_macro_resolution.cpp
     tests/unit/lsp/test_workspace_symbols.cpp
     tests/unit/lsp/test_project_manifest_parser.cpp
     tests/unit/lsp/test_project_registry.cpp

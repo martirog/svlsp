@@ -920,8 +920,11 @@ TEST_CASE("replaceMacros / findMacros round trip", "[db][symbol-db][phase6.29]")
     CHECK_FALSE(rows[0].defaults[0].has_value());
     CHECK(rows[0].defaults[1] == std::optional<std::string>{"1"});
 
+    CHECK(rows[0].body == "A+B");
+
     auto w = f.sdb.findMacros("W");
     REQUIRE(w.size() == 1);
+    CHECK(w[0].body == "8");
     CHECK_FALSE(w[0].isFunctionLike);
     CHECK(w[0].params.empty());
 

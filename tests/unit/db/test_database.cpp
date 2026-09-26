@@ -13,14 +13,14 @@ TEST_CASE("open in-memory database succeeds", "[db][database]") {
 TEST_CASE("initSchema creates tables and sets current version", "[db][database]") {
     Database db(":memory:");
     db.initSchema();
-    CHECK(db.schemaVersion() == 9);
+    CHECK(db.schemaVersion() == 10);
 }
 
 TEST_CASE("initSchema is idempotent", "[db][database]") {
     Database db(":memory:");
     db.initSchema();
     CHECK_NOTHROW(db.initSchema());
-    CHECK(db.schemaVersion() == 9);
+    CHECK(db.schemaVersion() == 10);
 }
 
 TEST_CASE("schemaVersion returns 0 on fresh database", "[db][database]") {
@@ -156,8 +156,22 @@ TEST_CASE("migration to v9 adds the macros table (plan.md §6.29 part A)", "[db]
     // Reshape into a v8 database: no macros table.
     db.execute("DROP TABLE macros; UPDATE schema_version SET version = 8;");
     db.initSchema();
-    CHECK(db.schemaVersion() == 9);
+    CHECK(db.schemaVersion() == 10);
     auto chk = db.prepare("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='macros'");
     REQUIRE(chk.step());
     CHECK(chk.columnInt(0) == 1);
+}
+
+TEST_CASE("migration to v10 adds macros.body", "[db][database]") {
+    Database db(":memory:");
+    db.initSchema();
+    // Reshape into a v9 database: macros without body.
+    db.execute("DROP TABLE macros;"
+               "CREATE TABLE macros (id INTEGER PRIMARY KEY AUTOINCREMENT, file_id INTEGER NOT NULL,"
+               " name TEXT NOT NULL, line INTEGER NOT NULL, col INTEGER NOT NULL,"
+               " is_function_like INTEGER NOT NULL DEFAULT 0, params TEXT NOT NULL DEFAULT '');"
+               "UPDATE schema_version SET version = 9;");
+    db.initSchema();
+    CHECK(db.schemaVersion() == 10);
+    CHECK_NOTHROW(db.prepare("SELECT body FROM macros"));
 }

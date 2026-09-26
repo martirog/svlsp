@@ -263,8 +263,8 @@ void SymbolDatabase::replaceMacros(int64_t fileId, const std::vector<MacroRecord
     del.step();
 
     auto ins = m_db.prepare(
-        "INSERT INTO macros (file_id, name, line, col, is_function_like, params) "
-        "VALUES (?,?,?,?,?,?)");
+        "INSERT INTO macros (file_id, name, line, col, is_function_like, params, body) "
+        "VALUES (?,?,?,?,?,?,?)");
     for (const auto& m : macros) {
         std::string params;
         for (size_t i = 0; i < m.params.size(); ++i) {
@@ -278,7 +278,8 @@ void SymbolDatabase::replaceMacros(int64_t fileId, const std::vector<MacroRecord
            .bind(3, m.line)
            .bind(4, m.column)
            .bind(5, m.isFunctionLike ? 1 : 0)
-           .bind(6, params);
+           .bind(6, params)
+           .bind(7, m.body);
         ins.step();
     }
     m_db.execute("COMMIT");
@@ -286,18 +287,21 @@ void SymbolDatabase::replaceMacros(int64_t fileId, const std::vector<MacroRecord
 
 std::vector<MacroRow> SymbolDatabase::findMacros(const std::string& name) const
 {
-    static constexpr const char* kSelect =
-        "SELECT m.name, m.line, m.col, m.is_function_like, m.params, f.path FROM ";
-    std::string sql = std::string(kSelect) +
+    auto select = [](const std::string& bodyCol) {
+        return "SELECT m.name, m.line, m.col, m.is_function_like, m.params, f.path, " + bodyCol +
+               " FROM ";
+    };
+    std::string sql = select("m.body") +
         "macros m JOIN files f ON f.id = m.file_id WHERE m.name = ?";
     int binds = 1;
     for (size_t i = 0; i < m_attachedLibraryPaths.size(); ++i) {
         const std::string alias = "lib" + std::to_string(i);
-        auto chk = m_db.prepare("SELECT COUNT(*) FROM " + alias +
+        auto chk = m_db.prepare("SELECT sql FROM " + alias +
                                 ".sqlite_master WHERE type='table' AND name='macros'");
-        if (!chk.step() || chk.columnInt(0) == 0) continue;
-        sql += " UNION ALL " + std::string(kSelect) + alias + ".macros m JOIN " + alias +
-               ".files f ON f.id = m.file_id WHERE m.name = ?";
+        if (!chk.step()) continue; // schema < 9: no macros table
+        const bool hasBody = chk.columnText(0).find("body") != std::string::npos;
+        sql += " UNION ALL " + select(hasBody ? "m.body" : "''") + alias + ".macros m JOIN " +
+               alias + ".files f ON f.id = m.file_id WHERE m.name = ?";
         ++binds;
     }
 
@@ -308,7 +312,7 @@ std::vector<MacroRow> SymbolDatabase::findMacros(const std::string& name) const
     while (stmt.step()) {
         MacroRow row{stmt.columnText(0), static_cast<int>(stmt.columnInt(1)),
                      static_cast<int>(stmt.columnInt(2)), stmt.columnInt(3) != 0,
-                     {}, {}, stmt.columnText(5)};
+                     {}, {}, stmt.columnText(5), stmt.columnText(6)};
         const std::string params = stmt.columnText(4);
         if (row.isFunctionLike && !params.empty()) {
             for (size_t start = 0;;) {

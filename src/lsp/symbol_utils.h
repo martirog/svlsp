@@ -180,3 +180,7 @@ bool isNamedConnectionParen(const std::string& text, size_t parenPos);
 // backward with a paren-depth counter and skipping named connections' own
 // parens (see isNamedConnectionParen). Not comment/string-aware.
 std::optional<size_t> findEnclosingParen(const std::string& text, size_t offset);
+
+// `text` with every comment and string-literal body replaced by spaces
+// (newlines and the quotes themselves kept), so offsets are unchanged.
+std::string blankCommentsAndStrings(const std::string& text);

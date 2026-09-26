@@ -227,3 +227,26 @@ TEST_CASE("attachLibraryDbs: findMacros sees an attached DB's macros, and skips 
     CHECK(rows[0].params.size() == 3);
     CHECK(f.sdb.findMacros("TOP").size() == 1);
 }
+
+TEST_CASE("attachLibraryDbs: findMacros reads a schema-v9 library's macros with an empty body",
+          "[db][symbol-db][library-attach][phase6.29]")
+{
+    std::string libPath = kRoot + "/macros_v9/lib.db";
+    buildLibraryDb(libPath, "/lib/m.svh", {});
+    {
+        Database db(libPath);
+        SymbolDatabase sdb(db);
+        sdb.replaceMacros(sdb.upsertFile("/lib/m.svh", "h"),
+                          {MacroRecord{"V9M", "body", 3, 8, "", true, {"A"}, {std::nullopt}}});
+        // Reshape into v9: macros without a body column.
+        db.execute("CREATE TABLE m9 AS SELECT id, file_id, name, line, col, is_function_like, "
+                   "params FROM macros; DROP TABLE macros; ALTER TABLE m9 RENAME TO macros;");
+    }
+
+    ProjectFixture f;
+    f.sdb.attachLibraryDbs({libPath});
+    auto rows = f.sdb.findMacros("V9M");
+    REQUIRE(rows.size() == 1);
+    CHECK(rows[0].params == std::vector<std::string>{"A"});
+    CHECK(rows[0].body.empty());
+}

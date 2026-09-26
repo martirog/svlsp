@@ -84,42 +84,6 @@ bool scopeOpBefore(const std::string& text, size_t i)
     return i >= 2 && text[i - 1] == ':' && text[i - 2] == ':' && (i < 3 || text[i - 3] != ':');
 }
 
-// `text` with every comment and string-literal body replaced by spaces
-// (newlines and the quotes themselves kept), so offsets are unchanged. All
-// scanning runs on this copy: a comment between `)` and an instance name, or
-// a '.'/'(' inside a string, can't derail it, and a cursor inside a comment
-// or string resolves to nothing (handoff "wordAtPosition resolves symbols
-// inside comments/strings").
-std::string blankCommentsAndStrings(const std::string& text)
-{
-    std::string out = text;
-    enum { Code, Line, Block, Str } state = Code;
-    for (size_t i = 0; i < out.size(); ++i) {
-        const char c = text[i];
-        const char next = i + 1 < text.size() ? text[i + 1] : '\0';
-        switch (state) {
-        case Code:
-            if (c == '/' && next == '/') { state = Line;  out[i] = out[i + 1] = ' '; ++i; }
-            else if (c == '/' && next == '*') { state = Block; out[i] = out[i + 1] = ' '; ++i; }
-            else if (c == '"') state = Str;
-            break;
-        case Line:
-            if (c == '\n') state = Code; else out[i] = ' ';
-            break;
-        case Block:
-            if (c == '*' && next == '/') { state = Code; out[i] = out[i + 1] = ' '; ++i; }
-            else if (c != '\n') out[i] = ' ';
-            break;
-        case Str:
-            if (c == '\\' && next != '\n' && next != '\0') { out[i] = out[i + 1] = ' '; ++i; }
-            else if (c == '"' || c == '\n') state = Code;
-            else out[i] = ' ';
-            break;
-        }
-    }
-    return out;
-}
-
 enum class KindFilter { Any, ScopeLike, Callable, Value };
 
 bool kindMatches(const SymbolRow& r, KindFilter f)

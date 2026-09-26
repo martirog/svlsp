@@ -4,7 +4,7 @@ namespace db {
 
 // Current schema version.  Increment and add a migration in Database::initSchema
 // whenever the schema changes.
-inline constexpr int SCHEMA_VERSION = 9;
+inline constexpr int SCHEMA_VERSION = 10;
 
 // DDL executed on a fresh (version-0) database — always reflects the latest schema.
 inline constexpr const char* SCHEMA_DDL = R"sql(
@@ -129,7 +129,9 @@ CREATE INDEX idx_file_includes_included ON file_includes(included_file_id);
 -- `localparam WIDTH` routinely coexist), so keeping them out of symbols
 -- keeps every existing name lookup unaffected. One row per `define in an
 -- active branch, attributed to the file it's written in. `params` holds
--- one entry per parameter, "NAME" or "NAME=default", separated by U+001F.
+-- one entry per parameter, "NAME" or "NAME=default", separated by U+001F;
+-- `body` is the macro body (continuation lines joined, trailing comment
+-- stripped), shown by hover (schema v10).
 CREATE TABLE macros (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     file_id          INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
@@ -137,11 +139,18 @@ CREATE TABLE macros (
     line             INTEGER NOT NULL,
     col              INTEGER NOT NULL,
     is_function_like INTEGER NOT NULL DEFAULT 0,
-    params           TEXT    NOT NULL DEFAULT ''
+    params           TEXT    NOT NULL DEFAULT '',
+    body             TEXT    NOT NULL DEFAULT ''
 );
 
 CREATE INDEX idx_macros_name    ON macros(name);
 CREATE INDEX idx_macros_file_id ON macros(file_id);
+)sql";
+
+// SQL applied when migrating an existing v9 database to v10.
+inline constexpr const char* MIGRATION_V9_TO_V10 = R"sql(
+ALTER TABLE macros ADD COLUMN body TEXT NOT NULL DEFAULT '';
+UPDATE schema_version SET version = 10;
 )sql";
 
 // SQL applied when migrating an existing v8 database to v9.

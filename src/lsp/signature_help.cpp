@@ -1,6 +1,7 @@
 #include "signature_help.h"
 #include "lsp/symbol_utils.h"
 #include "compiler/parse_record.h"
+#include "lsp/macro_resolution.h"
 #include "lsp/sv_keyword_signatures.h"
 #include "lsp/sv_system_tasks.h"
 #include <algorithm>
@@ -356,45 +357,22 @@ std::string macroCallName(const std::string& text, size_t parenOffset)
     return text.substr(i, end - i);
 }
 
-// Which of a (possibly redefined) macro's definitions a call in `curPath`
-// at `line1` sees: the last one before it in the same file, else the first
-// from another file (path order -- which of several other files' `define`s
-// is active isn't tracked), else a same-file one after it.
-std::optional<MacroRow> pickMacro(std::vector<MacroRow> rows, const std::string& curPath,
-                                  int line1)
-{
-    std::optional<MacroRow> before, other, after;
-    for (auto& r : rows) {
-        if (r.filePath == curPath) {
-            if (r.line <= line1) before = r;
-            else if (!after) after = r;
-        } else if (!other) {
-            other = r;
-        }
-    }
-    return before ? before : other ? other : after;
-}
-
 lsp::SignatureHelp macroHelp(const MacroRow& macro, const std::string& text,
                              size_t parenOffset, size_t cursorOffset)
 {
     const int index = computeActiveParam(text, parenOffset, cursorOffset).index;
 
     lsp::SignatureInformation sig;
-    std::string label = "`" + macro.name + "(";
     lsp::Array<lsp::ParameterInformation> params_;
     for (std::size_t i = 0; i < macro.params.size(); ++i) {
         std::string plabel = macro.params[i];
         if (i < macro.defaults.size() && macro.defaults[i]) plabel += " = " + *macro.defaults[i];
-        if (i > 0) label += ", ";
-        label += plabel;
         lsp::ParameterInformation p;
         p.label = plabel;
         params_.push_back(std::move(p));
     }
-    label += ")";
 
-    sig.label      = std::move(label);
+    sig.label      = macroSignature(macro);
     sig.parameters = std::move(params_);
     if (index >= 0 && static_cast<std::size_t>(index) < macro.params.size())
         sig.activeParameter = static_cast<unsigned>(index);

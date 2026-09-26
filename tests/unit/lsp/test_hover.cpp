@@ -169,3 +169,84 @@ TEST_CASE("HoverProvider: null for a cursor inside a comment or string literal",
     // ...while the real declaration still hovers.
     CHECK_FALSE(HoverProvider::getHover(makeParams("/c.sv", 0, 15), f.sdb, text).isNull());
 }
+
+// ---------------------------------------------------------------------------
+// Macros (plan.md §6.29 follow-up): hover on a `NAME use or a `define name
+// ---------------------------------------------------------------------------
+
+TEST_CASE("HoverProvider: a function-like macro shows its signature and body",
+          "[hover][macro][phase6.29]")
+{
+    Fixture f;
+    f.sdb.replaceMacros(f.sdb.upsertFile("/m.svh", "h"),
+                        {MacroRecord{"LOG", "$display(ID, MSG)", 3, 8, "", true, {"ID", "MSG"},
+                                     {std::nullopt, std::string("\"\"")}}});
+    const std::string text = "initial `LOG(\"a\", \"b\");";
+    auto result = HoverProvider::getHover(makeParams("/t.sv", 0, 10), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+    const auto& mc = std::get<lsp::MarkupContent>(result.value().contents);
+    const std::string v{mc.value};
+    CHECK(v.find("**Macro**") != std::string::npos);
+    CHECK(v.find("`LOG(ID, MSG = \"\")") != std::string::npos);
+    CHECK(v.find("$display(ID, MSG)") != std::string::npos);
+    CHECK(v.find("/m.svh:3") != std::string::npos);
+    // The range is the name under the cursor, not the definition.
+    REQUIRE(result.value().range.has_value());
+    CHECK(result.value().range->start.line == 0);
+    CHECK(result.value().range->start.character == 9);
+    CHECK(result.value().range->end.character == 12);
+}
+
+TEST_CASE("HoverProvider: an object-like macro shows its value, a long body is cut",
+          "[hover][macro][phase6.29]")
+{
+    Fixture f;
+    f.sdb.replaceMacros(f.sdb.upsertFile("/m.svh", "h"),
+                        {MacroRecord{"W", "8", 1, 8, "", false, {}, {}},
+                         MacroRecord{"BIG", std::string(2000, 'x'), 2, 8, "", false, {}, {}}});
+    auto w = HoverProvider::getHover(makeParams("/t.sv", 0, 8), f.sdb, "logic [`W-1:0] d;");
+    REQUIRE_FALSE(w.isNull());
+    const std::string wv{std::get<lsp::MarkupContent>(w.value().contents).value};
+    CHECK(wv.find("`W") != std::string::npos);
+    CHECK(wv.find("```systemverilog\n8\n```") != std::string::npos);
+
+    auto big = HoverProvider::getHover(makeParams("/t.sv", 0, 2), f.sdb, "`BIG");
+    REQUIRE_FALSE(big.isNull());
+    const std::string bv{std::get<lsp::MarkupContent>(big.value().contents).value};
+    CHECK(bv.size() < 1000);
+    CHECK(bv.find("…") != std::string::npos);
+}
+
+TEST_CASE("HoverProvider: a macro and a same-named parameter each hover as themselves",
+          "[hover][macro][phase6.29]")
+{
+    Fixture f;
+    auto fid = f.sdb.upsertFile("/t.sv", "h");
+    f.sdb.replaceSymbols(fid, {
+        {ParseRecordKind::Module, "hm", 1, 7, "", "", 4, ""},
+        {ParseRecordKind::Parameter, "WIDTH", 2, 13, "hm", "int", 0, "hm"},
+    });
+    f.sdb.replaceMacros(fid, {MacroRecord{"WIDTH", "16", 1, 8, "", false, {}, {}}});
+    const std::string text =
+        "module hm;\n"
+        "  parameter WIDTH = 4;\n"
+        "  logic [`WIDTH-1:0] a, b [WIDTH];\n"
+        "endmodule\n";
+    auto mac = HoverProvider::getHover(makeParams("/t.sv", 2, 10), f.sdb, text);
+    REQUIRE_FALSE(mac.isNull());
+    CHECK(std::string(std::get<lsp::MarkupContent>(mac.value().contents).value)
+              .find("**Macro**") != std::string::npos);
+    auto par = HoverProvider::getHover(makeParams("/t.sv", 2, 27), f.sdb, text);
+    REQUIRE_FALSE(par.isNull());
+    CHECK(std::string(std::get<lsp::MarkupContent>(par.value().contents).value)
+              .find("**Parameter**") != std::string::npos);
+}
+
+TEST_CASE("HoverProvider: an unknown macro is null, never a same-named symbol",
+          "[hover][macro][phase6.29]")
+{
+    Fixture f;
+    auto fid = f.sdb.upsertFile("/t.sv", "h");
+    f.sdb.replaceSymbols(fid, {{ParseRecordKind::Module, "NOPE", 1, 7, "", "", 2, ""}});
+    CHECK(HoverProvider::getHover(makeParams("/t.sv", 0, 2), f.sdb, "`NOPE").isNull());
+}

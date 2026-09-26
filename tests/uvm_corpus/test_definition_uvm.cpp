@@ -85,3 +85,18 @@ TEST_CASE("definition: inside an out-of-class method body, a class field and a b
     CHECK(cloc.range.start.line == 121u);
     CHECK(cloc.range.start.character == 32u);
 }
+
+TEST_CASE("definition: a `uvm_error use lands on its define in uvm_message_defines.svh "
+          "(plan.md §6.29 follow-up)",
+          "[uvm_corpus][definition][macro]") {
+    const std::string text = readCorpusFile("base/uvm_component.svh");
+    // Line 1935 (1-based) "    `uvm_error("INVSTNM", ...)" -> the define at
+    // macros/uvm_message_defines.svh:188, col 8.
+    auto result = DefinitionProvider::getDefinition(makeParams("base/uvm_component.svh", 1934, 7),
+                                                    uvmCorpusDb(), text);
+    REQUIRE_FALSE(result.isNull());
+    const auto& loc = std::get<lsp::Location>(result.get<lsp::Definition>());
+    CHECK(std::string(loc.uri.path()) == expectedUriPath("macros/uvm_message_defines.svh"));
+    CHECK(loc.range.start.line == 187u);
+    CHECK(loc.range.start.character == 8u);
+}

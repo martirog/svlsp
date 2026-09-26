@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include "lsp/references.h"
 #include "uvm_corpus_fixture.h"
+#include <cctype>
 #include <chrono>
 #include <filesystem>
 #include <set>
@@ -111,4 +112,33 @@ TEST_CASE("references: timing for a name used throughout the corpus",
     REQUIRE_FALSE(result.isNull());
     WARN("references(get_name): " << result.value().size() << " locations in " << ms << " ms");
     CHECK(ms < 30000);
+}
+
+TEST_CASE("references: the `uvm_error macro -- its define and uses across the corpus "
+          "(plan.md §6.29 follow-up)",
+          "[uvm_corpus][references][macro]") {
+    // base/uvm_component.svh:1935 (1-based) "    `uvm_error("INVSTNM", ...)";
+    // macros/uvm_message_defines.svh:188 "`define uvm_error(ID, MSG) \".
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto refs = refsAt("base/uvm_component.svh", 1934, 5);
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - t0).count();
+    WARN("references(`uvm_error): " << refs.size() << " locations in " << ms << " ms");
+    CHECK(refs.count(at("macros/uvm_message_defines.svh", 187, 8)) == 1);
+    CHECK(refs.count(at("base/uvm_component.svh", 1934, 5)) == 1);
+    CHECK(refs.size() > 100);
+    // `uvm_error_begin / `uvm_error_context are other macros.
+    // Result paths are the DB's corpus-relative paths absolutized against
+    // the working directory (see expectedUriPath); undo that to read them.
+    const std::string cwd = std::filesystem::current_path().string() + "/";
+    for (const auto& [path, line, col] : refs) {
+        INFO(path << ":" << line << ":" << col);
+        const std::string rel = path.rfind(cwd, 0) == 0 ? path.substr(cwd.size()) : path;
+        const std::string text = readCorpusFile(rel);
+        size_t off = 0;
+        for (unsigned l = 0; l < line; ++l) off = text.find('\n', off) + 1;
+        CHECK(text.compare(off + col, 9, "uvm_error") == 0);
+        const char after = text[off + col + 9];
+        CHECK_FALSE((std::isalnum(static_cast<unsigned char>(after)) || after == '_'));
+    }
 }

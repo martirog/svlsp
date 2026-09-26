@@ -688,3 +688,66 @@ TEST_CASE("Definition: inside an out-of-class body, bare names resolve to the cl
     requireDefinitionAt(f.sdb, "/ooc.sv", src, posOf(src, "@use4", "ooc_hook"),
                         "/ooc.sv", posOf(src, "@basehook", "ooc_hook"));
 }
+
+// ---------------------------------------------------------------------------
+// Macros (plan.md §6.29 follow-up)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("Definition: a macro use lands on its `define, in an included header",
+          "[definition][scoped][macro][phase6.29]")
+{
+    RealCompileFixture f;
+    const auto dir = std::filesystem::temp_directory_path() / "svlsp_test_def_macro";
+    std::filesystem::create_directories(dir);
+    const std::string inc = (dir / "defm.svh").string();
+    std::ofstream(inc) << "// header\n  `define DEFM_LOG(ID) $display(ID)\n";
+
+    const std::string top = (dir / "defm_top.sv").string();
+    const std::string text =
+        "`include \"defm.svh\"\n"
+        "`define DEFM_W 8\n"
+        "module defm_m;\n"
+        "  parameter DEFM_W = 2;\n"
+        "  logic [`DEFM_W-1:0] d; // @w\n"
+        "  initial `DEFM_LOG(\"x\"); // @log\n"
+        "`ifdef DEFM_W // @ifdef\n"
+        "`endif\n"
+        "endmodule\n";
+    f.ctrl.compile(top, text);
+
+    requireDefinitionAt(f.sdb, top, text, posOf(text, "@log", "DEFM_LOG"), inc, {1, 10});
+    requireDefinitionAt(f.sdb, top, text, posOf(text, "@w", "DEFM_W"), top, {1, 8});
+    requireDefinitionAt(f.sdb, top, text, posOf(text, "@ifdef", "DEFM_W"), top, {1, 8});
+    // The same-named parameter, used bare, is still the parameter.
+    const std::string use = "  assign d = DEFM_W; // @p\n";
+    const std::string text2 = text.substr(0, text.find("`ifdef")) + use +
+                              text.substr(text.find("`ifdef"));
+    f.ctrl.compile(top, text2);
+    requireDefinitionAt(f.sdb, top, text2, posOf(text2, "@p", "DEFM_W"), top, {3, 12});
+}
+
+TEST_CASE("Definition: a redefined macro lands on the definition in effect",
+          "[definition][scoped][macro][phase6.29]")
+{
+    RealCompileFixture f;
+    const std::string text =
+        "`define DEFR_V 1\n"
+        "module defr_a; int x = `DEFR_V; endmodule // @first\n"
+        "`undef DEFR_V\n"
+        "`define DEFR_V 2\n"
+        "module defr_b; int x = `DEFR_V; endmodule // @second\n";
+    f.ctrl.compile("/defr.sv", text);
+    requireDefinitionAt(f.sdb, "/defr.sv", text, posOf(text, "@first", "DEFR_V"),
+                        "/defr.sv", {0, 8});
+    requireDefinitionAt(f.sdb, "/defr.sv", text, posOf(text, "@second", "DEFR_V"),
+                        "/defr.sv", {3, 8});
+}
+
+TEST_CASE("Definition: an unknown macro is null", "[definition][scoped][macro][phase6.29]")
+{
+    RealCompileFixture f;
+    const std::string text = "module defu_m; endmodule\nint defu_m2 = `defu_m;\n";
+    f.ctrl.compile("/defu.sv", text);
+    auto result = DefinitionProvider::getDefinition(makeParams("/defu.sv", {1, 15}), f.sdb, text);
+    CHECK(result.isNull());
+}

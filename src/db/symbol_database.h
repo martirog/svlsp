@@ -49,6 +49,7 @@ struct MacroRow {
     std::vector<std::string> params;
     std::vector<std::optional<std::string>> defaults; // parallel to params
     std::string filePath;
+    std::string body; // empty from a library DB built before schema v10
 };
 
 // Typed access layer over the svlsp SQLite schema.
@@ -152,13 +153,14 @@ public:
     void replaceImports(int64_t fileId, const std::vector<ImportRecord>& imports);
 
     // Replaces every macro recorded for `fileId` (plan.md §6.29 part A).
-    // Only each record's name/line/column/parameters are stored; `file` is
+    // Each record's name/line/column/parameters/body are stored; `file` is
     // ignored (the caller has already partitioned by file).
     void replaceMacros(int64_t fileId, const std::vector<MacroRecord>& macros);
 
     // Every recorded `define of `name`, in this DB and every attached
     // library DB, ordered by (file path, line). An attached DB built before
-    // the macros table existed (schema < 9) is skipped.
+    // the macros table existed (schema < 9) is skipped; one built before
+    // macros.body (schema 9) reads with an empty body.
     std::vector<MacroRow> findMacros(const std::string& name) const;
 
     // Delete all instantiations for `fileId` then insert `insts`.

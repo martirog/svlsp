@@ -15,9 +15,8 @@
 // declaration elsewhere must not contribute its uses (fixed by §6.30 step
 // B), and names that used to have no symbol row at all -- typedef, enum
 // literal, struct member, genvar (recorded since §6.30 step C) and macro
-// -- still have references. Macros are still unrecorded (§6.25): that case
-// is tagged [!shouldfail] so the suite stays green while the gap stays
-// visible -- remove the tag once it passes.
+// (the macros table, §6.29 part A and its follow-up) -- still have
+// references.
 //
 // Fixture convention: the expected result is every whole-word occurrence of
 // the searched name on lines tagged `// @ref`; any other occurrence is a
@@ -653,7 +652,7 @@ TEST_CASE("References: genvar", "[references][scoped][unrecorded]")
     requireExactRefs(f, "/m.sv", "refs_g");
 }
 
-TEST_CASE("References: `define macro name", "[references][scoped][unrecorded][!shouldfail]")
+TEST_CASE("References: `define macro name", "[references][scoped][unrecorded]")
 {
     RealCompileFixture f;
     f.add("/m.sv",
@@ -663,4 +662,46 @@ TEST_CASE("References: `define macro name", "[references][scoped][unrecorded][!s
           "endmodule\n");
 
     requireExactRefs(f, "/m.sv", "REFS_WIDTH");
+}
+
+TEST_CASE("References: a macro from an included header -- uses, nested uses and directive "
+          "operands, not a same-named localparam",
+          "[references][scoped][macro][phase6.29]")
+{
+    RealCompileFixture f;
+    const std::string hdr = "`define REFS_MAC(X) (X) + 1 // @ref @cursor\n";
+    const std::string hpath = writeTemp("refs_mac.svh", hdr);
+    f.files[hpath] = hdr;
+    f.add("/refs_mac_top.sv",
+          "`include \"" + hpath + "\"\n"
+          "module refs_mac_m;\n"
+          "  localparam int REFS_MAC = 3;\n"
+          "  int a = `REFS_MAC(2); // @ref\n"
+          "  int b = REFS_MAC;\n"
+          "`ifdef REFS_MAC // @ref\n"
+          "  int c = `REFS_MAC(`REFS_MAC(1)); // @ref\n"
+          "`endif\n"
+          "endmodule\n"
+          "`undef REFS_MAC // @ref\n");
+
+    requireExactRefs(f, hpath, "REFS_MAC");
+
+    // Without the declaration: the `define is dropped, the uses stay.
+    auto noDecl = findRefs(f, hpath, "REFS_MAC", false);
+    CHECK(noDecl.size() == expectedAcross(f, "REFS_MAC").size() - 1);
+    CHECK(noDecl.count({hpath, 0u, 8u}) == 0);
+}
+
+TEST_CASE("References: a localparam's references leave a same-named macro's uses out",
+          "[references][scoped][macro][phase6.29]")
+{
+    RealCompileFixture f;
+    f.add("/refs_lp.sv",
+          "`define REFS_LP 5\n"
+          "module refs_lp_m;\n"
+          "  localparam int REFS_LP = 3; // @ref @cursor\n"
+          "  int a = `REFS_LP;\n"
+          "  int b = REFS_LP + 1; // @ref\n"
+          "endmodule\n");
+    requireExactRefs(f, "/refs_lp.sv", "REFS_LP");
 }
