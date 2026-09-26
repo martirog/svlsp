@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-09-26 (§6.29 part C done; parts B and A next).
+**Last updated:** 2026-09-26 (§6.29 parts C and B done; part A next).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -11,15 +11,15 @@ write-up) — read the relevant section there rather than looking for it here.
 
 ## Current state
 
-**PICK UP HERE NEXT TIME — plan.md §6.29 part B (keyword constructs),
-then part A (macros).** Part C (system tasks/functions) is done. §6.30 is
+**PICK UP HERE NEXT TIME — plan.md §6.29 part A (macros).** Parts C
+(system tasks/functions) and B (keyword constructs) are done. §6.30 is
 complete (steps 1, A–D).
 
-- Committed on `main`: everything through §6.30; §6.29 plan and part C.
+- Committed on `main`: everything through §6.30; §6.29 plan and parts C and B.
 - Test baselines:
-  - unit: **799 cases** — 798 pass + 1 `[!shouldfail]` known gap
+  - unit: **805 cases** — 804 pass + 1 `[!shouldfail]` known gap
     (references on a `` `define `` macro name, waits for §6.25)
-  - Emacs functional: **238/238**
+  - Emacs functional: **239/239**
   - UVM corpus (opt-in, last run at §6.30 step D): **388 assertions / 19 cases**, all passing.
     (Down from 499 at step C: the empty-prefix completion case checks
     each item, and step D's (name, kind) dedup removed 124 duplicate
@@ -56,28 +56,28 @@ complete (steps 1, A–D).
   (`defref_pkg_b`, `defref_top_b`), step-C kinds (`defref_kinds`) and an
   out-of-class body (`defref_ooc_p`); append new cases after them.
 
-## Next up — plan.md §6.29 parts B and A
+## Next up — plan.md §6.29 part A (macros)
 
-Signature help for call shapes that still return null. See §6.29 for the
-full design; part C (system tasks, `src/lsp/sv_system_tasks.h`) is done.
+Signature help for macro calls (`` `uvm_info(ID, MSG, VERB) ``) still
+returns null. See §6.29 for the full design; parts C (system tasks,
+`src/lsp/sv_system_tasks.h`) and B (keywords,
+`src/lsp/sv_keyword_signatures.h`) are done.
 
-- **B. Keyword constructs** (`for`/`foreach`/`case*`/`assert`/
-  `randomize … with`, …) — static table; `for` needs `;` as separator. Which
-  keywords are worth it is an open question. Keywords go *before* the
-  instantiation/bare-call lookup (a keyword is never a function name).
-- **A. Macros** (`` `uvm_info(ID, MSG, VERB) ``) — depends on §6.25's
-  investigation: retain `MacroRecord`'s parameter list, persist
-  `ParseRecordKind::Macro` rows, detect `` `name( `` in the unexpanded buffer.
-  Note `` ` `` is not an ident char in `signature_help.cpp`, so today a macro
-  call is read as a bare name and could falsely match a same-named function.
-- Shared: lookup order macro → keyword → instantiation → bare call (DB, then
-  `$` table) → dotted call; keep `signature_help.h`'s header comment
-  current; consider advertising `triggerCharacters = {"(", ","}` in
-  `server_state.cpp` once all land.
+- Depends on §6.25's investigation: retain `MacroRecord`'s parameter list,
+  persist `ParseRecordKind::Macro` rows, detect `` `name( `` in the
+  unexpanded buffer. Note `` ` `` is not an ident char in
+  `signature_help.cpp`, so today a macro call is read as a bare name and
+  could falsely match a same-named function. (The keyword table already
+  rejects a backtick-prefixed keyword.)
+- Lookup order once it lands: macro → keyword → instantiation → bare call
+  (DB, then `$` table) → dotted call; keep `signature_help.h`'s header
+  comment current; consider advertising `triggerCharacters = {"(", ","}`
+  in `server_state.cpp`.
 - Emacs fixtures: `ref_rename_sighelp.sv` is slow to compile in the ASan
   build (~9 s) and near test_12's first-request timeout — put new
   signature-help cases in their own small fixture (as
-  `fixtures/sighelp_systask.sv` does), not appended there.
+  `fixtures/sighelp_systask.sv`/`sighelp_keywords.sv` do), not appended
+  there.
 
 ## Other open work (priority roughly top-down)
 

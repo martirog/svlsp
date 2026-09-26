@@ -4041,8 +4041,8 @@ asked.
 
 ### 6.29 Signature Help for Macros, SystemVerilog Keyword Constructs, and System Tasks/Functions
 
-**Status:** part C (system tasks/functions) implemented 2026-09-26; parts
-B (keywords) and A (macros) not started.
+**Status:** parts C (system tasks/functions) and B (keyword constructs)
+implemented 2026-09-26; part A (macros) not started.
 
 **Motivation:** signature help today (§6.22, its follow-up, §6.26, §6.27,
 §6.28) covers exactly the call shapes that resolve to user-declared `Port`
@@ -4220,6 +4220,50 @@ got its own file.
 Unit suite: 799 cases, 798 pass + 1 known gap (macro). Emacs suite:
 238/238. UVM corpus not re-run: the fallback only runs for a `$name(` call
 that would otherwise return null, and no corpus case makes one.
+
+**Implemented 2026-09-26 (part B).** Keyword set settled with the user:
+`for`, `foreach`, `case`/`casez`/`casex`, the assertion forms and
+`randomize`; `if`/`while`/`repeat`/`wait (` stay null (one obvious
+expression each -- a popup would be noise).
+- `src/lsp/sv_keyword_signatures.h`: `KEYWORD_SIGNATURES`, `{keyword,
+  prefix, params, separator, doc}`. `keyword` is the identifier directly
+  before `(`; `prefix`, when set, must be the identifier before it, which
+  covers `assert`/`assume`/`cover`/`restrict property (`,
+  `cover sequence (`, `assert`/`assume`/`cover final (` and
+  `disable iff (`. Plain `assert`/`assume`/`cover`/`expect (` are
+  immediate forms. The `#0` deferred form isn't handled (`#0` isn't an
+  identifier). Same LRM-not-verified disclosure as the other tables.
+- `signature_help.cpp`: `findKeywordHeader` runs first, before the
+  instantiation and call lookups (a keyword is never a user name); an entry
+  whose prefix matches wins over an unprefixed one, and a prefixed-only
+  keyword without its prefix (`clk iff (`, `x property (`) falls through
+  to the normal lookups and stays null. A backtick before the keyword
+  (`` `assert( ``, a macro) is not a match. `keywordHelp` renders
+  `for (initialization; condition; step)` with the active parameter
+  counted by top-level `;` (so commas in multiple initializers and `;`
+  inside nested parens don't count), `foreach (array[index, ...])` with the
+  index list active once a top-level `[` is typed, `<prefix> <keyword>
+  (operand)` for the rest, and `randomize([variable, ...])`.
+- `randomize` is in the keyword table rather than resolved as a method: it
+  is built in and can't be user-declared, so bare `randomize(`,
+  `std::randomize(` and dotted `obj.randomize(` all match it (the dotted
+  form used to fail in `resolveMethod`). `randomize() with (list)` isn't
+  handled.
+
+Tests (`[phase6.29]`): `for` (initial, after two `;`, commas and a nested
+call's `;` not counted, 3 parameters, documentation), `foreach` (array
+part, index list, a bracket inside a nested call), `case`/`casez`/`casex`
+after `unique`/`priority`, every assertion form, `randomize` in all three
+call shapes, a null set (`if`/`while`/`repeat`/`wait`, `with (`, `iff`
+and `property`/`final` without their prefix, `my_for (`, a macro named
+like a keyword), and a `$clog2(`
+nested in a `for` header getting its own help. The four positive cases
+fail without the keyword path. `test_12`: a `for (` round trip on a new
+fixture, `fixtures/sighelp_keywords.sv`.
+
+Unit suite: 805 cases, 804 pass + 1 known gap (macro). Emacs suite:
+239/239. UVM corpus not re-run: no corpus signature-help case sits in a
+keyword header or a `randomize(` call.
 
 ---
 
