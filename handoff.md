@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-09-25 (§6.30 step C done).
+**Last updated:** 2026-09-26 (§6.30 complete; §6.29 next).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -11,23 +11,23 @@ write-up) — read the relevant section there rather than looking for it here.
 
 ## Current state
 
-**PICK UP HERE NEXT TIME — plan.md §6.30 step D** (out-of-class method
-bodies `function void C::m(); … endfunction` scoped under their class, so
-C's members are visible inside; see §6.30 "D." and open-work item 2).
-Steps 1, A, B and C are done; each has an "Implemented …" write-up in
-plan.md §6.30.
+**PICK UP HERE NEXT TIME — start plan.md §6.29** (signature help for
+macros, keyword constructs and system tasks; see "Next up" below). §6.30
+is complete (steps 1, A–D).
 
-- Committed on `main`: everything through §6.28; §6.29 plan; §6.30 plan,
-  step 1, step A (`0e3c43c`, docs `f2da749`), step B (`1aa04f7`, docs
-  `d9d13cb`) and step C (see `git log`).
-- Test baselines (with step C):
-  - unit: **784 cases** — 783 pass + 1 `[!shouldfail]` known gap
+- Committed on `main`: everything through §6.30 (step D: code + tests
+  and docs commits on 2026-09-26); §6.29 plan.
+- Test baselines:
+  - unit: **793 cases** — 792 pass + 1 `[!shouldfail]` known gap
     (references on a `` `define `` macro name, waits for §6.25)
-  - Emacs functional: **235/235**
-  - UVM corpus (opt-in): **499 assertions / 18 cases** (references on
-    `get_name` = 304 locations in ~320 ms release)
-  - UVM corpus `--build-db`: **1 diagnostic** total (the known
-    `data_type` ambiguity, see "Grammar quirks"); 15327 symbol rows
+  - Emacs functional: **237/237**
+  - UVM corpus (opt-in): **388 assertions / 19 cases**, all passing.
+    (Down from 499 at step C: the empty-prefix completion case checks
+    each item, and step D's (name, kind) dedup removed 124 duplicate
+    items; see plan.md §6.30 step D.)
+  - UVM corpus `--build-db`: **1 diagnostic, 15327 symbol rows**
+    (~17 min, ~7 GB RSS; don't run it at the same time as the corpus
+    tests)
 
 **What §6.30 changed that other work must know about:**
 - Hover/definition/references/rename all go through
@@ -46,9 +46,16 @@ plan.md §6.30.
   union field, scoped `<chain>::<variable-or-typedef>` — never on a lexical
   chain), `Genvar`. Anything that switches on kind strings must consider
   them.
+- Out-of-class method bodies (step D): `function void C::m()` is recorded
+  in the class's scope (`p::C`, next to the extern prototype) and its body
+  scope is `p::C::m`. So a prototype and its body share one Function name
+  and one Port scope: collect a method's parameters with
+  `SymbolDatabase::portsOf(scope)` (first declaration only), never a raw
+  `findSymbolsInScope` + Port filter. `enclosingClassNameAt` and the
+  resolver fall back to the scope chain to find the class of such a body.
 - `fixtures/defref_top.sv` has appended sections of same-named decoys
-  (`defref_pkg_b`, `defref_top_b`) and step-C kinds (`defref_kinds`);
-  append new cases after them.
+  (`defref_pkg_b`, `defref_top_b`), step-C kinds (`defref_kinds`) and an
+  out-of-class body (`defref_ooc_p`); append new cases after them.
 
 ## Next up — plan.md §6.29 (not started)
 
@@ -74,10 +81,23 @@ the full design; summary:
 
 ## Other open work (priority roughly top-down)
 
-0. **§6.30 step D** (the last step): scope out-of-class method bodies
-   under their class (item 2). Small follow-up noted in §6.30 step C: the
-   resolver doesn't follow a Typedef to the class it aliases
-   (`alias_t x; x.get()` resolves `get` by name only).
+0. **§6.30 follow-ups** (none blocking):
+   - constructors are never recorded (no `class_constructor_declaration`
+     handler): `function C::new(...)` has no Function row and its
+     arguments/locals land in the enclosing package's scope, visible
+     package-wide (e.g. `error_str`, `top`, `cs` from
+     `uvm_component::new` in `uvm_pkg`). In-class `new` isn't recorded
+     either;
+   - the resolver doesn't follow a Typedef to the class it aliases
+     (`alias_t x; x.get()` resolves `get` by name only);
+   - bare-name completion never offers inherited class members (dot-
+     completion does), inside in-class and out-of-class bodies alike;
+   - disclosed limits kept from the plan: `begin`/`end` and generate
+     blocks aren't scopes, scope containment is line-granular, struct /
+     interface / hierarchical receivers use the name-only fallback;
+   - a class's own members are found from an out-of-class body in another
+     file, but the visible set's local chain (and so completion) still only
+     covers the cursor's file.
 1. **Completion still uses `wordAtPosition`, which ignores comments/
    strings.** Hover/definition/references/rename are fixed (they use the
    resolver, which blanks comments and strings; unit-tested in
@@ -85,25 +105,22 @@ the full design; summary:
    offers symbols. Original report: hovering `put` in `endfunction // put`
    (`/home/martin/src/policy/policy_mixin.sv:37`) returned an unrelated
    `uvm_cache` method. No functional (Emacs) test for the comment case yet.
-2. **Out-of-class method bodies aren't scoped under their class**
-   (`function void C::m(); … endfunction`) — members of `C` are invisible to
-   `findSymbolsVisibleAt` inside the body. Affects hover/completion/definition/
-   signature help. Disclosed in plan.md §6.27; not fixed or planned yet.
-3. **§6.21** semantic reference-resolution diagnostics (unresolved type/import)
+2. **§6.21** semantic reference-resolution diagnostics (unresolved type/import)
    — not started. Related real bug: a live edit's `replaceDiagnostics` wipes
    diagnostics `LibraryResolver` appended earlier (one undiscriminated
    `diagnostics` table).
-4. **§6.24** audit compiler warnings from `tools/build.sh` — not started.
-5. **§6.12** configurable debounce interval (`debounceMs`) — not started.
-6. **§6.20** external read-only DB access — not started.
-7. **§6.22 follow-up**: UVM-corpus coverage for references/rename.
-8. **§6.19** library-DB staleness detection (source changed since build) —
+3. **§6.24** audit compiler warnings from `tools/build.sh` — not started.
+4. **§6.12** configurable debounce interval (`debounceMs`) — not started.
+5. **§6.20** external read-only DB access — not started.
+6. **§6.22 follow-up**: UVM-corpus coverage for rename (references has
+   it since §6.30 step B, `tests/uvm_corpus/test_references_uvm.cpp`).
+7. **§6.19** library-DB staleness detection (source changed since build) —
    open question, no shape chosen.
-9. **§6.5** performance — open; see "Known gaps" for the concrete costs.
-10. Comma-shorthand parameters (`function f(input int a, b)`) drop `b` — a
-    grammar ambiguity in `tf_port_item`; causes positional misalignment in
-    §6.23's missing-argument check. Not fixed.
-11. Minor: comment at `pathToUri()` explaining that `fromPath()` always
+8. **§6.5** performance — open; see "Known gaps" for the concrete costs.
+9. Comma-shorthand parameters (`function f(input int a, b)`) drop `b` — a
+   grammar ambiguity in `tf_port_item`; causes positional misalignment in
+   §6.23's missing-argument check. Not fixed.
+10. Minor: comment at `pathToUri()` explaining that `fromPath()` always
     absolutizes.
 
 ---

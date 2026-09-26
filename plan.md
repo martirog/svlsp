@@ -4182,8 +4182,10 @@ part C's table format); parameter-override blocks (`Module #(`).
 
 **Status:** step 1 (same-file wildcard import) implemented 2026-09-24;
 step A (shared resolver), step B (hover, definition, references,
-rename wired to it) and step C (typedef / enum literal / struct member /
-genvar recorded) implemented 2026-09-25; step D not started.
+rename wired to it), step C (typedef / enum literal / struct member /
+genvar recorded) and step D (out-of-class method bodies) implemented
+2026-09-25. Step D's UVM-corpus check is still pending (see handoff.md);
+§6.30 is complete once that passes.
 Planned 2026-09-24. The failing cases are already
 committed as `[!shouldfail]` tests (`ad85a28`).
 
@@ -4582,6 +4584,89 @@ already picks the first of duplicates by same-file/earliest line (the
 §6.22 corpus test relies on the prototype winning, so re-check that test).
 This also closes the known §6.27 dotted-call gap
 (`m_children[c].set_domain(...)`).
+
+**Implemented 2026-09-25 (step D).**
+- `sv_tree_walker.cpp`: `pushOutOfClassBody` handles a function/task body
+  with a `class_scope`. The row goes in the class's qualified scope (the
+  written qualifier relative to the current chain: `Outer::Inner` inside
+  package `p` is `p::Outer::Inner`; leading segments that restate the
+  enclosing frames are dropped), with `parent` = the class name. The
+  body's scope frame is `C::m`, so its locals and arguments are scoped
+  `p::C::m`. The exit listeners backpatch `endLine` by the frame's last
+  segment.
+- **Row de-duplication:** the body's Function/Task row is kept, next to
+  the extern prototype, both in `p::C`. Every lookup that picks one takes
+  the earliest (the prototype, which precedes its body): `memberInScope`,
+  `resolveMethod`, and `lookupBare` at a class-level scope. So calls,
+  dotted calls and the body's own `C::m` header all resolve to the
+  prototype row, and references/rename treat them as one symbol.
+  Bare-name completion dedupes candidates by (name, kind).
+- **Parameters:** the prototype's and the body's Port rows now share scope
+  `p::C::m`. New `SymbolDatabase::portsOf(scope)` returns ports in
+  (file, line, column) order and stops at the first repeated name, so only
+  the first declaration's (the prototype's, which carries any defaults)
+  are used. Signature help and §6.23's missing-argument check use it; the
+  resolver's named-argument lookup takes the first same-named port.
+- **Enclosing class:** `SymbolDatabase::enclosingClassNameAt` and the
+  resolver's `enclosingClassRow` fall back to the scope chain when no
+  class's line range contains the position, so `this.`/`super.`, bare
+  inherited members, signature help and the missing-argument check work
+  inside out-of-class bodies.
+- **Resolver `lookupBare`:** in a non-class scope, the nearest declaration
+  at or before the cursor wins over the earliest, so an argument used in
+  the body resolves to the body's own declaration, not the prototype's
+  same-named one. At a class-level scope the class's own members are also
+  looked up in any file, since a body may live in another file than its
+  class.
+
+Tests, each confirmed failing against the pre-step-D compiler (except the
+two noted):
+- `test_sv_listener.cpp`: 2 `[outofclass]` cases -- function body scope,
+  parent, endLine, locals/arguments and the restored stack; task body,
+  a nested `Outer::Inner::` qualifier and a top-level class.
+- `test_definition_scoped.cpp`: inside a body with package-level decoys,
+  a class field, a class method, `this.field`, an inherited field, a
+  `super.` call and the body's own argument.
+- `test_references_scoped.cpp`: a class field's references include the
+  body's use and exclude a same-named package variable.
+- `test_signature_help.cpp`: `m_children[c].set_domain(` inside the body,
+  with the prototype's default and each parameter once.
+- `test_completion.cpp`: a class field is offered inside the body; the
+  extern method is listed once.
+- `test_symbol_database.cpp`: `enclosingClassNameAt` inside a body, and
+  `portsOf` (these use hand-built rows, so they test the DB changes
+  alone).
+- `test_compilation_controller.cpp`: the missing-argument check against an
+  extern prototype's default, flagging each missing parameter once. It
+  also passed before step D, via the flat fallback; kept as a regression
+  guard against doubled ports.
+- `test_40`: `defref_ooc_p` appended to the fixture; definition and
+  references on a class field used inside an out-of-class body with a
+  package-level decoy (both fail on the pre-step-D binary).
+- UVM corpus: the `set_domain` signature-help case, which asserted null
+  as a known gap, now asserts the real signature
+  (`set_domain(uvm_domain domain, int hier = 1)`); new definition case for
+  `m_children` (a `uvm_printer` field shares the name) and a bare
+  `get_child(name)` call, both inside out-of-class bodies.
+
+Unit suite: 793 cases, 792 pass + 1 known gap (macro). Emacs suite:
+237/237. UVM corpus: 388 assertions / 19 cases, all pass (499 / 18
+before). The new definition case adds 8 assertions and the `set_domain`
+case goes from 1 to 6 (+13). The empty-prefix completion case checks
+`sortText` per item, and its list went from 388 to 264 items (-124) because
+of the (name, kind) dedup: exactly the 124 duplicate rows in the visible
+scopes -- 116 prototype/body Function/Task pairs, 6 repeated
+macro-expanded `uvm_pkg` Signals (`__tmp_rsrc__` x4 at one line,
+`_local_report_object_` x4) and the `name`/`parent` Ports explained below.
+`--build-db`: 1 diagnostic, 15327 symbol rows (unchanged: step D moves
+rows' scopes, not their number), 17m23s, 6.96 GB max RSS.
+
+**Found while checking the count (not fixed; pre-existing):** constructors
+are never recorded -- the walker has no `class_constructor_declaration`
+handler, in-class or out-of-class. So `function uvm_component::new(string
+name, uvm_component parent)` has no Function row, and its arguments and
+locals (`error_str`, `top`, `cs`, ...) are recorded in `uvm_pkg` scope,
+where they are visible package-wide.
 
 **Ordering:** wildcard-import same-file fix (with its own test, done) → A → B
 (hover/definition first, then references + rename) → C → D. After each
