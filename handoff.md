@@ -22,12 +22,15 @@ aliases and inherited completion are done (plan.md §6.30, the two
   `input int`; LRM 13.3 inheritance in `enterTf_port_item`), and
   constructors (recorded, resolved by context), typedef aliases followed
   to their class, inherited members in bare-name completion, and
-  signature-help trigger characters (`(`, `,`; retrigger `;`).
+  signature-help trigger characters (`(`, `,`; retrigger `;`), and
+  macros in workspace symbols.
 - Test baselines:
-  - unit: **869 cases**, all passing (no `[!shouldfail]` known gaps left
+  - unit: **873 cases**, all passing (no `[!shouldfail]` known gaps left
     -- the `` `define `` references case passes since the macro follow-up)
-  - Emacs functional: **252/252**
-  - UVM corpus (opt-in): **1106 assertions / 24 cases**, all passing.
+  - Emacs functional: **253/253**
+  - UVM corpus (opt-in): **1122 assertions / 25 cases**, all passing.
+    (+16: the workspace-symbol macro case -- 4 fixed checks plus 2 per
+    result for the 6 `uvm_info*` macros.)
     (1018 → 1106: +8 two definition cases -- typedef qualifier and
     `super.new`; +80 inherited items in the empty-prefix completion list,
     251 → 331, diffed.)
@@ -84,9 +87,8 @@ aliases and inherited completion are done (plan.md §6.30, the two
 
 ## Next up — candidates
 
-- **Macros in workspace symbols** (small; `findMacros` exists, a
-  prefix query over the `macros` table doesn't yet).
-- Or the "Other open work" list below.
+- The "Other open work" list below (item 1, completion inside comments
+  and strings, is the next user-visible bug).
 
 What §6.29 changed that other work must know about:
 - Macros live in their own `macros` table (schema v10: name, file, line,
@@ -377,6 +379,7 @@ Fixed and documented in plan.md / git history: string escapes, `void'(f())`,
   project. No cycle detection for `libraryDbSources` chains.
 - `handleExit` ignores clean vs. abnormal exit; `m_parentProcessId` unused.
 - Macros live in their own `macros` table, not `symbols` (§6.29), so
-  anything that only queries `symbols` (e.g. workspace symbols) misses them.
+  anything that only queries `symbols` misses them (workspace symbols
+  queries both since 2026-09-27).
 - Covergroup methods and `randomize() with {…}` constraint completion
   unsupported.

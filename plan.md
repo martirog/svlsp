@@ -4390,7 +4390,16 @@ their include guard).
   as a bare `WIDTH`).
 - Disclosed: a token-paste operand (`` a``NAME ``) reads as a macro use;
   a macro used inside a stringification (`` `"...`" ``) is inside a string
-  and isn't found; workspace symbols don't list macros.
+  and isn't found; workspace symbols don't list macros. **Workspace
+  symbols done 2026-09-27:** `findMacrosByNamePrefix` (shares
+  `queryMacros` with `findMacros`, attached library DBs included) feeds
+  workspace/symbol; a macro is listed under its plain name, kind Constant,
+  `containerName` `` `define ``. A query starting with a backtick matches
+  macros only. Also fixed: prefix queries passed the prefix to `LIKE`
+  unescaped, so `_` (in almost every SV name) was a one-character wildcard
+  (`a_b` matched `aXb_top`); `likePrefixPattern` escapes `\`, `%`, `_`.
+  Tests: unit (DB prefix + escaping, attached DB, provider), test_10, and
+  a UVM corpus case (`uvm_info` at `uvm_message_defines.svh:155`).
 
 Tests: `test_macro_resolution.cpp` (new: uses, the backtick itself,
 directive operands, directive keywords, parameters and values in a define
