@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-09-26 (§6.29 and its macro-navigation follow-up complete; no section queued).
+**Last updated:** 2026-09-27 (comma-shorthand parameters fixed; §6.30 follow-ups in progress, constructors first).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -11,16 +11,18 @@ write-up) — read the relevant section there rather than looking for it here.
 
 ## Current state
 
-**PICK UP HERE NEXT TIME — no section is queued; pick from "Next up"
-below with the user.** §6.29 (signature help for system tasks, keyword
-constructs and macros) and §6.30 are complete.
+**PICK UP HERE NEXT TIME — §6.30 follow-ups (item 0 of "Other open
+work"), starting with recording constructors.** §6.29, §6.30 and the
+comma-shorthand parameter fix are complete.
 
 - Committed on `main`: everything through §6.30 and §6.29, including
-  macro hover/definition/references/rename.
+  macro hover/definition/references/rename, and the comma-shorthand
+  parameter fix (`function f(input int a, b)` now records `b` as
+  `input int`; LRM 13.3 inheritance in `enterTf_port_item`).
 - Test baselines:
-  - unit: **837 cases**, all passing (no `[!shouldfail]` known gaps left
+  - unit: **848 cases**, all passing (no `[!shouldfail]` known gaps left
     -- the `` `define `` references case passes since the macro follow-up)
-  - Emacs functional: **244/244**
+  - Emacs functional: **245/245**
   - UVM corpus (opt-in): **1031 assertions / 22 cases**, all passing.
     (499 at §6.30 step C → 388 at step D: the empty-prefix completion
     case checks each item and step D's (name, kind) dedup removed 124
@@ -126,10 +128,7 @@ What §6.29 changed that other work must know about:
 7. **§6.19** library-DB staleness detection (source changed since build) —
    open question, no shape chosen.
 8. **§6.5** performance — open; see "Known gaps" for the concrete costs.
-9. Comma-shorthand parameters (`function f(input int a, b)`) drop `b` — a
-   grammar ambiguity in `tf_port_item`; causes positional misalignment in
-   §6.23's missing-argument check. Not fixed.
-10. Minor: comment at `pathToUri()` explaining that `fromPath()` always
+9. Minor: comment at `pathToUri()` explaining that `fromPath()` always
     absolutizes.
 
 ---
@@ -218,7 +217,7 @@ Compiler **g++-13** (pinned in `CMakePresets.json`). Debug has ASan+UBSan
 | LSP framework | lsp-framework v1.3.1 (submodule) |
 | Unit tests | Catch2 v3.8.1 (FetchContent) |
 | Parser | ANTLR4 v4.13.2 (FetchContent) |
-| Database | SQLite3 amalgamation, schema v8 |
+| Database | SQLite3 amalgamation, schema v10 |
 | Preprocessor | in-house C++ (not slang) |
 | Transport | stdio |
 
@@ -268,12 +267,12 @@ Chain-resolution helpers (`resolveChain`, `membersAcrossChain`,
 - `""` as a *scope* means top level — `findSymbolsInScope("")` returns every
   top-level symbol, so guard against an empty resolved type.
 
-### Database (`src/db/`, schema v8)
+### Database (`src/db/`, schema v10)
 
 Tables: `files`, `symbols (kind, name, line, col, parent, detail, end_line,
 scope)`, `diagnostics`, `imports (pkg_name, item, is_export)`,
 `instantiations`, `library_include_dirs`, `library_build_info`,
-`file_includes`. Migrations run automatically in `database.cpp`.
+`file_includes`, `macros`. Migrations run automatically in `database.cpp`.
 
 Key queries: `findSymbolsByName`/`ByNamePrefix`/`InScope` (union across attached
 library DBs), `findSymbolsVisibleAt` (local scope chain + top-level + wildcard/
@@ -366,6 +365,7 @@ Fixed and documented in plan.md / git history: string escapes, `void'(f())`,
 - Symbols from an attached library DB are visible session-wide, not per
   project. No cycle detection for `libraryDbSources` chains.
 - `handleExit` ignores clean vs. abnormal exit; `m_parentProcessId` unused.
-- Macros not recorded as symbols (§6.25/§6.29).
+- Macros live in their own `macros` table, not `symbols` (§6.29), so
+  anything that only queries `symbols` (e.g. workspace symbols) misses them.
 - Covergroup methods and `randomize() with {…}` constraint completion
   unsupported.

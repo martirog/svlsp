@@ -3172,9 +3172,15 @@ the sketch below essentially as designed:
   is mandatory, `port_identifier` is not, so a bare trailing `b` parses as an
   unnamed parameter *of type* `b`, not a second `int` parameter named `b` —
   the same category of grammar ambiguity as the already-documented
-  `data_type`/`variable_decl_assignment` one). Not fixed here — real
-  verification code overwhelmingly spells out each parameter's own
-  direction/type explicitly, so this only bites the terser, rarer style.
+  `data_type`/`variable_decl_assignment` one). **Fixed 2026-09-27** in the
+  walker, not the grammar: `enterTf_port_item` resolves each item against
+  the ones before it (LRM 13.3 — missing direction inherited; missing type
+  `logic` on the first argument or after an explicit direction, else
+  inherited) and reads a bare-identifier "type" with no `port_identifier` as
+  the name — always in a body, in a prototype only after a named argument
+  (`f(int, my_t)` stays an unnamed `my_t`). `b = 2` / `b[4]` already parsed
+  as implicit-typed names and now inherit the type too. UVM has 5 such
+  sites (e.g. `uvm_links.svh` `set(uvm_object lhs, rhs)`).
 - The direction extracted per parameter is only surfaced in the label when
   it's not the default `input` (`output`/`inout`/`ref`/`const ref` are kept,
   since those are genuinely informative; showing `input` on every single
