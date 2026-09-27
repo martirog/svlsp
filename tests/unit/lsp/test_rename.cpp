@@ -243,3 +243,24 @@ TEST_CASE("RenameProvider: renames a macro's define, uses and directive operands
                                                      {"/rm.sv", 3, 11},
                                                      {"/rm.sv", 4, 7}});
 }
+
+TEST_CASE("RenameProvider: a constructor can't be renamed", "[rename][ctor]")
+{
+    RealCompileFixture f;
+    f.add("/t.sv",
+          "class RnCtorA;\n"
+          "  function new(int a); endfunction\n"
+          "endclass\n"
+          "module top;\n"
+          "  RnCtorA x = new(1);\n"
+          "endmodule\n");
+    const auto& text = f.files.at("/t.sv");
+    CHECK_THROWS_AS(
+        RenameProvider::getRename(makeParams("/t.sv", 1, 11, "make"), f.sdb, text,
+                                  textMapLookup(f.files)),
+        lsp::RequestError);
+    CHECK_THROWS_AS(
+        RenameProvider::getRename(makeParams("/t.sv", 4, 14, "make"), f.sdb, text,
+                                  textMapLookup(f.files)),
+        lsp::RequestError);
+}

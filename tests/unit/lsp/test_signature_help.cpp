@@ -940,3 +940,56 @@ TEST_CASE("SignatureHelpProvider: comma-shorthand parameters each get a slot",
     REQUIRE(sig.activeParameter.has_value());
     CHECK(*sig.activeParameter == 1);
 }
+
+TEST_CASE("SignatureHelpProvider: `new(` shows the constructor of the class being constructed",
+          "[signature_help][real-compile][ctor]")
+{
+    RealCompileFixture f;
+    const std::string source =
+        "package sc_p;\n"
+        "  class ScBase;\n"
+        "    function new(int base_n); endfunction\n"
+        "  endclass\n"
+        "  class ScA extends ScBase;\n"
+        "    function new(string a_name, int a_n = 0);\n"
+        "      super.new(a_n);\n"                   // line 6
+        "    endfunction\n"
+        "  endclass\n"
+        "  class ScB;\n"
+        "    function new(bit b_flag); endfunction\n"
+        "    function void mk();\n"
+        "      ScA a = new(\"x\", 1);\n"            // line 12
+        "      a = new(\"y\");\n"                   // line 13
+        "    endfunction\n"
+        "  endclass\n"
+        "endpackage\n"
+        "module sc_top;\n"
+        "  int d[];\n"
+        "  initial d = new[3];\n"                  // line 19
+        "endmodule\n";
+    f.ctrl.compile("/sc.sv", source);
+
+    auto at = [&](unsigned line, const std::string& lineText, const std::string& after) {
+        const unsigned col = static_cast<unsigned>(lineText.find(after) + after.size());
+        return SignatureHelpProvider::getSignatureHelp(makeParams("/sc.sv", line, col), f.sdb,
+                                                       source);
+    };
+
+    // Inside ScB, `new(` for an ScA variable is ScA's constructor, not ScB's.
+    auto decl = at(12, "      ScA a = new(\"x\", 1);", "\"x\", ");
+    REQUIRE_FALSE(decl.isNull());
+    CHECK(decl.value().signatures[0].label == "new(string a_name, int a_n = 0)");
+    REQUIRE(decl.value().signatures[0].activeParameter.has_value());
+    CHECK(*decl.value().signatures[0].activeParameter == 1);
+
+    auto assign = at(13, "      a = new(\"y\");", "new(");
+    REQUIRE_FALSE(assign.isNull());
+    CHECK(assign.value().signatures[0].label == "new(string a_name, int a_n = 0)");
+
+    auto super = at(6, "      super.new(a_n);", "new(");
+    REQUIRE_FALSE(super.isNull());
+    CHECK(super.value().signatures[0].label == "new(int base_n)");
+
+    // `new[` for a dynamic array is not a constructor call.
+    CHECK(at(19, "  initial d = new[3];", "new[").isNull());
+}

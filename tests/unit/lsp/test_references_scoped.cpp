@@ -705,3 +705,28 @@ TEST_CASE("References: a localparam's references leave a same-named macro's uses
           "endmodule\n");
     requireExactRefs(f, "/refs_lp.sv", "REFS_LP");
 }
+
+TEST_CASE("ReferencesProvider: a constructor's references are its own declarations and the "
+          "`new`s that construct its class",
+          "[references][scoped][ctor]")
+{
+    RealCompileFixture f;
+    f.add("/ctor_refs.sv",
+          "class RfCtorBase;\n"
+          "  function new(int n); endfunction\n"
+          "endclass\n"
+          "class RfCtorA extends RfCtorBase;\n"
+          "  extern function new(string s); // @ref\n"
+          "  RfCtorBase other;\n"
+          "  function void mk(); other = new(3); endfunction\n"
+          "endclass\n"
+          "function RfCtorA::new(string s); // @ref @cursor\n"
+          "  super.new(1);\n"
+          "endfunction\n"
+          "module rf_ctor_top;\n"
+          "  RfCtorA a = new(\"x\"); // @ref\n"
+          "  RfCtorBase b = new(2);\n"
+          "  initial a = new(\"y\"); // @ref\n"
+          "endmodule\n");
+    CHECK(findRefs(f, "/ctor_refs.sv", "new") == expectedAcross(f, "new"));
+}

@@ -50,12 +50,17 @@
 # Fixture: fixtures/sighelp_shorthand.sv -- comma-shorthand parameters
 # (`input int shtf_a, shtf_b`): the bare `shtf_b` gets its own slot with
 # the inherited type.
+#
+# Fixture: fixtures/sighelp_ctor.sv -- §6.30 follow-up: `new(` resolves to
+# the constructor of the class being constructed (the declared variable's),
+# not the enclosing class's.
 
 SV_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/ref_rename_sighelp.sv"
 SYSTASK_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/sighelp_systask.sv"
 KEYWORD_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/sighelp_keywords.sv"
 MACRO_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/sighelp_macros.sv"
 SHORTHAND_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/sighelp_shorthand.sv"
+CTOR_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/sighelp_ctor.sv"
 
 section "signature help (textDocument/signatureHelp)"
 
@@ -71,7 +76,8 @@ if [ ! -x "${SVLSP_BIN}" ]; then
         "system function signature from the static table, variadic tail active" \
         "for header signature from the keyword table, semicolon-separated" \
         "macro signature from an included define-only header, default rendered" \
-        "comma-shorthand parameter gets its own slot with the inherited type"
+        "comma-shorthand parameter gets its own slot with the inherited type" \
+        "new( shows the constructed class's constructor, not the enclosing class's"
     do
         skip_test "$name" "svlsp binary not found at ${SVLSP_BIN}"
     done
@@ -323,6 +329,28 @@ else
              (if (and ok sig
                       (string= label \"shtf_add(int shtf_a, int shtf_b, output bit shtf_c)\")
                       (eql (length params) 3)
+                      (eql active 1))
+                 t nil))
+         (error (format \"elisp-error: %s\" (error-message-string err))))" \
+        "t"
+
+    run_test "new( shows the constructed class's constructor, not the enclosing class's" \
+        "(condition-case err
+           (let* ((buf    (svlsp-test/open-file \"${CTOR_FIXTURE}\"))
+                  (ok     (with-current-buffer buf (svlsp-test/wait-for-lsp 15)))
+                  (result (when ok
+                            (with-current-buffer buf
+                              (lsp-request \"textDocument/signatureHelp\"
+                                           (list :textDocument (list :uri (lsp--buffer-uri))
+                                                 :position     (list :line 10 :character 24))))))
+                  (sig     (when result (aref (gethash \"signatures\" result) 0)))
+                  (label   (when sig (gethash \"label\" sig)))
+                  (params  (when sig (gethash \"parameters\" sig)))
+                  (active  (when sig (gethash \"activeParameter\" sig))))
+             (svlsp-test/close-file buf)
+             (if (and ok sig
+                      (string= label \"new(string shct_name, int shct_n = 0)\")
+                      (eql (length params) 2)
                       (eql active 1))
                  t nil))
          (error (format \"elisp-error: %s\" (error-message-string err))))" \

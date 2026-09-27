@@ -59,3 +59,15 @@ package defref_ooc_p;
     defref_cnt = 1;
   endfunction
 endpackage
+// Appended for the §6.30 follow-up: constructors, found by context.
+class defref_CtorA;
+  function new(int n); endfunction
+endclass
+class defref_CtorB;
+  function new(bit f); endfunction
+  defref_CtorA a;
+  function void mk(); a = new(1); endfunction
+endclass
+module defref_ctor_top;
+  defref_CtorA x = new(2);
+endmodule

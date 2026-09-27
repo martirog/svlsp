@@ -2,6 +2,7 @@
 #include "lsp/symbol_utils.h"
 #include "compiler/parse_record.h"
 #include "lsp/macro_resolution.h"
+#include "lsp/symbol_resolution.h"
 #include "lsp/sv_keyword_signatures.h"
 #include "lsp/sv_system_tasks.h"
 #include <algorithm>
@@ -421,13 +422,24 @@ lsp::TextDocument_SignatureHelpResult SignatureHelpProvider::getSignatureHelp(
     std::vector<SymbolRow> typeRows;
     std::optional<SymbolRow> resolvedCallee;
     std::string systemTaskName; // an unqualified `$name(` call
-    if (auto header = parseInstantiationHeader(docText, *parenOffset)) {
+    // `new(` -- a constructor, found by context (the assigned variable's
+    // class, `super.`, `C::`) by the resolver; never by name alone.
+    size_t nameEnd = *parenOffset;
+    while (nameEnd > 0 && std::isspace(static_cast<unsigned char>(docText[nameEnd - 1]))) --nameEnd;
+    if (nameEnd >= 3 && docText.compare(nameEnd - 3, 3, "new") == 0 &&
+        (nameEnd == 3 || !isIdentChar(static_cast<unsigned char>(docText[nameEnd - 4])))) {
+        const lsp::Position pos = positionForOffset(docText, nameEnd - 3);
+        auto ctor = resolveSymbolAt(db, curPath, docText, pos.line, pos.character);
+        if (!ctor || ctor->row.name != "new") return nullptr;
+        calleeName     = "new";
+        resolvedCallee = ctor->row;
+    } else if (auto header = parseInstantiationHeader(docText, *parenOffset)) {
         for (auto& row : db.findSymbolsByName(header->typeName))
             if (row.kind == "Module" || row.kind == "Interface" || row.kind == "Program")
                 typeRows.push_back(row);
         calleeName = header->typeName;
     }
-    if (typeRows.empty()) {
+    if (typeRows.empty() && !resolvedCallee) {
         if (auto callee = parseCallHeader(docText, *parenOffset)) {
             calleeName = callee->name;
             if (callee->scope.empty() && calleeName.front() == '$') systemTaskName = calleeName;

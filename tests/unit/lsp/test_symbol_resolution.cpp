@@ -590,3 +590,105 @@ TEST_CASE("resolveSymbolAt: a cursor inside a comment or string literal resolves
     const Pos decl = posOf(text, "@line", "put");
     CHECK(resolveAt(f, "/t.sv", decl).has_value());
 }
+
+// §6.30 follow-up: constructors. `new` resolves by context only -- the
+// assigned variable's class, `super.`, `C::` or the declaration itself --
+// never by name, which would pick whichever class's constructor came first.
+const std::string kCtors =
+    "package ctor_p;\n"
+    "  class CtorBase;\n"
+    "    function new(int base_arg); endfunction // @base_new\n"
+    "  endclass\n"
+    "  class CtorA extends CtorBase;\n"
+    "    extern function new(string a_arg); // @a_proto\n"
+    "  endclass\n"
+    "  function CtorA::new(string a_arg); // @a_body\n"
+    "    super.new(1); // @super\n"
+    "  endfunction\n"
+    "  class CtorNoCtor extends CtorBase;\n"
+    "    function void f(); super.new(2); endfunction // @super_base\n"
+    "  endclass\n"
+    "  class CtorPlain;\n"
+    "    function void f(); super.new(); endfunction // @super_none\n"
+    "  endclass\n"
+    "  class CtorB;\n"
+    "    function new(int b_arg); endfunction // @b_new\n"
+    "    CtorA fld;\n"
+    "    function void run();\n"
+    "      CtorA x = new(\"x\"); // @decl_init\n"
+    "      x = new(\"y\"); // @assign\n"
+    "      fld = new(\"z\"); // @member\n"
+    "      this.fld = new(\"w\"); // @this_member\n"
+    "    endfunction\n"
+    "  endclass\n"
+    "endpackage\n"
+    "module ctor_top;\n"
+    "  ctor_p::CtorB b = new(3); // @qualified_decl\n"
+    "  int arr[];\n"
+    "  initial begin\n"
+    "    arr = new[4]; // @dyn\n"
+    "  end\n"
+    "endmodule\n";
+
+TEST_CASE("resolveSymbolAt: a constructor's own declaration resolves to its first declaration",
+          "[resolution][ctor]")
+{
+    F f;
+    f.add("/ctor.sv", kCtors);
+    requireResolves(f, "/ctor.sv", "@base_new", "new", "/ctor.sv", "@base_new");
+    requireResolves(f, "/ctor.sv", "@a_proto", "new", "/ctor.sv", "@a_proto");
+    // The out-of-class body resolves to its extern prototype, like a method.
+    requireResolves(f, "/ctor.sv", "@a_body", "new", "/ctor.sv", "@a_proto");
+}
+
+TEST_CASE("resolveSymbolAt: `lhs = new` resolves to the constructor of the assigned "
+          "variable's class, not the enclosing class's",
+          "[resolution][ctor]")
+{
+    F f;
+    f.add("/ctor.sv", kCtors);
+    requireResolves(f, "/ctor.sv", "@decl_init", "new", "/ctor.sv", "@a_proto");
+    requireResolves(f, "/ctor.sv", "@assign", "new", "/ctor.sv", "@a_proto");
+    requireResolves(f, "/ctor.sv", "@member", "new", "/ctor.sv", "@a_proto");
+    requireResolves(f, "/ctor.sv", "@this_member", "new", "/ctor.sv", "@a_proto");
+    requireResolves(f, "/ctor.sv", "@qualified_decl", "new", "/ctor.sv", "@b_new");
+}
+
+TEST_CASE("resolveSymbolAt: super.new resolves to the parent's own constructor only",
+          "[resolution][ctor]")
+{
+    F f;
+    f.add("/ctor.sv", kCtors);
+    // From an out-of-class body and from an in-class method.
+    requireResolves(f, "/ctor.sv", "@super", "new", "/ctor.sv", "@base_new");
+    requireResolves(f, "/ctor.sv", "@super_base", "new", "/ctor.sv", "@base_new");
+    // No parent class: nothing.
+    const std::string& text = f.files.at("/ctor.sv");
+    CHECK_FALSE(resolveAt(f, "/ctor.sv", posOf(text, "@super_none", "new")).has_value());
+}
+
+TEST_CASE("resolveSymbolAt: `new` with no class context resolves to nothing",
+          "[resolution][ctor]")
+{
+    F f;
+    f.add("/ctor.sv", kCtors);
+    const std::string& text = f.files.at("/ctor.sv");
+    CHECK_FALSE(resolveAt(f, "/ctor.sv", posOf(text, "@dyn", "new")).has_value());
+}
+
+TEST_CASE("overrideFamilyId: a constructor is its own family, shared by prototype and body",
+          "[resolution][ctor]")
+{
+    F f;
+    f.add("/ctor.sv", kCtors);
+    const std::string& text = f.files.at("/ctor.sv");
+    auto proto = resolveAt(f, "/ctor.sv", posOf(text, "@a_proto", "new"));
+    auto base  = resolveAt(f, "/ctor.sv", posOf(text, "@base_new", "new"));
+    REQUIRE(proto.has_value());
+    REQUIRE(base.has_value());
+    CHECK(overrideFamilyId(f.sdb, proto->row) == proto->row.id);
+    CHECK(overrideFamilyId(f.sdb, base->row) == base->row.id);
+    // The out-of-class body row joins its prototype's family.
+    for (auto& r : f.sdb.findSymbolsByName("new"))
+        if (r.scope == "ctor_p::CtorA") CHECK(overrideFamilyId(f.sdb, r) == proto->row.id);
+}

@@ -1273,3 +1273,40 @@ TEST_CASE("CompletionProvider: inside an out-of-class body, the class's own fiel
               return std::string(i.label) == "occ_run";
           }) == 1);
 }
+
+TEST_CASE("CompletionProvider: a constructor is never offered as a member, and its arguments "
+          "don't leak into the class",
+          "[completion][ctor]")
+{
+    Fixture f;
+    CompilationController ctrl{f.sdb};
+    const std::string text =
+        "package cc_p;\n"
+        "  class CcA;\n"
+        "    int cc_fld;\n"
+        "    function new(int cc_arg); endfunction\n"
+        "    function void cc_m();\n"
+        "      cc\n"            // line 5
+        "    endfunction\n"
+        "  endclass\n"
+        "endpackage\n"
+        "module cc_top;\n"
+        "  cc_p::CcA h = new(1);\n"
+        "  initial h.\n"     // line 11
+        "endmodule\n";
+    ctrl.compile("/cc.sv", text);
+
+    auto dot = CompletionProvider::getCompletion(makeParams("/cc.sv", 11, 12), f.sdb, text);
+    REQUIRE_FALSE(dot.isNull());
+    const auto& members = dot.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(members, "cc_fld"));
+    CHECK(hasItem(members, "cc_m"));
+    CHECK_FALSE(hasItem(members, "new"));
+    CHECK_FALSE(hasItem(members, "cc_arg"));
+
+    auto bare = CompletionProvider::getCompletion(makeParams("/cc.sv", 5, 8), f.sdb, text);
+    REQUIRE_FALSE(bare.isNull());
+    const auto& items = bare.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "cc_fld"));
+    CHECK_FALSE(hasItem(items, "cc_arg"));
+}

@@ -1843,3 +1843,150 @@ TEST_CASE("out-of-class task bodies, nested-class qualifiers and top-level class
     REQUIRE(lg != nullptr);
     CHECK(lg->scope == "Top::get");
 }
+
+// ---------------------------------------------------------------------------
+// §6.30 follow-up: class constructors. `function new(...)` in a class, its
+// `extern` prototype and an out-of-class `function C::new(...)` body are
+// recorded as Function `new` in the class's scope; the constructor's
+// arguments and locals nest under `<class scope>::new` instead of leaking
+// into the enclosing package.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("an in-class constructor is recorded, with its arguments and locals under it",
+          "[compiler][listener][phase6.30][ctor]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "package p;\n"
+        "  class C;\n"
+        "    function new(string name, int n = 1);\n"
+        "      int t;\n"
+        "      super.new();\n"
+        "    endfunction\n"
+        "    int after_ctor;\n"
+        "  endclass\n"
+        "endpackage\n");
+    REQUIRE(errs.empty());
+    auto* ctor = findRecord(recs, ParseRecordKind::Function, "new");
+    REQUIRE(ctor != nullptr);
+    CHECK(ctor->scope == "p::C");
+    CHECK(ctor->parent == "C");
+    CHECK(ctor->line == 3);
+    CHECK(ctor->column == 13);
+    CHECK(ctor->endLine == 6);
+    auto* name = findRecord(recs, ParseRecordKind::Port, "name");
+    auto* n    = findRecord(recs, ParseRecordKind::Port, "n");
+    auto* t    = findRecord(recs, ParseRecordKind::Signal, "t");
+    REQUIRE(name != nullptr);
+    REQUIRE(n != nullptr);
+    REQUIRE(t != nullptr);
+    CHECK(name->scope == "p::C::new");
+    CHECK(name->detail == "string");
+    CHECK(n->scope == "p::C::new");
+    CHECK(t->scope == "p::C::new");
+    auto* after = findRecord(recs, ParseRecordKind::Signal, "after_ctor");
+    REQUIRE(after != nullptr);
+    CHECK(after->scope == "p::C");
+}
+
+TEST_CASE("an extern constructor prototype and its out-of-class body share the class scope",
+          "[compiler][listener][phase6.30][ctor]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "package p;\n"
+        "  class C;\n"
+        "    extern function new(string name);\n"
+        "    int member;\n"
+        "  endclass\n"
+        "  function C::new(string name);\n"
+        "    string error_str;\n"
+        "  endfunction\n"
+        "  int after_body;\n"
+        "endpackage\n");
+    REQUIRE(errs.empty());
+    std::vector<const ParseRecord*> ctors;
+    for (const auto& r : recs)
+        if (r.kind == ParseRecordKind::Function && r.name == "new") ctors.push_back(&r);
+    REQUIRE(ctors.size() == 2);
+    for (auto* c : ctors) CHECK(c->scope == "p::C");
+    const ParseRecord* body = ctors[0]->line == 6 ? ctors[0] : ctors[1];
+    CHECK(body->line == 6);
+    CHECK(body->column == 14);
+    CHECK(body->endLine == 8);
+    for (const auto& r : recs)
+        if (r.kind == ParseRecordKind::Port && r.name == "name") CHECK(r.scope == "p::C::new");
+    auto* es = findRecord(recs, ParseRecordKind::Signal, "error_str");
+    REQUIRE(es != nullptr);
+    CHECK(es->scope == "p::C::new");
+    auto* member = findRecord(recs, ParseRecordKind::Signal, "member");
+    REQUIRE(member != nullptr);
+    CHECK(member->scope == "p::C");
+    auto* after = findRecord(recs, ParseRecordKind::Signal, "after_body");
+    REQUIRE(after != nullptr);
+    CHECK(after->scope == "p");
+}
+
+TEST_CASE("a constructor with no argument list is recorded",
+          "[compiler][listener][phase6.30][ctor]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "class C;\n"
+        "  function new;\n"
+        "  endfunction\n"
+        "endclass\n");
+    REQUIRE(errs.empty());
+    auto* ctor = findRecord(recs, ParseRecordKind::Function, "new");
+    REQUIRE(ctor != nullptr);
+    CHECK(ctor->scope == "C");
+    CHECK(ctor->endLine == 3);
+}
+
+// ---------------------------------------------------------------------------
+// A declaration initialized with a constructor or a dynamic-array `new[]`
+// takes variable_decl_assignment's class_new / dynamic_array_new
+// alternatives (`new(...)` is not an expression), whose identifier sits
+// under class_variable_identifier / dynamic_array_variable_identifier.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a class variable initialized with new is recorded with its type",
+          "[compiler][listener][ctor]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "package p; class A; endclass endpackage\n"
+        "class B;\n"
+        "  function void f();\n"
+        "    p::A x = new(1);\n"
+        "    p::A y = new, z;\n"
+        "  endfunction\n"
+        "endclass\n"
+        "module m;\n"
+        "  p::A w = new;\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    auto* x = findRecord(recs, ParseRecordKind::Signal, "x");
+    auto* y = findRecord(recs, ParseRecordKind::Signal, "y");
+    auto* z = findRecord(recs, ParseRecordKind::Signal, "z");
+    auto* w = findRecord(recs, ParseRecordKind::Signal, "w");
+    REQUIRE(x != nullptr);
+    REQUIRE(y != nullptr);
+    REQUIRE(z != nullptr);
+    REQUIRE(w != nullptr);
+    CHECK(x->detail == "p::A");
+    CHECK(x->scope == "B::f");
+    CHECK(x->line == 4);
+    CHECK(x->column == 9);
+    CHECK(z->detail == "p::A");
+    CHECK(w->scope == "m");
+}
+
+TEST_CASE("a dynamic array initialized with new[] is recorded and tagged",
+          "[compiler][listener][ctor]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "class A; endclass\n"
+        "module m;\n"
+        "  int arr[] = new[4];\n"
+        "  A objs[][$] = new[2];\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    auto* arr  = findRecord(recs, ParseRecordKind::Signal, "arr");
+    auto* objs = findRecord(recs, ParseRecordKind::Signal, "objs");
+    REQUIRE(arr != nullptr);
+    REQUIRE(objs != nullptr);
+    CHECK(arr->detail == "$dynamic_array");
+    CHECK(objs->detail == "$dynamic_array:$queue:A");
+}

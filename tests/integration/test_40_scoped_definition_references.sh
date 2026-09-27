@@ -121,6 +121,7 @@ DEF_TESTS=(
     "definition: a typedef use lands on the typedef"
     "definition: an enum literal use lands on the literal"
     "definition: a field used in an out-of-class body lands on the class's field"
+    "definition: new in another class's method -- the assigned field's class constructor"
 )
 REF_TESTS=(
     "references: signal -- declaration + both named-connection uses"
@@ -133,6 +134,7 @@ REF_TESTS=(
     "references: typedef -- declaration and use"
     "references: enum literal -- declaration and use"
     "references: class field -- includes the out-of-class body's use, not the package var"
+    "references: constructor -- its declaration and the news that construct its class"
 )
 RENAME_TESTS=(
     "rename: edits only the cursor module's signal, not a same-named one"
@@ -169,6 +171,8 @@ else
     # defref_Ooc::defref_run's out-of-class body; the package-level decoy
     # defref_cnt is on line 52, the class field on line 54.
     def_test "${DEF_TESTS[12]}" 58 4  defref_top.sv 54 8
+    # "  function void mk(); a = new(1); endfunction" in defref_CtorB (line 68)
+    def_test "${DEF_TESTS[13]}" 68 26 defref_top.sv 63 11
 
     # "  logic defref_sig;" (line 16)
     refs_test "${REF_TESTS[0]}" 16 8 \
@@ -194,6 +198,9 @@ else
         "defref_top.sv:46:20 defref_top.sv:48:22"
     refs_test "${REF_TESTS[9]}" 54 8 \
         "defref_top.sv:54:8 defref_top.sv:58:4"
+    # "  function new(int n); endfunction" in defref_CtorA (line 63)
+    refs_test "${REF_TESTS[10]}" 63 11 \
+        "defref_top.sv:63:11 defref_top.sv:68:26 defref_top.sv:71:19"
 
     rename_test "${RENAME_TESTS[0]}" 36 8 defref_sig_b \
         "defref_top.sv:36:8 defref_top.sv:40:19"

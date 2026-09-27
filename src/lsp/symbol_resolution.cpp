@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <set>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -154,6 +155,8 @@ private:
     std::optional<SymbolRow> enclosingClassRow(int line1) const;
     std::optional<SymbolRow> resolveReceiver(const std::vector<ChainSegment>& segs,
                                              int line1) const;
+    std::optional<SymbolRow> constructorIn(const std::string& classScope) const;
+    std::optional<ResolvedSymbol> resolveNew(size_t start, size_t before, int line1) const;
     struct Owner { SymbolRow row; bool paramList; };
     std::optional<Owner> connectionOwner(size_t paren, int depth);
 };
@@ -210,6 +213,12 @@ std::vector<SymbolRow> Resolver::classChainRows(const SymbolRow& cls) const
 int64_t Resolver::overrideFamilyId(const SymbolRow& row) const
 {
     if (!isCallable(row)) return row.id;
+    // Constructors are never inherited or overridden: each class's own `new`
+    // (its extern prototype and out-of-class body alike) is one symbol.
+    if (row.name == "new") {
+        auto own = constructorIn(row.scope);
+        return own ? own->id : row.id;
+    }
     auto cls = classRowForScope(row.scope);
     if (!cls) return row.id;
     int64_t root = row.id;
@@ -453,6 +462,83 @@ std::optional<SymbolRow> Resolver::resolveReceiver(const std::vector<ChainSegmen
     return cls;
 }
 
+// The constructor `classScope` itself declares -- the earliest `new` row, so
+// an extern prototype wins over its out-of-class body. Never an ancestor's:
+// constructors are not inherited.
+std::optional<SymbolRow> Resolver::constructorIn(const std::string& classScope) const
+{
+    std::vector<SymbolRow> rows;
+    for (auto& r : m_db.findSymbolsInScope(classScope))
+        if (r.name == "new" && isCallable(r)) rows.push_back(r);
+    std::vector<const SymbolRow*> ptrs;
+    for (auto& r : rows) ptrs.push_back(&r);
+    if (ptrs.empty()) return std::nullopt;
+    return *earliest(ptrs);
+}
+
+// `new` at [start, start+3), `before` its start with whitespace skipped. It
+// names a constructor only by context -- never by name alone, which would
+// pick an arbitrary class's:
+//   - a constructor's own declaration (`function new`, `function C::new`);
+//   - `super.new` (the parent class's), `C::new` / `p::C::new`;
+//   - `lhs = new` / `T v = new` (the class of `lhs`, resolved as a value
+//     chain; a declaration's own variable row gives its type).
+// Anything else (`new[n]`, a copy `new obj`, `return new`, an argument) is
+// nullopt.
+std::optional<ResolvedSymbol> Resolver::resolveNew(size_t start, size_t before, int line1) const
+{
+    const auto pos = positionForOffset(m_text, start);
+    for (auto& r : m_db.findSymbolsByName("new"))
+        if (isCallable(r) && r.filePath == m_path && r.line == line1 &&
+            r.col == static_cast<int>(pos.character))
+            if (auto own = constructorIn(r.scope)) return ResolvedSymbol{*own, true};
+
+    auto ctorOf = [&](const std::optional<SymbolRow>& cls) -> std::optional<ResolvedSymbol> {
+        if (!cls) return std::nullopt;
+        if (auto own = constructorIn(qualifiedScopeOf(*cls))) return ResolvedSymbol{*own, true};
+        return std::nullopt;
+    };
+
+    if (scopeOpBefore(m_text, before)) {
+        std::vector<std::string> segs;
+        size_t i = before - 2;
+        while (true) {
+            skipWsBack(m_text, i);
+            size_t segStart = identStartBefore(m_text, i);
+            if (segStart == i) return std::nullopt;
+            segs.push_back(m_text.substr(segStart, i - segStart));
+            i = segStart;
+            size_t k = i;
+            skipWsBack(m_text, k);
+            if (!scopeOpBefore(m_text, k)) break;
+            i = k - 2;
+        }
+        std::reverse(segs.begin(), segs.end());
+        auto scope = resolveQualifierScope(segs, m_path, line1);
+        return scope ? ctorOf(classRowForScope(*scope)) : std::nullopt;
+    }
+
+    if (before > 0 && m_text[before - 1] == '.') {
+        const lsp::Position endPos = positionForOffset(m_text, start + 3);
+        auto dotCtx = dotCompletionContext(m_text, endPos.line, endPos.character);
+        if (!dotCtx || dotCtx->segments.size() != 1 || dotCtx->segments[0].name != "super")
+            return std::nullopt;
+        return ctorOf(resolveReceiver(dotCtx->segments, line1));
+    }
+
+    // `lhs = new`: re-read `lhs` as a receiver chain by appending a '.'.
+    if (before < 2 || m_text[before - 1] != '=' ||
+        std::string_view("=!<>+-*/%&|^").find(m_text[before - 2]) != std::string_view::npos)
+        return std::nullopt;
+    size_t lhsEnd = before - 1;
+    skipWsBack(m_text, lhsEnd);
+    std::string probe = m_text.substr(0, lhsEnd) + ".";
+    const lsp::Position probePos = positionForOffset(probe, probe.size());
+    auto lhs = dotCompletionContext(probe, probePos.line, probePos.character);
+    if (!lhs || lhs->segments.empty()) return std::nullopt;
+    return ctorOf(resolveReceiver(lhs->segments, line1));
+}
+
 // For a named connection inside the parens at `paren`: the module/interface/
 // program being instantiated (port list, or `#(` parameter list), or the
 // function/task being called.
@@ -529,6 +615,8 @@ std::optional<ResolvedSymbol> Resolver::resolveAt(size_t offset, int depth)
 
     size_t before = start;
     skipWsBack(m_text, before);
+
+    if (word == "new") return resolveNew(start, before, line1);
 
     // 1. `A::B::word`
     if (scopeOpBefore(m_text, before)) {

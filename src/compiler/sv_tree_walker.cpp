@@ -147,14 +147,28 @@ static bool isMisparsedAssignment(SvParser::Data_declarationContext* ctx)
     return true;
 }
 
+// The identifier a variable_decl_assignment declares, whichever alternative
+// matched: `v = expr`, `v[] = new[n]` (dynamic_array_new) or `v = new(...)`
+// (class_new -- `new(...)` isn't an expression, so a class handle declared
+// with its constructor always lands here).
+static antlr4::tree::TerminalNode* declaredVariable(SvParser::Variable_decl_assignmentContext* vda)
+{
+    SvParser::Variable_identifierContext* vi = vda->variable_identifier();
+    if (!vi)
+        if (auto* d = vda->dynamic_array_variable_identifier()) vi = d->variable_identifier();
+    if (!vi)
+        if (auto* c = vda->class_variable_identifier()) vi = c->variable_identifier();
+    return vi ? vi->IDENTIFIER() : nullptr;
+}
+
 // Name of the first variable a variable_decl_assignment list declares, or
 // "" -- the owner a struct/union type declared inline in that declaration
 // belongs to (`struct {...} s, t;` scopes its members under `s`).
 static std::string firstVariableName(SvParser::List_of_variable_decl_assignmentsContext* list)
 {
     if (!list || list->variable_decl_assignment().empty()) return "";
-    auto* vi = list->variable_decl_assignment(0)->variable_identifier();
-    return vi && vi->IDENTIFIER() ? vi->IDENTIFIER()->getText() : "";
+    auto* id = declaredVariable(list->variable_decl_assignment(0));
+    return id ? id->getText() : "";
 }
 
 // The `::`-joined owner path of a struct/union data_type (plan.md §6.30
@@ -224,6 +238,7 @@ static std::string builtinBareTypeTag(SvParser::Data_type_or_implicitContext* dt
 static std::vector<std::string> containerDimensionTags(SvParser::Variable_decl_assignmentContext* vda)
 {
     std::vector<std::string> tags;
+    if (vda->unsized_dimension()) tags.push_back(CONTAINER_DYNAMIC_ARRAY); // `v[] = new[n]`
     for (auto* dim : vda->variable_dimension()) {
         if (dim->queue_dimension())            tags.push_back(CONTAINER_QUEUE);
         else if (dim->associative_dimension()) tags.push_back(CONTAINER_ASSOC);
@@ -531,6 +546,46 @@ public:
         popScope();
     }
 
+    // ---- Class constructors (§6.30 follow-up) ----
+    // Recorded as Function `new`, exactly like a method: in-class and
+    // out-of-class (`function C::new`) bodies push a scope frame so the
+    // constructor's arguments and locals nest under `<class>::new`; the
+    // extern prototype pops its frame at once, like enterFunction_prototype.
+
+    static antlr4::tree::TerminalNode* newKeyword(antlr4::ParserRuleContext* ctx) {
+        for (auto* child : ctx->children)
+            if (auto* t = dynamic_cast<antlr4::tree::TerminalNode*>(child); t && t->getText() == "new")
+                return t;
+        return nullptr;
+    }
+
+    void enterClass_constructor_declaration(
+        SvParser::Class_constructor_declarationContext* ctx) override {
+        auto* id = newKeyword(ctx);
+        if (!id) return;
+        if (auto* cs = ctx->class_scope())
+            pushOutOfClassBody(ParseRecordKind::Function, id, cs);
+        else
+            pushId(ParseRecordKind::Function, id, ctx, currentScope());
+    }
+
+    void exitClass_constructor_declaration(
+        SvParser::Class_constructor_declarationContext* ctx) override {
+        if (!newKeyword(ctx)) return;
+        backpatchEndLine(lastScopeSegment(currentScope()), translatedEndLine(ctx->stop));
+        popScope();
+    }
+
+    void enterClass_constructor_prototype(
+        SvParser::Class_constructor_prototypeContext* ctx) override {
+        pushId(ParseRecordKind::Function, newKeyword(ctx), ctx, currentScope());
+    }
+
+    void exitClass_constructor_prototype(
+        SvParser::Class_constructor_prototypeContext* ctx) override {
+        if (newKeyword(ctx)) popScope();
+    }
+
     // ---- Function/task prototypes -- no body (plan.md §6.16) ----
     // Covers pure virtual, extern, and interface-class methods (all reach
     // function_prototype/task_prototype via method_prototype), plus DPI
@@ -692,9 +747,7 @@ public:
         // is ever non-empty).
         const std::string elementTag = !bareTag.empty() ? bareTag : typeName;
         for (auto* vda : list->variable_decl_assignment()) {
-            auto* vi = vda->variable_identifier();
-            if (!vi) continue;
-            auto* id = vi->IDENTIFIER();
+            auto* id = declaredVariable(vda);
             if (!id) continue;
             // Layered detail (plan.md §6.15): every container-dimension tag
             // on this declarator, outermost first, followed by the element
@@ -783,9 +836,8 @@ public:
         auto* list = ctx->list_of_variable_decl_assignments();
         if (!list) return;
         for (auto* vda : list->variable_decl_assignment())
-            if (auto* vi = vda->variable_identifier())
-                pushIdInScope(ParseRecordKind::Member, vi->IDENTIFIER(), scope, currentScope(),
-                              typeName);
+            if (auto* id = declaredVariable(vda))
+                pushIdInScope(ParseRecordKind::Member, id, scope, currentScope(), typeName);
     }
 
     void enterGenvar_declaration(SvParser::Genvar_declarationContext* ctx) override {

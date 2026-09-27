@@ -36,6 +36,10 @@ lsp::TextDocument_RenameResult RenameProvider::getRename(
         db, std::string{params.textDocument.uri.path()}, params.position.line,
         params.position.character, docText, textForPath, &word);
     if (!occurrences) return nullptr; // not a known symbol
+    if (word == "new") {
+        throw lsp::RequestError(lsp::MessageError::InvalidParams,
+            "a class constructor is always named 'new' and can't be renamed");
+    }
 
     lsp::Map<lsp::DocumentUri, lsp::Array<lsp::TextEdit>> changes;
     for (const auto& occ : *occurrences) {
