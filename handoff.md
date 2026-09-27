@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-09-27 (comma-shorthand parameters and §6.30 constructor follow-up done).
+**Last updated:** 2026-09-27 (comma-shorthand parameters; §6.30 follow-ups: constructors, typedef aliases, inherited completion).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -11,21 +11,25 @@ write-up) — read the relevant section there rather than looking for it here.
 
 ## Current state
 
-**PICK UP HERE NEXT TIME — the remaining §6.30 follow-ups (item 0 of
-"Other open work"): Typedef-to-class resolution, then inherited members
-in bare-name completion.** Constructors are done (plan.md §6.30
-"Follow-up: constructors").
+**PICK UP HERE NEXT TIME — no section is queued; pick from "Next up"
+below with the user.** The §6.30 follow-ups for constructors, typedef
+aliases and inherited completion are done (plan.md §6.30, the two
+"Follow-up" entries); what remains of item 0 is disclosed limits.
 
 - Committed on `main`: everything through §6.30 and §6.29, including
   macro hover/definition/references/rename, and the comma-shorthand
   parameter fix (`function f(input int a, b)` now records `b` as
   `input int`; LRM 13.3 inheritance in `enterTf_port_item`), and
-  constructors (recorded, resolved by context).
+  constructors (recorded, resolved by context), typedef aliases followed
+  to their class, and inherited members in bare-name completion.
 - Test baselines:
-  - unit: **862 cases**, all passing (no `[!shouldfail]` known gaps left
+  - unit: **868 cases**, all passing (no `[!shouldfail]` known gaps left
     -- the `` `define `` references case passes since the macro follow-up)
-  - Emacs functional: **248/248**
-  - UVM corpus (opt-in): **1018 assertions / 22 cases**, all passing.
+  - Emacs functional: **251/251**
+  - UVM corpus (opt-in): **1106 assertions / 24 cases**, all passing.
+    (1018 → 1106: +8 two definition cases -- typedef qualifier and
+    `super.new`; +80 inherited items in the empty-prefix completion list,
+    251 → 331, diffed.)
     (1031 → 1018 with constructors: the empty-prefix completion list lost
     13 leaked constructor arguments/locals, 264 → 251 items, diffed.)
     (499 at §6.30 step C → 388 at step D: the empty-prefix completion
@@ -108,10 +112,10 @@ What §6.29 changed that other work must know about:
 ## Other open work (priority roughly top-down)
 
 0. **§6.30 follow-ups** (none blocking):
-   - the resolver doesn't follow a Typedef to the class it aliases
-     (`alias_t x; x.get()` resolves `get` by name only);
-   - bare-name completion never offers inherited class members (dot-
-     completion does), inside in-class and out-of-class bodies alike;
+   - completion offers an ancestor's `local` members (qualifiers aren't
+     recorded);
+   - no constructor resolution for `return new(...)` or `new` passed as an
+     argument; `super.` completion doesn't offer `new`;
    - disclosed limits kept from the plan: `begin`/`end` and generate
      blocks aren't scopes, scope containment is line-granular, struct /
      interface / hierarchical receivers use the name-only fallback;

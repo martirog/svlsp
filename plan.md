@@ -4964,6 +4964,43 @@ where they are visible package-wide.
   return type) and `new` passed as an argument get no constructor
   resolution. `super.` dot-completion doesn't offer `new`.
 
+**Follow-up: typedef aliases and inherited completion (2026-09-27).**
+Fixed.
+- *Typedefs.* A Typedef that aliases a class is followed to the class in
+  both chain resolvers:
+  - `Resolver::resolveTypeName` (hover / definition / references /
+    rename): after no Class matches, a Typedef found by the same lookup is
+    resolved from its aliased type, in the typedef's own context. That
+    covers receivers (`alias_t x; x.get()`) and `::` qualifiers
+    (`uvm_config_int::set`). Chains of typedefs work; the existing depth
+    guard stops loops.
+  - `SymbolDatabase::baseClassChain` (completion, dotted / `::` signature
+    help): a Typedef row continues the walk with its aliased type; the
+    visited guard covers loops.
+
+  `dataTypeName` already drops `#(...)`, so `typedef C#(int) c_t;` aliases
+  `C`. Typedefs of structs, enums or built-ins have an empty detail and
+  stop the walk.
+- *Inherited members in bare-name completion.* Inside a class or an
+  out-of-class body, completion appends the members of every `extends`
+  ancestor (`enclosingClassNameAt` → `baseClassChain`) after the visible
+  set. The (name, kind) dedup keeps the class's own member when it
+  overrides one. Not filtered: an ancestor's `local` members (qualifiers
+  aren't recorded).
+- *Verification.*
+  - Unit: 868 cases, all passing.
+  - Emacs: 251/251 (typedef dot-completion in test_27, definition through
+    a typedef receiver in test_40, inherited completion in test_16).
+  - UVM corpus: 1106 assertions / 24 cases, all passing (1018 / 22
+    before). +8 from two new definition cases: `uvm_config_int::set` (a
+    typedef of `uvm_config_db#(uvm_bitstream_t)`) lands on
+    `uvm_config_db::set`, and `super.new(name)` in `uvm_component::new`
+    lands on `uvm_report_object`'s constructor. +80 from the empty-prefix
+    completion case at `uvm_component`'s header: its list went 251 → 331,
+    diffed; all 80 added items are `uvm_report_object` / `uvm_object`
+    members (`get_name`, `print`, `uvm_report_info`, ...), none removed.
+    Some are `local` in their class (`m_inst_count`), the limit above.
+
 **Ordering:** wildcard-import same-file fix (with its own test, done) → A → B
 (hover/definition first, then references + rename) → C → D. After each
 step, remove the `[!shouldfail]` tag from every test that now passes:
