@@ -194,6 +194,11 @@ lsp::TextDocument_CompletionResult CompletionProvider::getCompletion(
     // LSP position is 0-based; scopeAtPosition uses 1-based lines.
     const int line1 = static_cast<int>(params.position.line) + 1;
 
+    // Typing inside a comment or a string literal is prose, not code.
+    if (auto offset = offsetForPosition(docText, params.position.line, params.position.character);
+        offset && insideCommentOrString(docText, *offset))
+        return nullptr;
+
     if (auto dot = dotCompletionContext(docText, params.position.line, params.position.character)) {
         auto resolved = resolveChain(db, path, line1, dot->segments);
         if (!resolved) return nullptr;

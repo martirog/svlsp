@@ -9,10 +9,10 @@
 // instead -- this lets the this./super. probes below distinguish "resolved
 // through Factory's own override" from "resolved through the parent".
 //
-// "// probe: ..." comment lines put the dot-completion trigger text at a
+// "probe: ..." lines (in a never-defined `ifdef) put the dot-completion trigger text at a
 // precise (line, char) position -- same trick dot_completion.sv/
 // builtin_method_completion.sv use (see their own header comments for why
-// the probe text sits inside a comment).
+// the probe text sits in a never-defined `ifdef).
 
 class Greeter;
   function void greet_child(); endfunction
@@ -30,8 +30,10 @@ class Factory extends BaseFactory;
   function Greeter get_child(); endfunction
 
   function void method_in_factory();
-    // probe: this.get_child().gr
-    // probe: super.get_child().gr
+`ifdef SVLSP_TEST_PROBES
+       probe: this.get_child().gr
+       probe: super.get_child().gr
+`endif
   endfunction
 endclass
 
@@ -42,6 +44,8 @@ function int get_num();
 endfunction
 
 module chained_dot_completion_top;
-  // probe: make_factory().get_child().gr
-  // probe: get_num().foo().bar
+`ifdef SVLSP_TEST_PROBES
+     probe: make_factory().get_child().gr
+     probe: get_num().foo().bar
+`endif
 endmodule

@@ -288,6 +288,19 @@ lsp::Position positionForOffset(const std::string& text, size_t offset)
     return lsp::Position{line, static_cast<unsigned>(offset - lineStart)};
 }
 
+std::optional<size_t> offsetForPosition(const std::string& text, unsigned line,
+                                        unsigned character)
+{
+    size_t offset = 0;
+    for (unsigned cur = 0; cur < line; ++cur) {
+        const size_t nl = text.find('\n', offset);
+        if (nl == std::string::npos) return std::nullopt;
+        offset = nl + 1;
+    }
+    offset += character;
+    return offset <= text.size() ? std::optional<size_t>(offset) : std::nullopt;
+}
+
 namespace {
 // Position of the next single ':' layer separator at or after `from`,
 // skipping every "::" (a `pkg::`/`Outer::` qualifier inside one layer's
@@ -482,32 +495,52 @@ std::optional<size_t> findEnclosingParen(const std::string& text, size_t offset)
 // a '.'/'(' inside a string, can't derail it, and a cursor inside a comment
 // or string resolves to nothing (handoff "wordAtPosition resolves symbols
 // inside comments/strings").
-std::string blankCommentsAndStrings(const std::string& text)
+namespace {
+
+// One pass of the comment/string scanner over text[0, limit): blanks what it
+// scans into `out` when given, and returns whether it ended inside a
+// comment or string. A pair (`//`, `/*`, `*/`, an escape) straddling
+// `limit` is scanned whole.
+bool scanCommentsAndStrings(const std::string& text, size_t limit, std::string* out)
 {
-    std::string out = text;
     enum { Code, Line, Block, Str } state = Code;
-    for (size_t i = 0; i < out.size(); ++i) {
+    auto blank = [&](size_t i) { if (out) (*out)[i] = ' '; };
+    for (size_t i = 0; i < limit && i < text.size(); ++i) {
         const char c = text[i];
         const char next = i + 1 < text.size() ? text[i + 1] : '\0';
         switch (state) {
         case Code:
-            if (c == '/' && next == '/') { state = Line;  out[i] = out[i + 1] = ' '; ++i; }
-            else if (c == '/' && next == '*') { state = Block; out[i] = out[i + 1] = ' '; ++i; }
+            if (c == '/' && next == '/') { state = Line;  blank(i); blank(i + 1); ++i; }
+            else if (c == '/' && next == '*') { state = Block; blank(i); blank(i + 1); ++i; }
             else if (c == '"') state = Str;
             break;
         case Line:
-            if (c == '\n') state = Code; else out[i] = ' ';
+            if (c == '\n') state = Code; else blank(i);
             break;
         case Block:
-            if (c == '*' && next == '/') { state = Code; out[i] = out[i + 1] = ' '; ++i; }
-            else if (c != '\n') out[i] = ' ';
+            if (c == '*' && next == '/') { state = Code; blank(i); blank(i + 1); ++i; }
+            else if (c != '\n') blank(i);
             break;
         case Str:
-            if (c == '\\' && next != '\n' && next != '\0') { out[i] = out[i + 1] = ' '; ++i; }
+            if (c == '\\' && next != '\n' && next != '\0') { blank(i); blank(i + 1); ++i; }
             else if (c == '"' || c == '\n') state = Code;
-            else out[i] = ' ';
+            else blank(i);
             break;
         }
     }
+    return state != Code;
+}
+
+} // namespace
+
+std::string blankCommentsAndStrings(const std::string& text)
+{
+    std::string out = text;
+    scanCommentsAndStrings(text, text.size(), &out);
     return out;
+}
+
+bool insideCommentOrString(const std::string& text, size_t offset)
+{
+    return scanCommentsAndStrings(text, offset, nullptr);
 }

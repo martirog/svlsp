@@ -11,7 +11,7 @@
 // PolicyBase-typed variable only ever offered the synthetic
 // randomize-family methods, never PolicyBase's own real, declared method.
 //
-// "// probe: ..." comment lines put the dot-completion trigger text at a
+// "probe: ..." lines (in a never-defined `ifdef) put the dot-completion trigger text at a
 // precise position via search-forward on literal fixture text, not a
 // hand-counted line/char position -- see test_32_live_edit_completion.sh's
 // own header comment for why.
@@ -28,7 +28,7 @@ module package_scoped_dot_completion_top;
   import policy_base_pkg::*;
 
   PolicyBase policy;
-
-  // probe: policy.get
-
+`ifdef SVLSP_TEST_PROBES
+     probe: policy.get
+`endif
 endmodule

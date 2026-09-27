@@ -24,7 +24,7 @@
 // today. That's a real, separate bug, out of scope for §6.16 -- see
 // handoff.md. Keeping PolicyImpl top-level here avoids conflating the two.
 //
-// "// probe: ..." comment lines put the dot-completion trigger text at a
+// "probe: ..." lines (in a never-defined `ifdef) put the dot-completion trigger text at a
 // precise position via search-forward on literal fixture text, not a
 // hand-counted line/char position -- see test_32_live_edit_completion.sh's
 // own header comment for why.
@@ -43,7 +43,7 @@ endclass
 
 module prototype_methods_top;
   PolicyImpl all_policies[$];
-
-  // probe: all_policies[0].get
-
+`ifdef SVLSP_TEST_PROBES
+     probe: all_policies[0].get
+`endif
 endmodule

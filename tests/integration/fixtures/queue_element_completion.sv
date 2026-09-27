@@ -10,10 +10,10 @@
 // plain int queue -- a regression guard that indexing into a built-in-typed
 // container still yields nothing.
 //
-// "// probe: ..." comment lines put the dot-completion trigger text at a
+// "probe: ..." lines (in a never-defined `ifdef) put the dot-completion trigger text at a
 // precise (line, char) position -- same trick builtin_method_completion.sv/
 // chained_dot_completion.sv use (see their own header comments for why the
-// probe text sits inside a comment).
+// probe text sits in a never-defined `ifdef).
 
 class Widget;
   function void greet(); endfunction
@@ -24,10 +24,11 @@ module queue_element_completion_top;
   Widget aa[string];
   Widget arr[4][$];
   int iq[$];
-
-  // probe: q[0].
-  // probe: aa["k"].
-  // probe: arr[i].
-  // probe: arr[i][j].
-  // probe: iq[0].
+`ifdef SVLSP_TEST_PROBES
+     probe: q[0].
+     probe: aa["k"].
+     probe: arr[i].
+     probe: arr[i][j].
+     probe: iq[0].
+`endif
 endmodule

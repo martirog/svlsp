@@ -105,6 +105,11 @@ std::optional<DotCompletion> dotCompletionContext(
 // degrading gracefully.
 lsp::Position positionForOffset(const std::string& text, size_t offset);
 
+// positionForOffset's forward direction: the byte offset of a 0-based
+// (line, character) position, or std::nullopt past the end of `text`.
+std::optional<size_t> offsetForPosition(const std::string& text, unsigned line,
+                                        unsigned character);
+
 // Peels `depth` container-dimension layers off the front of a layered
 // `detail` string (plan.md §6.15) -- see completion.cpp's original
 // doc comment (unchanged, only relocated here in plan.md §6.27 so
@@ -184,3 +189,8 @@ std::optional<size_t> findEnclosingParen(const std::string& text, size_t offset)
 // `text` with every comment and string-literal body replaced by spaces
 // (newlines and the quotes themselves kept), so offsets are unchanged.
 std::string blankCommentsAndStrings(const std::string& text);
+
+// True when a cursor at `offset` (between text[offset-1] and text[offset])
+// is inside a comment or a string literal -- same scanner as
+// blankCommentsAndStrings.
+bool insideCommentOrString(const std::string& text, size_t offset);

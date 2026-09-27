@@ -6,7 +6,7 @@
 // randomize) -- the unit-test layer already covers every kind (dynamic/
 // fixed-size array, string, event, semaphore) exhaustively.
 //
-// "// probe: ..." comment lines put the dot-completion trigger text at a
+// "probe: ..." lines (in a never-defined `ifdef) put the dot-completion trigger text at a
 // precise (line, char) position purely for dotCompletionContext to read --
 // same trick dot_completion.sv/fuzzy_completion.sv use (see their own
 // header comments for why: bare no-paren text on a real code line risks
@@ -22,10 +22,11 @@ module builtin_method_completion_top;
   mailbox #(int) mbx;
   process p;
   Widget obj;
-
-  // probe: q.
-  // probe: aa.
-  // probe: mbx.
-  // probe: p.
-  // probe: obj.
+`ifdef SVLSP_TEST_PROBES
+     probe: q.
+     probe: aa.
+     probe: mbx.
+     probe: p.
+     probe: obj.
+`endif
 endmodule

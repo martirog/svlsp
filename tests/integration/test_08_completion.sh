@@ -17,6 +17,7 @@
 # visible even on a line before the method's own declaration).
 
 SV_FIXTURE="${SVLSP_ROOT}/examples/module_basic.sv"
+COMMENT_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/completion_in_comment.sv"
 
 section "completion (textDocument/completion)"
 
@@ -24,6 +25,7 @@ if [ ! -x "${SVLSP_BIN}" ]; then
     skip_test "server alive after completion request"          "svlsp binary not found at ${SVLSP_BIN}"
     skip_test "completion returns candidates inside module"    "svlsp binary not found at ${SVLSP_BIN}"
     skip_test "completion at top-level scope includes the module itself"   "svlsp binary not found at ${SVLSP_BIN}"
+    skip_test "completion inside a comment or string offers nothing"   "svlsp binary not found at ${SVLSP_BIN}"
 else
     # --- server survives a completion request -----------------------------
     run_test "server alive after completion request" \
@@ -81,6 +83,26 @@ else
                              (mapcar (lambda (i) (gethash \"label\" i)) items))))
              (svlsp-test/close-file buf)
              (if (and ok (member \"adder\" labels)) t nil))
+         (error (format \"elisp-error: %s\" (error-message-string err))))" \
+        "t"
+
+    run_test "completion inside a comment or string offers nothing" \
+        "(condition-case err
+           (let* ((buf (svlsp-test/open-file \"${COMMENT_FIXTURE}\"))
+                  (ok  (with-current-buffer buf (svlsp-test/wait-for-lsp 15)))
+                  (at  (lambda (line char)
+                         (with-current-buffer buf
+                           (lsp-request \"textDocument/completion\"
+                                        (list :textDocument (list :uri (lsp--buffer-uri))
+                                              :position     (list :line line :character char))))))
+                  (in-comment (when ok (funcall at 7 27)))
+                  (in-string  (when ok (funcall at 8 25)))
+                  (in-code    (when ok (funcall at 7 11)))
+                  (items      (when (hash-table-p in-code) (gethash \"items\" in-code)))
+                  (labels     (mapcar (lambda (i) (gethash \"label\" i)) items)))
+             (svlsp-test/close-file buf)
+             (if (and ok (null in-comment) (null in-string) (member \"cmtc_other\" labels)) t
+               (format \"comment=%S string=%S code=%S\" in-comment in-string labels)))
          (error (format \"elisp-error: %s\" (error-message-string err))))" \
         "t"
 fi

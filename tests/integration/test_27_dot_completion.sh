@@ -10,20 +10,22 @@
 #   class DotWidget { function spin_up(); int speed_val; }
 #   module dot_completion_top; DotWidget w; int plain_int; ... endmodule
 #
-# The three trigger positions live inside "// probe: ..." comments (see the
-# fixture's own header comment for why: bare no-paren text on a real code
+# The three trigger positions live on "probe: ..." lines inside a
+# never-defined `ifdef (see the fixture's own header comment for why: a
+# comment won't do -- completion offers nothing there -- and bare no-paren
+# text on a real code
 # line gets mis-parsed as an implicit-type variable declaration under this
 # grammar's data_type ambiguity, self-matching every probe rather than
 # testing anything -- same trick fuzzy_completion.sv uses).
 #
 # Line-number reference (1-based -> LSP 0-based):
-#   line 25 -> LSP line 24, char 14 -- "  // probe: w."          (after '.')
-#   line 26 -> LSP line 25, char 17 -- "  // probe: w.spi"        (after "spi")
-#   line 27 -> LSP line 26, char 22 -- "  // probe: plain_int."   (after '.')
+#   line 25 -> LSP line 24, char 14 -- "     probe: w."          (after '.')
+#   line 26 -> LSP line 25, char 17 -- "     probe: w.spi"        (after "spi")
+#   line 27 -> LSP line 26, char 22 -- "     probe: plain_int."   (after '.')
 
 SV_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/dot_completion.sv"
 # §6.30 follow-up: a receiver typed by a (chained) class typedef.
-# "  // probe: h." -> LSP line 16, char 14.
+# "     probe: h." -> LSP line 17, char 14.
 TYPEDEF_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/typedef_dot_completion.sv"
 
 # ---------------------------------------------------------------------------
@@ -174,7 +176,7 @@ run_test "h. through a typedef of a typedef offers the aliased class's members" 
                         (with-current-buffer buf
                           (lsp-request \"textDocument/completion\"
                                        (list :textDocument (list :uri (lsp--buffer-uri))
-                                             :position     (list :line 16 :character 14))))))
+                                             :position     (list :line 17 :character 14))))))
               (items  (when (hash-table-p result) (gethash \"items\" result)))
               (labels (when (listp items)
                         (mapcar (lambda (i) (gethash \"label\" i)) items))))

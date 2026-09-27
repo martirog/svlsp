@@ -398,3 +398,25 @@ TEST_CASE("peelDimensionLayers: keeps a qualified element type intact",
     // A qualified name is an element layer, never an indexable dimension.
     CHECK(peelDimensionLayers("pkg_b::Item", 1) == "");
 }
+
+TEST_CASE("insideCommentOrString: the cursor (between offset-1 and offset) in a comment or string",
+          "[symbol_utils][comment]")
+{
+    const std::string t =
+        "int a; // put here\n"       // 0..18
+        "/* blk */ b = \"s t\";\n"
+        "c";
+    auto at = [&](const std::string& marker, size_t delta) { return t.find(marker) + delta; };
+    CHECK_FALSE(insideCommentOrString(t, at("a;", 1)));      // after `a`
+    CHECK(insideCommentOrString(t, at("put", 3)));           // end of `put`
+    CHECK(insideCommentOrString(t, at("here", 4)));          // end of the line comment
+    CHECK(insideCommentOrString(t, at("put", 0)));           // after the space in the comment
+    CHECK_FALSE(insideCommentOrString(t, at("/* blk", 0)));  // line start, before the block
+    CHECK(insideCommentOrString(t, at("blk", 2)));
+    CHECK_FALSE(insideCommentOrString(t, at("*/", 2)));      // just after `*/`
+    CHECK(insideCommentOrString(t, at("\"s", 1)));           // just after the opening quote
+    CHECK(insideCommentOrString(t, at("s t", 2)));
+    CHECK_FALSE(insideCommentOrString(t, at("t\";", 2)));    // just after the closing quote
+    CHECK_FALSE(insideCommentOrString(t, t.size()));         // after `c`
+    CHECK_FALSE(insideCommentOrString(t, 0));
+}

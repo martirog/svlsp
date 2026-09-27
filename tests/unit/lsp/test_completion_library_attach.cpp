@@ -119,27 +119,29 @@ TEST_CASE("CompletionProvider: dot-completion resolves a class from each of two"
 {
     TwoLibraryProject proj;
 
-    // The live edit: declares both libraries' classes and probes each with
-    // a "// probe: ..." comment (this suite's own live-edit-fixture
-    // convention -- see live_edit_completion.sv -- keeps the file valid SV
-    // throughout even mid-edit) -- this text did not exist at the first,
-    // no-usage compile above.
+    // The live edit: declares both libraries' classes and probes each on a
+    // "probe: ..." line inside a never-defined `ifdef (the preprocessor
+    // drops it, so the file stays valid SV; completion reads the raw text,
+    // and a comment would be skipped as prose) -- this text did not exist
+    // at the first, no-usage compile above.
     const std::string text =
         "module top;\n"
         "  NetPacket pkt;\n"
         "  AuthToken tok;\n"
-        "  // probe: pkt.\n"
-        "  // probe: tok.\n"
+        "`ifdef SVLSP_TEST_PROBES\n"
+        "     probe: pkt.\n"
+        "     probe: tok.\n"
+        "`endif\n"
         "endmodule\n";
     proj.liveEdit(text);
 
-    auto pktResult = CompletionProvider::getCompletion(makeParams(proj.topPath, 3, 16), proj.sdb, text);
+    auto pktResult = CompletionProvider::getCompletion(makeParams(proj.topPath, 4, 16), proj.sdb, text);
     REQUIRE_FALSE(pktResult.isNull());
     auto& pktItems = pktResult.get<lsp::Array<lsp::CompletionItem>>();
     CHECK(hasItem(pktItems, "checksum"));    // from libA
     CHECK_FALSE(hasItem(pktItems, "expiresAt")); // not leaked from libB
 
-    auto tokResult = CompletionProvider::getCompletion(makeParams(proj.topPath, 4, 16), proj.sdb, text);
+    auto tokResult = CompletionProvider::getCompletion(makeParams(proj.topPath, 5, 16), proj.sdb, text);
     REQUIRE_FALSE(tokResult.isNull());
     auto& tokItems = tokResult.get<lsp::Array<lsp::CompletionItem>>();
     CHECK(hasItem(tokItems, "expiresAt"));   // from libB
@@ -153,25 +155,28 @@ TEST_CASE("CompletionProvider: a fuzzy top-level prefix reaches class names in"
     TwoLibraryProject proj;
 
     // Same live-edit discipline as above: each prefix is typed into a real
-    // recompile of top.sv (as a "// probe: ..." comment, so the file stays
-    // syntactically valid throughout, matching this suite's own live-edit
-    // fixture convention) rather than queried against the first compile's
-    // no-usage content.
+    // recompile of top.sv (on a "probe: ..." line inside a never-defined
+    // `ifdef, so the file stays syntactically valid throughout) rather than
+    // queried against the first compile's no-usage content.
     const std::string netText =
         "module top;\n"
-        "  // probe: Net\n"
+        "`ifdef SVLSP_TEST_PROBES\n"
+        "     probe: Net\n"
+        "`endif\n"
         "endmodule\n";
     proj.liveEdit(netText);
-    auto netResult = CompletionProvider::getCompletion(makeParams(proj.topPath, 1, 15), proj.sdb, netText);
+    auto netResult = CompletionProvider::getCompletion(makeParams(proj.topPath, 2, 15), proj.sdb, netText);
     REQUIRE_FALSE(netResult.isNull());
     CHECK(hasItem(netResult.get<lsp::Array<lsp::CompletionItem>>(), "NetPacket"));
 
     const std::string authText =
         "module top;\n"
-        "  // probe: Auth\n"
+        "`ifdef SVLSP_TEST_PROBES\n"
+        "     probe: Auth\n"
+        "`endif\n"
         "endmodule\n";
     proj.liveEdit(authText);
-    auto authResult = CompletionProvider::getCompletion(makeParams(proj.topPath, 1, 16), proj.sdb, authText);
+    auto authResult = CompletionProvider::getCompletion(makeParams(proj.topPath, 2, 16), proj.sdb, authText);
     REQUIRE_FALSE(authResult.isNull());
     CHECK(hasItem(authResult.get<lsp::Array<lsp::CompletionItem>>(), "AuthToken"));
 }

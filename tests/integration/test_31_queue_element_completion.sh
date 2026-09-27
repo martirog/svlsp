@@ -7,7 +7,7 @@
 # element throughout; `arr` is a fixed array of queues of Widget so both
 # partial indexing (arr[i], still a queue) and full indexing (arr[i][j],
 # reaches the Widget element) can be distinguished; `iq` is a plain int
-# queue, a fail-closed regression guard. "// probe: ..." comment lines put
+# queue, a fail-closed regression guard. "probe: ..." lines (in a never-defined `ifdef) put
 # the dot-completion trigger text at a precise (line, char) position (see
 # the fixture's own header comment).
 #

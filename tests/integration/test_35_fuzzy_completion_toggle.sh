@@ -39,8 +39,8 @@
 #      passed.
 #
 # Line-number reference (fixture, 1-based -> LSP 0-based), same as test_25:
-#   WIDTH line 27 (0-based), char 19 — exact full-name prefix
-#   wdth  line 28 (0-based), char 18 — typo'd/non-contiguous prefix
+#   WIDTH line 28 (0-based), char 19 — exact full-name prefix
+#   wdth  line 29 (0-based), char 18 — typo'd/non-contiguous prefix
 
 SV_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/fuzzy_completion.sv"
 
@@ -81,7 +81,7 @@ else
                               (with-current-buffer buf2
                                 (lsp-request \"textDocument/completion\"
                                              (list :textDocument (list :uri (lsp--buffer-uri))
-                                                   :position     (list :line 28 :character 18))))))
+                                                   :position     (list :line 29 :character 18))))))
                     (items  (when (hash-table-p result) (gethash \"items\" result)))
                     (labels (when (listp items)
                               (mapcar (lambda (i) (gethash \"label\" i)) items))))
@@ -99,7 +99,7 @@ else
                             (with-current-buffer buf
                               (lsp-request \"textDocument/completion\"
                                            (list :textDocument (list :uri (lsp--buffer-uri))
-                                                 :position     (list :line 27 :character 19))))))
+                                                 :position     (list :line 28 :character 19))))))
                   (items  (when (hash-table-p result) (gethash \"items\" result)))
                   (labels (when (listp items)
                             (mapcar (lambda (i) (gethash \"label\" i)) items))))
@@ -133,7 +133,7 @@ else
                               (with-current-buffer buf2
                                 (lsp-request \"textDocument/completion\"
                                              (list :textDocument (list :uri (lsp--buffer-uri))
-                                                   :position     (list :line 28 :character 18))))))
+                                                   :position     (list :line 29 :character 18))))))
                     (items  (when (hash-table-p result) (gethash \"items\" result)))
                     (labels (when (listp items)
                               (mapcar (lambda (i) (gethash \"label\" i)) items))))

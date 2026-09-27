@@ -6,15 +6,15 @@
 # Fixture: chained_dot_completion.sv — Greeter (greet_child) and
 # BaseGreeter (greet_base); BaseFactory.get_child() returns BaseGreeter,
 # Factory extends BaseFactory and *overrides* get_child() to return
-# Greeter instead. "// probe: ..." comment lines put the dot-completion
+# Greeter instead. "probe: ..." lines (in a never-defined `ifdef) put the dot-completion
 # trigger text at a precise (line, char) position (see the fixture's own
 # header comment).
 #
 # Position reference (LSP 0-based lines, character right after the chain):
-#   line 32, char 33 — "this.get_child().gr"  (inside a Factory method)
-#   line 33, char 34 — "super.get_child().gr" (inside a Factory method)
-#   line 44, char 41 — "make_factory().get_child().gr" (free functions)
-#   line 45, char 31 — "get_num().foo().bar" (broken link: int mid-chain)
+#   line 33, char 33 — "this.get_child().gr"  (inside a Factory method)
+#   line 34, char 34 — "super.get_child().gr" (inside a Factory method)
+#   line 47, char 41 — "make_factory().get_child().gr" (free functions)
+#   line 48, char 31 — "get_num().foo().bar" (broken link: int mid-chain)
 
 SV_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/chained_dot_completion.sv"
 
@@ -39,7 +39,7 @@ else
                             (with-current-buffer buf
                               (lsp-request \"textDocument/completion\"
                                            (list :textDocument (list :uri (lsp--buffer-uri))
-                                                 :position     (list :line 44 :character 41))))))
+                                                 :position     (list :line 47 :character 41))))))
                   (items  (when (hash-table-p result) (gethash \"items\" result)))
                   (labels (when (listp items)
                             (mapcar (lambda (i) (gethash \"label\" i)) items))))
@@ -56,7 +56,7 @@ else
                             (with-current-buffer buf
                               (lsp-request \"textDocument/completion\"
                                            (list :textDocument (list :uri (lsp--buffer-uri))
-                                                 :position     (list :line 32 :character 33))))))
+                                                 :position     (list :line 33 :character 33))))))
                   (items  (when (hash-table-p result) (gethash \"items\" result)))
                   (labels (when (listp items)
                             (mapcar (lambda (i) (gethash \"label\" i)) items))))
@@ -73,7 +73,7 @@ else
                             (with-current-buffer buf
                               (lsp-request \"textDocument/completion\"
                                            (list :textDocument (list :uri (lsp--buffer-uri))
-                                                 :position     (list :line 33 :character 34))))))
+                                                 :position     (list :line 34 :character 34))))))
                   (items  (when (hash-table-p result) (gethash \"items\" result)))
                   (labels (when (listp items)
                             (mapcar (lambda (i) (gethash \"label\" i)) items))))
@@ -90,7 +90,7 @@ else
                             (with-current-buffer buf
                               (lsp-request \"textDocument/completion\"
                                            (list :textDocument (list :uri (lsp--buffer-uri))
-                                                 :position     (list :line 33 :character 34))))))
+                                                 :position     (list :line 34 :character 34))))))
                   (items  (when (hash-table-p result) (gethash \"items\" result)))
                   (labels (when (listp items)
                             (mapcar (lambda (i) (gethash \"label\" i)) items))))
@@ -107,7 +107,7 @@ else
                             (with-current-buffer buf
                               (lsp-request \"textDocument/completion\"
                                            (list :textDocument (list :uri (lsp--buffer-uri))
-                                                 :position     (list :line 45 :character 31)))))))
+                                                 :position     (list :line 48 :character 31)))))))
              (svlsp-test/close-file buf)
              (if (and ok (null result)) t nil))
          (error (format \"elisp-error: %s\" (error-message-string err))))" \

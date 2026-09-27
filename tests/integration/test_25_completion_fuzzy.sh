@@ -5,15 +5,15 @@
 # unit-test level.
 #
 # Fixture: fuzzy_completion.sv — module "sensor" declares WIDTH (parameter),
-# report_id and xxrepxx (ports). Four "// probe: ..." comment lines put
-# typed-prefix probe text at precise (line, char) positions (see the
-# fixture's own header comment for the exact layout/rationale — the probe
-# text sits inside a comment specifically so it is never lexed/parsed and
-# can't create a spurious symbol of its own):
-#   WIDTH   line 27 (0-based), char 19 — exact full-name prefix
-#   wdth    line 28 (0-based), char 18 — typo'd/non-contiguous prefix
-#   rep     line 29 (0-based), char 17 — ambiguous prefix, two candidates
-#   qqqqq   line 30 (0-based), char 19 — prefix matching nothing
+# report_id and xxrepxx (ports). Four "probe: ..." lines put typed-prefix
+# probe text at precise (line, char) positions (see the fixture's own
+# header comment for the exact layout/rationale — the probe text sits in a
+# never-defined `ifdef specifically so it is never parsed and can't create
+# a spurious symbol of its own):
+#   WIDTH   line 28 (0-based), char 19 — exact full-name prefix
+#   wdth    line 29 (0-based), char 18 — typo'd/non-contiguous prefix
+#   rep     line 30 (0-based), char 17 — ambiguous prefix, two candidates
+#   qqqqq   line 31 (0-based), char 19 — prefix matching nothing
 
 SV_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/fuzzy_completion.sv"
 
@@ -39,7 +39,7 @@ else
                             (with-current-buffer buf
                               (lsp-request \"textDocument/completion\"
                                            (list :textDocument (list :uri (lsp--buffer-uri))
-                                                 :position     (list :line 27 :character 19))))))
+                                                 :position     (list :line 28 :character 19))))))
                   (items  (when (hash-table-p result) (gethash \"items\" result)))
                   (labels (when (listp items)
                             (mapcar (lambda (i) (gethash \"label\" i)) items))))
@@ -57,7 +57,7 @@ else
                             (with-current-buffer buf
                               (lsp-request \"textDocument/completion\"
                                            (list :textDocument (list :uri (lsp--buffer-uri))
-                                                 :position     (list :line 28 :character 18))))))
+                                                 :position     (list :line 29 :character 18))))))
                   (items  (when (hash-table-p result) (gethash \"items\" result)))
                   (labels (when (listp items)
                             (mapcar (lambda (i) (gethash \"label\" i)) items))))
@@ -75,7 +75,7 @@ else
                             (with-current-buffer buf
                               (lsp-request \"textDocument/completion\"
                                            (list :textDocument (list :uri (lsp--buffer-uri))
-                                                 :position     (list :line 28 :character 18))))))
+                                                 :position     (list :line 29 :character 18))))))
                   (items  (when (hash-table-p result) (gethash \"items\" result)))
                   (labels (when (listp items)
                             (mapcar (lambda (i) (gethash \"label\" i)) items))))
@@ -96,7 +96,7 @@ else
                             (with-current-buffer buf
                               (lsp-request \"textDocument/completion\"
                                            (list :textDocument (list :uri (lsp--buffer-uri))
-                                                 :position     (list :line 30 :character 19)))))))
+                                                 :position     (list :line 31 :character 19)))))))
              (svlsp-test/close-file buf)
              (if (and ok (null result)) t nil))
          (error (format \"elisp-error: %s\" (error-message-string err))))" \
@@ -111,7 +111,7 @@ else
                             (with-current-buffer buf
                               (lsp-request \"textDocument/completion\"
                                            (list :textDocument (list :uri (lsp--buffer-uri))
-                                                 :position     (list :line 29 :character 17))))))
+                                                 :position     (list :line 30 :character 17))))))
                   (items  (when (hash-table-p result) (gethash \"items\" result)))
                   (labels (when (listp items)
                             (mapcar (lambda (i) (gethash \"label\" i)) items)))

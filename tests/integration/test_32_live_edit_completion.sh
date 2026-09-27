@@ -2,7 +2,7 @@
 # test_32_live_edit_completion.sh — verify dot-completion on text that is
 # *typed into a live buffer*, not baked into the fixture's initial content.
 #
-# Every other completion test opens a file whose "// probe: ..." trigger
+# Every other completion test opens a file whose "probe: ..." trigger
 # text already exists on disk at a known (line, char) and just fires
 # textDocument/completion at that fixed position. That never exercises the
 # real editing path: didChange -> ChangeDebouncer (plan.md §6.8) -> a
@@ -53,7 +53,9 @@ else
                        (goto-char (point-min))
                        (search-forward \"// INSERT-EDIT-HERE\")
                        (end-of-line)
-                       (insert \"  // probe: w.gr\")
+                       (insert \"\\n\`ifdef SVLSP_TEST_PROBES\\n  probe: w.gr\\n\`endif\")
+                       (forward-line -1)
+                       (end-of-line)
                        (sit-for 3) ;; past the 300ms debounce window
                        (let ((pos (list :line (1- (line-number-at-pos))
                                         :character (- (point) (line-beginning-position)))))
@@ -78,7 +80,9 @@ else
                        (goto-char (point-min))
                        (search-forward \"// INSERT-EDIT-HERE\")
                        (end-of-line)
-                       (insert \"  // probe: w.gr\")
+                       (insert \"\\n\`ifdef SVLSP_TEST_PROBES\\n  probe: w.gr\\n\`endif\")
+                       (forward-line -1)
+                       (end-of-line)
                        (sit-for 3)
                        (let ((pos (list :line (1- (line-number-at-pos))
                                         :character (- (point) (line-beginning-position)))))
@@ -103,7 +107,9 @@ else
                        (goto-char (point-min))
                        (search-forward \"// INSERT-EDIT-HERE\")
                        (end-of-line)
-                       (insert \"\\n  Widget w2;\\n  // probe: w2.gr\")
+                       (insert \"\\n  Widget w2;\\n\`ifdef SVLSP_TEST_PROBES\\n  probe: w2.gr\\n\`endif\")
+                       (forward-line -1)
+                       (end-of-line)
                        (sit-for 3)
                        (let ((pos (list :line (1- (line-number-at-pos))
                                         :character (- (point) (line-beginning-position)))))

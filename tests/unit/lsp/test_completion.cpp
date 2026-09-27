@@ -1400,3 +1400,31 @@ TEST_CASE("CompletionProvider: an overriding member is offered once, not also fr
     CHECK(std::count_if(items.begin(), items.end(),
                         [](const lsp::CompletionItem& i) { return i.label == "ov_m"; }) == 1);
 }
+
+TEST_CASE("CompletionProvider: nothing is offered inside a comment or string literal",
+          "[completion][comment]")
+{
+    Fixture f;
+    CompilationController ctrl{f.sdb};
+    const std::string text =
+        "class CmtW; int cmt_fld; function void put(); endfunction endclass\n"
+        "module cmt_top;\n"
+        "  CmtW w;\n"
+        "  int cmt_x; // cmt\n"                 // line 3
+        "  /* w. */\n"                          // line 4
+        "  initial $display(\"cmt w.\");\n"   // line 5
+        "  initial cmt_x = 1;\n"                // line 6
+        "endmodule\n";
+    ctrl.compile("/cmt.sv", text);
+
+    auto at = [&](unsigned line, unsigned col) {
+        return CompletionProvider::getCompletion(makeParams("/cmt.sv", line, col), f.sdb, text);
+    };
+    CHECK(at(3, 18).isNull());   // end of `// cmt`
+    CHECK(at(4, 7).isNull());    // after `w.` in a block comment
+    CHECK(at(5, 26).isNull());   // after `w.` in a string
+    // Control: the same prefix in code still completes.
+    auto code = at(6, 13);
+    REQUIRE_FALSE(code.isNull());
+    CHECK(hasItem(code.get<lsp::Array<lsp::CompletionItem>>(), "cmt_x"));
+}

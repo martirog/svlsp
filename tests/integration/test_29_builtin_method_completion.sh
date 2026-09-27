@@ -5,9 +5,9 @@
 #
 # Fixture: builtin_method_completion.sv — a queue, an associative array, a
 # mailbox, a process, and a plain class instance with no explicitly-declared
-# randomize. "// probe: ..." comment lines put the dot-completion trigger
-# text at a precise (line, char) position (see the fixture's own header
-# comment for why the probe text sits inside a comment).
+# randomize. "probe: ..." lines put the dot-completion trigger text at a
+# precise (line, char) position (see the fixture's own header comment for
+# why the probe text sits in a never-defined `ifdef).
 #
 # Position reference (LSP 0-based lines, character right after the '.'):
 #   line 25, char 14 — "q."
