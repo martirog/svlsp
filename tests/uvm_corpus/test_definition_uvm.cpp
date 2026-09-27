@@ -100,3 +100,39 @@ TEST_CASE("definition: a `uvm_error use lands on its define in uvm_message_defin
     CHECK(loc.range.start.line == 187u);
     CHECK(loc.range.start.character == 8u);
 }
+
+TEST_CASE("definition: a call qualified by a class typedef lands on the aliased class's method "
+          "(§6.30 follow-up)",
+          "[uvm_corpus][definition][typedef]") {
+    const std::string text = readCorpusFile("base/uvm_root.svh");
+
+    // Line 1087 (1-based) "      uvm_config_int::set(m_uvm_top, ...);" --
+    // `typedef uvm_config_db#(uvm_bitstream_t) uvm_config_int;` -> the
+    // static `set` at base/uvm_config_db.svh line 121 (col 23), not any
+    // other class's `set`.
+    auto def = DefinitionProvider::getDefinition(makeParams("base/uvm_root.svh", 1086, 22),
+                                                 uvmCorpusDb(), text);
+    REQUIRE_FALSE(def.isNull());
+    const auto& loc = std::get<lsp::Location>(def.get<lsp::Definition>());
+    CHECK(std::string(loc.uri.path()) == expectedUriPath("base/uvm_config_db.svh"));
+    CHECK(loc.range.start.line == 120u);
+    CHECK(loc.range.start.character == 23u);
+}
+
+TEST_CASE("definition: super.new in a constructor lands on the parent class's own constructor "
+          "(§6.30 follow-up)",
+          "[uvm_corpus][definition][ctor]") {
+    const std::string text = readCorpusFile("base/uvm_component.svh");
+
+    // Line 1696 (1-based) "  super.new(name);" inside the out-of-class
+    // `function uvm_component::new(...)` -> uvm_report_object's
+    // `function new(string name = "");` at base/uvm_report_object.svh line
+    // 117 (col 11).
+    auto def = DefinitionProvider::getDefinition(makeParams("base/uvm_component.svh", 1695, 8),
+                                                 uvmCorpusDb(), text);
+    REQUIRE_FALSE(def.isNull());
+    const auto& loc = std::get<lsp::Location>(def.get<lsp::Definition>());
+    CHECK(std::string(loc.uri.path()) == expectedUriPath("base/uvm_report_object.svh"));
+    CHECK(loc.range.start.line == 116u);
+    CHECK(loc.range.start.character == 11u);
+}

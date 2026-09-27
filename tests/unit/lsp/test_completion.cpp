@@ -1310,3 +1310,93 @@ TEST_CASE("CompletionProvider: a constructor is never offered as a member, and i
     CHECK(hasItem(items, "cc_fld"));
     CHECK_FALSE(hasItem(items, "cc_arg"));
 }
+
+TEST_CASE("CompletionProvider: dot-completion through a class typedef offers the class's members",
+          "[completion][dot][typedef]")
+{
+    Fixture f;
+    CompilationController ctrl{f.sdb};
+    const std::string text =
+        "package tdc_p;\n"
+        "  class TdcC; int tdc_fld; function void tdc_m(); endfunction endclass\n"
+        "  typedef TdcC tdc_alias_t;\n"
+        "  typedef tdc_alias_t tdc_alias2_t;\n"
+        "endpackage\n"
+        "class TdcDecoy; int tdc_decoy_fld; endclass\n"
+        "module tdc_top;\n"
+        "  import tdc_p::*;\n"
+        "  tdc_alias2_t h;\n"
+        "  initial h.\n"     // line 9
+        "endmodule\n";
+    ctrl.compile("/tdc.sv", text);
+
+    auto dot = CompletionProvider::getCompletion(makeParams("/tdc.sv", 9, 12), f.sdb, text);
+    REQUIRE_FALSE(dot.isNull());
+    const auto& items = dot.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "tdc_fld"));
+    CHECK(hasItem(items, "tdc_m"));
+    CHECK(hasItem(items, "randomize"));
+    CHECK_FALSE(hasItem(items, "tdc_decoy_fld"));
+}
+
+TEST_CASE("CompletionProvider: bare-name completion inside a class offers inherited members, "
+          "in in-class and out-of-class bodies",
+          "[completion][phase6.30][inherited]")
+{
+    Fixture f;
+    CompilationController ctrl{f.sdb};
+    const std::string text =
+        "package inh_p;\n"
+        "  class InhBase;\n"
+        "    int inh_base_fld;\n"
+        "    function void inh_base_m(); endfunction\n"
+        "  endclass\n"
+        "  class InhMid extends InhBase;\n"
+        "    int inh_mid_fld;\n"
+        "  endclass\n"
+        "  class InhC extends InhMid;\n"
+        "    int inh_own;\n"
+        "    function void run();\n"
+        "      inh\n"            // line 11
+        "    endfunction\n"
+        "    extern function void ooc();\n"
+        "  endclass\n"
+        "  function void InhC::ooc();\n"
+        "    inh\n"              // line 16
+        "  endfunction\n"
+        "  class InhUnrelated; int inh_unrelated_fld; endclass\n"
+        "endpackage\n";
+    ctrl.compile("/inh.sv", text);
+
+    for (auto [line, col] : {std::pair{11u, 9u}, std::pair{16u, 7u}}) {
+        auto result = CompletionProvider::getCompletion(makeParams("/inh.sv", line, col), f.sdb, text);
+        REQUIRE_FALSE(result.isNull());
+        const auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+        CHECK(hasItem(items, "inh_own"));
+        CHECK(hasItem(items, "inh_mid_fld"));
+        CHECK(hasItem(items, "inh_base_fld"));
+        CHECK(hasItem(items, "inh_base_m"));
+        CHECK_FALSE(hasItem(items, "inh_unrelated_fld"));
+    }
+}
+
+TEST_CASE("CompletionProvider: an overriding member is offered once, not also from the parent",
+          "[completion][phase6.30][inherited]")
+{
+    Fixture f;
+    CompilationController ctrl{f.sdb};
+    const std::string text =
+        "class OvB; virtual function void ov_m(); endfunction endclass\n"
+        "class OvC extends OvB;\n"
+        "  virtual function void ov_m(); endfunction\n"
+        "  function void run();\n"
+        "    ov_\n"             // line 4
+        "  endfunction\n"
+        "endclass\n";
+    ctrl.compile("/ov.sv", text);
+    auto result = CompletionProvider::getCompletion(makeParams("/ov.sv", 4, 7), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+    const auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(std::count_if(items.begin(), items.end(),
+                        [](const lsp::CompletionItem& i) { return i.label == "ov_m"; }) == 1);
+}

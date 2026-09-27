@@ -122,6 +122,7 @@ DEF_TESTS=(
     "definition: an enum literal use lands on the literal"
     "definition: a field used in an out-of-class body lands on the class's field"
     "definition: new in another class's method -- the assigned field's class constructor"
+    "definition: method on a receiver typed by a class typedef -- the aliased class's"
 )
 REF_TESTS=(
     "references: signal -- declaration + both named-connection uses"
@@ -173,6 +174,8 @@ else
     def_test "${DEF_TESTS[12]}" 58 4  defref_top.sv 54 8
     # "  function void mk(); a = new(1); endfunction" in defref_CtorB (line 68)
     def_test "${DEF_TESTS[13]}" 68 26 defref_top.sv 63 11
+    # "  initial r = h.defref_td_get();" in defref_td_top (line 87)
+    def_test "${DEF_TESTS[14]}" 87 16 defref_top.sv 76 17
 
     # "  logic defref_sig;" (line 16)
     refs_test "${REF_TESTS[0]}" 16 8 \

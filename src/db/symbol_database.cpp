@@ -829,9 +829,17 @@ std::vector<std::string> SymbolDatabase::baseClassChain(
                    row.scope.compare(row.scope.size() - qualifier->size() - 2, 2, "::") == 0;
         };
 
-        std::vector<SymbolRow> classRows;
-        for (auto& row : findSymbolsByName(bare))
+        std::vector<SymbolRow> classRows, typedefRows;
+        for (auto& row : findSymbolsByName(bare)) {
             if (row.kind == "Class" && inQualifier(row)) classRows.push_back(row);
+            if (row.kind == "Typedef" && inQualifier(row)) typedefRows.push_back(row);
+        }
+        if (classRows.empty() && !typedefRows.empty()) {
+            // A class typedef (`typedef C alias_t;`, `typedef C#(int) c_t;`):
+            // continue with the aliased type; the visited guard covers loops.
+            current = pickSameFilePreferred(typedefRows, curPath)->detail;
+            continue;
+        }
         if (classRows.empty()) break; // not a known class -- stop (fail closed)
 
         const SymbolRow* best = pickSameFilePreferred(classRows, curPath);

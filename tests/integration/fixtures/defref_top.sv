@@ -71,3 +71,19 @@ endclass
 module defref_ctor_top;
   defref_CtorA x = new(2);
 endmodule
+// Appended for the §6.30 follow-up: a receiver typed by a class typedef.
+package defref_td_p;
+  class defref_TdC;
+    function int defref_td_get(); return 0; endfunction
+  endclass
+  typedef defref_TdC defref_td_t;
+endpackage
+class defref_TdDecoy;
+  function int defref_td_get(); return 1; endfunction
+endclass
+module defref_td_top;
+  import defref_td_p::*;
+  defref_td_t h;
+  int r;
+  initial r = h.defref_td_get();
+endmodule

@@ -17,6 +17,9 @@
 # returns all symbols visible at that scope with no prefix filtering.
 
 SV_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/two_classes.sv"
+# §6.30 follow-up: inherited members in bare-name completion (LSP line 12,
+# char 0, inside icmp_C::run).
+INHERIT_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/inherited_completion.sv"
 
 # Helper: extract labels from a completion result (hash-table with "items" list).
 # Returns a space-separated string of label names for use with grep/member checks.
@@ -37,7 +40,8 @@ if [ ! -x "${SVLSP_BIN}" ]; then
         "completion inside ClassB includes method_b (ClassB method)" \
         "completion inside ClassB excludes alpha (ClassA member)" \
         "completion inside ClassB excludes beta (ClassA member)" \
-        "completion inside ClassB excludes method_a (ClassA method)"
+        "completion inside ClassB excludes method_a (ClassA method)" \
+        "completion inside a derived class's method offers inherited members"
     do
         skip_test "$name" "svlsp binary not found at ${SVLSP_BIN}"
     done
@@ -261,5 +265,25 @@ run_test "completion inside ClassB excludes method_a (ClassA method)" \
                         (mapcar (lambda (i) (gethash \"label\" i)) items))))
          (svlsp-test/close-file buf)
          (if (and ok (not (member \"method_a\" labels))) t nil))
+     (error (format \"elisp-error: %s\" (error-message-string err))))" \
+    "t"
+
+run_test "completion inside a derived class's method offers inherited members" \
+    "(condition-case err
+       (let* ((buf    (svlsp-test/open-file \"${INHERIT_FIXTURE}\"))
+              (ok     (with-current-buffer buf (svlsp-test/wait-for-lsp 15)))
+              (result (when ok
+                        (with-current-buffer buf
+                          (lsp-request \"textDocument/completion\"
+                                       (list :textDocument (list :uri (lsp--buffer-uri))
+                                             :position     (list :line 12 :character 0))))))
+              (items  (when (hash-table-p result) (gethash \"items\" result)))
+              (labels (when (listp items)
+                        (mapcar (lambda (i) (gethash \"label\" i)) items))))
+         (svlsp-test/close-file buf)
+         (if (and ok (member \"icmp_own\" labels) (member \"icmp_local\" labels)
+                  (member \"icmp_base_fld\" labels) (member \"icmp_base_m\" labels)
+                  (not (member \"icmp_unrelated_fld\" labels)))
+             t nil))
      (error (format \"elisp-error: %s\" (error-message-string err))))" \
     "t"

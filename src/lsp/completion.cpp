@@ -209,7 +209,19 @@ lsp::TextDocument_CompletionResult CompletionProvider::getCompletion(
     // scope (plan.md §6.9) before scoring/emptiness-checking, so a file
     // with zero DB symbols (e.g. a brand-new buffer) still offers top-level
     // keywords instead of returning null.
-    auto candidates = candidatesFromRows(db.findSymbolsVisibleAt(path, line1));
+    // Inside a class (or an out-of-class method body), its ancestors'
+    // members are in scope too. Appended after the visible set, so the
+    // (name, kind) dedup lets a class's own member shadow an inherited one.
+    auto rows = db.findSymbolsVisibleAt(path, line1);
+    if (const std::string cls = db.enclosingClassNameAt(path, line1); !cls.empty()) {
+        const auto chain = db.baseClassChain(cls, path);
+        for (size_t i = 1; i < chain.size(); ++i) {
+            auto inherited = db.findSymbolsInScope(chain[i]);
+            rows.insert(rows.end(), std::make_move_iterator(inherited.begin()),
+                        std::make_move_iterator(inherited.end()));
+        }
+    }
+    auto candidates = candidatesFromRows(rows);
     auto keywords    = candidatesFromKeywords(db.scopeKindAtPosition(path, line1));
     candidates.insert(candidates.end(),
                        std::make_move_iterator(keywords.begin()),

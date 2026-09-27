@@ -692,3 +692,55 @@ TEST_CASE("overrideFamilyId: a constructor is its own family, shared by prototyp
     for (auto& r : f.sdb.findSymbolsByName("new"))
         if (r.scope == "ctor_p::CtorA") CHECK(overrideFamilyId(f.sdb, r) == proto->row.id);
 }
+
+// §6.30 follow-up: a Typedef that aliases a class is followed to the class,
+// as a receiver's type and as a `::` qualifier (`uvm_config_int::set` is a
+// typedef of a parameterized uvm_config_db). Every case has a same-named
+// decoy method a name-only lookup could pick.
+const std::string kTypedefs =
+    "package td_p;\n"
+    "  class TdC;\n"
+    "    function int td_get(); return 0; endfunction // @get\n"
+    "    static function void td_s(); endfunction // @s\n"
+    "  endclass\n"
+    "  class TdP #(type T = int);\n"
+    "    static function void td_ps(); endfunction // @ps\n"
+    "  endclass\n"
+    "  typedef TdC td_alias_t;\n"
+    "  typedef td_alias_t td_alias2_t;\n"
+    "  typedef TdP#(int) tdp_int_t;\n"
+    "endpackage\n"
+    "class TdDecoy;\n"
+    "  function int td_get(); return 1; endfunction\n"
+    "  static function void td_s(); endfunction\n"
+    "  static function void td_ps(); endfunction\n"
+    "endclass\n"
+    "module td_top;\n"
+    "  import td_p::*;\n"
+    "  td_alias_t a;\n"
+    "  td_alias2_t b;\n"
+    "  initial begin\n"
+    "    void'(a.td_get()); // @recv\n"
+    "    void'(b.td_get()); // @recv2\n"
+    "    td_alias_t::td_s(); // @qual\n"
+    "    tdp_int_t::td_ps(); // @param\n"
+    "  end\n"
+    "endmodule\n";
+
+TEST_CASE("resolveSymbolAt: a receiver whose type is a class typedef resolves into the class",
+          "[resolution][typedef]")
+{
+    F f;
+    f.add("/td.sv", kTypedefs);
+    requireResolves(f, "/td.sv", "@recv", "td_get", "/td.sv", "@get");
+    requireResolves(f, "/td.sv", "@recv2", "td_get", "/td.sv", "@get");
+}
+
+TEST_CASE("resolveSymbolAt: a class typedef as a `::` qualifier, parameterized or not",
+          "[resolution][typedef]")
+{
+    F f;
+    f.add("/td.sv", kTypedefs);
+    requireResolves(f, "/td.sv", "@qual", "td_s", "/td.sv", "@s");
+    requireResolves(f, "/td.sv", "@param", "td_ps", "/td.sv", "@ps");
+}

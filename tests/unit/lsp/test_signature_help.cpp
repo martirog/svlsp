@@ -993,3 +993,40 @@ TEST_CASE("SignatureHelpProvider: `new(` shows the constructor of the class bein
     // `new[` for a dynamic array is not a constructor call.
     CHECK(at(19, "  initial d = new[3];", "new[").isNull());
 }
+
+TEST_CASE("SignatureHelpProvider: dotted and `::` calls through a class typedef",
+          "[signature_help][real-compile][typedef]")
+{
+    RealCompileFixture f;
+    const std::string source =
+        "package tds_p;\n"
+        "  class TdsC;\n"
+        "    function int tds_get(int tds_i); return 0; endfunction\n"
+        "    static function void tds_s(string tds_n); endfunction\n"
+        "  endclass\n"
+        "  typedef TdsC tds_alias_t;\n"
+        "endpackage\n"
+        "class TdsDecoy;\n"
+        "  function int tds_get(bit decoy_b); return 0; endfunction\n"
+        "  static function void tds_s(bit decoy_b); endfunction\n"
+        "endclass\n"
+        "module tds_top;\n"
+        "  import tds_p::*;\n"
+        "  tds_alias_t h;\n"
+        "  initial begin\n"
+        "    void'(h.tds_get(1));\n"          // line 15
+        "    tds_alias_t::tds_s(\"n\");\n"   // line 16
+        "  end\n"
+        "endmodule\n";
+    f.ctrl.compile("/tds.sv", source);
+
+    auto dotted = SignatureHelpProvider::getSignatureHelp(
+        makeParams("/tds.sv", 15, 20), f.sdb, source);
+    REQUIRE_FALSE(dotted.isNull());
+    CHECK(dotted.value().signatures[0].label == "tds_get(int tds_i)");
+
+    auto scoped = SignatureHelpProvider::getSignatureHelp(
+        makeParams("/tds.sv", 16, 23), f.sdb, source);
+    REQUIRE_FALSE(scoped.isNull());
+    CHECK(scoped.value().signatures[0].label == "tds_s(string tds_n)");
+}
