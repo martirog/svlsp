@@ -21,11 +21,12 @@ aliases and inherited completion are done (plan.md §6.30, the two
   parameter fix (`function f(input int a, b)` now records `b` as
   `input int`; LRM 13.3 inheritance in `enterTf_port_item`), and
   constructors (recorded, resolved by context), typedef aliases followed
-  to their class, and inherited members in bare-name completion.
+  to their class, inherited members in bare-name completion, and
+  signature-help trigger characters (`(`, `,`; retrigger `;`).
 - Test baselines:
-  - unit: **868 cases**, all passing (no `[!shouldfail]` known gaps left
+  - unit: **869 cases**, all passing (no `[!shouldfail]` known gaps left
     -- the `` `define `` references case passes since the macro follow-up)
-  - Emacs functional: **251/251**
+  - Emacs functional: **252/252**
   - UVM corpus (opt-in): **1106 assertions / 24 cases**, all passing.
     (1018 → 1106: +8 two definition cases -- typedef qualifier and
     `super.new`; +80 inherited items in the empty-prefix completion list,
@@ -83,9 +84,6 @@ aliases and inherited completion are done (plan.md §6.30, the two
 
 ## Next up — candidates
 
-- **Advertise `triggerCharacters = {"(", ","}`** for signature help in
-  `server_state.cpp` (plan.md §6.29 "Shared infrastructure"; every shape
-  is `(`/`,`-driven). Not done yet.
 - **Macros in workspace symbols** (small; `findMacros` exists, a
   prefix query over the `macros` table doesn't yet).
 - Or the "Other open work" list below.

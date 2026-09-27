@@ -4324,7 +4324,12 @@ Implementation:
   table now makes them possible; the `[!shouldfail]` references test is
   still a known gap), stale macros of an included file that later has no
   records, errors or macros at all (its rows aren't cleared), and
-  `triggerCharacters` (still not advertised).
+  `triggerCharacters` (still not advertised). **Trigger characters done
+  2026-09-27:** `triggerCharacters = {"(", ","}` plus
+  `retriggerCharacters = {";"}` (the `for (...)` header's separator; a
+  retrigger only fires while help is showing). Unit test in
+  `test_server_state.cpp`, and test_12 checks lsp-mode receives both
+  lists.
 
 Tests (`[phase6.29]`): preprocessor -- parameters, defaults (a nested-
 paren default), column, `` `define Z() ``, and an included file's
