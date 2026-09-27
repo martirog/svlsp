@@ -163,6 +163,11 @@ public:
     // macros.body (schema 9) reads with an empty body.
     std::vector<MacroRow> findMacros(const std::string& name) const;
 
+    // Every recorded `define whose name starts with `prefix` (literally --
+    // '_' and '%' are not wildcards), across attached library DBs like
+    // findMacros, ordered by (name, file path, line). Workspace symbols.
+    std::vector<MacroRow> findMacrosByNamePrefix(const std::string& prefix) const;
+
     // Delete all instantiations for `fileId` then insert `insts`.
     void replaceInstantiations(int64_t fileId, const std::vector<InstantiationRecord>& insts);
 
@@ -289,6 +294,11 @@ private:
     // result in C++ rather than relying on ORDER BY across a UNION ALL.
     std::vector<SymbolRow> queryAcrossAttachedDbs(
         const std::string& cond, const std::string& bindValue) const;
+
+    // The macros-table counterpart: `cond` references only m/f and exactly
+    // one `?`. Unordered.
+    std::vector<MacroRow> queryMacros(const std::string& cond,
+                                      const std::string& bindValue) const;
 
     int64_t fileIdFor(const std::string& path) const;
     std::vector<ImportRow> importsForFileId(int64_t fileId) const;

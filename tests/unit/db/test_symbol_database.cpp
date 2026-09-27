@@ -958,3 +958,35 @@ TEST_CASE("a default value containing '=' and commas survives the round trip",
     REQUIRE(rows.size() == 1);
     CHECK(rows[0].defaults[0] == std::optional<std::string>{"f(a == b, c)"});
 }
+
+TEST_CASE("findSymbolsByNamePrefix treats '_' and '%' in the prefix literally",
+          "[db][symbol-db][workspace_symbols]") {
+    Fixture f;
+    int64_t fid = f.sdb.upsertFile("/a.sv", "h");
+    f.sdb.replaceSymbols(fid, {
+        {ParseRecordKind::Module, "a_b_top", 1, 7, "", "", 2, ""},
+        {ParseRecordKind::Module, "aXb_top", 3, 7, "", "", 4, ""},
+        {ParseRecordKind::Module, "pct_mod", 5, 7, "", "", 6, ""},
+    });
+    auto rows = f.sdb.findSymbolsByNamePrefix("a_b");
+    REQUIRE(rows.size() == 1);
+    CHECK(rows[0].name == "a_b_top");
+    CHECK(f.sdb.findSymbolsByNamePrefix("%").empty());
+}
+
+TEST_CASE("findMacrosByNamePrefix returns macros whose name starts with the prefix",
+          "[db][symbol-db][workspace_symbols]") {
+    Fixture f;
+    f.sdb.replaceMacros(f.sdb.upsertFile("/m.svh", "h"), {
+        MacroRecord{"ws_log", "", 1, 8, "", true, {"MSG"}, {std::nullopt}},
+        MacroRecord{"ws_WIDTH", "8", 2, 8},
+        MacroRecord{"wsXother", "1", 3, 8},
+    });
+    auto rows = f.sdb.findMacrosByNamePrefix("ws_");
+    REQUIRE(rows.size() == 2);
+    CHECK(rows[0].name == "ws_WIDTH");
+    CHECK(rows[1].name == "ws_log");
+    CHECK(rows[1].line == 1);
+    CHECK(rows[1].col == 8);
+    CHECK(f.sdb.findMacrosByNamePrefix("").size() == 3);
+}

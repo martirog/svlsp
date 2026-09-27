@@ -74,3 +74,18 @@ TEST_CASE("workspace/symbol finds all 28 cataloged real UVM classes", "[uvm_corp
     checkCandidate("uvm_analysis_port",             "tlm1/uvm_analysis_port.svh", 68);
     checkCandidate("uvm_tlm_generic_payload",       "tlm2/uvm_tlm2_generic_payload.svh", 114);
 }
+
+TEST_CASE("workspace/symbol lists UVM macros from the macros table", "[uvm_corpus][workspace_symbols][macro]") {
+    // `define uvm_info(ID, MSG, VERBOSITY) at macros/uvm_message_defines.svh:155.
+    checkCandidate("uvm_info", "macros/uvm_message_defines.svh", 155);
+
+    // `uvm_info finds only macros, and `_` in the query is not a wildcard.
+    auto result = WorkspaceSymbolsProvider::getWorkspaceSymbols(makeParams("`uvm_info"), uvmCorpusDb());
+    REQUIRE_FALSE(result.isNull());
+    const auto& syms = result.get<lsp::Array<lsp::WorkspaceSymbol>>();
+    CHECK(containsSymbolAt(syms, "uvm_info", "macros/uvm_message_defines.svh", 155));
+    for (const auto& s : syms) {
+        CHECK(s.containerName.value_or("") == "`define");
+        CHECK(s.name.rfind("uvm_info", 0) == 0);
+    }
+}

@@ -253,6 +253,18 @@ void SymbolDatabase::replaceImports(int64_t fileId,
 
 namespace {
 constexpr char kMacroParamSep = '\x1f';
+
+// A LIKE pattern matching names that start with `prefix` literally, for use
+// with `ESCAPE '\'` -- '_' is common in SystemVerilog names.
+std::string likePrefixPattern(const std::string& prefix)
+{
+    std::string out;
+    for (char c : prefix) {
+        if (c == '\\' || c == '%' || c == '_') out += '\\';
+        out += c;
+    }
+    return out + "%";
+}
 }
 
 void SymbolDatabase::replaceMacros(int64_t fileId, const std::vector<MacroRecord>& macros)
@@ -287,12 +299,32 @@ void SymbolDatabase::replaceMacros(int64_t fileId, const std::vector<MacroRecord
 
 std::vector<MacroRow> SymbolDatabase::findMacros(const std::string& name) const
 {
+    auto rows = queryMacros("m.name = ?", name);
+    std::stable_sort(rows.begin(), rows.end(), [](const MacroRow& a, const MacroRow& b) {
+        return a.filePath != b.filePath ? a.filePath < b.filePath : a.line < b.line;
+    });
+    return rows;
+}
+
+std::vector<MacroRow> SymbolDatabase::findMacrosByNamePrefix(const std::string& prefix) const
+{
+    auto rows = queryMacros("m.name LIKE ? ESCAPE '\\'", likePrefixPattern(prefix));
+    std::stable_sort(rows.begin(), rows.end(), [](const MacroRow& a, const MacroRow& b) {
+        if (a.name != b.name) return a.name < b.name;
+        return a.filePath != b.filePath ? a.filePath < b.filePath : a.line < b.line;
+    });
+    return rows;
+}
+
+std::vector<MacroRow> SymbolDatabase::queryMacros(const std::string& cond,
+                                                  const std::string& bindValue) const
+{
     auto select = [](const std::string& bodyCol) {
         return "SELECT m.name, m.line, m.col, m.is_function_like, m.params, f.path, " + bodyCol +
                " FROM ";
     };
     std::string sql = select("m.body") +
-        "macros m JOIN files f ON f.id = m.file_id WHERE m.name = ?";
+        "macros m JOIN files f ON f.id = m.file_id WHERE " + cond;
     int binds = 1;
     for (size_t i = 0; i < m_attachedLibraryPaths.size(); ++i) {
         const std::string alias = "lib" + std::to_string(i);
@@ -301,12 +333,12 @@ std::vector<MacroRow> SymbolDatabase::findMacros(const std::string& name) const
         if (!chk.step()) continue; // schema < 9: no macros table
         const bool hasBody = chk.columnText(0).find("body") != std::string::npos;
         sql += " UNION ALL " + select(hasBody ? "m.body" : "''") + alias + ".macros m JOIN " +
-               alias + ".files f ON f.id = m.file_id WHERE m.name = ?";
+               alias + ".files f ON f.id = m.file_id WHERE " + cond;
         ++binds;
     }
 
     auto stmt = m_db.prepare(sql);
-    for (int i = 1; i <= binds; ++i) stmt.bind(i, name);
+    for (int i = 1; i <= binds; ++i) stmt.bind(i, bindValue);
 
     std::vector<MacroRow> rows;
     while (stmt.step()) {
@@ -330,9 +362,6 @@ std::vector<MacroRow> SymbolDatabase::findMacros(const std::string& name) const
         }
         rows.push_back(std::move(row));
     }
-    std::stable_sort(rows.begin(), rows.end(), [](const MacroRow& a, const MacroRow& b) {
-        return a.filePath != b.filePath ? a.filePath < b.filePath : a.line < b.line;
-    });
     return rows;
 }
 
@@ -581,7 +610,7 @@ std::vector<SymbolRow> SymbolDatabase::findSymbolsInScope(
 std::vector<SymbolRow> SymbolDatabase::findSymbolsByNamePrefix(
     const std::string& prefix) const
 {
-    auto rows = queryAcrossAttachedDbs("s.name LIKE ? ESCAPE '\\'", prefix + "%");
+    auto rows = queryAcrossAttachedDbs("s.name LIKE ? ESCAPE '\\'", likePrefixPattern(prefix));
     std::stable_sort(rows.begin(), rows.end(), [](const SymbolRow& a, const SymbolRow& b) {
         if (a.name != b.name) return a.name < b.name;
         return a.filePath < b.filePath;

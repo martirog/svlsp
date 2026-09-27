@@ -250,3 +250,25 @@ TEST_CASE("attachLibraryDbs: findMacros reads a schema-v9 library's macros with 
     CHECK(rows[0].params == std::vector<std::string>{"A"});
     CHECK(rows[0].body.empty());
 }
+
+TEST_CASE("attachLibraryDbs: findMacrosByNamePrefix sees an attached DB's macros",
+          "[db][symbol-db][library-attach][workspace_symbols]")
+{
+    std::string libPath = kRoot + "/macros_prefix/lib.db";
+    buildLibraryDb(libPath, "/lib/uvm_macros.svh", {});
+    {
+        Database db(libPath);
+        SymbolDatabase sdb(db);
+        sdb.replaceMacros(sdb.upsertFile("/lib/uvm_macros.svh", "h"),
+                          {MacroRecord{"uvm_info", "", 155, 8}});
+    }
+    ProjectFixture f;
+    f.sdb.replaceMacros(f.sdb.upsertFile("/p/top.sv", "h"), {MacroRecord{"uvm_top_m", "1", 1, 8}});
+    f.sdb.attachLibraryDbs({libPath});
+
+    auto rows = f.sdb.findMacrosByNamePrefix("uvm_");
+    REQUIRE(rows.size() == 2);
+    CHECK(rows[0].name == "uvm_info");
+    CHECK(rows[0].filePath == "/lib/uvm_macros.svh");
+    CHECK(rows[1].name == "uvm_top_m");
+}

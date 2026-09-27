@@ -95,3 +95,36 @@ TEST_CASE("WorkspaceSymbolsProvider: location points to correct file and line", 
     CHECK(loc.range.start.line == 2u);      // 1-based line 3 → 0-based 2
     CHECK(loc.range.start.character == 7u);
 }
+
+TEST_CASE("WorkspaceSymbolsProvider: macros are listed by prefix as constants in `define",
+          "[workspace_symbols][macro]")
+{
+    Fixture f;
+    int64_t fid = f.sdb.upsertFile("/defs.svh", "h");
+    f.sdb.replaceSymbols(fid, {{ParseRecordKind::Module, "wsm_top", 5, 7, "", "", 6, ""}});
+    f.sdb.replaceMacros(fid, {MacroRecord{"wsm_LOG", "", 2, 8, "", true, {"M"}, {std::nullopt}},
+                              MacroRecord{"other_M", "1", 3, 8}});
+
+    auto result = WorkspaceSymbolsProvider::getWorkspaceSymbols(makeParams("wsm_"), f.sdb);
+    REQUIRE_FALSE(result.isNull());
+    const auto& syms = result.get<lsp::Array<lsp::WorkspaceSymbol>>();
+    REQUIRE(syms.size() == 2);
+    auto macro = std::find_if(syms.begin(), syms.end(),
+                              [](const lsp::WorkspaceSymbol& s) { return s.name == "wsm_LOG"; });
+    REQUIRE(macro != syms.end());
+    CHECK(macro->kind == lsp::SymbolKind::Constant);
+    REQUIRE(macro->containerName.has_value());
+    CHECK(*macro->containerName == "`define");
+    const auto& loc = std::get<lsp::Location>(macro->location);
+    CHECK(std::string(loc.uri.path()) == "/defs.svh");
+    CHECK(loc.range.start.line == 1u);
+    CHECK(loc.range.start.character == 8u);
+    CHECK(loc.range.end.character == 15u);
+
+    // A query written the way a macro is used (`wsm_) finds only macros.
+    auto ticked = WorkspaceSymbolsProvider::getWorkspaceSymbols(makeParams("`wsm_"), f.sdb);
+    REQUIRE_FALSE(ticked.isNull());
+    const auto& only = ticked.get<lsp::Array<lsp::WorkspaceSymbol>>();
+    REQUIRE(only.size() == 1);
+    CHECK(only[0].name == "wsm_LOG");
+}
