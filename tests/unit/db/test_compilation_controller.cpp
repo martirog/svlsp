@@ -447,6 +447,23 @@ TEST_CASE("compile does not flag required arguments supplied entirely by name",
     CHECK(errs.empty());
 }
 
+TEST_CASE("compile counts comma-shorthand parameters as separate arguments",
+          "[db][ctrl][call-args][tf_shorthand]") {
+    Fixture f;
+    auto errs = f.ctrl.compile("/a.sv",
+        "module top;\n"
+        "  function int my_func(input int a, b, c = 3);\n"
+        "    my_func = a + b + c;\n"
+        "  endfunction\n"
+        "  initial my_func(1, 2);\n"
+        "  initial my_func(1);\n"
+        "endmodule\n");
+
+    REQUIRE(errs.size() == 1);
+    CHECK(errs[0].message.find("'b'") != std::string::npos);
+    CHECK(errs[0].line == 6);
+}
+
 TEST_CASE("compile does not flag a call to an unresolved callee name",
           "[db][ctrl][call-args]") {
     Fixture f;

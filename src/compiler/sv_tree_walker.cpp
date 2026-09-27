@@ -75,6 +75,30 @@ static std::string classTypeName(SvParser::Class_typeContext* ct)
     return name;
 }
 
+// The identifier of a data_type_or_implicit that is nothing but one
+// unqualified, unparameterized name (`b`, or `b [4]` read as packed
+// dimensions), else nullptr. In a tf_port_item with no port_identifier this
+// is the comma-shorthand ambiguity: `(input int a, b)` parses `b` as the
+// *type* of an unnamed argument.
+static antlr4::tree::TerminalNode* bareTypeIdentifier(SvParser::Data_type_or_implicitContext* dtoi)
+{
+    auto* dt = dtoi ? dtoi->data_type() : nullptr;
+    if (!dt) return nullptr;
+    if (auto* ti = dt->type_identifier())
+        return (dt->class_scope() || dt->package_scope()) ? nullptr : ti->IDENTIFIER();
+    if (auto* ct = dt->class_type()) {
+        auto* psci = ct->ps_class_identifier();
+        if (!psci || psci->package_scope() || !ct->parameter_value_assignment().empty() ||
+            !ct->class_identifier().empty() || !psci->class_identifier())
+            return nullptr;
+        return psci->class_identifier()->IDENTIFIER();
+    }
+    if (auto* cg = dt->ps_covergroup_identifier())
+        return (cg->package_scope() || !cg->covergroup_identifier())
+                   ? nullptr : cg->covergroup_identifier()->IDENTIFIER();
+    return nullptr;
+}
+
 // The declared user type of a data_type, *with* any `pkg::`/`Class::`/
 // `$unit::` qualifier the source wrote (plan.md §6.30 step A -- previously
 // only the bare trailing identifier was kept, so pkg_a::Item and
@@ -574,18 +598,18 @@ public:
     // "...::funcName", exactly matching a module's own ports being scoped to
     // "...::moduleName".
     void enterTf_port_item(SvParser::Tf_port_itemContext* ctx) override {
-        auto* portId = ctx->port_identifier();
-        if (!portId || !portId->IDENTIFIER()) return; // no name -- nothing to record
-
-        // LRM: direction defaults to `input` when tf_port_direction is
-        // absent; applied explicitly here rather than leaving it blank.
-        std::string dir = "input";
-        if (auto* tpd = ctx->tf_port_direction())
-            dir = m_tokens->getText(tpd);
-
-        std::string type;
-        if (auto* dtoi = ctx->data_type_or_implicit())
-            type = m_tokens->getText(dtoi);
+        // Direction and type can be inherited from earlier arguments
+        // (comma shorthand), so resolve the list up to this item.
+        auto* list = dynamic_cast<SvParser::Tf_port_listContext*>(ctx->parent);
+        if (!list) return;
+        TfPort port;
+        for (auto* item : list->tf_port_item()) {
+            port = effectiveTfPort(item, port, list);
+            if (item == ctx) break;
+        }
+        if (!port.name) return; // no name -- nothing to record
+        const std::string& dir  = port.dir;
+        const std::string& type = port.type;
 
         // Only call out a non-default direction in the label -- the
         // overwhelming majority of real parameters are plain (implicit
@@ -608,7 +632,7 @@ public:
             detail += " = " + m_tokens->getText(expr);
         }
 
-        pushId(ParseRecordKind::Port, portId->IDENTIFIER(), ctx, currentScope(), detail);
+        pushId(ParseRecordKind::Port, port.name, ctx, currentScope(), detail);
     }
 
     // ---- Ports (ANSI style) ----
@@ -875,6 +899,48 @@ private:
     std::vector<CallRecord>   m_calls;
     std::vector<std::string>  m_scopeStack;
     bool                      m_inExport{false};
+
+    // One tf_port_item's name, direction and type after LRM 13.3's
+    // inheritance rules. A default-constructed TfPort stands for "no
+    // previous argument".
+    struct TfPort {
+        antlr4::tree::TerminalNode* name{nullptr};
+        std::string dir{"input"};
+        std::string type;
+        bool isFirst{true};
+    };
+
+    // `item` resolved against the argument before it: a missing direction is
+    // inherited; a missing type is `logic` on the first argument or after an
+    // explicit direction, else inherited. A bare-identifier "type" with no
+    // port_identifier is the argument's name -- always in a body (names are
+    // mandatory there), and in a prototype only when the previous argument
+    // was named (`f(int, my_t)` keeps `my_t` as an unnamed argument's type).
+    TfPort effectiveTfPort(SvParser::Tf_port_itemContext* item, const TfPort& prev,
+                           SvParser::Tf_port_listContext* list) const {
+        TfPort p;
+        p.isFirst = false;
+        auto* dtoi = item->data_type_or_implicit();
+        std::string typeText = dtoi ? m_tokens->getText(dtoi) : "";
+        if (auto* pid = item->port_identifier()) {
+            p.name = pid->IDENTIFIER();
+        } else if (auto* bare = bareTypeIdentifier(dtoi)) {
+            const bool prototype =
+                dynamic_cast<SvParser::Function_prototypeContext*>(list->parent) ||
+                dynamic_cast<SvParser::Task_prototypeContext*>(list->parent) ||
+                dynamic_cast<SvParser::Class_constructor_prototypeContext*>(list->parent);
+            if (!prototype || prev.name) {
+                p.name = bare;
+                typeText.clear();
+            }
+        }
+        auto* tpd = item->tf_port_direction();
+        p.dir = tpd ? m_tokens->getText(tpd) : prev.dir;
+        if (!typeText.empty())            p.type = typeText;
+        else if (prev.isFirst || tpd)     p.type = "logic";
+        else                              p.type = prev.type;
+        return p;
+    }
 
     // Translate a stop token's line through the source map; returns 0 if token is null.
     int translatedEndLine(antlr4::Token* stop) const {

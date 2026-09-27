@@ -698,6 +698,141 @@ TEST_CASE("a pure-virtual method's parameters are recorded even with no body",
 }
 
 // ---------------------------------------------------------------------------
+// Comma-shorthand parameters (LRM 13.3): an argument with neither direction
+// nor type inherits both from the previous one; a missing direction is
+// inherited alone; a missing type is `logic` on the first argument or after
+// an explicit direction. A bare trailing `b` parses as an unnamed parameter
+// *of type* `b`, which the walker reinterprets as a name.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a comma-shorthand parameter inherits direction and type",
+          "[compiler][listener][tf_shorthand]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "function int add(input int a, b);\n"
+        "  return a + b;\n"
+        "endfunction\n");
+    REQUIRE(errs.empty());
+    auto* pb = findRecord(recs, ParseRecordKind::Port, "b");
+    REQUIRE(pb != nullptr);
+    CHECK(pb->detail == "int");
+    CHECK(pb->scope == "add");
+    CHECK(pb->line == 1);
+    CHECK(pb->column == 30);
+}
+
+TEST_CASE("a comma-shorthand parameter inherits a non-default direction",
+          "[compiler][listener][tf_shorthand]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "task t(ref int a, b, c);\n"
+        "endtask\n");
+    REQUIRE(errs.empty());
+    CHECK(countKind(recs, ParseRecordKind::Port) == 3);
+    auto* pc = findRecord(recs, ParseRecordKind::Port, "c");
+    REQUIRE(pc != nullptr);
+    CHECK(pc->detail == "ref int");
+}
+
+TEST_CASE("a comma-shorthand parameter with a default or dimension inherits the type",
+          "[compiler][listener][tf_shorthand]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "function void f(input int a = 1, b = 2, c[4]);\n"
+        "endfunction\n");
+    REQUIRE(errs.empty());
+    auto* pb = findRecord(recs, ParseRecordKind::Port, "b");
+    auto* pc = findRecord(recs, ParseRecordKind::Port, "c");
+    REQUIRE(pb != nullptr);
+    REQUIRE(pc != nullptr);
+    CHECK(pb->detail == std::string("int") + PARAM_DEFAULT_VALUE_SEP + " = 2");
+    CHECK(pc->detail == "int");
+}
+
+TEST_CASE("a comma-shorthand parameter inherits a class or packed type",
+          "[compiler][listener][tf_shorthand]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "function void f(MyClass a, b);\n"
+        "endfunction\n"
+        "function void g(input logic [7:0] x, y);\n"
+        "endfunction\n"
+        "function void h(input [3:0] p, q);\n"
+        "endfunction\n");
+    REQUIRE(errs.empty());
+    auto* pb = findRecord(recs, ParseRecordKind::Port, "b");
+    auto* py = findRecord(recs, ParseRecordKind::Port, "y");
+    auto* pq = findRecord(recs, ParseRecordKind::Port, "q");
+    REQUIRE(pb != nullptr);
+    REQUIRE(py != nullptr);
+    REQUIRE(pq != nullptr);
+    CHECK(pb->detail == "MyClass");
+    CHECK(py->detail == "logic [7:0]");
+    CHECK(pq->detail == "[3:0]");
+}
+
+TEST_CASE("an explicit direction with no type defaults the type to logic",
+          "[compiler][listener][tf_shorthand]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "function void f(input int a, output b);\n"
+        "endfunction\n");
+    REQUIRE(errs.empty());
+    auto* pb = findRecord(recs, ParseRecordKind::Port, "b");
+    REQUIRE(pb != nullptr);
+    CHECK(pb->detail == "output logic");
+}
+
+TEST_CASE("an untyped first parameter defaults to logic",
+          "[compiler][listener][tf_shorthand]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "function void f(a, b);\n"
+        "endfunction\n");
+    REQUIRE(errs.empty());
+    auto* pa = findRecord(recs, ParseRecordKind::Port, "a");
+    auto* pb = findRecord(recs, ParseRecordKind::Port, "b");
+    REQUIRE(pa != nullptr);
+    REQUIRE(pb != nullptr);
+    CHECK(pa->detail == "logic");
+    CHECK(pb->detail == "logic");
+}
+
+TEST_CASE("a direction carries over to a later explicitly-typed parameter",
+          "[compiler][listener][tf_shorthand]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "function void f(output int a, bit b);\n"
+        "endfunction\n");
+    REQUIRE(errs.empty());
+    auto* pb = findRecord(recs, ParseRecordKind::Port, "b");
+    REQUIRE(pb != nullptr);
+    CHECK(pb->detail == "output bit");
+}
+
+TEST_CASE("a comma-shorthand parameter is recorded on a prototype",
+          "[compiler][listener][tf_shorthand]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "class C;\n"
+        "  pure virtual function void f(input int a, b);\n"
+        "  extern task t(output bit x, y);\n"
+        "endclass\n");
+    REQUIRE(errs.empty());
+    auto* pb = findRecord(recs, ParseRecordKind::Port, "b");
+    auto* py = findRecord(recs, ParseRecordKind::Port, "y");
+    REQUIRE(pb != nullptr);
+    REQUIRE(py != nullptr);
+    CHECK(pb->scope == "C::f");
+    CHECK(pb->detail == "int");
+    CHECK(py->scope == "C::t");
+    CHECK(py->detail == "output bit");
+}
+
+TEST_CASE("a prototype's unnamed type-only parameters record nothing",
+          "[compiler][listener][tf_shorthand]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "class C;\n"
+        "  extern function void f(int, my_t);\n"
+        "  pure virtual function void g(my_t);\n"
+        "endclass\n");
+    REQUIRE(errs.empty());
+    CHECK(countKind(recs, ParseRecordKind::Port) == 0);
+}
+
+// ---------------------------------------------------------------------------
 // Parent scope tracking
 // ---------------------------------------------------------------------------
 

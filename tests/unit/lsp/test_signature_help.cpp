@@ -916,3 +916,27 @@ TEST_CASE("SignatureHelpProvider: which definition of a redefined macro is used"
     // ...and with no other file, the later same-file definition is used.
     CHECK(at(f.sdb, "`SELF_LATE(", 0, 11).first == "`SELF_LATE(S)");
 }
+
+TEST_CASE("SignatureHelpProvider: comma-shorthand parameters each get a slot",
+          "[signature_help][real-compile][tf_shorthand]")
+{
+    RealCompileFixture f;
+    const std::string source =
+        "module top;\n"
+        "  function int add3(input int a, b, output bit c);\n"
+        "    add3 = a + b;\n"
+        "  endfunction\n"
+        "  initial add3(1, 2, x);\n" // line 4 (0-based)
+        "endmodule\n";
+    f.ctrl.compile("/t.sv", source);
+
+    const std::string line4 = "  initial add3(1, 2, x);";
+    const unsigned col = static_cast<unsigned>(line4.find("2"));
+    auto result = SignatureHelpProvider::getSignatureHelp(
+        makeParams("/t.sv", 4, col), f.sdb, source);
+    REQUIRE_FALSE(result.isNull());
+    CHECK(result.value().signatures[0].label == "add3(int a, int b, output bit c)");
+    const auto& sig = result.value().signatures[0];
+    REQUIRE(sig.activeParameter.has_value());
+    CHECK(*sig.activeParameter == 1);
+}

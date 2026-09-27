@@ -46,11 +46,16 @@
 # `` `SH29M_LOG( `` call whose macro is defined in an included, `define-only
 # header (sighelp_macros.svh), with the cursor on its defaulted third
 # parameter.
+#
+# Fixture: fixtures/sighelp_shorthand.sv -- comma-shorthand parameters
+# (`input int shtf_a, shtf_b`): the bare `shtf_b` gets its own slot with
+# the inherited type.
 
 SV_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/ref_rename_sighelp.sv"
 SYSTASK_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/sighelp_systask.sv"
 KEYWORD_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/sighelp_keywords.sv"
 MACRO_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/sighelp_macros.sv"
+SHORTHAND_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/sighelp_shorthand.sv"
 
 section "signature help (textDocument/signatureHelp)"
 
@@ -65,7 +70,8 @@ if [ ! -x "${SVLSP_BIN}" ]; then
         "module instantiation port labels carry their declared type, including a default value" \
         "system function signature from the static table, variadic tail active" \
         "for header signature from the keyword table, semicolon-separated" \
-        "macro signature from an included define-only header, default rendered"
+        "macro signature from an included define-only header, default rendered" \
+        "comma-shorthand parameter gets its own slot with the inherited type"
     do
         skip_test "$name" "svlsp binary not found at ${SVLSP_BIN}"
     done
@@ -296,6 +302,28 @@ else
                       (string= label \"\`SH29M_LOG(ID, MSG, VERB = 1)\")
                       (eql (length params) 3)
                       (eql active 2))
+                 t nil))
+         (error (format \"elisp-error: %s\" (error-message-string err))))" \
+        "t"
+
+    run_test "comma-shorthand parameter gets its own slot with the inherited type" \
+        "(condition-case err
+           (let* ((buf    (svlsp-test/open-file \"${SHORTHAND_FIXTURE}\"))
+                  (ok     (with-current-buffer buf (svlsp-test/wait-for-lsp 15)))
+                  (result (when ok
+                            (with-current-buffer buf
+                              (lsp-request \"textDocument/signatureHelp\"
+                                           (list :textDocument (list :uri (lsp--buffer-uri))
+                                                 :position     (list :line 8 :character 22))))))
+                  (sig     (when result (aref (gethash \"signatures\" result) 0)))
+                  (label   (when sig (gethash \"label\" sig)))
+                  (params  (when sig (gethash \"parameters\" sig)))
+                  (active  (when sig (gethash \"activeParameter\" sig))))
+             (svlsp-test/close-file buf)
+             (if (and ok sig
+                      (string= label \"shtf_add(int shtf_a, int shtf_b, output bit shtf_c)\")
+                      (eql (length params) 3)
+                      (eql active 1))
                  t nil))
          (error (format \"elisp-error: %s\" (error-message-string err))))" \
         "t"
