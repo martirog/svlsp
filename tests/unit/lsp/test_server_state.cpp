@@ -51,6 +51,20 @@ TEST_CASE("ServerState: initialize returns textDocumentSync capability", "[lifec
     REQUIRE(result.capabilities.textDocumentSync.has_value());
 }
 
+TEST_CASE("ServerState: signature help triggers on '(' and ',' and re-triggers on ';'",
+          "[lifecycle][signature_help]")
+{
+    ServerState s;
+    auto result = s.handleInitialize(makeParams());
+    REQUIRE(result.capabilities.signatureHelpProvider.has_value());
+    const auto& opts = *result.capabilities.signatureHelpProvider;
+    REQUIRE(opts.triggerCharacters.has_value());
+    CHECK(*opts.triggerCharacters == lsp::Array<lsp::String>{"(", ","});
+    // `for (init; cond; step)` moves to the next slot on ';'.
+    REQUIRE(opts.retriggerCharacters.has_value());
+    CHECK(*opts.retriggerCharacters == lsp::Array<lsp::String>{";"});
+}
+
 TEST_CASE("ServerState: double initialize throws RequestError", "[lifecycle]")
 {
     ServerState s;

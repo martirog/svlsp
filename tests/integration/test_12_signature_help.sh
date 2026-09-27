@@ -77,7 +77,8 @@ if [ ! -x "${SVLSP_BIN}" ]; then
         "for header signature from the keyword table, semicolon-separated" \
         "macro signature from an included define-only header, default rendered" \
         "comma-shorthand parameter gets its own slot with the inherited type" \
-        "new( shows the constructed class's constructor, not the enclosing class's"
+        "new( shows the constructed class's constructor, not the enclosing class's" \
+        "server advertises ( and , as trigger characters and ; as a retrigger"
     do
         skip_test "$name" "svlsp binary not found at ${SVLSP_BIN}"
     done
@@ -353,6 +354,20 @@ else
                       (eql (length params) 2)
                       (eql active 1))
                  t nil))
+         (error (format \"elisp-error: %s\" (error-message-string err))))" \
+        "t"
+
+    run_test "server advertises ( and , as trigger characters and ; as a retrigger" \
+        "(condition-case err
+           (let* ((buf  (svlsp-test/open-file \"${SHORTHAND_FIXTURE}\"))
+                  (ok   (with-current-buffer buf (svlsp-test/wait-for-lsp 15)))
+                  (opts (when ok (with-current-buffer buf
+                                   (lsp--capability \"signatureHelpProvider\"))))
+                  (trig (when (hash-table-p opts) (append (gethash \"triggerCharacters\" opts) nil)))
+                  (retr (when (hash-table-p opts) (append (gethash \"retriggerCharacters\" opts) nil))))
+             (svlsp-test/close-file buf)
+             (if (and ok (equal trig '(\"(\" \",\")) (equal retr '(\";\"))) t
+               (format \"trigger=%S retrigger=%S\" trig retr)))
          (error (format \"elisp-error: %s\" (error-message-string err))))" \
         "t"
 fi

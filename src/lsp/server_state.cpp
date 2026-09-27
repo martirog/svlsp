@@ -24,7 +24,13 @@ auto ServerState::handleInitialize(lsp::InitializeParams params)
             },
             .completionProvider  = lsp::CompletionOptions{},
             .hoverProvider            = lsp::OneOf<bool, lsp::HoverOptions>(true),
-            .signatureHelpProvider    = lsp::SignatureHelpOptions{},
+            // Every signature shape opens with '(' and advances on ','; a
+            // `for (...)` header advances on ';', which only needs to
+            // re-trigger help that is already showing.
+            .signatureHelpProvider    = lsp::SignatureHelpOptions{
+                .triggerCharacters   = lsp::Array<lsp::String>{"(", ","},
+                .retriggerCharacters = lsp::Array<lsp::String>{";"},
+            },
             .definitionProvider       = lsp::OneOf<bool, lsp::DefinitionOptions>(true),
             .referencesProvider      = lsp::OneOf<bool, lsp::ReferenceOptions>(true),
             .documentSymbolProvider  = lsp::OneOf<bool, lsp::DocumentSymbolOptions>(true),
