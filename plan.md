@@ -5074,6 +5074,117 @@ file contains a declaration or import that could reach `target`.
 
 ---
 
+### 6.31 Doc Comments on Declarations (Hover, Signature Help, Completion)
+
+**Status:** planned 2026-09-27 (research done, decisions below confirmed
+by the user). Not started.
+
+**Goal:** a comment block directly above a declaration (no blank line in
+between) is recorded as that declaration's docstring, for modules,
+interfaces, programs, packages, classes, functions, tasks, ports,
+parameters, signals/fields, typedefs, enum literals, struct members and
+`` `define``s. Hover, signature help and completion show it.
+
+**Research findings:**
+- The lexer puts `ONE_LINE_COMMENT`, `BLOCK_COMMENT` and `WHITE_SPACE` on
+  the HIDDEN channel (`grammar/Sv.g4:3786-3788`), and the preprocessor
+  keeps comments in its output, so `SvTreeWalker`'s `m_tokens` has them.
+- The preprocessor emits a blank line for every directive and every line
+  of an inactive `` `ifdef `` branch, and `m_sourceMap` maps each output
+  line to its original (file, line).
+- The user's code documents methods directly above, with qualifiers
+  before the keyword (`// put all policy's you want` above
+  `pure virtual function void put_policy(...)`, `policy_api.sv`).
+- UVM mostly puts a `// @uvm-ieee 1800.2-2020 auto 13.1.3.3` tag directly
+  above and the real doc one blank line higher. Across UVM's
+  class/function/task/module/interface/package/typedef lines: 669 have a
+  real doc directly above, 1607 only a tag (748 of those with a doc one
+  blank line up), 2476 nothing.
+
+**Decisions (confirmed):**
+- *Strict adjacency.* Only a comment block whose last line is the line
+  directly above the declaration counts. A block that is nothing but tag
+  lines (`@uvm-ieee ...`) or separator lines (`//----`, `//====`) is no
+  doc; there is no skipping over a blank line.
+- *Trailing fallback.* When nothing is above, a comment after the
+  declaration on its own line (`int count; // number of items`,
+  `input clk, // main clock`) is the doc.
+- *First round covers* hover, signature help, completion (via
+  `completionItem/resolve`) and macros.
+
+**Extraction rules (walker):**
+1. Anchor: the declaration's first token, i.e. the listener ctx's start
+   token moved left over default-channel tokens on the same line (so
+   `pure virtual`, `protected`, `extern`, `local`, `static` and
+   attributes on that line are included). Two declarations on one line
+   (`int a; int b;`) share the doc above; accepted.
+2. Walk the hidden tokens left of the anchor. Collect comment tokens that
+   are each the first non-whitespace on their original line, whose
+   original lines are consecutive and in the anchor's file, the last one
+   ending on the anchor's original line - 1. Contiguity is checked on
+   `m_sourceMap` (file, line), so a blank line, a directive, an inactive
+   `` `ifdef `` or an `` `include `` boundary breaks it. A comment that
+   follows code on its line (a trailing comment of the previous
+   declaration) stops the walk.
+3. Trailing fallback: the first comment token after the declaration's
+   last token on the same original line (for a port or enum literal, after
+   the following `,`).
+4. Cleanup: strip `//`, `///`, `/*`, `/**`, `*/` and a leading ` * `;
+   drop separator lines and tag-only lines; dedent; keep line breaks;
+   trim leading/trailing empty lines. An empty result is no doc.
+5. Macros: `SvPreprocessor` records the doc of each `` `define `` from the
+   raw lines above it in the same file (same rules, text-based), and
+   the trailing comment already split off the define line as fallback.
+
+**Storage (schema v11):**
+- New table `symbol_docs(file_id, line, col, doc)`, replaced per file
+  with the symbols, keyed by position (not symbol id, which collides
+  across attached DBs). `ParseRecord` gains `doc`; `replaceSymbols`
+  writes the non-empty ones.
+- `SymbolDatabase::docFor(const SymbolRow&)`: looks up (path, line, col)
+  in the main schema and every attached library DB that has the table (a
+  library built before v11 has no docs until rebuilt).
+- `macros.doc` column (the `macros.body` precedent: an attached DB
+  without it reads as empty). `MacroRow` gains `doc`.
+- Not a column on `symbols`: `findSymbolsVisibleAt` loads hundreds of
+  rows per completion request and every symbol projection (4 places)
+  would change.
+
+**Providers:**
+- Hover: doc rendered under the existing header (plain paragraphs, line
+  breaks kept). For a method, the resolver lands on the extern
+  prototype; if the prototype has no doc, use the out-of-class body's.
+- Signature help: `SignatureInformation.documentation` for functions,
+  tasks, constructors, modules/interfaces/programs and macros (the field
+  is already set for system tasks and keywords).
+- Completion: advertise `resolveProvider`; items carry enough `data`
+  (path, line, col or macro name) for `completionItem/resolve` to fill
+  `documentation`. No doc fetched for the whole list.
+
+**Verification plan:**
+- Unit (walker): doc directly above; blank line between (none); trailing
+  comment of the previous line not taken; qualifiers before the keyword;
+  block comment and `/** */`; `` `ifdef``/`` `define`` line between
+  (none); comment at the end of an `` `include``d file not attached to the
+  includer's next declaration; ports, enum literals, class fields,
+  typedefs; trailing fallback; tag-only and separator-only blocks (none);
+  cleanup output.
+- Unit (DB): round trip, replace on recompile, attached library with and
+  without the table, schema migration v10 → v11.
+- Unit (providers): hover, signature help, completion resolve, macro doc,
+  prototype/body fallback.
+- Emacs: hover and signature help on a documented fixture; completion
+  resolve.
+- UVM corpus: count of recorded docs, and a spot check (e.g. a method
+  with a real doc directly above, and a `@uvm-ieee`-only one with none).
+  `--build-db` time and size before/after.
+
+**Out of scope:** NaturalDocs formatting (`//|` example blocks as code,
+`~arg~` emphasis), skipping blank lines, docs in workspace/document
+symbols.
+
+---
+
 ## Appendix A — Technology Stack Summary
 
 | Concern | Choice | Rationale |

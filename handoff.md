@@ -11,8 +11,9 @@ write-up) — read the relevant section there rather than looking for it here.
 
 ## Current state
 
-**PICK UP HERE NEXT TIME — no section is queued; pick from "Next up"
-below with the user.** The §6.30 follow-ups for constructors, typedef
+**PICK UP HERE NEXT TIME — plan.md §6.31 (doc comments on declarations)
+is planned and its decisions are confirmed; implement it when the user
+says so.** The §6.30 follow-ups for constructors, typedef
 aliases and inherited completion are done (plan.md §6.30, the two
 "Follow-up" entries); what remains of item 0 is disclosed limits.
 
