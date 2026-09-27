@@ -22,12 +22,12 @@ aliases and inherited completion are done (plan.md §6.30, the two
   `input int`; LRM 13.3 inheritance in `enterTf_port_item`), and
   constructors (recorded, resolved by context), typedef aliases followed
   to their class, inherited members in bare-name completion, and
-  signature-help trigger characters (`(`, `,`; retrigger `;`), and
-  macros in workspace symbols.
+  signature-help trigger characters (`(`, `,`; retrigger `;`), macros
+  in workspace symbols, and no completion inside comments/strings.
 - Test baselines:
-  - unit: **873 cases**, all passing (no `[!shouldfail]` known gaps left
+  - unit: **875 cases**, all passing (no `[!shouldfail]` known gaps left
     -- the `` `define `` references case passes since the macro follow-up)
-  - Emacs functional: **253/253**
+  - Emacs functional: **254/254**
   - UVM corpus (opt-in): **1122 assertions / 25 cases**, all passing.
     (+16: the workspace-symbol macro case -- 4 fixed checks plus 2 per
     result for the 6 `uvm_info*` macros.)
@@ -87,8 +87,7 @@ aliases and inherited completion are done (plan.md §6.30, the two
 
 ## Next up — candidates
 
-- The "Other open work" list below (item 1, completion inside comments
-  and strings, is the next user-visible bug).
+- The "Other open work" list below.
 
 What §6.29 changed that other work must know about:
 - Macros live in their own `macros` table (schema v10: name, file, line,
@@ -122,26 +121,19 @@ What §6.29 changed that other work must know about:
    - a class's own members are found from an out-of-class body in another
      file, but the visible set's local chain (and so completion) still only
      covers the cursor's file.
-1. **Completion still uses `wordAtPosition`, which ignores comments/
-   strings.** Hover/definition/references/rename are fixed (they use the
-   resolver, which blanks comments and strings; unit-tested in
-   `test_hover.cpp`). Completion typed inside a comment or string still
-   offers symbols. Original report: hovering `put` in `endfunction // put`
-   (`/home/martin/src/policy/policy_mixin.sv:37`) returned an unrelated
-   `uvm_cache` method. No functional (Emacs) test for the comment case yet.
-2. **§6.21** semantic reference-resolution diagnostics (unresolved type/import)
+1. **§6.21** semantic reference-resolution diagnostics (unresolved type/import)
    — not started. Related real bug: a live edit's `replaceDiagnostics` wipes
    diagnostics `LibraryResolver` appended earlier (one undiscriminated
    `diagnostics` table).
-3. **§6.24** audit compiler warnings from `tools/build.sh` — not started.
-4. **§6.12** configurable debounce interval (`debounceMs`) — not started.
-5. **§6.20** external read-only DB access — not started.
-6. **§6.22 follow-up**: UVM-corpus coverage for rename (references has
+2. **§6.24** audit compiler warnings from `tools/build.sh` — not started.
+3. **§6.12** configurable debounce interval (`debounceMs`) — not started.
+4. **§6.20** external read-only DB access — not started.
+5. **§6.22 follow-up**: UVM-corpus coverage for rename (references has
    it since §6.30 step B, `tests/uvm_corpus/test_references_uvm.cpp`).
-7. **§6.19** library-DB staleness detection (source changed since build) —
+6. **§6.19** library-DB staleness detection (source changed since build) —
    open question, no shape chosen.
-8. **§6.5** performance — open; see "Known gaps" for the concrete costs.
-9. Minor: comment at `pathToUri()` explaining that `fromPath()` always
+7. **§6.5** performance — open; see "Known gaps" for the concrete costs.
+8. Minor: comment at `pathToUri()` explaining that `fromPath()` always
     absolutizes.
 
 ---
@@ -340,6 +332,10 @@ macro's result.
   `examples/**`.
 - Append new signature-help fixtures to the **end** of
   `fixtures/ref_rename_sighelp.sv` so existing hardcoded line numbers stay valid.
+- Completion probes (`probe: w.` text at a fixed position) go on lines
+  inside a never-defined `` `ifdef SVLSP_TEST_PROBES `` ... `` `endif ``,
+  never in a `//` comment: completion offers nothing inside a comment or
+  string, and bare probe text on a code line gets parsed as a declaration.
 - Wrap all Elisp in `condition-case` (the script is `set -euo pipefail`).
   `(lsp-workspaces)` is buffer-local. `lsp-request` returns `nil` for JSON null.
 - Timing-sensitive tests: set `lsp-idle-delay` **before** `(lsp)` connects.

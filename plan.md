@@ -4689,6 +4689,17 @@ known `data_type` ambiguity).
 - `HoverProvider`/`DefinitionProvider` call `resolveSymbolAt` and render
   its `row`; `wordAtPosition`/`findSymbolsByName` are gone from both. A
   cursor inside a comment or string now hovers/jumps to nothing.
+  **Completion followed 2026-09-27:** `insideCommentOrString(text,
+  offset)` (the same scanner as `blankCommentsAndStrings`, now shared)
+  makes completion return null inside a comment or string. Nine Emacs
+  fixtures and two library-attach unit tests had put their probes in
+  `// probe: ...` comments (to keep the parser from reading them as
+  declarations), so they relied on this bug. Their probes now sit in a
+  never-defined `` `ifdef SVLSP_TEST_PROBES `` (the preprocessor drops
+  them; completion reads the raw text); `//` became two spaces so columns
+  are unchanged, and the fuzzy / chained / typedef probes moved down one
+  to three lines. keyword_completion.sv keeps its comment probes: those
+  tests complete at column 0, before the comment starts.
 - New `resolveSymbolsAt(db, path, text, positions)` resolves many
   positions in one file with one comment/string-blanked copy of the text
   (references resolves every lexical hit; `resolveSymbolAt` re-blanks the
