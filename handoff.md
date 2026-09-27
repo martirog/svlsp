@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-09-27 (comma-shorthand parameters fixed; §6.30 follow-ups in progress, constructors first).
+**Last updated:** 2026-09-27 (comma-shorthand parameters and §6.30 constructor follow-up done).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -11,25 +11,29 @@ write-up) — read the relevant section there rather than looking for it here.
 
 ## Current state
 
-**PICK UP HERE NEXT TIME — §6.30 follow-ups (item 0 of "Other open
-work"), starting with recording constructors.** §6.29, §6.30 and the
-comma-shorthand parameter fix are complete.
+**PICK UP HERE NEXT TIME — the remaining §6.30 follow-ups (item 0 of
+"Other open work"): Typedef-to-class resolution, then inherited members
+in bare-name completion.** Constructors are done (plan.md §6.30
+"Follow-up: constructors").
 
 - Committed on `main`: everything through §6.30 and §6.29, including
   macro hover/definition/references/rename, and the comma-shorthand
   parameter fix (`function f(input int a, b)` now records `b` as
-  `input int`; LRM 13.3 inheritance in `enterTf_port_item`).
+  `input int`; LRM 13.3 inheritance in `enterTf_port_item`), and
+  constructors (recorded, resolved by context).
 - Test baselines:
-  - unit: **848 cases**, all passing (no `[!shouldfail]` known gaps left
+  - unit: **862 cases**, all passing (no `[!shouldfail]` known gaps left
     -- the `` `define `` references case passes since the macro follow-up)
-  - Emacs functional: **245/245**
-  - UVM corpus (opt-in): **1031 assertions / 22 cases**, all passing.
+  - Emacs functional: **248/248**
+  - UVM corpus (opt-in): **1018 assertions / 22 cases**, all passing.
+    (1031 → 1018 with constructors: the empty-prefix completion list lost
+    13 leaked constructor arguments/locals, 264 → 251 items, diffed.)
     (499 at §6.30 step C → 388 at step D: the empty-prefix completion
     case checks each item and step D's (name, kind) dedup removed 124
     duplicates; +10 for §6.29 part A; +633 for the macro follow-up, whose
     references case checks each of its 313 locations.)
-  - UVM corpus `--build-db`: **1 diagnostic, 15327 symbol rows, 553
-    macro rows, 163 files** (~17 min, ~7 GB RSS; don't run it at the same
+  - UVM corpus `--build-db`: **1 diagnostic, 15731 symbol rows, 553
+    macro rows, 163 files** (~15 min, ~7 GB RSS; don't run it at the same
     time as the corpus tests, and a laptop suspend pauses either; when
     waiting on one from a script, don't `pgrep -f` its command line --
     the waiting shell's own command line matches)
@@ -62,6 +66,17 @@ comma-shorthand parameter fix are complete.
   (`defref_pkg_b`, `defref_top_b`), step-C kinds (`defref_kinds`) and an
   out-of-class body (`defref_ooc_p`); append new cases after them.
 
+**What the constructor follow-up changed that other work must know about:**
+- Function rows named `new` now exist (scope = the class, body frame
+  `<class>::new`). `new` is resolved only by context
+  (`resolveNew` in `symbol_resolution.cpp`), never by name; completion
+  skips these rows; rename refuses them; `overrideFamilyId` never merges
+  constructors across a hierarchy.
+- `T x = new(...)` / `v[] = new[n]` declarations are recorded now (they
+  parse through `class_variable_identifier` /
+  `dynamic_array_variable_identifier`): use `declaredVariable(vda)` in the
+  walker, never `vda->variable_identifier()` directly.
+
 ## Next up — candidates
 
 - **Advertise `triggerCharacters = {"(", ","}`** for signature help in
@@ -93,12 +108,6 @@ What §6.29 changed that other work must know about:
 ## Other open work (priority roughly top-down)
 
 0. **§6.30 follow-ups** (none blocking):
-   - constructors are never recorded (no `class_constructor_declaration`
-     handler): `function C::new(...)` has no Function row and its
-     arguments/locals land in the enclosing package's scope, visible
-     package-wide (e.g. `error_str`, `top`, `cs` from
-     `uvm_component::new` in `uvm_pkg`). In-class `new` isn't recorded
-     either;
    - the resolver doesn't follow a Typedef to the class it aliases
      (`alias_t x; x.get()` resolves `get` by name only);
    - bare-name completion never offers inherited class members (dot-

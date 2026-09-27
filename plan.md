@@ -4907,6 +4907,63 @@ name, uvm_component parent)` has no Function row, and its arguments and
 locals (`error_str`, `top`, `cs`, ...) are recorded in `uvm_pkg` scope,
 where they are visible package-wide.
 
+**Follow-up: constructors (2026-09-27).** Fixed.
+- *Recording.* `enterClass_constructor_declaration` /
+  `enterClass_constructor_prototype` record Function `new` exactly like a
+  method: in the class's scope, with a `<class>::new` frame for the body
+  (`pushOutOfClassBody` for `function C::new`). Arguments and locals
+  now nest under it. `new` is a literal token, found by `newKeyword()`.
+- *Found on the way, also fixed:* a declaration initialized with a
+  constructor (`T x = new(...)`, `T x = new;`) or a dynamic-array `new[n]`
+  was never recorded. `new(...)` isn't an `expression`, so ANTLR takes
+  `variable_decl_assignment`'s `class_new` / `dynamic_array_new`
+  alternatives, whose identifier sits under `class_variable_identifier` /
+  `dynamic_array_variable_identifier`. The walker only read
+  `variable_identifier()`. `declaredVariable()` reads all three, and the
+  dynamic alternative's leading `[]` is tagged `$dynamic_array`.
+- *Resolution by context, never by name.* A `new` row found by name
+  would be an arbitrary class's constructor (the probe showed `x = new(1)`
+  in class B hovering B's `new` although `x` is an A). The resolver's
+  `resolveNew` handles `new` before every other shape:
+  - a constructor's own declaration resolves to that class's constructor;
+  - `super.new` resolves to the parent's own constructor;
+  - `C::new` resolves to that class's constructor;
+  - `lhs = new` / `T v = new` resolves to the class of `lhs`, re-read as a
+    receiver chain by appending a `.` and reusing `dotCompletionContext` +
+    `resolveReceiver`;
+  - anything else (`new[n]`, `new obj`, `return new`, an argument) is
+    nothing.
+
+  Constructors are never inherited, so only the class's own `new` counts
+  (`constructorIn`, earliest row, so the extern prototype wins over its
+  body). `overrideFamilyId` makes each class's `new` its own family.
+- *Providers.*
+  - Signature help routes `new(` through the resolver: new feature,
+    constructor signatures for `x = new(`, `T v = new(`, `super.new(`.
+  - Completion drops Function `new` rows (`obj.new` isn't legal; the
+    keyword is still offered).
+  - Rename refuses a constructor with an InvalidParams error.
+  - References returns the class's own declarations and the `new`s that
+    construct it.
+- *Verification.*
+  - Unit: 862 cases, all passing.
+  - Emacs: 248/248 (new `sighelp_ctor.sv` case in test_12; definition +
+    references cases appended to `defref_top.sv` for test_40).
+  - UVM corpus: 1018 assertions / 22 cases, all passing (1031 before). The
+    −13 is the empty-prefix completion case, which checks each item: its
+    list went 264 → 251. The dropped items were diffed against the old
+    build and all 13 are constructor arguments/locals that used to leak
+    into `uvm_component`/`uvm_pkg` scope: `name`, `parent`, `error_str`,
+    `top`, `cs`, `bld`, `common`, `found`, `rp`, `rq`, `rsrc`, and the
+    macro-expanded `__tmp_rsrc__` / `_local_report_object_`. Nothing was
+    added.
+  - `--build-db`: 1 diagnostic (unchanged), 15731 symbol rows (15327
+    before; +404 = 318 constructor rows + 86 `T x = new` declarations now
+    recorded), 553 macro rows, 163 files, 14m42s, 6.96 GB max RSS.
+- *Not done:* `return new(...)` (would need the enclosing function's
+  return type) and `new` passed as an argument get no constructor
+  resolution. `super.` dot-completion doesn't offer `new`.
+
 **Ordering:** wildcard-import same-file fix (with its own test, done) → A → B
 (hover/definition first, then references + rename) → C → D. After each
 step, remove the `[!shouldfail]` tag from every test that now passes:
