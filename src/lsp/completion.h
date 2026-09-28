@@ -13,4 +13,11 @@ public:
     static lsp::TextDocument_CompletionResult getCompletion(
         const lsp::CompletionParams& params, SymbolDatabase& db, const std::string& docText,
         bool fuzzyEnabled = true);
+
+    // completionItem/resolve (plan.md §6.31): fills `documentation` from the
+    // doc comment of the symbol the item's `data` names (path, line, col,
+    // kind, scope -- set by getCompletion on every DB-symbol item). An item
+    // without `data` (a keyword, a built-in method) or without a doc comes
+    // back unchanged.
+    static lsp::CompletionItem resolve(lsp::CompletionItem item, SymbolDatabase& db);
 };

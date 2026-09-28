@@ -25,7 +25,7 @@
 #
 # Line-number reference (1-based -> LSP 0-based):
 #   user_ref.sv:7        -> LSP line 6, char 2  — "  DisambigTarget obj;"
-#   zzz_class_decl.sv:5  -> LSP line 4, char 6  — "class DisambigTarget;"
+#   zzz_class_decl.sv:7  -> LSP line 6, char 6  — "class DisambigTarget;"
 #   aaa_signal_holder.sv:7 -> LSP line 6, char 8 — "  logic DisambigTarget;"
 
 USER_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/kind_tiebreak/user_ref.sv"
@@ -91,7 +91,7 @@ run_test "definition: cross-file reference resolves into zzz_class_decl.sv, not 
     "t"
 
 # The resolved location must be the Class's own declaration line (LSP
-# line 4, 0-based -- "class DisambigTarget;" at 1-based line 5).
+# line 6, 0-based -- "class DisambigTarget;" at 1-based line 7).
 run_test "definition: cross-file reference resolves to the Class's declaration line" \
     "(condition-case err
        (let* ((buf    (svlsp-test/open-file \"${USER_FIXTURE}\"))
@@ -106,7 +106,7 @@ run_test "definition: cross-file reference resolves to the Class's declaration l
                         (gethash \"line\"
                                  (gethash \"start\" (gethash \"range\" loc))))))
          (svlsp-test/close-file buf)
-         (if (and ok (equal line 4)) t nil))
+         (if (and ok (equal line 6)) t nil))
      (error (format \"elisp-error: %s\" (error-message-string err))))" \
     "t"
 

@@ -50,6 +50,7 @@ struct MacroRow {
     std::vector<std::optional<std::string>> defaults; // parallel to params
     std::string filePath;
     std::string body; // empty from a library DB built before schema v10
+    std::string doc;  // plan.md §6.31; empty from a library DB built before schema v11
 };
 
 // Typed access layer over the svlsp SQLite schema.
@@ -143,8 +144,13 @@ public:
     std::vector<ImportRow> importsForFile(const std::string& path) const;
 
     // Delete all symbols for `fileId` then insert `records` in a single
-    // transaction.
+    // transaction. Each record's non-empty `doc` goes to symbol_docs.
     void replaceSymbols(int64_t fileId, const std::vector<ParseRecord>& records);
+
+    // The doc comment recorded for `sym` (plan.md §6.31), from this DB or
+    // the attached library DB it came from; "" when it has none (or its
+    // library was built before schema v11).
+    std::string docFor(const SymbolRow& sym) const;
 
     // Delete all diagnostics for `fileId` then insert `errors`.
     void replaceDiagnostics(int64_t fileId, const std::vector<ParseError>& errors);

@@ -15,6 +15,7 @@ lsp::TextDocument_HoverResult macroHover(const MacroNameAt& at, SymbolDatabase& 
     if (!macro) return nullptr;
 
     std::string content = "**Macro** `` " + macroSignature(*macro) + " ``";
+    if (!macro->doc.empty()) content += "\n\n" + docMarkdown(macro->doc);
     if (!macro->body.empty()) {
         std::string body = macro->body;
         if (body.size() > kMaxMacroBody) body = body.substr(0, kMaxMacroBody) + " …";
@@ -47,6 +48,8 @@ lsp::TextDocument_HoverResult HoverProvider::getHover(
     std::string content = "**" + best.kind + "** `" + best.name + "`";
     if (!best.detail.empty())
         content += " → `" + best.detail + "`";  // →
+    if (const std::string doc = symbolDoc(db, best); !doc.empty())
+        content += "\n\n" + docMarkdown(doc);
     if (!best.scope.empty())
         content += "\n\nin *" + best.scope + "*";
 

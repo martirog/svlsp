@@ -4,7 +4,7 @@ namespace db {
 
 // Current schema version.  Increment and add a migration in Database::initSchema
 // whenever the schema changes.
-inline constexpr int SCHEMA_VERSION = 10;
+inline constexpr int SCHEMA_VERSION = 11;
 
 // DDL executed on a fresh (version-0) database — always reflects the latest schema.
 inline constexpr const char* SCHEMA_DDL = R"sql(
@@ -131,7 +131,8 @@ CREATE INDEX idx_file_includes_included ON file_includes(included_file_id);
 -- active branch, attributed to the file it's written in. `params` holds
 -- one entry per parameter, "NAME" or "NAME=default", separated by U+001F;
 -- `body` is the macro body (continuation lines joined, trailing comment
--- stripped), shown by hover (schema v10).
+-- stripped), shown by hover (schema v10). `doc` is the comment block
+-- documenting the `define (plan.md §6.31, schema v11).
 CREATE TABLE macros (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     file_id          INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
@@ -140,11 +141,36 @@ CREATE TABLE macros (
     col              INTEGER NOT NULL,
     is_function_like INTEGER NOT NULL DEFAULT 0,
     params           TEXT    NOT NULL DEFAULT '',
-    body             TEXT    NOT NULL DEFAULT ''
+    body             TEXT    NOT NULL DEFAULT '',
+    doc              TEXT    NOT NULL DEFAULT ''
 );
 
 CREATE INDEX idx_macros_name    ON macros(name);
 CREATE INDEX idx_macros_file_id ON macros(file_id);
+
+-- Doc comments of declarations (plan.md §6.31), one row per documented
+-- symbol, keyed by the symbol's position rather than symbols.id (ids
+-- collide across attached library DBs). Replaced with the file's symbols.
+CREATE TABLE symbol_docs (
+    file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    line    INTEGER NOT NULL,
+    col     INTEGER NOT NULL,
+    doc     TEXT    NOT NULL,
+    PRIMARY KEY (file_id, line, col)
+) WITHOUT ROWID;
+)sql";
+
+// SQL applied when migrating an existing v10 database to v11.
+inline constexpr const char* MIGRATION_V10_TO_V11 = R"sql(
+ALTER TABLE macros ADD COLUMN doc TEXT NOT NULL DEFAULT '';
+CREATE TABLE IF NOT EXISTS symbol_docs (
+    file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    line    INTEGER NOT NULL,
+    col     INTEGER NOT NULL,
+    doc     TEXT    NOT NULL,
+    PRIMARY KEY (file_id, line, col)
+) WITHOUT ROWID;
+UPDATE schema_version SET version = 11;
 )sql";
 
 // SQL applied when migrating an existing v9 database to v10.

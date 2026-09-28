@@ -116,7 +116,7 @@ int explicitFileCount(const std::string& configPath)
 // actual compile work lives in LibraryDbBuilder (src/lsp/library_db_builder.h),
 // factored out so it's unit-testable; this is just the CLI-facing wrapper.
 // Returns the process exit code.
-int buildDb(const std::string& configPath, const std::string& outputPath)
+int buildDb(const std::string& configPath, const std::string& outputPath, bool collectDocs)
 {
     // Progress feedback goes to stderr as a single growing counter (see
     // ProgressCounterBuf above) -- unlike the server's --log-files (which
@@ -134,7 +134,7 @@ int buildDb(const std::string& configPath, const std::string& outputPath)
     // has no version to offer and passes "" (build()'s default), skipping
     // the check exactly as before this feature existed.
     auto result = LibraryDbBuilder::build(configPath, outputPath, &progressStream,
-                                          SVLSP_GIT_VERSION);
+                                          SVLSP_GIT_VERSION, collectDocs);
     progressBuf.finish();
     if (!result.ok) {
         std::cerr << "svlsp: error parsing '" << configPath << "': " << result.error << '\n';
@@ -167,7 +167,8 @@ int buildDb(const std::string& configPath, const std::string& outputPath)
 // argument after their flag -- `--build-db --output db.f config.f` (flags
 // grouped before their values) is NOT accepted, only `--build-db config.f
 // --output db.f` (each flag immediately followed by its own value); see
-// plan.md §6.19 and docs/usage.md.
+// plan.md §6.19 and docs/usage.md. Adding --no-doc-comments stores no doc
+// comments (plan.md §6.31), for a smaller DB.
 int main(int argc, char** argv)
 {
     // Checked in its own pass, ahead of everything else: --version must
@@ -190,6 +191,7 @@ int main(int argc, char** argv)
     std::ostream* logStream = nullptr;
     std::string buildDbConfigPath;
     std::string buildDbOutputPath;
+    bool collectDocs = true;
     for (int i = 1; i < argc; ++i) {
         // A flag's value is required to be the very next argv entry; if
         // that's missing, or looks like another flag (starts with "--"),
@@ -230,6 +232,8 @@ int main(int argc, char** argv)
                 return 1;
             }
             buildDbOutputPath = argv[++i];
+        } else if (std::strcmp(argv[i], "--no-doc-comments") == 0) {
+            collectDocs = false;
         }
     }
 
@@ -238,7 +242,7 @@ int main(int argc, char** argv)
             std::cerr << "svlsp: --build-db requires --output <db-path>\n";
             return 1;
         }
-        return buildDb(buildDbConfigPath, buildDbOutputPath);
+        return buildDb(buildDbConfigPath, buildDbOutputPath, collectDocs);
     }
 
     auto& io = lsp::io::standardIO();

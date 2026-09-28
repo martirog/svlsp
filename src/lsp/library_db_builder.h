@@ -47,9 +47,15 @@ public:
     // a successful build, but only when it's non-empty -- a caller that
     // didn't supply one never clobbers a real value an earlier --build-db
     // run recorded.
+    //
+    // `collectDocs` false (`--build-db --no-doc-comments`, plan.md §6.31)
+    // stores no doc comments. The setting is part of the recorded build
+    // version, so switching it forces the same full rebuild a new binary
+    // does -- otherwise unchanged files would keep (or keep lacking) docs.
     static Result build(const std::string& configPath, const std::string& outputPath,
                         std::ostream* progressLog = nullptr,
-                        const std::string& currentVersion = "");
+                        const std::string& currentVersion = "",
+                        bool collectDocs = true);
 
     // For each `config.libraryDbSources` entry (plan.md §6.19 piece 3):
     // if its cachePath already exists on disk, leave it alone; otherwise

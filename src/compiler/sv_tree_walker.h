@@ -22,8 +22,12 @@ struct WalkResult {
 // preprocessor), every ParseRecord line and ParseError line is translated back
 // to its original file and line number before being returned.  When empty,
 // ANTLR4 line numbers are used as-is.
+//
+// `collectDocs` false skips doc-comment extraction (ParseRecord::doc stays
+// "", plan.md §6.31).
 class SvTreeWalker {
 public:
     static WalkResult walk(const std::string& source,
-                           const std::vector<SourceLine>& sourceMap = {});
+                           const std::vector<SourceLine>& sourceMap = {},
+                           bool collectDocs = true);
 };

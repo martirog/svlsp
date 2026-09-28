@@ -58,3 +58,52 @@ TEST_CASE("hover: uvm_component itself resolves with its base class in the detai
     CHECK(val.find("Class") != std::string::npos);
     CHECK(val.find("uvm_component") != std::string::npos);
 }
+
+// ---------------------------------------------------------------------------
+// Doc comments (plan.md §6.31)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("hover: an extern prototype with only a tag above shows its body's doc",
+          "[uvm_corpus][hover][phase6.31]") {
+    const std::string text = readCorpusFile("base/uvm_component.svh");
+    // Line 666 (1-based) -> 0-based 665: "  extern virtual function void build();"
+    // under "// @uvm-compat ..." only; the out-of-class body is documented
+    // "// contains default behavior for build_phase()".
+    auto result = HoverProvider::getHover(makeParams("base/uvm_component.svh", 665, 32),
+                                          uvmCorpusDb(), text);
+    REQUIRE_FALSE(result.isNull());
+    const std::string val{std::get<lsp::MarkupContent>(result->contents).value};
+    CHECK(val.find("**Function** `build`") == 0);
+    CHECK(val.find("contains default behavior for build_phase()") != std::string::npos);
+    CHECK(val.find("@uvm") == std::string::npos);
+}
+
+TEST_CASE("hover: a method whose doc sits one blank line above a tag shows none",
+          "[uvm_corpus][hover][phase6.31]") {
+    const std::string text = readCorpusFile("base/uvm_object.svh");
+    // Line 118 (1-based) -> 0-based 117: "  extern virtual function string get_name ();"
+    // -- the real doc is above a blank line and a `@uvm-ieee` tag, and the
+    // body's block above is a `// get_name` / `// ---` banner then a blank.
+    auto result = HoverProvider::getHover(makeParams("base/uvm_object.svh", 117, 35),
+                                          uvmCorpusDb(), text);
+    REQUIRE_FALSE(result.isNull());
+    const std::string val{std::get<lsp::MarkupContent>(result->contents).value};
+    CHECK(val.find("**Function** `get_name`") == 0);
+    CHECK(val.find("Returns the name") == std::string::npos);
+    CHECK(val.find("@uvm") == std::string::npos);
+}
+
+TEST_CASE("doc comments: count recorded across the UVM corpus",
+          "[uvm_corpus][phase6.31]") {
+    auto& db = uvmCorpusDb();
+    int symbols = 0, documented = 0;
+    for (const auto& path : db.allFilePaths())
+        for (const auto& row : db.symbolsForFile(path)) {
+            ++symbols;
+            if (!db.docFor(row).empty()) ++documented;
+        }
+    // Measured 2026-09-28 (the same 960 rows `--build-db` stores in
+    // symbol_docs); a change here means the extraction rules changed.
+    CHECK(symbols == 15731);
+    CHECK(documented == 960);
+}

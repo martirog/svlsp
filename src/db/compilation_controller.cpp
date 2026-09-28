@@ -160,7 +160,9 @@ std::vector<ParseError> CompilationController::compile(const std::string& path,
         for (const auto& [name, value] : config->defines) preprocessor.define(name, value);
     }
     auto preprocessed = preprocessor.process(stripped.source, path, m_log);
-    auto walked       = SvTreeWalker::walk(preprocessed.source, preprocessed.sourceMap);
+    auto walked = SvTreeWalker::walk(preprocessed.source, preprocessed.sourceMap, m_collectDocs);
+    if (!m_collectDocs)
+        for (auto& mac : preprocessed.macros) mac.doc.clear();
 
     // Partition records, errors, imports, and instantiations by their
     // original source file. An empty `file` field means the record belongs

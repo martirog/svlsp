@@ -56,16 +56,24 @@ public:
     // fixed for the server's lifetime -- see plan.md §6.11.
     bool fuzzyCompletionEnabled() const { return m_fuzzyCompletionEnabled; }
 
+    // `initializationOptions.svlsp.docComments` (plan.md §6.31), same rules
+    // as fuzzyCompletion: true unless present and false. Off, no doc
+    // comments are collected into the DB (saves its space), so hover,
+    // signature help and completion show none.
+    bool docCommentsEnabled() const { return m_docCommentsEnabled; }
+
 private:
     std::atomic<Phase> m_phase{Phase::Uninitialized};
     lsp::NullOr<int>   m_parentProcessId;  // for parent-process exit monitoring
     lsp::NullOr<lsp::DocumentUri> m_rootUri;
     std::string        m_explicitProjectConfigPath;
     bool               m_fuzzyCompletionEnabled{true};
+    bool               m_docCommentsEnabled{true};
 
     // Throws lsp::RequestError if the server is not in Active state.
     void requireActive(const char* method) const;
 
     static std::string extractProjectConfigPath(const lsp::InitializeParams& params);
-    static bool extractFuzzyCompletionEnabled(const lsp::InitializeParams& params);
+    // `initializationOptions.svlsp.<key>` when present and a boolean, else true.
+    static bool extractBoolOption(const lsp::InitializeParams& params, std::string_view key);
 };

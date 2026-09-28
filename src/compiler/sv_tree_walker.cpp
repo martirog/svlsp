@@ -1,8 +1,10 @@
 #include "compiler/sv_tree_walker.h"
+#include "compiler/doc_comment.h"
 #include "SvBaseListener.h"
 #include "SvLexer.h"
 #include "SvParser.h"
 #include <antlr4-runtime.h>
+#include <algorithm>
 #include <optional>
 
 // ---------------------------------------------------------------------------
@@ -383,8 +385,8 @@ public:
     // for a multi-token parameter list a person reads character-by-character
     // in a signature-help popup.
     SvRecordListener(const std::vector<SourceLine>& sourceMap,
-                      antlr4::CommonTokenStream* tokens)
-        : m_sourceMap(sourceMap), m_tokens(tokens) {}
+                      antlr4::CommonTokenStream* tokens, bool collectDocs)
+        : m_sourceMap(sourceMap), m_tokens(tokens), m_collectDocs(collectDocs) {}
 
     const std::vector<ParseRecord>&  records() const { return m_records; }
     const std::vector<ImportRecord>& imports() const { return m_imports; }
@@ -536,7 +538,7 @@ public:
         if (auto* fdt = ctx->function_data_type_or_implicit())
             retType = fdt->getText();
         if (auto* cs = ctx->class_scope())
-            pushOutOfClassBody(ParseRecordKind::Function, id, cs, retType);
+            pushOutOfClassBody(ParseRecordKind::Function, id, ctx, cs, retType);
         else
             pushId(ParseRecordKind::Function, id, ctx, currentScope(), retType);
     }
@@ -564,7 +566,7 @@ public:
         auto* id = newKeyword(ctx);
         if (!id) return;
         if (auto* cs = ctx->class_scope())
-            pushOutOfClassBody(ParseRecordKind::Function, id, cs);
+            pushOutOfClassBody(ParseRecordKind::Function, id, ctx, cs);
         else
             pushId(ParseRecordKind::Function, id, ctx, currentScope());
     }
@@ -621,7 +623,7 @@ public:
         if (ctx->task_identifier().empty()) return;
         auto* id = ctx->task_identifier(0)->IDENTIFIER();
         if (auto* cs = ctx->class_scope())
-            pushOutOfClassBody(ParseRecordKind::Task, id, cs);
+            pushOutOfClassBody(ParseRecordKind::Task, id, ctx, cs);
         else
             pushId(ParseRecordKind::Task, id, ctx, currentScope());
     }
@@ -837,7 +839,7 @@ public:
         if (!list) return;
         for (auto* vda : list->variable_decl_assignment())
             if (auto* id = declaredVariable(vda))
-                pushIdInScope(ParseRecordKind::Member, id, scope, currentScope(), typeName);
+                pushIdInScope(ParseRecordKind::Member, id, ctx, scope, currentScope(), typeName);
     }
 
     void enterGenvar_declaration(SvParser::Genvar_declarationContext* ctx) override {
@@ -945,6 +947,7 @@ public:
 private:
     const std::vector<SourceLine>& m_sourceMap;
     antlr4::CommonTokenStream* m_tokens;
+    bool                      m_collectDocs;
     std::vector<ParseRecord>  m_records;
     std::vector<ImportRecord> m_imports;
     std::vector<InstantiationRecord> m_instantiations;
@@ -1003,10 +1006,10 @@ private:
 
     // Push using the identifier token's position (more precise than the rule start).
     void pushId(ParseRecordKind kind, antlr4::tree::TerminalNode* id,
-                antlr4::ParserRuleContext* /*ctx*/,
+                antlr4::ParserRuleContext* ctx,
                 const std::string& parent = "", const std::string& detail = "") {
         if (!id) return;
-        pushIdInScope(kind, id, currentScopeChain(), parent, detail);
+        pushIdInScope(kind, id, ctx, currentScopeChain(), parent, detail);
         // Push this record's name onto the scope stack so nested declarations
         // have it as their parent. Only top-level named scopes push here.
         if (kind == ParseRecordKind::Module   ||
@@ -1029,7 +1032,8 @@ private:
     // p::Outer::Inner); leading segments that restate the enclosing frames
     // are dropped (`p::C` written inside package p is p::C).
     void pushOutOfClassBody(ParseRecordKind kind, antlr4::tree::TerminalNode* id,
-                            SvParser::Class_scopeContext* cs, const std::string& detail = "") {
+                            antlr4::ParserRuleContext* ctx, SvParser::Class_scopeContext* cs,
+                            const std::string& detail = "") {
         if (!id) return;
         std::vector<std::string> segs;
         const std::string written = classTypeName(cs->class_type());
@@ -1041,7 +1045,7 @@ private:
             start = sep + 2;
         }
         if (segs.empty() || segs.back().empty()) {
-            pushId(kind, id, nullptr, currentScope(), detail);
+            pushId(kind, id, ctx, currentScope(), detail);
             return;
         }
         // Drop leading qualifier segments that restate the enclosing frames.
@@ -1054,7 +1058,7 @@ private:
 
         const std::string chain      = currentScopeChain();
         const std::string classScope = chain.empty() ? rel : chain + "::" + rel;
-        pushIdInScope(kind, id, classScope, segs.back(), detail);
+        pushIdInScope(kind, id, ctx, classScope, segs.back(), detail);
         pushScope(rel + "::" + id->getText());
     }
 
@@ -1065,17 +1069,130 @@ private:
 
     // Records `id` with an explicit `scope` instead of the scope stack's
     // chain (struct members live in a scope named after their owner, which
-    // is never on the stack). Never pushes a scope.
+    // is never on the stack). Never pushes a scope. `ctx` is the declaration
+    // the doc comment is looked up around (null: no doc).
     void pushIdInScope(ParseRecordKind kind, antlr4::tree::TerminalNode* id,
-                       const std::string& scope, const std::string& parent = "",
-                       const std::string& detail = "") {
+                       antlr4::ParserRuleContext* ctx, const std::string& scope,
+                       const std::string& parent = "", const std::string& detail = "") {
         if (!id) return;
         auto* tok = id->getSymbol();
         int compiledLine = static_cast<int>(tok->getLine());
         int compiledCol  = static_cast<int>(tok->getCharPositionInLine());
         auto [file, line] = translateLine(compiledLine, m_sourceMap);
         int col = translateColumn(compiledLine, compiledCol, m_sourceMap);
-        m_records.push_back({kind, id->getText(), line, col, parent, detail, 0, scope, file});
+        m_records.push_back({kind, id->getText(), line, col, parent, detail, 0, scope, file,
+                             ctx && m_collectDocs ? docFor(ctx) : std::string{}});
+    }
+
+    // ---- Doc comments (plan.md §6.31) ----
+
+    static bool isComment(const antlr4::Token* t) {
+        return t->getType() == SvLexer::ONE_LINE_COMMENT || t->getType() == SvLexer::BLOCK_COMMENT;
+    }
+
+    // Compiled line a comment ends on (a line comment's token carries its
+    // newline, so that is its own line).
+    static int lastLineOf(const antlr4::Token* t) {
+        int line = static_cast<int>(t->getLine());
+        if (t->getType() == SvLexer::BLOCK_COMMENT) {
+            const std::string text = t->getText();
+            line += static_cast<int>(std::count(text.begin(), text.end(), '\n'));
+        }
+        return line;
+    }
+
+    // A token that ends the previous construct: the declaration starts after it.
+    static bool endsConstruct(const std::string& text) {
+        static const char* const kEnds[] = {";", ",", "(", ")", "{", "}", "begin", "fork",
+                                            "join", "join_any", "join_none"};
+        for (const char* e : kEnds)
+            if (text == e) return true;
+        return text.rfind("end", 0) == 0; // end, endfunction, endclass, ...
+    }
+
+    // The declaration's first token: ctx's start moved left over the
+    // qualifiers written before it on the same line (`pure virtual`,
+    // `protected`, `extern`, `rand`, a variable's type, ...).
+    antlr4::Token* declarationAnchor(antlr4::ParserRuleContext* ctx) const {
+        antlr4::Token* anchor = ctx->getStart();
+        const size_t line = anchor->getLine();
+        for (size_t i = anchor->getTokenIndex(); i-- > 0;) {
+            antlr4::Token* t = m_tokens->get(i);
+            if (t->getChannel() != antlr4::Token::DEFAULT_CHANNEL) continue;
+            if (t->getLine() != line || endsConstruct(t->getText())) break;
+            anchor = t;
+        }
+        return anchor;
+    }
+
+    // True when only whitespace precedes token `i` on its line.
+    bool startsLine(size_t i) const {
+        while (i-- > 0) {
+            antlr4::Token* t = m_tokens->get(i);
+            if (t->getType() == SvLexer::ONE_LINE_COMMENT) return true;
+            if (t->getType() != SvLexer::WHITE_SPACE) return false;
+            if (t->getText().find('\n') != std::string::npos) return true;
+        }
+        return true;
+    }
+
+    // The comment block ending on the line directly above `anchor`: comments
+    // that each start their line, on consecutive lines of the anchor's own
+    // file. Consecutive in both the compiled output and the original file,
+    // so a blank line, a directive, an inactive `ifdef or an `include
+    // boundary between them breaks the block.
+    std::string docAbove(const antlr4::Token* anchor) const {
+        const int anchorLine = static_cast<int>(anchor->getLine());
+        const auto [file, origLine] = translateLine(anchorLine, m_sourceMap);
+        auto inPlace = [&](int l) {
+            auto [f, o] = translateLine(l, m_sourceMap);
+            return f == file && o == origLine - (anchorLine - l);
+        };
+        std::vector<std::string> comments;
+        int expected = anchorLine - 1;
+        for (size_t i = anchor->getTokenIndex(); i-- > 0;) {
+            antlr4::Token* t = m_tokens->get(i);
+            if (t->getChannel() == antlr4::Token::DEFAULT_CHANNEL) break;
+            if (!isComment(t)) continue;
+            if (lastLineOf(t) != expected || !startsLine(i)) break;
+            bool contiguous = true;
+            for (int l = static_cast<int>(t->getLine()); l <= expected && contiguous; ++l)
+                contiguous = inPlace(l);
+            if (!contiguous) break;
+            comments.push_back(t->getText());
+            expected = static_cast<int>(t->getLine()) - 1;
+        }
+        std::reverse(comments.begin(), comments.end());
+        return cleanDocComment(comments);
+    }
+
+    // A comment following a one-line declaration on its line, after at most
+    // one `,`/`;` (`int count; // items`, `input clk, // clock`).
+    std::string docAfter(const antlr4::Token* anchor, antlr4::ParserRuleContext* ctx) const {
+        const antlr4::Token* stop = ctx->getStop();
+        if (!stop || stop->getLine() != anchor->getLine()) return "";
+        bool separated = false;
+        for (size_t i = stop->getTokenIndex() + 1; i < m_tokens->size(); ++i) {
+            antlr4::Token* t = m_tokens->get(i);
+            if (t->getType() == antlr4::Token::EOF) break;
+            if (isComment(t))
+                return t->getLine() == stop->getLine() ? cleanDocComment({t->getText()}) : "";
+            if (t->getType() == SvLexer::WHITE_SPACE) {
+                if (t->getText().find('\n') != std::string::npos) break;
+                continue;
+            }
+            const std::string text = t->getText();
+            if (separated || (text != "," && text != ";")) break;
+            separated = true;
+        }
+        return "";
+    }
+
+    std::string docFor(antlr4::ParserRuleContext* ctx) const {
+        if (!ctx->getStart()) return "";
+        const antlr4::Token* anchor = declarationAnchor(ctx);
+        std::string doc = docAbove(anchor);
+        return doc.empty() ? docAfter(anchor, ctx) : doc;
     }
 
     void extractParams(SvParser::List_of_param_assignmentsContext* list,
@@ -1118,7 +1235,8 @@ private:
 // ---------------------------------------------------------------------------
 
 WalkResult SvTreeWalker::walk(const std::string& source,
-                               const std::vector<SourceLine>& sourceMap) {
+                               const std::vector<SourceLine>& sourceMap,
+                               bool collectDocs) {
     antlr4::ANTLRInputStream input(source);
     SvLexer lexer(&input);
     antlr4::CommonTokenStream tokens(&lexer);
@@ -1132,7 +1250,7 @@ WalkResult SvTreeWalker::walk(const std::string& source,
 
     antlr4::tree::ParseTree* tree = parser.source_text();
 
-    SvRecordListener listener(sourceMap, &tokens);
+    SvRecordListener listener(sourceMap, &tokens, collectDocs);
     antlr4::tree::ParseTreeWalker::DEFAULT.walk(&listener, tree);
 
     return {listener.records(), errListener.errors(), listener.imports(), listener.instantiations(),

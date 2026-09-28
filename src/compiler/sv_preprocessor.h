@@ -15,6 +15,7 @@ struct MacroRecord {
     std::vector<std::string> params{};
     // Parallel to `params`; nullopt = no default (`define M(A, B=1)).
     std::vector<std::optional<std::string>> defaults{};
+    std::string doc{};  // cleaned doc comment above/after the `define (plan.md §6.31)
 };
 
 struct PreprocessorResult {

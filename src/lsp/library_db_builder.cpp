@@ -11,9 +11,12 @@
 
 LibraryDbBuilder::Result LibraryDbBuilder::build(
     const std::string& configPath, const std::string& outputPath, std::ostream* progressLog,
-    const std::string& currentVersion)
+    const std::string& currentVersion, bool collectDocs)
 {
     Result result;
+    const std::string buildVersion =
+        currentVersion.empty() || collectDocs ? currentVersion
+                                              : currentVersion + " (no doc comments)";
 
     // Wraps the whole build, not just config parsing: build() must never
     // throw (its documented contract), since a caller reached through a
@@ -57,10 +60,11 @@ LibraryDbBuilder::Result LibraryDbBuilder::build(
         // with no version information -- see build()'s own doc comment)
         // always skips this, preserving every pre-existing call site's
         // behavior exactly.
-        if (!currentVersion.empty() && sdb.builtByVersion() != currentVersion)
+        if (!buildVersion.empty() && sdb.builtByVersion() != buildVersion)
             sdb.resetAllFiles();
 
         CompilationController controller(sdb, progressLog);
+        controller.setCollectDocs(collectDocs);
 
         result.fileCount = ProjectCompiler::loadProject(config, controller, sdb);
 
@@ -71,8 +75,8 @@ LibraryDbBuilder::Result LibraryDbBuilder::build(
         // just this one DB later inherits the full transitive closure, not
         // only this config's own top-level includeDirs.
         sdb.setLibraryIncludeDirs(config.includeDirs);
-        if (!currentVersion.empty())
-            sdb.setBuiltByVersion(currentVersion);
+        if (!buildVersion.empty())
+            sdb.setBuiltByVersion(buildVersion);
 
         if (auto stmt = db.prepare("SELECT COUNT(*) FROM diagnostics"); stmt.step())
             result.diagnosticCount = stmt.columnInt(0);

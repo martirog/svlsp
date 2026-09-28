@@ -62,9 +62,16 @@ public:
                                     std::vector<std::string>* includedFiles = nullptr,
                                     bool forceRecompile = false);
 
+    // Whether doc comments (plan.md §6.31) are extracted and stored; on by
+    // default. Off leaves symbol_docs empty and macros.doc "", saving the
+    // space they take (initializationOptions.svlsp.docComments, and
+    // `--build-db --no-doc-comments`). Applies to files compiled from now on.
+    void setCollectDocs(bool collect) { m_collectDocs = collect; }
+
 private:
     SymbolDatabase& m_sdb;
     std::ostream*   m_log;
+    bool            m_collectDocs{true};
 
     static std::string hashContent(const std::string& text);
 };

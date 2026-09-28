@@ -194,3 +194,11 @@ std::string blankCommentsAndStrings(const std::string& text);
 // is inside a comment or a string literal -- same scanner as
 // blankCommentsAndStrings.
 bool insideCommentOrString(const std::string& text, size_t offset);
+
+// A symbol's doc comment (plan.md §6.31). An extern method's prototype and
+// its out-of-class body are one method: whichever of the two is documented
+// supplies the doc for both.
+std::string symbolDoc(SymbolDatabase& db, const SymbolRow& row);
+
+// `doc` as markdown with its line breaks kept (each one a hard break).
+std::string docMarkdown(const std::string& doc);

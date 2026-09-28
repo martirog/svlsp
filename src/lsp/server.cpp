@@ -136,6 +136,7 @@ void LanguageServer::registerHandlers()
             [this](lsp::InitializeParams&& params) {
                 auto result = m_state.handleInitialize(std::move(params));
                 m_projects.setExplicitConfigPath(m_state.explicitProjectConfigPath());
+                m_compiler.setCollectDocs(m_state.docCommentsEnabled());
                 return result;
             })
         .add<lsp::notifications::Initialized>(
@@ -236,6 +237,11 @@ void LanguageServer::registerHandlers()
                 return CompletionProvider::getCompletion(
                     params, m_symbolDb, m_store.get(params.textDocument.uri).text,
                     m_state.fuzzyCompletionEnabled());
+            })
+        .add<lsp::requests::CompletionItem_Resolve>(
+            [this](lsp::CompletionItem&& item) {
+                std::lock_guard lock{m_dataMutex};
+                return CompletionProvider::resolve(std::move(item), m_symbolDb);
             })
         .add<lsp::requests::TextDocument_DocumentSymbol>(
             [this](lsp::DocumentSymbolParams&& params) {

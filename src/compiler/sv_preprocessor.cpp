@@ -1,5 +1,7 @@
 #include "compiler/sv_preprocessor.h"
 #include "compiler/compiler_directive_stripper.h"
+#include "compiler/doc_comment.h"
+#include <algorithm>
 #include <cassert>
 #include <cctype>
 #include <filesystem>
@@ -377,6 +379,32 @@ static std::optional<ParsedMacro> parseMacroDefinition(std::string_view rest, Ma
     return parsed;
 }
 
+// The doc comment of the `define on 1-based `defineLine` of `lines`
+// (plan.md §6.31): the block of `//` lines and whole-line `/* */` comments
+// directly above it, same rules as SvTreeWalker's declaration docs.
+static std::string macroDocAbove(const std::vector<std::string>& lines, int defineLine) {
+    std::vector<std::string> comments;
+    for (int i = defineLine - 2; i >= 0;) {
+        const std::string_view t = trimSV(lines[i]);
+        if (t.substr(0, 2) == "//") {
+            comments.emplace_back(t);
+            --i;
+            continue;
+        }
+        if (t.size() < 2 || t.substr(t.size() - 2) != "*/") break;
+        int first = i;
+        while (first >= 0 && trimSV(lines[first]).find("/*") == std::string_view::npos) --first;
+        if (first < 0 || trimSV(lines[first]).substr(0, 2) != "/*") break;
+        std::string block;
+        for (int j = first; j <= i; ++j) block += std::string(trimSV(lines[j])) + "\n";
+        block.pop_back();
+        comments.push_back(block);
+        i = first - 1;
+    }
+    std::reverse(comments.begin(), comments.end());
+    return cleanDocComment(comments);
+}
+
 // ---------------------------------------------------------------------------
 // Multi-line macro invocations (no backslash continuation)
 // ---------------------------------------------------------------------------
@@ -508,6 +536,7 @@ static void processSource(const std::string& source, const std::string& filepath
     std::istringstream iss(source);
     std::string line;
     int lineNo = 0;
+    std::vector<std::string> rawLines; // `source` split into lines, on the first `define
 
     // Emit one output line (content + newline) and record its origin in the source map.
     // depth == 0 means we are in the primary compiled file; use "" so callers can
@@ -663,9 +692,16 @@ static void processSource(const std::string& source, const std::string& filepath
             }
             if (auto opt = parseMacroDefinition(mergedRest, ctx.macros, ctx.errors)) {
                 const int column = static_cast<int>(i + opt->nameOffset);
+                if (rawLines.empty()) {
+                    std::istringstream all(source);
+                    for (std::string l; std::getline(all, l);) rawLines.push_back(std::move(l));
+                }
+                std::string doc = macroDocAbove(rawLines, defineLine);
+                if (doc.empty() && lineNo == defineLine)
+                    doc = cleanDocComment({std::string(splitLineComment(mergedRest).second)});
                 ctx.macroRecords.push_back({opt->name, opt->body, defineLine, column, mapFile,
                                             opt->isFunctionLike, std::move(opt->params),
-                                            std::move(opt->defaults)});
+                                            std::move(opt->defaults), std::move(doc)});
             }
         } else if (dir == "undef") {
             ctx.macros.erase(std::string(trimSV(stripLineComment(rest))));

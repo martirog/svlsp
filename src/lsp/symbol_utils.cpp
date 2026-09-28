@@ -544,3 +544,31 @@ bool insideCommentOrString(const std::string& text, size_t offset)
 {
     return scanCommentsAndStrings(text, offset, nullptr);
 }
+
+std::string symbolDoc(SymbolDatabase& db, const SymbolRow& row)
+{
+    std::string doc = db.docFor(row);
+    // Only a class method has a prototype/body pair; at top level ("")
+    // this would scan every top-level symbol.
+    if (!doc.empty() || row.scope.empty() || (row.kind != "Function" && row.kind != "Task"))
+        return doc;
+    for (const auto& other : db.findSymbolsInScope(row.scope)) {
+        if (other.name != row.name || other.kind != row.kind) continue;
+        if (other.filePath == row.filePath && other.line == row.line && other.col == row.col)
+            continue;
+        if (doc = db.docFor(other); !doc.empty()) return doc;
+    }
+    return "";
+}
+
+std::string docMarkdown(const std::string& doc)
+{
+    std::string out;
+    for (size_t i = 0; i < doc.size(); ++i) {
+        if (doc[i] == '\n' && i > 0 && doc[i - 1] != '\n' && i + 1 < doc.size() &&
+            doc[i + 1] != '\n')
+            out += "  ";
+        out += doc[i];
+    }
+    return out;
+}

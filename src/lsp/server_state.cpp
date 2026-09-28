@@ -11,7 +11,8 @@ auto ServerState::handleInitialize(lsp::InitializeParams params)
     m_parentProcessId = params.processId;
     m_rootUri = params.rootUri;
     m_explicitProjectConfigPath = extractProjectConfigPath(params);
-    m_fuzzyCompletionEnabled = extractFuzzyCompletionEnabled(params);
+    m_fuzzyCompletionEnabled = extractBoolOption(params, "fuzzyCompletion");
+    m_docCommentsEnabled     = extractBoolOption(params, "docComments");
     m_phase.store(Phase::Active);
 
     return {
@@ -22,7 +23,9 @@ auto ServerState::handleInitialize(lsp::InitializeParams params)
                 .change    = lsp::TextDocumentSyncKind::Full,
                 .save      = true,
             },
-            .completionProvider  = lsp::CompletionOptions{},
+            // Docs are fetched per item on resolve (plan.md §6.31), never
+            // for the whole list.
+            .completionProvider  = lsp::CompletionOptions{.resolveProvider = true},
             .hoverProvider            = lsp::OneOf<bool, lsp::HoverOptions>(true),
             // Every signature shape opens with '(' and advances on ','; a
             // `for (...)` header advances on ';', which only needs to
@@ -80,7 +83,7 @@ std::string ServerState::extractProjectConfigPath(const lsp::InitializeParams& p
     return projectConfig->string();
 }
 
-bool ServerState::extractFuzzyCompletionEnabled(const lsp::InitializeParams& params)
+bool ServerState::extractBoolOption(const lsp::InitializeParams& params, std::string_view key)
 {
     if (!params.initializationOptions) return true;
     const lsp::json::Value& opts = *params.initializationOptions;
@@ -89,10 +92,10 @@ bool ServerState::extractFuzzyCompletionEnabled(const lsp::InitializeParams& par
     const lsp::json::Value* svlsp = opts.object().find("svlsp");
     if (!svlsp || !svlsp->isObject()) return true;
 
-    const lsp::json::Value* fuzzyCompletion = svlsp->object().find("fuzzyCompletion");
-    if (!fuzzyCompletion || !fuzzyCompletion->isBoolean()) return true;
+    const lsp::json::Value* value = svlsp->object().find(key);
+    if (!value || !value->isBoolean()) return true;
 
-    return fuzzyCompletion->boolean();
+    return value->boolean();
 }
 
 void ServerState::requireActive(const char* method) const

@@ -435,3 +435,37 @@ TEST_CASE("LibraryDbBuilder: a DB predating this feature (no recorded version) i
     CHECK(sdb.findSymbolsByName("top_mod").size() == 1);
     CHECK(sdb.builtByVersion() == "v1");
 }
+
+// ---------------------------------------------------------------------------
+// collectDocs (plan.md §6.31): `--build-db --no-doc-comments`.
+// ---------------------------------------------------------------------------
+
+namespace {
+int64_t symbolDocCount(const std::string& dbPath) {
+    Database db(dbPath);
+    auto stmt = db.prepare("SELECT COUNT(*) FROM symbol_docs");
+    REQUIRE(stmt.step());
+    return stmt.columnInt(0);
+}
+} // namespace
+
+TEST_CASE("LibraryDbBuilder: collectDocs false stores no docs, and switching it rebuilds",
+          "[lsp][library-db-builder][phase6.31]")
+{
+    std::string root = kRoot + "/collect-docs";
+    writeFile(root + "/top.sv", "// Documented.\nmodule doc_lib_mod; endmodule\n");
+    writeFile(root + "/proj.f", "top.sv\n");
+    std::string dbPath = root + "/out.db";
+    fs::remove(dbPath);
+
+    REQUIRE(LibraryDbBuilder::build(root + "/proj.f", dbPath, nullptr, "v1").ok);
+    CHECK(symbolDocCount(dbPath) == 1);
+
+    // Same binary version, docs switched off: the unchanged file must be
+    // reparsed, not kept from the cache with its doc.
+    REQUIRE(LibraryDbBuilder::build(root + "/proj.f", dbPath, nullptr, "v1", false).ok);
+    CHECK(symbolDocCount(dbPath) == 0);
+
+    REQUIRE(LibraryDbBuilder::build(root + "/proj.f", dbPath, nullptr, "v1").ok);
+    CHECK(symbolDocCount(dbPath) == 1);
+}

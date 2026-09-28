@@ -75,6 +75,7 @@ struct ParseRecord {
     int             endLine{0};    // 1-based; last line of scope body; 0 for leaf symbols
     std::string     scope{};       // full enclosing scope chain, e.g. "MyModule::MyClass"
     std::string     file{};        // original source file; empty = same as compiled file
+    std::string     doc{};         // cleaned doc comment (plan.md §6.31); "" = none
 };
 
 struct ParseError {

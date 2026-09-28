@@ -4,6 +4,7 @@
 #include "lsp/sv_keywords.h"
 #include "lsp/sv_builtin_methods.h"
 #include <algorithm>
+#include <optional>
 #include <cstdio>
 #include <set>
 #include <unordered_set>
@@ -18,6 +19,7 @@ struct Candidate {
     std::string              name;
     lsp::CompletionItemKind  kind;
     std::string              detail; // empty = omit item.detail
+    std::optional<SymbolRow> row{};  // the DB symbol, for resolve's `data`
 };
 
 // One candidate per (name, kind): an extern method's prototype and its
@@ -33,7 +35,7 @@ std::vector<Candidate> candidatesFromRows(const std::vector<SymbolRow>& rows)
     for (auto& row : rows)
         if (!(row.kind == "Function" && row.name == "new") &&
             seen.emplace(row.name, row.kind).second)
-            out.push_back({row.name, completionKindFor(row.kind), row.detail});
+            out.push_back({row.name, completionKindFor(row.kind), row.detail, row});
     return out;
 }
 
@@ -113,6 +115,15 @@ lsp::TextDocument_CompletionResult buildCompletionItems(
         item.kind  = c.kind;
         if (!c.detail.empty())
             item.detail = c.detail;
+        if (c.row) {
+            lsp::json::Object data;
+            data["path"]  = lsp::json::String(c.row->filePath);
+            data["line"]  = lsp::json::Integer(c.row->line);
+            data["col"]   = lsp::json::Integer(c.row->col);
+            data["kind"]  = lsp::json::String(c.row->kind);
+            data["scope"] = lsp::json::String(c.row->scope);
+            item.data = lsp::json::Value(std::move(data));
+        }
         if (fuzzyEnabled && !prefix.empty()) {
             // Zero-padded rank so clients that re-sort by sortText (rather
             // than trusting response order) preserve our fuzzy ranking.
@@ -232,4 +243,29 @@ lsp::TextDocument_CompletionResult CompletionProvider::getCompletion(
                        std::make_move_iterator(keywords.begin()),
                        std::make_move_iterator(keywords.end()));
     return buildCompletionItems(candidates, prefix, fuzzyEnabled);
+}
+
+lsp::CompletionItem CompletionProvider::resolve(lsp::CompletionItem item, SymbolDatabase& db)
+{
+    if (!item.data || !item.data->isObject()) return item;
+    const auto& data = item.data->object();
+    const auto* path  = data.find("path");
+    const auto* line  = data.find("line");
+    const auto* col   = data.find("col");
+    const auto* kind  = data.find("kind");
+    const auto* scope = data.find("scope");
+    if (!path || !path->isString() || !line || !line->isInteger() || !col || !col->isInteger() ||
+        !kind || !kind->isString() || !scope || !scope->isString())
+        return item;
+
+    SymbolRow row{};
+    row.name     = item.label;
+    row.kind     = kind->string();
+    row.filePath = path->string();
+    row.line     = static_cast<int>(line->integer());
+    row.col      = static_cast<int>(col->integer());
+    row.scope    = scope->string();
+    if (std::string doc = symbolDoc(db, row); !doc.empty())
+        item.documentation = lsp::MarkupContent{lsp::MarkupKind::Markdown, docMarkdown(doc)};
+    return item;
 }

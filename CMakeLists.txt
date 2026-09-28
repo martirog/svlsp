@@ -155,6 +155,7 @@ add_library(svlsp_compiler STATIC
     src/compiler/parse_cache.cpp
     src/compiler/sv_preprocessor.cpp
     src/compiler/sv_tree_walker.cpp
+    src/compiler/doc_comment.cpp
     src/compiler/filelist_parser.cpp
     src/compiler/file_utils.cpp
 )
@@ -228,6 +229,7 @@ add_executable(unit_tests
     tests/unit/lsp/test_symbol_resolution.cpp
     tests/unit/lsp/test_fuzzy_match.cpp
     tests/unit/lsp/test_completion.cpp
+    tests/unit/lsp/test_doc_comment_providers.cpp
     tests/unit/lsp/test_completion_library_attach.cpp
     tests/unit/lsp/test_completion_latency.cpp
     tests/unit/lsp/test_sv_keywords.cpp
@@ -250,12 +252,14 @@ add_executable(unit_tests
     tests/unit/compiler/test_compiler_directive_stripper.cpp
     tests/unit/compiler/test_sv_preprocessor.cpp
     tests/unit/compiler/test_sv_listener.cpp
+    tests/unit/compiler/test_doc_comments.cpp
     tests/unit/compiler/test_sv_error_recovery.cpp
     tests/unit/compiler/test_parse_cache.cpp
     tests/unit/compiler/test_filelist_parser.cpp
     tests/unit/db/test_database.cpp
     tests/unit/db/test_symbol_database.cpp
     tests/unit/db/test_symbol_database_library_attach.cpp
+    tests/unit/db/test_symbol_docs.cpp
     tests/unit/db/test_compilation_controller.cpp
     tests/unit/db/test_library_resolver.cpp
     tests/unit/db/test_project_compiler.cpp

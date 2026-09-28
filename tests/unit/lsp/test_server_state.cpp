@@ -284,3 +284,35 @@ TEST_CASE("ServerState: fuzzyCompletionEnabled is false when explicitly set fals
     s.handleInitialize(params);
     CHECK_FALSE(s.fuzzyCompletionEnabled());
 }
+
+// ---------------------------------------------------------------------------
+// docCommentsEnabled (plan.md §6.31)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("ServerState: docCommentsEnabled defaults to true, and svlsp.docComments turns it off",
+          "[lsp][server-state][phase6.31]")
+{
+    {
+        ServerState s;
+        s.handleInitialize(makeParams());
+        CHECK(s.docCommentsEnabled());
+    }
+    ServerState s;
+    auto params = makeParams();
+    lsp::json::Object svlsp;
+    svlsp["docComments"] = lsp::json::Value(false);
+    lsp::json::Object root;
+    root["svlsp"] = lsp::json::Value(std::move(svlsp));
+    params.initializationOptions = lsp::json::Value(std::move(root));
+    s.handleInitialize(params);
+    CHECK_FALSE(s.docCommentsEnabled());
+}
+
+TEST_CASE("ServerState: completion advertises resolveProvider (plan.md §6.31)",
+          "[lsp][server-state][phase6.31]")
+{
+    ServerState s;
+    auto result = s.handleInitialize(makeParams());
+    REQUIRE(result.capabilities.completionProvider.has_value());
+    CHECK(result.capabilities.completionProvider->resolveProvider.value_or(false));
+}

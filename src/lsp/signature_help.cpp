@@ -375,6 +375,7 @@ lsp::SignatureHelp macroHelp(const MacroRow& macro, const std::string& text,
 
     sig.label      = macroSignature(macro);
     sig.parameters = std::move(params_);
+    if (!macro.doc.empty()) sig.documentation = macro.doc;
     if (index >= 0 && static_cast<std::size_t>(index) < macro.params.size())
         sig.activeParameter = static_cast<unsigned>(index);
 
@@ -503,12 +504,14 @@ lsp::TextDocument_SignatureHelpResult SignatureHelpProvider::getSignatureHelp(
         label += plabel;
         lsp::ParameterInformation p;
         p.label = plabel;
+        if (std::string doc = db.docFor(ports[i]); !doc.empty()) p.documentation = std::move(doc);
         params_.push_back(std::move(p));
     }
     label += ")";
 
     sig.label      = std::move(label);
     sig.parameters = std::move(params_);
+    if (std::string doc = symbolDoc(db, best); !doc.empty()) sig.documentation = std::move(doc);
     if (!ports.empty() && activeIndex >= 0 &&
         static_cast<std::size_t>(activeIndex) < ports.size()) {
         sig.activeParameter = static_cast<unsigned>(activeIndex);
