@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-09-27 (comma-shorthand parameters; §6.30 follow-ups: constructors, typedef aliases, inherited completion).
+**Last updated:** 2026-09-28 (§6.31 doc comments on declarations, with the `docComments` / `--no-doc-comments` switch).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -11,11 +11,9 @@ write-up) — read the relevant section there rather than looking for it here.
 
 ## Current state
 
-**PICK UP HERE NEXT TIME — plan.md §6.31 (doc comments on declarations)
-is planned and its decisions are confirmed; implement it when the user
-says so.** The §6.30 follow-ups for constructors, typedef
-aliases and inherited completion are done (plan.md §6.30, the two
-"Follow-up" entries); what remains of item 0 is disclosed limits.
+**§6.31 (doc comments on declarations) is done** (plan.md §6.31,
+"Implementation"). Next: pick from "Other open work" below — the new
+item 0 (a UVM `--build-db` false-positive diagnostic) is the freshest lead.
 
 - Committed on `main`: everything through §6.30 and §6.29, including
   macro hover/definition/references/rename, and the comma-shorthand
@@ -24,12 +22,15 @@ aliases and inherited completion are done (plan.md §6.30, the two
   constructors (recorded, resolved by context), typedef aliases followed
   to their class, inherited members in bare-name completion, and
   signature-help trigger characters (`(`, `,`; retrigger `;`), macros
-  in workspace symbols, and no completion inside comments/strings.
+  in workspace symbols, no completion inside comments/strings, and doc
+  comments (§6.31) in hover, signature help and completion resolve.
 - Test baselines:
-  - unit: **875 cases**, all passing (no `[!shouldfail]` known gaps left
+  - unit: **913 cases**, all passing (no `[!shouldfail]` known gaps left
     -- the `` `define `` references case passes since the macro follow-up)
-  - Emacs functional: **254/254**
-  - UVM corpus (opt-in): **1122 assertions / 25 cases**, all passing.
+  - Emacs functional: **258/258**
+  - UVM corpus (opt-in): **1132 assertions / 28 cases**, all passing.
+    (+10: three §6.31 doc-comment cases -- prototype/body fallback, a
+    tag-only method with no doc, and the corpus doc count pinned at 960.)
     (+16: the workspace-symbol macro case -- 4 fixed checks plus 2 per
     result for the 6 `uvm_info*` macros.)
     (1018 → 1106: +8 two definition cases -- typedef qualifier and
@@ -41,8 +42,10 @@ aliases and inherited completion are done (plan.md §6.30, the two
     case checks each item and step D's (name, kind) dedup removed 124
     duplicates; +10 for §6.29 part A; +633 for the macro follow-up, whose
     references case checks each of its 313 locations.)
-  - UVM corpus `--build-db`: **1 diagnostic, 15731 symbol rows, 553
-    macro rows, 163 files** (~15 min, ~7 GB RSS; don't run it at the same
+  - UVM corpus `--build-db`: **2 diagnostics, 15731 symbol rows, 553
+    macro rows, 163 files, 960 symbol docs + 30 macro docs; 4.50 MB
+    (4.30 MB with `--no-doc-comments`)** (the 2nd diagnostic is item 0 of
+    "Other open work") (~15 min, ~7 GB RSS; don't run it at the same
     time as the corpus tests, and a laptop suspend pauses either; when
     waiting on one from a script, don't `pgrep -f` its command line --
     the waiting shell's own command line matches)
@@ -74,6 +77,25 @@ aliases and inherited completion are done (plan.md §6.30, the two
 - `fixtures/defref_top.sv` has appended sections of same-named decoys
   (`defref_pkg_b`, `defref_top_b`), step-C kinds (`defref_kinds`) and an
   out-of-class body (`defref_ooc_p`); append new cases after them.
+
+**What §6.31 changed that other work must know about:**
+- Schema **v11**: `symbol_docs(file_id, line, col, doc)` (WITHOUT ROWID,
+  written by `replaceSymbols`) and `macros.doc`. Read a symbol's doc with
+  `symbolDoc(db, row)` (symbol_utils; prototype/body fallback), not
+  `db.docFor` directly, unless you want exactly that row's.
+- `ParseRecord::doc` / `MacroRecord::doc`; `pushIdInScope` now takes the
+  declaration ctx the doc is found around (null = no doc).
+- A comment block directly above a declaration IS its doc now — a test
+  fixture whose header comment sits right above a declaration changes that
+  declaration's hover (test_26 hit this). Leave a blank line after a
+  fixture's header comment.
+- Completion items for DB symbols carry `data` {path, line, col, kind,
+  scope}; the server advertises `resolveProvider` and answers
+  `completionItem/resolve`.
+- `CompilationController::setCollectDocs(false)` — from
+  `initializationOptions.svlsp.docComments: false` or `--build-db
+  --no-doc-comments` (which also tags the recorded build version, forcing a
+  rebuild on a switch). Lazy `libraryDbSources` builds always collect docs.
 
 **What the constructor follow-up changed that other work must know about:**
 - Function rows named `new` now exist (scope = the class, body frame
@@ -111,7 +133,14 @@ What §6.29 changed that other work must know about:
 
 ## Other open work (priority roughly top-down)
 
-0. **§6.30 follow-ups** (none blocking):
+0. **UVM `--build-db` reports 2 diagnostics, not 1**: the extra one is
+   `reg/uvm_reg_predictor.svh:141` "missing required argument 'parent' in
+   call to 'create'" on `BUSTYPE::type_id::create("t")` (BUSTYPE is a type
+   parameter). Found while measuring §6.31; identical with and without doc
+   comments. Most likely introduced by the typedef-alias follow-up
+   (5870b3a: `resolveMethod` now follows `type_id` typedefs), which never
+   re-ran `--build-db`. Unconfirmed — rebuild at 5870b3a^ to check.
+0b. **§6.30 follow-ups** (none blocking):
    - completion offers an ancestor's `local` members (qualifiers aren't
      recorded);
    - no constructor resolution for `return new(...)` or `new` passed as an
@@ -380,3 +409,6 @@ Fixed and documented in plan.md / git history: string escapes, `void'(f())`,
   queries both since 2026-09-27).
 - Covergroup methods and `randomize() with {…}` constraint completion
   unsupported.
+- Doc comments (§6.31): `int a; int b;` on one line gives `b` no doc; no
+  NaturalDocs formatting; not shown in workspace/document symbols; lazy
+  `libraryDbSources` builds ignore `docComments: false`.

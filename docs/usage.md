@@ -18,6 +18,7 @@ implemented.
   "initializationOptions": {
     "svlsp": {
       "fuzzyCompletion": false,
+      "docComments": false,
       "projectConfig": "/path/to/.svlsp.json"
     }
   }
@@ -69,6 +70,34 @@ unranked (no reordering by match quality).
 Any value other than a JSON boolean `false` (missing, wrong type, or
 `initializationOptions` absent entirely) leaves fuzzy matching on — you only
 need to set this if you want to turn it *off*.
+
+### Doc comments (`docComments`)
+
+A comment block directly above a declaration — no blank line in between —
+is recorded as that declaration's documentation, and shown by hover,
+signature help and completion (fetched per item via `completionItem/resolve`):
+
+```systemverilog
+// Adds two numbers.
+function int add(int a, int b);
+```
+
+When nothing is directly above, a comment after the declaration on the same
+line is used instead (`int count; // number of items`). Separator lines
+(`//-----`) and UVM tag lines (`// @uvm-ieee ...`) are dropped; a block made
+only of those is no documentation. The same rules apply to `` `define ``s.
+
+Storing the docs costs database space (the in-memory database of a live
+session, and a `--build-db` file — for UVM about 190 KB, under 5% of a 4.3 MB
+database). Set `svlsp.docComments` to `false` to collect none:
+
+```json
+{ "initializationOptions": { "svlsp": { "docComments": false } } }
+```
+
+Like `fuzzyCompletion`, anything other than a JSON boolean `false` leaves
+it on. It applies to what the server compiles itself; a library database
+has its docs decided when it is built (`--no-doc-comments`, below).
 
 ## Checking what you actually built: `--version`
 
@@ -146,6 +175,18 @@ library like UVM whose whole source tree is reached through one top-level
 file (`uvm_pkg.sv`) that `` `include ``s everything else: the counter still
 ticks up file by file as each one is discovered, rather than sitting at
 `1/1` for the entire build and then jumping straight to the final count.
+
+Add `--no-doc-comments` to leave doc comments (see
+[`docComments`](#doc-comments-doccomments)) out of the database, for a
+smaller file:
+
+```bash
+svlsp --build-db /path/to/uvm.f --output /path/to/uvm.db --no-doc-comments
+```
+
+The setting is recorded in the database with the building binary's version,
+so rebuilding into the same `<db-path>` with the flag added or removed
+recompiles every file rather than keeping the cached ones as they were.
 
 `--build-db` requires `--output`; the reverse (`--output` with no
 `--build-db`) is ignored and the server starts normally. A bad or

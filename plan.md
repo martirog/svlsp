@@ -5076,8 +5076,9 @@ file contains a declaration or import that could reach `target`.
 
 ### 6.31 Doc Comments on Declarations (Hover, Signature Help, Completion)
 
-**Status:** planned 2026-09-27 (research done, decisions below confirmed
-by the user). Not started.
+**Status:** done 2026-09-28 (planned 2026-09-27). Implementation notes,
+the user-requested space measurement and the `docComments` switch are in
+"Implementation" at the end of this section.
 
 **Goal:** a comment block directly above a declaration (no blank line in
 between) is recorded as that declaration's docstring, for modules,
@@ -5182,6 +5183,52 @@ parameters, signals/fields, typedefs, enum literals, struct members and
 **Out of scope:** NaturalDocs formatting (`//|` example blocks as code,
 `~arg~` emphasis), skipping blank lines, docs in workspace/document
 symbols.
+
+**Implementation (2026-09-28):**
+- `src/compiler/doc_comment.{h,cpp}`: `cleanDocComment` (rule 4). Tag
+  lines are those starting `@uvm` (`@uvm-ieee`, `@uvm-accellera`,
+  `@uvm-compat`, ... -- all UVM uses); separator lines are 3+ characters
+  of `-=*/#~_+`.
+- Walker (`SvRecordListener::docFor`, called from `pushIdInScope`, which
+  now takes the declaration ctx): the anchor moves left over same-line
+  tokens but stops at `;` `,` `(` `)` `{` `}` `begin` `fork` `join*` and
+  `end*`. So `f(int a, int b)` on one line gives the arguments no doc
+  (never the function's), and in `int a; int b;` only `a` gets the doc
+  above -- stricter than the "share it" the plan accepted. The trailing
+  fallback applies only when the declaration's ctx ends on its first line
+  (a leaf, or a prototype), so `endfunction // name` is never a doc.
+- Preprocessor: `macroDocAbove` on the raw lines of the defining file; the
+  trailing `//` of a single-line `define as fallback.
+- Schema v11 as planned; `symbol_docs` is `WITHOUT ROWID` with primary key
+  (file_id, line, col), written by `replaceSymbols`.
+- Providers: `symbolDoc` (symbol_utils) does the prototype/body fallback
+  both ways; `docMarkdown` turns single line breaks into hard breaks.
+  Signature help also sets each parameter's `documentation` from its Port
+  doc. Completion items carry `data` {path, line, col, kind, scope};
+  `CompletionProvider::resolve` handles `completionItem/resolve`.
+- **Switch (user request):** `initializationOptions.svlsp.docComments:
+  false` and `svlsp --build-db ... --no-doc-comments`, both through
+  `CompilationController::setCollectDocs` (the walker skips extraction;
+  macro docs are cleared). For `--build-db` the setting is appended to the
+  recorded build version (`"<git> (no doc comments)"`), so switching it
+  forces a full rebuild instead of keeping cached files' docs. The live
+  server's lazy `libraryDbSources` builds always collect docs.
+- **Space (UVM `--build-db`, user request):** 960 symbol docs (132 KB of
+  text) + 30 macro docs (2.3 KB). File 4,497,408 B with docs vs 4,300,800
+  B with `--no-doc-comments` (+192 KB, +4.6%; after VACUUM 4.09 MB vs 3.90
+  MB, +4.8%). Symbols/macros/files unchanged (15731 / 553 / 163). Peak RSS
+  identical (6.96 GB); wall time 14:48 with docs vs 18:30 without -- noise,
+  no measurable extraction cost.
+- Both builds report **2** diagnostics, not the 1 recorded since §6.30 step
+  D: the extra one is `reg/uvm_reg_predictor.svh:141` "missing required
+  argument 'parent' in call to 'create'" (`BUSTYPE::type_id::create("t")`).
+  Present with and without docs, so not this section's; most likely from
+  the typedef-alias follow-up (5870b3a), whose write-up didn't re-run
+  `--build-db`. Not investigated further.
+- A test fixture's file-header comment directly above its class became the
+  class's doc (`kind_tiebreak/zzz_class_decl.sv`, whose comment mentions
+  "Signal", which test_26 forbids in the hover); a blank line now separates
+  them.
 
 ---
 
