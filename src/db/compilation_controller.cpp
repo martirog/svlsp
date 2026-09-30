@@ -10,21 +10,6 @@
 
 namespace {
 
-// Same same-file-preferred tie-break lsp::pickBestSymbol
-// (src/lsp/symbol_utils.cpp) already applies for hover/definition/
-// signature-help -- duplicated here in miniature rather than shared, since
-// svlsp_db intentionally has no dependency on svlsp_lib (see this
-// repository's own CMakeLists.txt comment on svlsp_compiler/svlsp_db vs.
-// svlsp_lib). `rows` is always already filtered to Function/Task by the
-// caller, so pickBestSymbol's fuller kind-tier tie-break (declaration-like
-// vs. data-like) never applies here -- both kinds are declaration-like.
-const SymbolRow* pickCallee(const std::vector<SymbolRow>& rows, const std::string& curPath)
-{
-    for (const auto& r : rows)
-        if (r.filePath == curPath) return &r;
-    return &rows.front();
-}
-
 // True if the declared parameter at `portIndex` received a real value at
 // this call site: by position (an actual expression, not an elided slot --
 // plan.md §6.23 allows skipping a defaulted parameter positionally while
@@ -76,7 +61,7 @@ std::optional<SymbolRow> resolveCallee(
     for (auto& row : sdb.findSymbolsByName(call.calleeName))
         if (row.kind == "Function" || row.kind == "Task") callees.push_back(row);
     if (callees.empty()) return std::nullopt;
-    return *pickCallee(callees, filePath);
+    return SymbolDatabase::pickSameFilePreferred(callees, filePath);
 }
 
 // Resolves each of `calls` (all from the same file, `filePath`) against

@@ -147,6 +147,7 @@ private:
                                         bool withInherited = true) const;
     std::optional<SymbolRow> resolveTypeName(const std::string& type, const std::string& ctxPath,
                                              int ctxLine1) const;
+    std::optional<SymbolRow> classInScope(const std::string& scope, const std::string& name) const;
     std::optional<std::string> resolveQualifierScope(const std::vector<std::string>& segs,
                                                      const std::string& ctxPath,
                                                      int ctxLine1) const;
@@ -172,16 +173,7 @@ std::optional<ResolvedSymbol> Resolver::fallback(const std::string& name) const
 // Same chain findSymbolsVisibleAt builds: innermost scope first, ending "".
 std::vector<std::string> Resolver::scopeChain(const std::string& path, int line1) const
 {
-    std::vector<std::string> chain;
-    std::string cur = m_db.scopeAtPosition(path, line1);
-    while (true) {
-        chain.push_back(cur);
-        auto sep = cur.rfind("::");
-        if (sep == std::string::npos) break;
-        cur = cur.substr(0, sep);
-    }
-    if (chain.back() != "") chain.push_back("");
-    return chain;
+    return SymbolDatabase::scopeChain(m_db.scopeAtPosition(path, line1));
 }
 
 std::optional<SymbolRow> Resolver::classRowForScope(const std::string& scope) const
@@ -327,11 +319,7 @@ std::optional<SymbolRow> Resolver::resolveTypeName(const std::string& type,
         segs.pop_back();
         auto scope = resolveQualifierScope(segs, ctxPath, ctxLine1);
         if (!scope) return std::nullopt;
-        auto m = memberInScope(*scope, name, KindFilter::ScopeLike);
-        if (m && m->kind == "Class") return m;
-        if (auto td = memberInScope(*scope, name, KindFilter::Typedef))
-            return resolveTypeName(td->detail, td->filePath, td->line);
-        return std::nullopt;
+        return classInScope(*scope, name);
     }
 
     // Inherited members are skipped: a type name (notably a class's own
@@ -352,6 +340,18 @@ std::optional<SymbolRow> Resolver::resolveTypeName(const std::string& type,
     if (classes.empty() && typedefs.size() == 1)
         return resolveTypeName(typedefs.front().detail, typedefs.front().filePath,
                                typedefs.front().line);
+    return std::nullopt;
+}
+
+// The class `name` names as a member of `scope`: a class declared there, or
+// a typedef declared there followed to the class it aliases.
+std::optional<SymbolRow> Resolver::classInScope(const std::string& scope,
+                                                const std::string& name) const
+{
+    auto m = memberInScope(scope, name, KindFilter::ScopeLike);
+    if (m && m->kind == "Class") return m;
+    if (auto td = memberInScope(scope, name, KindFilter::Typedef))
+        return resolveTypeName(td->detail, td->filePath, td->line);
     return std::nullopt;
 }
 
@@ -379,13 +379,8 @@ std::optional<std::string> Resolver::resolveQualifierScope(const std::vector<std
         }
     }
     for (size_t i = 1; i < segs.size(); ++i) {
-        auto nested = memberInScope(scope, segs[i], KindFilter::ScopeLike);
-        if (!nested || nested->kind != "Class") {
-            auto td = memberInScope(scope, segs[i], KindFilter::Typedef);
-            if (!td) return std::nullopt;
-            nested = resolveTypeName(td->detail, td->filePath, td->line);
-            if (!nested) return std::nullopt;
-        }
+        auto nested = classInScope(scope, segs[i]);
+        if (!nested) return std::nullopt;
         scope = qualifiedScopeOf(*nested);
     }
     return scope;

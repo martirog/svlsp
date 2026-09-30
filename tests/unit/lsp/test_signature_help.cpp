@@ -1068,3 +1068,33 @@ TEST_CASE("signature help resolves Class::type_id::create through that class's t
           "create(string name = \"\", int parent = 0)");
     CHECK(labelAt("x = BUSTYPE::type_id::create(") == "null");
 }
+
+TEST_CASE("signature help follows a class-scoped typedef to the class its own package "
+          "declares, not a same-named one declared first", "[lsp][signature-help]")
+{
+    // tq_b's typedef names a bare `Reg`: resolved from where the typedef is
+    // declared (tq_b), not by name with a same-file tie-break (tq_a's).
+    Fixture f;
+    CompilationController cc{f.sdb};
+    const std::string src =
+        "package tq_a;\n"
+        "  class Reg;\n"
+        "    static function int create(int a_only); endfunction\n"
+        "  endclass\n"
+        "endpackage\n"
+        "package tq_b;\n"
+        "  class Reg;\n"
+        "    static function int create(string b_name, int b_parent); endfunction\n"
+        "  endclass\n"
+        "  class User;\n"
+        "    typedef Reg type_id;\n"
+        "  endclass\n"
+        "endpackage\n";
+    cc.compile("/tq.sv", src);
+
+    const std::string line = "x = tq_b::User::type_id::create(";
+    auto help = SignatureHelpProvider::getSignatureHelp(
+        makeParams("/tq.sv", 13, static_cast<unsigned>(line.size())), f.sdb, src + line);
+    REQUIRE_FALSE(help.isNull());
+    CHECK(help->signatures.at(0).label == "create(string b_name, int b_parent)");
+}

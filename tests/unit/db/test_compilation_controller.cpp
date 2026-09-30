@@ -819,3 +819,31 @@ TEST_CASE("Class::type_id::create resolves through that class's own type_id",
     CHECK(errs[0].line == 17);
     CHECK(errs[0].message == "missing required argument 'parent' in call to 'create'");
 }
+
+TEST_CASE("a class-scoped typedef is followed to the class its own package declares",
+          "[db][ctrl][call-args]") {
+    // tq_b's typedef names a bare `Reg`: resolved from where the typedef is
+    // declared (tq_b), not by name with a same-file tie-break (tq_a's, whose
+    // create takes one argument and would hide the missing b_parent).
+    Fixture f;
+    auto errs = f.ctrl.compile("/tq.sv",
+        "package tq_a;\n"
+        "  class Reg;\n"
+        "    static function int create(int a_only); endfunction\n"
+        "  endclass\n"
+        "endpackage\n"
+        "package tq_b;\n"
+        "  class Reg;\n"
+        "    static function int create(string b_name, int b_parent); endfunction\n"
+        "  endclass\n"
+        "  class User;\n"
+        "    typedef Reg type_id;\n"
+        "  endclass\n"
+        "  class Other;\n"
+        "    static function void f(); void'(tq_b::User::type_id::create(\"x\")); endfunction\n"
+        "  endclass\n"
+        "endpackage\n");
+    REQUIRE(errs.size() == 1);
+    CHECK(errs[0].line == 14);
+    CHECK(errs[0].message == "missing required argument 'b_parent' in call to 'create'");
+}

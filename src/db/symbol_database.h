@@ -249,6 +249,16 @@ public:
     // `this`/`super` resolution in chained dot-completion (plan.md §6.14).
     std::string enclosingClassNameAt(const std::string& path, int line) const;
 
+    // `innermost` followed by each enclosing scope, ending with "" (top
+    // level): "p::C::m" -> {"p::C::m", "p::C", "p", ""}.
+    static std::vector<std::string> scopeChain(const std::string& innermost);
+
+    // The first of `rows` (non-empty) declared in `curPath`, else the first
+    // -- the simpler half of lsp::pickBestSymbol, for svlsp_db code, which
+    // has no dependency on svlsp_lib.
+    static const SymbolRow& pickSameFilePreferred(const std::vector<SymbolRow>& rows,
+                                                  const std::string& curPath);
+
     // All symbols visible from `(path, line)`: every symbol in the scope chain
     // at that position (local → enclosing scopes) plus all top-level symbols
     // from every file.  Ordered innermost-scope-first, then by name.
@@ -264,11 +274,10 @@ public:
     // (e.g. UVM's own `typedef uvm_object_registry#(T) type_id;` idiom), or
     // a genuine unknown -- callers rely on this emptiness to tell "known
     // class, safe to walk its hierarchy" apart from "not a class, don't
-    // guess," per this section's fail-closed design. A same-named-class
-    // collision is broken by a same-file-preferred tie-break (`curPath`) --
-    // the simpler half of `lsp::pickBestSymbol`, duplicated here rather than
-    // shared since svlsp_db has no dependency on svlsp_lib (matching
-    // compilation_controller.cpp's own pickCallee precedent). A cycle guard
+    // guess," per this section's fail-closed design. A class typedef is
+    // followed to the type it aliases, looked up from the typedef's own
+    // scope outward. A same-named-class collision is broken by
+    // pickSameFilePreferred (`curPath`). A cycle guard
     // stops the walk if a class ever (directly or transitively) names
     // itself as its own ancestor, rather than looping forever.
     std::vector<std::string> baseClassChain(const std::string& className,

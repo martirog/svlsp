@@ -725,18 +725,8 @@ std::string SymbolDatabase::enclosingClassNameAt(
 std::vector<SymbolRow> SymbolDatabase::findSymbolsVisibleAt(
     const std::string& path, int line) const
 {
-    // Build the scope chain from innermost outward, ending with "".
-    std::string inner = scopeAtPosition(path, line);
-    std::vector<std::string> scopes;
-    std::string cur = inner;
-    while (true) {
-        scopes.push_back(cur);
-        auto sep = cur.rfind("::");
-        if (sep == std::string::npos) break;
-        cur = cur.substr(0, sep);
-    }
-    if (scopes.empty() || !scopes.back().empty())
-        scopes.push_back("");
+    // The scope chain from innermost outward, ending with "".
+    const std::vector<std::string> scopes = scopeChain(scopeAtPosition(path, line));
 
     // Load imports for this file: wildcard (`import pkg::*`) and specific
     // (`import pkg::Name`).  Wildcards extend the cross-file scope search;
@@ -845,18 +835,27 @@ std::vector<SymbolRow> SymbolDatabase::findSymbolsVisibleAt(
     return rows;
 }
 
-namespace {
-// Same-file-preferred tie-break -- the simpler half of lsp::pickBestSymbol
-// (src/lsp/symbol_utils.cpp), duplicated here rather than shared since
-// svlsp_db has no dependency on svlsp_lib (matching
-// compilation_controller.cpp's own pickCallee precedent, plan.md §6.26).
-const SymbolRow* pickSameFilePreferred(const std::vector<SymbolRow>& rows, const std::string& curPath)
+std::vector<std::string> SymbolDatabase::scopeChain(const std::string& innermost)
+{
+    std::vector<std::string> chain;
+    std::string cur = innermost;
+    while (true) {
+        chain.push_back(cur);
+        auto sep = cur.rfind("::");
+        if (sep == std::string::npos) break;
+        cur = cur.substr(0, sep);
+    }
+    if (!chain.back().empty()) chain.push_back("");
+    return chain;
+}
+
+const SymbolRow& SymbolDatabase::pickSameFilePreferred(const std::vector<SymbolRow>& rows,
+                                                       const std::string& curPath)
 {
     for (const auto& r : rows)
-        if (r.filePath == curPath) return &r;
-    return &rows.front();
+        if (r.filePath == curPath) return r;
+    return rows.front();
 }
-} // namespace
 
 std::vector<std::string> SymbolDatabase::baseClassChain(
     const std::string& className, const std::string& curPath) const
@@ -898,15 +897,31 @@ std::vector<std::string> SymbolDatabase::baseClassChain(
         }
         if (classRows.empty() && !typedefRows.empty()) {
             // A class typedef (`typedef C alias_t;`, `typedef C#(int) c_t;`):
-            // continue with the aliased type; the visited guard covers loops.
-            current = pickSameFilePreferred(typedefRows, curPath)->detail;
+            // continue with the aliased type, qualified with the innermost
+            // scope around the typedef that declares it -- a bare `Reg` in
+            // p::User's typedef is p's Reg, not another package's. The
+            // visited guard covers loops.
+            const SymbolRow& td = pickSameFilePreferred(typedefRows, curPath);
+            current = td.detail;
+            if (current.find("::") == std::string::npos) {
+                const auto aliased = findSymbolsByName(current);
+                for (const auto& scope : scopeChain(td.scope)) {
+                    auto declares = [&](const SymbolRow& r) {
+                        return (r.kind == "Class" || r.kind == "Typedef") && r.scope == scope;
+                    };
+                    if (std::any_of(aliased.begin(), aliased.end(), declares)) {
+                        current = (scope.empty() ? "$unit" : scope) + "::" + current;
+                        break;
+                    }
+                }
+            }
             continue;
         }
         if (classRows.empty()) break; // not a known class -- stop (fail closed)
 
-        const SymbolRow* best = pickSameFilePreferred(classRows, curPath);
-        chain.push_back(best->scope.empty() ? best->name : best->scope + "::" + best->name);
-        current = best->detail; // single recorded parent name, "" if none
+        const SymbolRow& best = pickSameFilePreferred(classRows, curPath);
+        chain.push_back(best.scope.empty() ? best.name : best.scope + "::" + best.name);
+        current = best.detail; // single recorded parent name, "" if none
     }
     return chain;
 }
@@ -921,7 +936,7 @@ std::optional<SymbolRow> SymbolDatabase::resolveMethod(
             if ((row.kind == "Function" || row.kind == "Task") && row.name == methodName)
                 candidates.push_back(row);
         if (!candidates.empty())
-            return *pickSameFilePreferred(candidates, curPath);
+            return pickSameFilePreferred(candidates, curPath);
     }
     return std::nullopt;
 }
