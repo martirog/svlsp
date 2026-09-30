@@ -5077,6 +5077,34 @@ Fixed.
     only), 15731 symbol rows, 553 macro rows, 163 files, 960 symbol docs +
     30 macro docs, 4.50 MB; 14m15s, 6.96 GB max RSS.
 
+**Follow-up: a typedef's aliased type resolved where the typedef is
+declared, and shared helpers (2026-09-30).** Fixed.
+- *Symptom (found in review).* `SymbolDatabase::baseClassChain` followed a
+  class typedef by continuing with its `detail` as a bare name, found by
+  name with a same-file tie-break. With `typedef Reg type_id;` in
+  `tq_b::User` and another `Reg` in `tq_a` declared first in the same
+  file, `tq_b::User::type_id::create(` got `tq_a`'s signature in signature
+  help, and the missing-argument check resolved to the same wrong method
+  (a missed diagnostic here; a false one when the signatures differ the
+  other way). Go-to-definition was right: it uses `Resolver`.
+- *Fix.* A bare aliased type is qualified with the innermost scope on the
+  typedef's own scope chain that declares a class or typedef of that name
+  (`$unit` for top level) before the walk continues; unchanged when
+  nothing on the chain declares it.
+- *Streamlining in the same change:* `SymbolDatabase::scopeChain(innermost)`
+  (static) replaces the two copies in `findSymbolsVisibleAt` and
+  `Resolver::scopeChain`; `SymbolDatabase::pickSameFilePreferred` (static,
+  public) replaces `compilation_controller.cpp`'s identical `pickCallee`;
+  `Resolver::classInScope` (a class, or a typedef followed to its class)
+  replaces the same logic in `resolveTypeName` and `resolveQualifierScope`.
+- *Left open:* signature help and the compile-time check still resolve
+  `::` qualifiers through `baseClassChain`, not `Resolver` (see handoff).
+- *Verification.* Unit: 919 cases, all passing (+2: the signature-help and
+  compile-time cases above). Emacs: 271/271. UVM corpus: 1132 assertions /
+  28 cases, all passing. `--build-db`: unchanged -- 1 diagnostic, 15731
+  symbol rows, 553 macro rows, 163 files, 960 symbol docs + 30 macro docs,
+  4.50 MB; 13m43s CPU, 6.96 GB max RSS.
+
 **Ordering:** wildcard-import same-file fix (with its own test, done) → A → B
 (hover/definition first, then references + rename) → C → D. After each
 step, remove the `[!shouldfail]` tag from every test that now passes:

@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-09-30 (`::`-qualifier fix plus multi-level `::` Emacs tests and the nested-typedef resolver fix, committed).
+**Last updated:** 2026-09-30 (review follow-up: typedef aliased type resolved from its own scope, shared helpers; committed).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -24,7 +24,12 @@ several classes still uses the same-file tie-break. Emacs tests for
 multi-level `::` (none existed) were added with it, and exposed a resolver
 gap now fixed too: a class-scoped typedef as a middle segment
 (`pkg::C::type_id::create`) is followed to its class, and definition on
-that `type_id` lands on the typedef.
+that `type_id` lands on the typedef. A review follow-up (plan.md §6.30,
+"Follow-up: a typedef's aliased type resolved where the typedef is
+declared") fixed `baseClassChain` resolving a typedef's bare aliased type
+by name instead of from the typedef's scope, and merged duplicated helpers
+(`SymbolDatabase::scopeChain`, `pickSameFilePreferred`,
+`Resolver::classInScope`).
 
 §6.31 (doc comments on declarations) is done and committed (plan.md §6.31,
 "Implementation").
@@ -39,7 +44,7 @@ that `type_id` lands on the typedef.
   in workspace symbols, no completion inside comments/strings, and doc
   comments (§6.31) in hover, signature help and completion resolve.
 - Test baselines:
-  - unit: **917 cases**, all passing (no `[!shouldfail]` known gaps left
+  - unit: **919 cases**, all passing (no `[!shouldfail]` known gaps left
     -- the `` `define `` references case passes since the macro follow-up)
   - Emacs functional: **271/271**
   - UVM corpus (opt-in): **1132 assertions / 28 cases**, all passing.
@@ -147,6 +152,13 @@ What §6.29 changed that other work must know about:
 ## Other open work (priority roughly top-down)
 
 0. **§6.30 follow-ups** (none blocking):
+   - two `::`-qualifier resolvers: signature help (and the compile-time
+     missing-argument check) go through `SymbolDatabase::resolveMethod`/
+     `baseClassChain` (textual suffix match + same-file tie-break), while
+     hover/definition/references/rename use `Resolver`
+     (`symbol_resolution.cpp`, scope-aware). Signature help could resolve
+     its callee with `resolveSymbolAt` instead; the compile-time check
+     must stay in `svlsp_db`;
    - completion offers an ancestor's `local` members (qualifiers aren't
      recorded);
    - no constructor resolution for `return new(...)` or `new` passed as an
@@ -293,8 +305,10 @@ Compiler **g++-13** (pinned in `CMakePresets.json`). Debug has ASan+UBSan
 Chain-resolution helpers (`resolveChain`, `membersAcrossChain`,
 `peelDimensionLayers`, `dotCompletionContext`, `positionForOffset`) live in
 `src/lsp/symbol_utils.h/.cpp`, shared by completion and signature help.
-`svlsp_db` must not depend on `svlsp_lib`, which is why
-`compilation_controller.cpp` carries its own small `pickCallee`.
+`svlsp_db` must not depend on `svlsp_lib`, which is why `svlsp_db` code
+uses `SymbolDatabase::pickSameFilePreferred` (the simpler half of
+`pickBestSymbol`). Scope chains (innermost first, ending `""`) come from
+`SymbolDatabase::scopeChain`.
 
 ### Encodings in `symbols.detail`
 
