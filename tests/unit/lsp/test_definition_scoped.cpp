@@ -193,6 +193,45 @@ TEST_CASE("Definition: pkg_b::Item::stat() resolves to pkg_b's static method",
                         "/pkgs.sv", posOf(kPkgs, "@b_stat", "stat("));
 }
 
+TEST_CASE("Definition: pkg::Class::type_id::create() resolves each segment through the "
+          "class's own typedef, not an earlier same-named one",
+          "[definition][scoped][scope-op]")
+{
+    // The UVM factory shape: `type_id` is a class-scoped typedef of a
+    // registry class. The decoys in tq_a are declared first, so a name-only
+    // lookup would land on them.
+    RealCompileFixture f;
+    const std::string pkgs =
+        "package tq_a;\n"
+        "  class Reg;\n"
+        "    static function int create(); return 1; endfunction\n"
+        "  endclass\n"
+        "  class User;\n"
+        "    typedef Reg type_id;\n"
+        "  endclass\n"
+        "endpackage\n"
+        "package tq_b;\n"
+        "  class Reg;\n"
+        "    static function int create(); return 2; endfunction // @b_create\n"
+        "  endclass\n"
+        "  class User;\n"
+        "    typedef Reg type_id; // @b_typeid\n"
+        "  endclass\n"
+        "endpackage\n";
+    f.ctrl.compile("/pkgs.sv", pkgs);
+    const std::string top =
+        "module top;\n"
+        "  int r;\n"
+        "  initial r = tq_b::User::type_id::create(); // @use\n"
+        "endmodule\n";
+    f.ctrl.compile("/top.sv", top);
+
+    requireDefinitionAt(f.sdb, "/top.sv", top, posOf(top, "@use", "type_id"),
+                        "/pkgs.sv", posOf(pkgs, "@b_typeid", "type_id"));
+    requireDefinitionAt(f.sdb, "/top.sv", top, posOf(top, "@use", "create"),
+                        "/pkgs.sv", posOf(pkgs, "@b_create", "create"));
+}
+
 TEST_CASE("Definition: Class::method() picks the named class's method over an earlier "
           "same-named method on another class in the same file",
           "[definition][scoped][scope-op]")

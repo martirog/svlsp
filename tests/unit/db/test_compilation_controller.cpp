@@ -759,3 +759,63 @@ TEST_CASE("compile persists macros under the file that defines them, including a
     CHECK(f.sdb.findMacros("CTRL_TOP_W").empty());
     CHECK(f.sdb.findMacros("CTRL_INC_M").size() == 1);
 }
+
+// ---------------------------------------------------------------------------
+// A multi-segment qualifier is resolved whole (UVM uvm_reg_predictor.svh:141).
+// ---------------------------------------------------------------------------
+
+namespace {
+// The UVM factory shape: each class declares `typedef <registry> type_id;`,
+// and only a component registry's create() requires `parent`.
+const std::string kRegistries =
+    "  class obj_registry;\n"
+    "    static function int create(string name = \"\", int parent = 0); endfunction\n"
+    "  endclass\n"
+    "  class comp_registry;\n"
+    "    static function int create(string name, int parent); endfunction\n"
+    "  endclass\n"
+    "  class item;\n"
+    "    typedef obj_registry type_id;\n"
+    "  endclass\n"
+    "  class comp;\n"
+    "    typedef comp_registry type_id;\n"
+    "  endclass\n";
+} // namespace
+
+TEST_CASE("a type-parameter-qualified factory call is not resolved against the "
+          "enclosing file's own type_id", "[db][ctrl][call-args]") {
+    Fixture f;
+    // BUSTYPE is a type parameter, not a class: `BUSTYPE::type_id::create`
+    // must fail closed, never land on predictor's own (component) type_id.
+    // As in UVM, predictor's file holds only its own (component) type_id, so
+    // the same-file tie-break picks it for a bare `type_id` qualifier.
+    REQUIRE(f.ctrl.compile("/lib.sv", "package p;\n" + kRegistries + "endpackage\n").empty());
+    auto errs = f.ctrl.compile("/a.sv",
+        "package q;\n"
+        "  import p::*;\n"
+        "  class predictor #(type BUSTYPE = int);\n"
+        "    typedef comp_registry type_id;\n"
+        "    static function void f();\n"
+        "      void'(BUSTYPE::type_id::create(\"t\"));\n"
+        "    endfunction\n"
+        "  endclass\n"
+        "endpackage\n");
+    CHECK(errs.empty());
+}
+
+TEST_CASE("Class::type_id::create resolves through that class's own type_id",
+          "[db][ctrl][call-args]") {
+    Fixture f;
+    auto errs = f.ctrl.compile("/a.sv",
+        "package p;\n" + kRegistries +
+        "  class user;\n"
+        "    static function void f();\n"
+        "      void'(item::type_id::create(\"i\"));\n" // object registry: all defaulted
+        "      void'(comp::type_id::create(\"c\"));\n" // component registry: parent missing
+        "    endfunction\n"
+        "  endclass\n"
+        "endpackage\n");
+    REQUIRE(errs.size() == 1);
+    CHECK(errs[0].line == 17);
+    CHECK(errs[0].message == "missing required argument 'parent' in call to 'create'");
+}

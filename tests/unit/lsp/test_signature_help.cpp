@@ -1030,3 +1030,41 @@ TEST_CASE("SignatureHelpProvider: dotted and `::` calls through a class typedef"
     REQUIRE_FALSE(scoped.isNull());
     CHECK(scoped.value().signatures[0].label == "tds_s(string tds_n)");
 }
+
+// ---------------------------------------------------------------------------
+// A multi-segment qualifier is resolved whole (uvm_reg_predictor.svh:141).
+// ---------------------------------------------------------------------------
+
+TEST_CASE("signature help resolves Class::type_id::create through that class's type_id, "
+          "and not a type parameter's", "[lsp][signature-help]")
+{
+    Fixture f;
+    CompilationController cc{f.sdb};
+    const std::string src =
+        "package sq;\n"
+        "  class sq_obj_registry;\n"
+        "    static function int create(string name = \"\", int parent = 0); endfunction\n"
+        "  endclass\n"
+        "  class sq_comp_registry;\n"
+        "    static function int create(string name, int parent, int ctx = 0); endfunction\n"
+        "  endclass\n"
+        "  class sq_item;\n"
+        "    typedef sq_obj_registry type_id;\n"
+        "  endclass\n"
+        "  class sq_pred #(type BUSTYPE = int);\n"
+        "    typedef sq_comp_registry type_id;\n"
+        "  endclass\n"
+        "endpackage\n";
+    cc.compile("/sq.sv", src);
+
+    auto labelAt = [&](const std::string& line) -> std::string {
+        const std::string text = src + line;
+        const unsigned row = 14; // the appended line
+        auto help = SignatureHelpProvider::getSignatureHelp(
+            makeParams("/sq.sv", row, static_cast<unsigned>(line.size())), f.sdb, text);
+        return help.isNull() ? "null" : std::string(help->signatures.at(0).label);
+    };
+    CHECK(labelAt("x = sq_item::type_id::create(") ==
+          "create(string name = \"\", int parent = 0)");
+    CHECK(labelAt("x = BUSTYPE::type_id::create(") == "null");
+}

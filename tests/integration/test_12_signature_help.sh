@@ -54,6 +54,13 @@
 # Fixture: fixtures/sighelp_ctor.sv -- §6.30 follow-up: `new(` resolves to
 # the constructor of the class being constructed (the declared variable's),
 # not the enclosing class's.
+#
+# Fixture: fixtures/sighelp_scoped.sv -- multi-level `::` qualifiers (the
+# UVM factory shape): `shsc_item::type_id::shsc_create(` and
+# `shsc_pkg::shsc_item::type_id::shsc_create(` resolve through
+# shsc_item's own type_id (the object registry), not the enclosing
+# shsc_pred's (the component registry); `BUSTYPE::type_id::shsc_create(`
+# (a type parameter) gets no signature at all.
 
 SV_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/ref_rename_sighelp.sv"
 SYSTASK_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/sighelp_systask.sv"
@@ -61,6 +68,28 @@ KEYWORD_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/sighelp_keywords.sv"
 MACRO_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/sighelp_macros.sv"
 SHORTHAND_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/sighelp_shorthand.sv"
 CTOR_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/sighelp_ctor.sv"
+SCOPED_FIXTURE="${SVLSP_ROOT}/tests/integration/fixtures/sighelp_scoped.sv"
+
+# scoped_sig_test <name> <line> <char> <expected label, or "null">
+scoped_sig_test() {
+    run_test "$1" \
+        "(condition-case err
+           (let* ((buf    (svlsp-test/open-file \"${SCOPED_FIXTURE}\"))
+                  (ok     (with-current-buffer buf (svlsp-test/wait-for-lsp 15)))
+                  (result (when ok
+                            (with-current-buffer buf
+                              (lsp-request \"textDocument/signatureHelp\"
+                                           (list :textDocument (list :uri (lsp--buffer-uri))
+                                                 :position     (list :line $2 :character $3))))))
+                  (sig    (when result (aref (gethash \"signatures\" result) 0))))
+             (svlsp-test/close-file buf)
+             (cond ((not ok) \"no-lsp\")
+                   ((null result) \"null\")
+                   (t (format \"%s @%s\" (gethash \"label\" sig)
+                              (gethash \"activeParameter\" sig)))))
+         (error (format \"elisp-error: %s\" (error-message-string err))))" \
+        "$4"
+}
 
 section "signature help (textDocument/signatureHelp)"
 
@@ -78,6 +107,9 @@ if [ ! -x "${SVLSP_BIN}" ]; then
         "macro signature from an included define-only header, default rendered" \
         "comma-shorthand parameter gets its own slot with the inherited type" \
         "new( shows the constructed class's constructor, not the enclosing class's" \
+        "Class::type_id::method( resolves through that class's type_id" \
+        "pkg::Class::type_id::method( resolves through that class's type_id" \
+        "TypeParam::type_id::method( gets no signature, not the enclosing class's type_id" \
         "server advertises ( and , as trigger characters and ; as a retrigger"
     do
         skip_test "$name" "svlsp binary not found at ${SVLSP_BIN}"
@@ -356,6 +388,17 @@ else
                  t nil))
          (error (format \"elisp-error: %s\" (error-message-string err))))" \
         "t"
+
+    OBJ_CREATE='"shsc_create(string shsc_name = \"\", int shsc_parent = 0) @1"'
+    # "      x = shsc_item::type_id::shsc_create(\"i\", 1);" (line 21)
+    scoped_sig_test "Class::type_id::method( resolves through that class's type_id" \
+        21 47 "${OBJ_CREATE}"
+    # "      x = shsc_pkg::shsc_item::type_id::shsc_create(\"j\", 2);" (line 22)
+    scoped_sig_test "pkg::Class::type_id::method( resolves through that class's type_id" \
+        22 57 "${OBJ_CREATE}"
+    # "      x = BUSTYPE::type_id::shsc_create(\"t\", 3);" (line 23)
+    scoped_sig_test "TypeParam::type_id::method( gets no signature, not the enclosing class's type_id" \
+        23 45 '"null"'
 
     run_test "server advertises ( and , as trigger characters and ; as a retrigger" \
         "(condition-case err

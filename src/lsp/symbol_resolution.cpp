@@ -356,7 +356,8 @@ std::optional<SymbolRow> Resolver::resolveTypeName(const std::string& type,
 }
 
 // The scope a `A::B::` qualifier names: a package, a class (resolved as a
-// type from the context), `$unit` (top level), then nested classes.
+// type from the context), `$unit` (top level), then nested classes -- a
+// nested typedef (UVM's `C::type_id::`) followed to the class it aliases.
 std::optional<std::string> Resolver::resolveQualifierScope(const std::vector<std::string>& segs,
                                                            const std::string& ctxPath,
                                                            int ctxLine1) const
@@ -379,7 +380,12 @@ std::optional<std::string> Resolver::resolveQualifierScope(const std::vector<std
     }
     for (size_t i = 1; i < segs.size(); ++i) {
         auto nested = memberInScope(scope, segs[i], KindFilter::ScopeLike);
-        if (!nested || nested->kind != "Class") return std::nullopt;
+        if (!nested || nested->kind != "Class") {
+            auto td = memberInScope(scope, segs[i], KindFilter::Typedef);
+            if (!td) return std::nullopt;
+            nested = resolveTypeName(td->detail, td->filePath, td->line);
+            if (!nested) return std::nullopt;
+        }
         scope = qualifiedScopeOf(*nested);
     }
     return scope;
@@ -661,6 +667,9 @@ std::optional<ResolvedSymbol> Resolver::resolveAt(size_t offset, int depth)
                                 : followedByParen ? KindFilter::Callable
                                                   : KindFilter::Any;
         if (auto m = memberInScope(*scope, word, prefer)) return ResolvedSymbol{*m, true};
+        if (followedByScope)
+            if (auto td = memberInScope(*scope, word, KindFilter::Typedef))
+                return ResolvedSymbol{*td, true};
         return std::nullopt;
     }
 

@@ -123,6 +123,14 @@ DEF_TESTS=(
     "definition: a field used in an out-of-class body lands on the class's field"
     "definition: new in another class's method -- the assigned field's class constructor"
     "definition: method on a receiver typed by a class typedef -- the aliased class's"
+    "definition: pkg::Class::method -- package segment lands on the package"
+    "definition: pkg::Class::method -- class segment lands on that package's class"
+    "definition: pkg::Class::method -- method segment lands on that class's method"
+    "definition: pkg_q::Class::method -- class segment lands on the decoy package's class"
+    "definition: pkg_q::Class::method -- method segment lands on the decoy package's method"
+    "definition: pkg::Class::type_id::method -- class segment lands on the class"
+    "definition: pkg::Class::type_id::method -- type_id segment lands on that class's typedef"
+    "definition: pkg::Class::type_id::method -- method segment lands on the aliased class's method"
 )
 REF_TESTS=(
     "references: signal -- declaration + both named-connection uses"
@@ -136,6 +144,7 @@ REF_TESTS=(
     "references: enum literal -- declaration and use"
     "references: class field -- includes the out-of-class body's use, not the package var"
     "references: constructor -- its declaration and the news that construct its class"
+    "references: method called as pkg::Class::method -- excludes the decoy package's"
 )
 RENAME_TESTS=(
     "rename: edits only the cursor module's signal, not a same-named one"
@@ -176,6 +185,18 @@ else
     def_test "${DEF_TESTS[13]}" 68 26 defref_top.sv 63 11
     # "  initial r = h.defref_td_get();" in defref_td_top (line 87)
     def_test "${DEF_TESTS[14]}" 87 16 defref_top.sv 76 17
+    # Multi-level `::` (defref_ml_top): line 108
+    # "  initial r = defref_ml_p::defref_MlOuter::defref_ml_make();", line 110
+    # the same through the decoy package defref_ml_q, and line 109
+    # "  initial r = defref_ml_p::defref_MlUser::type_id::defref_ml_create(\"x\");".
+    def_test "${DEF_TESTS[15]}" 108 14 defref_top.sv 90 8
+    def_test "${DEF_TESTS[16]}" 108 27 defref_top.sv 91 8
+    def_test "${DEF_TESTS[17]}" 108 43 defref_top.sv 92 24
+    def_test "${DEF_TESTS[18]}" 110 27 defref_top.sv 102 8
+    def_test "${DEF_TESTS[19]}" 110 43 defref_top.sv 103 24
+    def_test "${DEF_TESTS[20]}" 109 27 defref_top.sv 97 8
+    def_test "${DEF_TESTS[21]}" 109 42 defref_top.sv 98 25
+    def_test "${DEF_TESTS[22]}" 109 51 defref_top.sv 95 24
 
     # "  logic defref_sig;" (line 16)
     refs_test "${REF_TESTS[0]}" 16 8 \
@@ -204,6 +225,9 @@ else
     # "  function new(int n); endfunction" in defref_CtorA (line 63)
     refs_test "${REF_TESTS[10]}" 63 11 \
         "defref_top.sv:63:11 defref_top.sv:68:26 defref_top.sv:71:19"
+    # "  static function int defref_ml_make(); ..." in defref_ml_p (line 92)
+    refs_test "${REF_TESTS[11]}" 92 24 \
+        "defref_top.sv:108:43 defref_top.sv:92:24"
 
     rename_test "${RENAME_TESTS[0]}" 36 8 defref_sig_b \
         "defref_top.sv:36:8 defref_top.sv:40:19"

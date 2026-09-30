@@ -67,11 +67,10 @@ std::optional<InstantiationHeader> parseInstantiationHeader(
 
 struct CallHeader {
     std::string name;
-    // The immediate `Class::`/`pkg::` scope name directly before `name`
-    // (plan.md §6.26), or "" for a genuinely unqualified call -- same
-    // "segment directly before the last '::'" convention as
+    // The whole `Class::`/`pkg::` qualifier before `name` (plan.md §6.26),
+    // or "" for a genuinely unqualified call -- same convention as
     // extractCalleeScope (src/compiler/sv_tree_walker.cpp), so
-    // "T::type_id::create(" yields scope "type_id", not "T".
+    // "T::type_id::create(" yields scope "T::type_id".
     std::string scope;
 };
 
@@ -101,15 +100,14 @@ std::optional<CallHeader> parseCallHeader(const std::string& text, size_t parenO
     if (name.empty()) return std::nullopt;
 
     // A "::" immediately before the name means a scope-qualified call --
-    // walk back over one or more "Scope::" segments the same way
-    // extractCalleeScope's "last segment before the last '::'" rule does,
-    // keeping only the immediate one.
+    // walk back over one or more "Scope::" segments, keeping them all, as
+    // extractCalleeScope does.
     std::string scope;
     while (i >= 2 && text[i - 1] == ':' && text[i - 2] == ':') {
         i -= 2;
         std::string seg = readIdentBack(i);
         if (seg.empty()) return std::nullopt;
-        if (scope.empty()) scope = seg; // keep only the immediate (last) segment
+        scope = scope.empty() ? seg : seg + "::" + scope;
     }
 
     skipWsBack(i);

@@ -87,3 +87,26 @@ module defref_td_top;
   int r;
   initial r = h.defref_td_get();
 endmodule
+// Appended: multi-level `::` qualifiers, with a same-named decoy class.
+package defref_ml_p;
+  class defref_MlOuter;
+    static function int defref_ml_make(); return 0; endfunction
+  endclass
+  class defref_MlReg;
+    static function int defref_ml_create(string n); return 0; endfunction
+  endclass
+  class defref_MlUser;
+    typedef defref_MlReg type_id;
+  endclass
+endpackage
+package defref_ml_q;
+  class defref_MlOuter;
+    static function int defref_ml_make(); return 1; endfunction
+  endclass
+endpackage
+module defref_ml_top;
+  int r;
+  initial r = defref_ml_p::defref_MlOuter::defref_ml_make();
+  initial r = defref_ml_p::defref_MlUser::type_id::defref_ml_create("x");
+  initial r = defref_ml_q::defref_MlOuter::defref_ml_make();
+endmodule

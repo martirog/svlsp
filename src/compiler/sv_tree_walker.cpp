@@ -321,27 +321,26 @@ static std::vector<CallArgSlot> extractArgSlots(SvParser::List_of_argumentsConte
     return slots;
 }
 
-// Extracts the immediate scope name from a `::`-qualified call identifier's
-// own verbatim text (plan.md §6.26), or "" if `idText` has no `::` at all.
-// "Immediate" means the segment directly before the *last* `::` -- e.g.
-// "type_id" (not "T") for the doubly-qualified `T::type_id::create` idiom
-// (`class_scope tf_identifier`, see the Sv.g4 grammar-quirks table), since
-// that is the name the call is actually being resolved against. `idText`
-// comes from the token stream (m_tokens->getText), not ctx->getText(), so
-// stray inter-token whitespace around a `::` (`Class :: method`) is
-// possible and trimmed here rather than assumed absent.
+// Extracts the whole `::`-qualifier from a qualified call identifier's own
+// verbatim text (plan.md §6.26), or "" if `idText` has no `::` at all: every
+// segment before the *last* `::` -- "T::type_id" for the doubly-qualified
+// `T::type_id::create` idiom (`class_scope tf_identifier`, see the Sv.g4
+// grammar-quirks table). All of it, not just "type_id": resolution
+// (SymbolDatabase::baseClassChain) then looks for a type_id declared in T,
+// and fails closed when T is a type parameter -- keeping only "type_id"
+// resolved UVM's `BUSTYPE::type_id::create("t")` against whichever type_id
+// the calling file declared (uvm_reg_predictor.svh:141). `idText` comes from
+// the token stream (m_tokens->getText), not ctx->getText(), so stray
+// inter-token whitespace around a `::` (`Class :: method`) is possible and
+// dropped here rather than assumed absent.
 static std::string extractCalleeScope(const std::string& idText)
 {
     size_t lastSep = idText.rfind("::");
     if (lastSep == std::string::npos) return "";
-    std::string scope = idText.substr(0, lastSep);
-    size_t prevSep = scope.rfind("::");
-    if (prevSep != std::string::npos) scope = scope.substr(prevSep + 2);
-
-    size_t start = scope.find_first_not_of(" \t\r\n");
-    if (start == std::string::npos) return "";
-    size_t end = scope.find_last_not_of(" \t\r\n");
-    return scope.substr(start, end - start + 1);
+    std::string scope;
+    for (char c : idText.substr(0, lastSep))
+        if (c != ' ' && c != '\t' && c != '\r' && c != '\n') scope += c;
+    return scope;
 }
 
 // ---------------------------------------------------------------------------

@@ -123,12 +123,13 @@ struct CallArgSlot {
 // grammar's own list_of_arguments rule never interleaves them).
 struct CallRecord {
     std::string calleeName;
-    // The immediate scope name for an explicitly `Class::`/`pkg::`-qualified
-    // call (e.g. "type_id" for `type_id::create(...)`, "type_id" -- not "T"
-    // -- for the doubly-qualified `T::type_id::create(...)` idiom) -- empty
-    // for a genuinely unqualified call. Retained (not discarded) so
-    // resolution can scope the lookup to that exact name's own class
-    // hierarchy rather than searching the whole database by bare name alone
+    // The whole qualifier of an explicitly `Class::`/`pkg::`-qualified call
+    // (e.g. "type_id" for `type_id::create(...)`, "T::type_id" for the
+    // doubly-qualified `T::type_id::create(...)` idiom, so resolution looks
+    // for a type_id declared in T) -- empty for a genuinely unqualified
+    // call. Retained (not discarded) so resolution can scope the lookup to
+    // that exact name's own class hierarchy rather than searching the whole
+    // database by bare name alone
     // (plan.md §6.26 -- this used to be dropped here, the root cause of
     // most of that section's disclosed false positives).
     std::string calleeScope;

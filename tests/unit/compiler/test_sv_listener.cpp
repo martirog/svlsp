@@ -1518,8 +1518,8 @@ TEST_CASE("a Class::-qualified call records the class name as calleeScope",
     CHECK(c->calleeScope == "Foo");
 }
 
-TEST_CASE("a doubly-scoped call (T::type_id::create) records only the "
-          "immediate scope", "[compiler][listener][call]") {
+TEST_CASE("a doubly-scoped call (T::type_id::create) records the whole "
+          "qualifier", "[compiler][listener][call]") {
     auto result = walkSource(
         "module top;\n"
         "  class type_id;\n"
@@ -1528,10 +1528,18 @@ TEST_CASE("a doubly-scoped call (T::type_id::create) records only the "
         "  class T;\n"
         "  endclass\n"
         "  initial T::type_id::create(1);\n"
+        "  initial T :: type_id :: create(2);\n"
         "endmodule\n");
-    auto* c = findCall(result.calls, "create");
-    REQUIRE(c != nullptr);
-    CHECK(c->calleeScope == "type_id");
+    // The whole qualifier, so resolution looks for a type_id declared in T
+    // (plan.md §6.30 follow-up, uvm_reg_predictor.svh:141), whitespace
+    // around `::` dropped.
+    int seen = 0;
+    for (const auto& c : result.calls)
+        if (c.calleeName == "create") {
+            CHECK(c.calleeScope == "T::type_id");
+            ++seen;
+        }
+    CHECK(seen == 2);
 }
 
 // ---------------------------------------------------------------------------
