@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-09-28 (§6.31 doc comments on declarations, with the `docComments` / `--no-doc-comments` switch).
+**Last updated:** 2026-09-30 (`::`-qualifier fix plus multi-level `::` Emacs tests and the nested-typedef resolver fix, committed).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -11,9 +11,23 @@ write-up) — read the relevant section there rather than looking for it here.
 
 ## Current state
 
-**§6.31 (doc comments on declarations) is done** (plan.md §6.31,
-"Implementation"). Next: pick from "Other open work" below — the new
-item 0 (a UVM `--build-db` false-positive diagnostic) is the freshest lead.
+**The `::`-qualifier fix (the extra UVM `--build-db` diagnostic) is done
+and committed** (plan.md §6.30 "Follow-up: the whole `::` qualifier of a
+call"). Next: pick from "Other open work".
+
+In short: a call's recorded qualifier (`CallRecord::calleeScope`,
+signature help's `CallHeader::scope`) is now the whole qualifier,
+`T::type_id`, not just `type_id`, so `BUSTYPE::type_id::create` (type
+parameter) fails closed instead of resolving to the calling file's own
+`type_id`. Not covered: a bare `type_id::create(...)` in a file with
+several classes still uses the same-file tie-break. Emacs tests for
+multi-level `::` (none existed) were added with it, and exposed a resolver
+gap now fixed too: a class-scoped typedef as a middle segment
+(`pkg::C::type_id::create`) is followed to its class, and definition on
+that `type_id` lands on the typedef.
+
+§6.31 (doc comments on declarations) is done and committed (plan.md §6.31,
+"Implementation").
 
 - Committed on `main`: everything through §6.30 and §6.29, including
   macro hover/definition/references/rename, and the comma-shorthand
@@ -25,9 +39,9 @@ item 0 (a UVM `--build-db` false-positive diagnostic) is the freshest lead.
   in workspace symbols, no completion inside comments/strings, and doc
   comments (§6.31) in hover, signature help and completion resolve.
 - Test baselines:
-  - unit: **913 cases**, all passing (no `[!shouldfail]` known gaps left
+  - unit: **917 cases**, all passing (no `[!shouldfail]` known gaps left
     -- the `` `define `` references case passes since the macro follow-up)
-  - Emacs functional: **258/258**
+  - Emacs functional: **271/271**
   - UVM corpus (opt-in): **1132 assertions / 28 cases**, all passing.
     (+10: three §6.31 doc-comment cases -- prototype/body fallback, a
     tag-only method with no doc, and the corpus doc count pinned at 960.)
@@ -42,10 +56,9 @@ item 0 (a UVM `--build-db` false-positive diagnostic) is the freshest lead.
     case checks each item and step D's (name, kind) dedup removed 124
     duplicates; +10 for §6.29 part A; +633 for the macro follow-up, whose
     references case checks each of its 313 locations.)
-  - UVM corpus `--build-db`: **2 diagnostics, 15731 symbol rows, 553
+  - UVM corpus `--build-db`: **1 diagnostic, 15731 symbol rows, 553
     macro rows, 163 files, 960 symbol docs + 30 macro docs; 4.50 MB
-    (4.30 MB with `--no-doc-comments`)** (the 2nd diagnostic is item 0 of
-    "Other open work") (~15 min, ~7 GB RSS; don't run it at the same
+    (4.30 MB with `--no-doc-comments`)** (~15 min, ~7 GB RSS; don't run it at the same
     time as the corpus tests, and a laptop suspend pauses either; when
     waiting on one from a script, don't `pgrep -f` its command line --
     the waiting shell's own command line matches)
@@ -133,14 +146,7 @@ What §6.29 changed that other work must know about:
 
 ## Other open work (priority roughly top-down)
 
-0. **UVM `--build-db` reports 2 diagnostics, not 1**: the extra one is
-   `reg/uvm_reg_predictor.svh:141` "missing required argument 'parent' in
-   call to 'create'" on `BUSTYPE::type_id::create("t")` (BUSTYPE is a type
-   parameter). Found while measuring §6.31; identical with and without doc
-   comments. Most likely introduced by the typedef-alias follow-up
-   (5870b3a: `resolveMethod` now follows `type_id` typedefs), which never
-   re-ran `--build-db`. Unconfirmed — rebuild at 5870b3a^ to check.
-0b. **§6.30 follow-ups** (none blocking):
+0. **§6.30 follow-ups** (none blocking):
    - completion offers an ancestor's `local` members (qualifiers aren't
      recorded);
    - no constructor resolution for `return new(...)` or `new` passed as an

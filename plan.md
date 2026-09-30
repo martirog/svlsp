@@ -5026,6 +5026,57 @@ Fixed.
     members (`get_name`, `print`, `uvm_report_info`, ...), none removed.
     Some are `local` in their class (`m_inst_count`), the limit above.
 
+**Follow-up: the whole `::` qualifier of a call (2026-09-29).** Fixed.
+- *Symptom.* Since the typedef-alias follow-up, the UVM `--build-db`
+  reported a 2nd diagnostic (found during §6.31):
+  `reg/uvm_reg_predictor.svh:141` "missing required argument 'parent' in
+  call to 'create'" on `t = BUSTYPE::type_id::create("t");`, with
+  `BUSTYPE` a type parameter.
+- *Cause.* The walker's `extractCalleeScope` (and signature help's
+  `parseCallHeader`) kept only the segment directly before the method name,
+  so the call's qualifier was just `type_id`. Once `baseClassChain`
+  followed `type_id` typedefs, its same-file tie-break picked
+  `uvm_reg_predictor`'s own `type_id` (a `uvm_component_registry`, whose
+  `create(name, parent, contxt="")` requires `parent`). Before, a typedef
+  qualifier resolved to nothing and the check skipped the call. The same
+  flaw made `SomeClass::type_id::create` land on whichever `type_id` the
+  calling file declares first, not SomeClass's own.
+- *Fix.* Keep the whole qualifier: `CallRecord::calleeScope` and
+  `CallHeader::scope` are now `T::type_id` (whitespace around `::`
+  dropped). `baseClassChain` already matches a qualified name by scope
+  suffix, so `BUSTYPE::type_id` finds no `type_id` declared in a class
+  `BUSTYPE` and fails closed, while `item::type_id` resolves item's own
+  registry.
+- *Not covered:* a bare `type_id::create(...)` in a file with several
+  classes still uses the same-file tie-break rather than the enclosing
+  class's own `type_id`.
+- *Emacs coverage for multi-level `::`* (none existed before): test_39
+  (`callargs_scoped.sv`: `C::type_id::`, `pkg::C::type_id::` and
+  `BUSTYPE::type_id::` factory calls, exactly the two component-registry
+  calls reported), test_12 (`sighelp_scoped.sv`: the same three shapes in
+  signature help) and test_40 (`defref_top.sv`'s `defref_ml_*` section:
+  definition on every segment of `pkg::C::method` and
+  `pkg::C::type_id::method`, a same-named decoy package, and references).
+  They found a resolver gap: a class-scoped typedef as a *middle* segment
+  (`pkg::C::type_id::create`) wasn't followed -- definition on `type_id`
+  was null, and `create` only resolved through the name-only fallback.
+  `resolveQualifierScope` now follows a nested typedef to its class, and a
+  word followed by `::` accepts a typedef when no package/class matches.
+- *Verification.*
+  - Unit: 917 cases, all passing (the UVM shape across two files and
+    `Class::type_id::create` through the right class in
+    test_compilation_controller; a signature-help case; the listener case
+    now expects `T::type_id`, with and without spaces around `::`; a
+    test_definition_scoped case for each segment of
+    `pkg::C::type_id::create` against decoys declared first).
+  - Emacs: 271/271 (+13).
+  - UVM corpus: 1132 assertions / 28 cases, all passing (unchanged, also
+    after the resolver fix; the `::` signature-help cases exercise the
+    changed `parseCallHeader`).
+  - `--build-db`: **1 diagnostic** again (`base/uvm_transaction.svh:443`
+    only), 15731 symbol rows, 553 macro rows, 163 files, 960 symbol docs +
+    30 macro docs, 4.50 MB; 14m15s, 6.96 GB max RSS.
+
 **Ordering:** wildcard-import same-file fix (with its own test, done) → A → B
 (hover/definition first, then references + rename) → C → D. After each
 step, remove the `[!shouldfail]` tag from every test that now passes:
@@ -5224,7 +5275,8 @@ symbols.
   argument 'parent' in call to 'create'" (`BUSTYPE::type_id::create("t")`).
   Present with and without docs, so not this section's; most likely from
   the typedef-alias follow-up (5870b3a), whose write-up didn't re-run
-  `--build-db`. Not investigated further.
+  `--build-db`. Fixed since (§6.30, "Follow-up: the whole `::` qualifier
+  of a call").
 - A test fixture's file-header comment directly above its class became the
   class's doc (`kind_tiebreak/zzz_class_decl.sv`, whose comment mentions
   "Signal", which test_26 forbids in the hover); a blank line now separates
