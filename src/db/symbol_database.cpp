@@ -240,21 +240,23 @@ std::string SymbolDatabase::docFor(const SymbolRow& sym) const
 }
 
 void SymbolDatabase::replaceDiagnostics(int64_t fileId,
-                                        const std::vector<ParseError>& errors)
+                                        const std::vector<ParseError>& errors,
+                                        const std::string& source)
 {
     m_db.execute("BEGIN");
-    auto del = m_db.prepare("DELETE FROM diagnostics WHERE file_id = ?");
-    del.bind(1, fileId);
+    auto del = m_db.prepare("DELETE FROM diagnostics WHERE file_id = ? AND source = ?");
+    del.bind(1, fileId).bind(2, source);
     del.step();
 
     auto ins = m_db.prepare(
-        "INSERT INTO diagnostics (file_id,line,col,message) VALUES (?,?,?,?)");
+        "INSERT INTO diagnostics (file_id,line,col,message,source) VALUES (?,?,?,?,?)");
     for (const auto& e : errors) {
         ins.reset();
         ins.bind(1, fileId)
            .bind(2, e.line)
            .bind(3, e.column)
-           .bind(4, e.message);
+           .bind(4, e.message)
+           .bind(5, source);
         ins.step();
     }
     m_db.execute("COMMIT");
@@ -482,20 +484,72 @@ std::vector<InstantiationRow> SymbolDatabase::instantiationsOfType(
     return rows;
 }
 
-void SymbolDatabase::appendDiagnostics(int64_t fileId, const std::vector<ParseError>& extra)
+void SymbolDatabase::appendDiagnostics(int64_t fileId, const std::vector<ParseError>& extra,
+                                       const std::string& source, const std::string& subject)
 {
     m_db.execute("BEGIN");
-    auto ins = m_db.prepare(
-        "INSERT INTO diagnostics (file_id,line,col,message) VALUES (?,?,?,?)");
+    auto ins = m_db.prepare("INSERT INTO diagnostics (file_id,line,col,message,source,subject) "
+                            "VALUES (?,?,?,?,?,?)");
     for (const auto& e : extra) {
         ins.reset();
         ins.bind(1, fileId)
            .bind(2, e.line)
            .bind(3, e.column)
-           .bind(4, e.message);
+           .bind(4, e.message)
+           .bind(5, source)
+           .bind(6, subject);
         ins.step();
     }
     m_db.execute("COMMIT");
+}
+
+void SymbolDatabase::clearDiagnostics(const std::string& source)
+{
+    auto del = m_db.prepare("DELETE FROM diagnostics WHERE source = ?");
+    del.bind(1, source);
+    del.step();
+}
+
+std::vector<ParseError> SymbolDatabase::refreshLibraryDiagnostics(int64_t fileId)
+{
+    std::vector<std::pair<std::string, std::string>> tagged; // (module name, message)
+    {
+        auto q = m_db.prepare(
+            "SELECT subject, MIN(message) FROM diagnostics "
+            "WHERE file_id = ? AND source = 'library' GROUP BY subject");
+        q.bind(1, fileId);
+        while (q.step()) tagged.emplace_back(q.columnText(0), q.columnText(1));
+    }
+    if (tagged.empty()) return {};
+
+    m_db.execute("BEGIN");
+    auto del = m_db.prepare("DELETE FROM diagnostics WHERE file_id = ? AND source = 'library'");
+    del.bind(1, fileId);
+    del.step();
+
+    std::vector<ParseError> kept;
+    auto declared = m_db.prepare(
+        "SELECT 1 FROM symbols WHERE name = ? AND kind IN ('Module','Interface','Program') LIMIT 1");
+    auto lines = m_db.prepare(
+        "SELECT line FROM instantiations WHERE file_id = ? AND type_name = ? ORDER BY line");
+    auto ins = m_db.prepare("INSERT INTO diagnostics (file_id,line,col,message,source,subject) "
+                            "VALUES (?,?,?,?,'library',?)");
+    for (const auto& [typeName, message] : tagged) {
+        declared.reset();
+        declared.bind(1, typeName);
+        if (declared.step()) continue;
+        lines.reset();
+        lines.bind(1, fileId).bind(2, typeName);
+        while (lines.step()) {
+            const int line = static_cast<int>(lines.columnInt(0));
+            ins.reset();
+            ins.bind(1, fileId).bind(2, line).bind(3, 0).bind(4, message).bind(5, typeName);
+            ins.step();
+            kept.push_back({line, 0, message});
+        }
+    }
+    m_db.execute("COMMIT");
+    return kept;
 }
 
 void SymbolDatabase::replaceFileIncludes(int64_t fileId,

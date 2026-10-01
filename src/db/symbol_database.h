@@ -152,8 +152,11 @@ public:
     // library was built before schema v11).
     std::string docFor(const SymbolRow& sym) const;
 
-    // Delete all diagnostics for `fileId` then insert `errors`.
-    void replaceDiagnostics(int64_t fileId, const std::vector<ParseError>& errors);
+    // Delete `fileId`'s diagnostics from `source` (schema.h's
+    // diagnostics.source) then insert `errors` as that source's. Other
+    // sources' rows are left alone.
+    void replaceDiagnostics(int64_t fileId, const std::vector<ParseError>& errors,
+                            const std::string& source = "compile");
 
     // Delete all imports for `fileId` then insert `imports`.
     void replaceImports(int64_t fileId, const std::vector<ImportRecord>& imports);
@@ -186,9 +189,23 @@ public:
     // referencing file when `typeName` can't be resolved by LibraryResolver.
     std::vector<InstantiationRow> instantiationsOfType(const std::string& typeName) const;
 
-    // Insert-only: appends diagnostics without deleting existing rows for
-    // `fileId` (unlike replaceDiagnostics, which is delete-then-insert).
-    void appendDiagnostics(int64_t fileId, const std::vector<ParseError>& extra);
+    // Insert-only: appends diagnostics from `source`, about `subject`,
+    // without deleting existing rows for `fileId` (unlike replaceDiagnostics).
+    void appendDiagnostics(int64_t fileId, const std::vector<ParseError>& extra,
+                           const std::string& source = "compile",
+                           const std::string& subject = "");
+
+    // Deletes every diagnostic from `source`, in every file.
+    void clearDiagnostics(const std::string& source);
+
+    // Re-anchors `fileId`'s 'library' diagnostics (LibraryResolver's
+    // unresolved instantiations) to its current instantiations, once a
+    // recompile has replaced them: each module name (subject) they were
+    // about gets one row per instantiation of it still in the file, or none
+    // once something declares it. Returns the resulting rows. Never adds a
+    // name that had no row (library resolution only runs on a project
+    // compile).
+    std::vector<ParseError> refreshLibraryDiagnostics(int64_t fileId);
 
     // Delete all file_includes rows where `fileId` is the includer, then
     // insert one row per path in `includedPaths` (each already upserted into

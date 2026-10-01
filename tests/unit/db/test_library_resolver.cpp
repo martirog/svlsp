@@ -147,3 +147,100 @@ TEST_CASE("an unresolved instantiation gets a diagnostic on the referencing file
     }
     CHECK(found);
 }
+
+// ---------------------------------------------------------------------------
+// A recompile keeps LibraryResolver's diagnostics (one diagnostics table,
+// rows tagged with the unresolved module name), re-anchored to the file's
+// current instantiations.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+std::vector<int> unresolvedLines(const SymbolDatabase& sdb, const std::string& path,
+                                 const std::string& name) {
+    std::vector<int> lines;
+    for (const auto& d : sdb.diagnosticsForFile(path))
+        if (d.message.find("'" + name + "'") != std::string::npos) lines.push_back(d.line);
+    return lines;
+}
+
+bool mentions(const std::vector<ParseError>& errs, const std::string& name) {
+    return std::any_of(errs.begin(), errs.end(), [&](const ParseError& e) {
+        return e.message.find("'" + name + "'") != std::string::npos;
+    });
+}
+
+} // namespace
+
+TEST_CASE("a recompile keeps an unresolved-instantiation diagnostic and returns it",
+          "[db][library-resolver]") {
+    Fixture f;
+    f.ctrl.compile("/top.sv", "module top; ghost_mod u0(); endmodule\n");
+    LibraryResolver::resolve(ProjectConfig{}, f.ctrl, f.sdb);
+
+    auto errs = f.ctrl.compile("/top.sv", "module top; ghost_mod u0(); int x; endmodule\n");
+    CHECK(mentions(errs, "ghost_mod"));
+    CHECK(unresolvedLines(f.sdb, "/top.sv", "ghost_mod") == std::vector<int>{1});
+}
+
+TEST_CASE("a recompile moves an unresolved-instantiation diagnostic with its instantiation",
+          "[db][library-resolver]") {
+    Fixture f;
+    f.ctrl.compile("/top.sv", "module top; ghost_mod u0(); endmodule\n");
+    LibraryResolver::resolve(ProjectConfig{}, f.ctrl, f.sdb);
+
+    f.ctrl.compile("/top.sv",
+                   "module top;\n"
+                   "  int x;\n"
+                   "  ghost_mod u0();\n"
+                   "  ghost_mod u1();\n"
+                   "endmodule\n");
+    CHECK(unresolvedLines(f.sdb, "/top.sv", "ghost_mod") == std::vector<int>{3, 4});
+}
+
+TEST_CASE("a recompile drops an unresolved-instantiation diagnostic once the "
+          "instantiation is gone", "[db][library-resolver]") {
+    Fixture f;
+    f.ctrl.compile("/top.sv", "module top; ghost_mod u0(); endmodule\n");
+    LibraryResolver::resolve(ProjectConfig{}, f.ctrl, f.sdb);
+
+    auto errs = f.ctrl.compile("/top.sv", "module top; endmodule\n");
+    CHECK_FALSE(mentions(errs, "ghost_mod"));
+    CHECK(unresolvedLines(f.sdb, "/top.sv", "ghost_mod").empty());
+}
+
+TEST_CASE("a recompile drops an unresolved-instantiation diagnostic once the "
+          "module is declared", "[db][library-resolver]") {
+    Fixture f;
+    f.ctrl.compile("/top.sv", "module top; ghost_mod u0(); endmodule\n");
+    LibraryResolver::resolve(ProjectConfig{}, f.ctrl, f.sdb);
+
+    auto errs = f.ctrl.compile("/top.sv",
+                               "module ghost_mod; endmodule\n"
+                               "module top; ghost_mod u0(); endmodule\n");
+    CHECK_FALSE(mentions(errs, "ghost_mod"));
+    CHECK(unresolvedLines(f.sdb, "/top.sv", "ghost_mod").empty());
+}
+
+TEST_CASE("a recompile still replaces the compiler's own diagnostics",
+          "[db][library-resolver]") {
+    Fixture f;
+    f.ctrl.compile("/top.sv", "module top; ghost_mod u0(); int ; endmodule\n");
+    LibraryResolver::resolve(ProjectConfig{}, f.ctrl, f.sdb);
+    REQUIRE(f.sdb.diagnosticsForFile("/top.sv").size() > 1);
+
+    f.ctrl.compile("/top.sv", "module top; ghost_mod u0(); endmodule\n");
+    auto rows = f.sdb.diagnosticsForFile("/top.sv");
+    REQUIRE(rows.size() == 1);
+    CHECK(rows[0].message.find("ghost_mod") != std::string::npos);
+}
+
+TEST_CASE("resolving twice leaves one unresolved-instantiation diagnostic",
+          "[db][library-resolver]") {
+    Fixture f;
+    f.ctrl.compile("/top.sv", "module top; ghost_mod u0(); endmodule\n");
+    LibraryResolver::resolve(ProjectConfig{}, f.ctrl, f.sdb);
+    LibraryResolver::resolve(ProjectConfig{}, f.ctrl, f.sdb);
+
+    CHECK(unresolvedLines(f.sdb, "/top.sv", "ghost_mod") == std::vector<int>{1});
+}

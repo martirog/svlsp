@@ -179,9 +179,11 @@ std::vector<ParseError> CompilationController::compile(const std::string& path,
     // rather than only once this entire pipeline finishes; see
     // SvPreprocessor::process's own doc comment for why that matters.)
     std::vector<std::string> allIncluded;
+    std::vector<int64_t> recompiledIncFids; // instantiations replaced below
     for (const auto& [filePath, recs] : recsByFile) {
         if (filePath.empty()) continue;
         int64_t incFid = m_sdb.upsertFile(filePath, "");
+        recompiledIncFids.push_back(incFid);
         m_sdb.replaceSymbols(incFid,        recs);
         m_sdb.replaceDiagnostics(incFid,    errsByFile[filePath]  );
         m_sdb.replaceImports(incFid,        importsByFile[filePath]);
@@ -211,6 +213,13 @@ std::vector<ParseError> CompilationController::compile(const std::string& path,
         m_sdb.replaceMacros(incFid, macs);
         allIncluded.push_back(filePath);
     }
+
+    // replaceDiagnostics above kept LibraryResolver's 'library' rows
+    // (unresolved instantiations); re-anchor them to the instantiations just recorded -- after every
+    // file of this unit is persisted, so a module it now declares clears
+    // them. The primary's are part of the return value, as below.
+    std::vector<ParseError> primaryUnresolvedDiags = m_sdb.refreshLibraryDiagnostics(fid);
+    for (int64_t incFid : recompiledIncFids) m_sdb.refreshLibraryDiagnostics(incFid);
 
     // Missing-required-argument check (plan.md §6.23) -- run only once every
     // symbol from this whole compile unit (primary + every included file)
@@ -254,5 +263,6 @@ std::vector<ParseError> CompilationController::compile(const std::string& path,
 
     auto result = errsByFile[""];
     result.insert(result.end(), primaryCallDiags.begin(), primaryCallDiags.end());
+    result.insert(result.end(), primaryUnresolvedDiags.begin(), primaryUnresolvedDiags.end());
     return result;
 }

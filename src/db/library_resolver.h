@@ -20,7 +20,9 @@ public:
     // retried; combined with `controller.compile`'s content-hash cache, this
     // guarantees the loop terminates. Every name still unresolved when the
     // loop ends gets a diagnostic attached (via SymbolDatabase::
-    // appendDiagnostics) to each file that references it.
+    // appendDiagnostics, source 'library', subject the name) to each file
+    // that references it; a later recompile of that file keeps and
+    // re-anchors it (SymbolDatabase::refreshLibraryDiagnostics).
     //
     // Returns the number of additional files compiled.
     static int resolve(const ProjectConfig& config, CompilationController& controller,

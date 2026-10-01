@@ -13,14 +13,14 @@ TEST_CASE("open in-memory database succeeds", "[db][database]") {
 TEST_CASE("initSchema creates tables and sets current version", "[db][database]") {
     Database db(":memory:");
     db.initSchema();
-    CHECK(db.schemaVersion() == 11);
+    CHECK(db.schemaVersion() == 12);
 }
 
 TEST_CASE("initSchema is idempotent", "[db][database]") {
     Database db(":memory:");
     db.initSchema();
     CHECK_NOTHROW(db.initSchema());
-    CHECK(db.schemaVersion() == 11);
+    CHECK(db.schemaVersion() == 12);
 }
 
 TEST_CASE("schemaVersion returns 0 on fresh database", "[db][database]") {
@@ -156,7 +156,7 @@ TEST_CASE("migration to v9 adds the macros table (plan.md §6.29 part A)", "[db]
     // Reshape into a v8 database: no macros table.
     db.execute("DROP TABLE macros; UPDATE schema_version SET version = 8;");
     db.initSchema();
-    CHECK(db.schemaVersion() == 11);
+    CHECK(db.schemaVersion() == 12);
     auto chk = db.prepare("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='macros'");
     REQUIRE(chk.step());
     CHECK(chk.columnInt(0) == 1);
@@ -172,7 +172,7 @@ TEST_CASE("migration to v10 adds macros.body", "[db][database]") {
                " is_function_like INTEGER NOT NULL DEFAULT 0, params TEXT NOT NULL DEFAULT '');"
                "UPDATE schema_version SET version = 9;");
     db.initSchema();
-    CHECK(db.schemaVersion() == 11);
+    CHECK(db.schemaVersion() == 12);
     CHECK_NOTHROW(db.prepare("SELECT body FROM macros"));
 }
 
@@ -187,7 +187,21 @@ TEST_CASE("migration to v11 adds symbol_docs and macros.doc (plan.md §6.31)", "
                " body TEXT NOT NULL DEFAULT '');"
                "UPDATE schema_version SET version = 10;");
     db.initSchema();
-    CHECK(db.schemaVersion() == 11);
+    CHECK(db.schemaVersion() == 12);
     CHECK_NOTHROW(db.prepare("SELECT doc FROM macros"));
     CHECK_NOTHROW(db.prepare("SELECT file_id, line, col, doc FROM symbol_docs"));
+}
+
+TEST_CASE("migration to v12 adds diagnostics.source and .subject", "[db][database]") {
+    Database db(":memory:");
+    db.initSchema();
+    // Reshape into a v11 database: diagnostics without source/subject.
+    db.execute("DROP TABLE diagnostics;"
+               "CREATE TABLE diagnostics (id INTEGER PRIMARY KEY AUTOINCREMENT,"
+               " file_id INTEGER NOT NULL, line INTEGER NOT NULL, col INTEGER NOT NULL,"
+               " message TEXT NOT NULL);"
+               "UPDATE schema_version SET version = 11;");
+    db.initSchema();
+    CHECK(db.schemaVersion() == 12);
+    CHECK_NOTHROW(db.prepare("SELECT source, subject FROM diagnostics"));
 }

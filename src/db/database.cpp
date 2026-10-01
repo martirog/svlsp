@@ -74,6 +74,14 @@ void Database::initSchema()
         execute(db::MIGRATION_V9_TO_V10);
     if (v < 11)
         execute(db::MIGRATION_V10_TO_V11);
+    if (v < 12) {
+        // Skip the ALTER when the column is already there (a database
+        // reshaped to an older version by hand still has it).
+        auto col = prepare("SELECT 1 FROM pragma_table_info('diagnostics') "
+                           "WHERE name = 'source'");
+        execute(col.step() ? "UPDATE schema_version SET version = 12;"
+                           : db::MIGRATION_V11_TO_V12);
+    }
 }
 
 void Database::execute(const std::string& sql)

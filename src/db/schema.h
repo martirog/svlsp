@@ -4,7 +4,7 @@ namespace db {
 
 // Current schema version.  Increment and add a migration in Database::initSchema
 // whenever the schema changes.
-inline constexpr int SCHEMA_VERSION = 11;
+inline constexpr int SCHEMA_VERSION = 12;
 
 // DDL executed on a fresh (version-0) database — always reflects the latest schema.
 inline constexpr const char* SCHEMA_DDL = R"sql(
@@ -48,7 +48,14 @@ CREATE TABLE diagnostics (
     file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
     line    INTEGER NOT NULL,
     col     INTEGER NOT NULL,
-    message TEXT    NOT NULL
+    message TEXT    NOT NULL,
+    -- Who produced the row, so each producer replaces only its own:
+    -- 'compile' (CompilationController: parse errors, missing arguments) or
+    -- 'library' (LibraryResolver's unresolved instantiations).
+    source  TEXT    NOT NULL DEFAULT 'compile',
+    -- What the row is about, where its producer needs it: the module name
+    -- of a 'library' row, so a recompile can re-anchor it.
+    subject TEXT    NOT NULL DEFAULT ''
 );
 
 CREATE INDEX idx_diagnostics_file_id ON diagnostics(file_id);
@@ -158,6 +165,13 @@ CREATE TABLE symbol_docs (
     doc     TEXT    NOT NULL,
     PRIMARY KEY (file_id, line, col)
 ) WITHOUT ROWID;
+)sql";
+
+// SQL applied when migrating an existing v11 database to v12.
+inline constexpr const char* MIGRATION_V11_TO_V12 = R"sql(
+ALTER TABLE diagnostics ADD COLUMN source TEXT NOT NULL DEFAULT 'compile';
+ALTER TABLE diagnostics ADD COLUMN subject TEXT NOT NULL DEFAULT '';
+UPDATE schema_version SET version = 12;
 )sql";
 
 // SQL applied when migrating an existing v10 database to v11.
