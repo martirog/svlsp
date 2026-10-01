@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-09-30 (review follow-up: typedef aliased type resolved from its own scope, shared helpers; signature help on `resolveSymbolAt`, committed).
+**Last updated:** 2026-10-01 (per-source diagnostics, schema v12: a live edit no longer wipes `LibraryResolver`'s diagnostics; committed, corpus batch pending).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -11,16 +11,25 @@ write-up) — read the relevant section there rather than looking for it here.
 
 ## Current state
 
-**PICK UP HERE NEXT TIME — signature help now resolves callees with
-`resolveSymbolAt` (plan.md §6.30, "Follow-up: signature help resolves
-callees with `resolveSymbolAt`"): done and committed.** Files:
-`src/lsp/signature_help.cpp`, `src/lsp/signature_help.h`,
-`tests/unit/lsp/test_signature_help.cpp` (+2 cases), plan.md, this file.
-- Verified: unit 921/921, Emacs 271/271 (debug build rebuilt), UVM
-  corpus 1132 assertions / 28 cases, all passing (2026-10-01).
-- `--build-db` doesn't need a re-run (`svlsp_db` unchanged).
+**PICK UP HERE NEXT TIME — per-source diagnostics (plan.md §6.21,
+"Prerequisite done"): a live edit no longer wipes `LibraryResolver`'s
+"unresolved instantiation" diagnostics.** Committed; the corpus batch
+for it is still pending (see below). Files:
+`src/db/schema.h`, `database.cpp`, `symbol_database.{h,cpp}`,
+`compilation_controller.cpp`, `library_resolver.{h,cpp}`,
+`tests/unit/db/test_library_resolver.cpp` (+6),
+`tests/unit/db/test_database.cpp` (+1, version checks -> 12), plan.md,
+this file.
+- Verified: unit 928/928, Emacs 271/271 (debug build).
+- Pending, **batched**: the UVM corpus suite and corpus `--build-db`
+  (`svlsp_db` changed: schema v12). Run them once after the next fix(es),
+  never while a fix is being edited; then replace the pending note in
+  plan.md §6.21 and here with the results.
 
-Committed earlier today (2026-09-30), in order: the whole-`::`-qualifier
+Committed 2026-10-01: signature help resolves callees with
+`resolveSymbolAt` (72a0b75 + b651a58; corpus 1132/28 passing).
+
+Committed 2026-09-30, in order: the whole-`::`-qualifier
 fix with multi-level `::` Emacs tests (340f590 + 9d4a8da), then the
 typedef-scope fix and helper merges (0ffe00c + 9dbee21).
 
@@ -54,7 +63,7 @@ by name instead of from the typedef's scope, and merged duplicated helpers
   in workspace symbols, no completion inside comments/strings, and doc
   comments (§6.31) in hover, signature help and completion resolve.
 - Test baselines:
-  - unit: **921 cases**, all passing (no `[!shouldfail]` known gaps left
+  - unit: **928 cases**, all passing (no `[!shouldfail]` known gaps left
     -- the `` `define `` references case passes since the macro follow-up)
   - Emacs functional: **271/271**
   - UVM corpus (opt-in): **1132 assertions / 28 cases**, all passing.
@@ -105,6 +114,14 @@ by name instead of from the typedef's scope, and merged duplicated helpers
 - `fixtures/defref_top.sv` has appended sections of same-named decoys
   (`defref_pkg_b`, `defref_top_b`), step-C kinds (`defref_kinds`) and an
   out-of-class body (`defref_ooc_p`); append new cases after them.
+
+**What per-source diagnostics (schema v12) changed that other work must know about:**
+- `diagnostics.source` (`'compile'` default, `'library'`) and
+  `diagnostics.subject`. `replaceDiagnostics(fileId, errs, source =
+  "compile")` deletes only that source's rows; a new diagnostic producer
+  picks its own source value rather than appending untagged rows.
+- `'library'` rows are re-anchored on every recompile
+  (`refreshLibraryDiagnostics`) and are part of `compile`'s return value.
 
 **What §6.31 changed that other work must know about:**
 - Schema **v11**: `symbol_docs(file_id, line, col, doc)` (WITHOUT ROWID,
@@ -178,9 +195,8 @@ What §6.29 changed that other work must know about:
      file, but the visible set's local chain (and so completion) still only
      covers the cursor's file.
 1. **§6.21** semantic reference-resolution diagnostics (unresolved type/import)
-   — not started. Related real bug: a live edit's `replaceDiagnostics` wipes
-   diagnostics `LibraryResolver` appended earlier (one undiscriminated
-   `diagnostics` table).
+   — not started; its prerequisite (per-source diagnostics, v12) is done --
+   use `source = 'reference'` with `replaceDiagnostics(..., source)`.
 2. **§6.24** audit compiler warnings from `tools/build.sh` — not started.
 3. **§6.12** configurable debounce interval (`debounceMs`) — not started.
 4. **§6.20** external read-only DB access — not started.

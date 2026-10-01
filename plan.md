@@ -512,7 +512,8 @@ edges are also deliberately deferred out of this pass**, for a related but
 distinct reason found in the same research: `SymbolDatabase::replaceDiagnostics`
 does an unconditional `DELETE FROM diagnostics WHERE file_id=?` shared with
 `LibraryResolver::appendDiagnostics`'s own rows, so a live edit already
-silently wipes a file's "unresolved instantiation" diagnostic today with no
+silently wiped a file's "unresolved instantiation" diagnostic (fixed
+2026-10-01, §6.21 "Prerequisite done") with no
 mechanism to re-add it — building instantiation-edge invalidation on top of
 that without fixing it first would just paper over a bug rather than close
 it. §6.21's own writeup covers the shared `source`-column fix both need.
@@ -2903,8 +2904,10 @@ happen independently for external access to be possible at all.
 
 ### 6.21 Semantic Reference-Resolution Diagnostics (unresolved type/import usage)
 
-**Status:** not started. Added to the plan 2026-09-12, found researching §6.4's
-own "why don't import edges need cross-file invalidation" question.
+**Status:** not started; its prerequisite, per-source diagnostics, is done
+(2026-10-01, "Prerequisite done" below). Added to the plan 2026-09-12, found
+researching §6.4's own "why don't import edges need cross-file invalidation"
+question.
 
 **Why this is needed:** every diagnostic this project has ever produced comes
 from exactly two sources — ANTLR parse errors, and `LibraryResolver`'s
@@ -2962,6 +2965,36 @@ import edges out: there is currently nothing for invalidation to refresh.
   patches; whichever of §6.7/§6.21/the `LibraryResolver` live-edit fix lands
   first should build this shared mechanism, not just its own narrow piece of
   it. Proposed `source` value for this section: `'reference'`.
+
+  **Prerequisite done (2026-10-01), with the `LibraryResolver` live-edit
+  fix.** Schema **v12** adds `diagnostics.source` (`'compile'` default:
+  parse errors and §6.23's missing-argument check; `'library'`:
+  `LibraryResolver`) and `diagnostics.subject` (what a row is about where
+  its producer needs it -- the module name of a `'library'` row).
+  `replaceDiagnostics(fileId, errs, source = "compile")` deletes only that
+  source's rows (this is the proposed `replaceDiagnosticsBySource`);
+  `appendDiagnostics(fileId, errs, source, subject)`;
+  `clearDiagnostics(source)`. A `'library'` row isn't just kept across a
+  recompile but re-anchored: `CompilationController::compile` calls
+  `SymbolDatabase::refreshLibraryDiagnostics` for the primary file and each
+  included file whose instantiations it replaced, after the whole unit is
+  persisted, which rewrites each name's rows to one per instantiation of it
+  still in the file and drops a name something now declares. The primary's
+  rows are in `compile`'s return value (what the server publishes).
+  `LibraryResolver::resolve` clears every `'library'` row before re-adding,
+  so a second resolve no longer duplicates them (it did before).
+  *Left open:* a live edit never adds a `'library'` row for a name the file
+  didn't already have one for (library resolution runs only on a project
+  compile, and flagging there would false-positive on a `-y` module not yet
+  compiled); a row in file F isn't cleared when another file G starts
+  declaring the module, until F recompiles; an included file that has parse
+  errors but no records keeps its stale instantiations and so its rows.
+  *Tests:* 6 unit cases in `test_library_resolver.cpp` (kept + returned,
+  moved with its instantiation, dropped when removed, dropped when declared,
+  compiler rows still replaced, resolve twice -> one row; the first three
+  fail with the old delete) and the v12 migration in `test_database.cpp`.
+  Unit 928/928, Emacs 271/271. UVM corpus and `--build-db` pending
+  (batched with the next fixes).
 - **Feeds directly back into §6.4**: once this ships, editing `a.sv` to
   remove `SomeClass` must eventually re-flag `b.sv` — the same
   name-based-diff-and-invalidate shape §6.4 already needs for instantiation
