@@ -1098,3 +1098,63 @@ TEST_CASE("signature help follows a class-scoped typedef to the class its own pa
     REQUIRE_FALSE(help.isNull());
     CHECK(help->signatures.at(0).label == "create(string b_name, int b_parent)");
 }
+
+// ---------------------------------------------------------------------------
+// Callees resolved as hover/definition resolve them (resolveSymbolAt), not by
+// name with a same-file tie-break.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("signature help resolves a bare call through the caller's import, not a "
+          "same-named function declared first", "[lsp][signature-help]")
+{
+    Fixture f;
+    CompilationController cc{f.sdb};
+    cc.compile("/pkgs.sv",
+        "package bi_a;\n"
+        "  function int bi_make(int a_only); endfunction\n"
+        "endpackage\n"
+        "package bi_b;\n"
+        "  function int bi_make(string b_name, int b_n); endfunction\n"
+        "endpackage\n");
+    const std::string src =
+        "module bi_top;\n"
+        "  import bi_b::*;\n"
+        "  int r;\n"
+        "  initial r = bi_make(\n"
+        "endmodule\n";
+    cc.compile("/top.sv", src);
+
+    auto help = SignatureHelpProvider::getSignatureHelp(makeParams("/top.sv", 3, 22), f.sdb, src);
+    REQUIRE_FALSE(help.isNull());
+    CHECK(help->signatures.at(0).label == "bi_make(string b_name, int b_n)");
+}
+
+TEST_CASE("signature help resolves a dotted call on a receiver whose type the caller "
+          "imports, not a same-named class declared first", "[lsp][signature-help]")
+{
+    Fixture f;
+    CompilationController cc{f.sdb};
+    cc.compile("/pkgs.sv",
+        "package bd_a;\n"
+        "  class Obj;\n"
+        "    function int bd_get(int a_only); endfunction\n"
+        "  endclass\n"
+        "endpackage\n"
+        "package bd_b;\n"
+        "  class Obj;\n"
+        "    function int bd_get(string b_name, int b_n); endfunction\n"
+        "  endclass\n"
+        "endpackage\n");
+    const std::string src =
+        "module bd_top;\n"
+        "  import bd_b::*;\n"
+        "  Obj o;\n"
+        "  int r;\n"
+        "  initial r = o.bd_get(\n"
+        "endmodule\n";
+    cc.compile("/top.sv", src);
+
+    auto help = SignatureHelpProvider::getSignatureHelp(makeParams("/top.sv", 4, 23), f.sdb, src);
+    REQUIRE_FALSE(help.isNull());
+    CHECK(help->signatures.at(0).label == "bd_get(string b_name, int b_n)");
+}

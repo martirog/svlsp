@@ -67,11 +67,9 @@ std::optional<InstantiationHeader> parseInstantiationHeader(
 
 struct CallHeader {
     std::string name;
-    // The whole `Class::`/`pkg::` qualifier before `name` (plan.md §6.26),
-    // or "" for a genuinely unqualified call -- same convention as
-    // extractCalleeScope (src/compiler/sv_tree_walker.cpp), so
-    // "T::type_id::create(" yields scope "T::type_id".
-    std::string scope;
+    // True for a `Class::`/`pkg::`-qualified call (plan.md §6.26); the
+    // qualifier itself is resolved by resolveSymbolAt.
+    bool qualified = false;
 };
 
 // Reads the single identifier immediately before `parenOffset`: a bare
@@ -81,8 +79,7 @@ struct CallHeader {
 // Program -- see plan.md §6.22's follow-up section. Deliberately scoped to
 // *undotted* calls only: if a '.' immediately precedes the identifier (or
 // its scope prefix, skipping whitespace), this is a dotted call
-// (`obj.method(`) that needs completion's own chain-resolution machinery,
-// not this lexical scan -- fails closed (nullopt) rather than guessing.
+// (`obj.method(`, see dottedCallName) -- nullopt.
 std::optional<CallHeader> parseCallHeader(const std::string& text, size_t parenOffset)
 {
     auto skipWsBack = [&](size_t& i) {
@@ -100,62 +97,47 @@ std::optional<CallHeader> parseCallHeader(const std::string& text, size_t parenO
     if (name.empty()) return std::nullopt;
 
     // A "::" immediately before the name means a scope-qualified call --
-    // walk back over one or more "Scope::" segments, keeping them all, as
-    // extractCalleeScope does.
-    std::string scope;
+    // walk back over one or more "Scope::" segments.
+    bool qualified = false;
     while (i >= 2 && text[i - 1] == ':' && text[i - 2] == ':') {
         i -= 2;
-        std::string seg = readIdentBack(i);
-        if (seg.empty()) return std::nullopt;
-        scope = scope.empty() ? seg : seg + "::" + scope;
+        if (readIdentBack(i).empty()) return std::nullopt;
+        qualified = true;
     }
 
     skipWsBack(i);
-    if (i > 0 && text[i - 1] == '.') return std::nullopt; // dotted -- see parseDottedCallHeader
+    if (i > 0 && text[i - 1] == '.') return std::nullopt; // dotted -- see dottedCallName
 
-    return CallHeader{std::move(name), std::move(scope)};
+    return CallHeader{std::move(name), qualified};
 }
 
-struct DottedCall {
-    std::string calleeName;
-    SymbolRow   symbol;
-};
-
-// Resolves a dotted call (`obj.method(`, or a longer chain
-// `obj.field.method(`) -- tried only after parseCallHeader above fails,
-// i.e. only when a '.' (not '::') immediately precedes the call name
-// (plan.md §6.27). Reuses dot-completion's own chain-resolution machinery
-// (dotCompletionContext + resolveChain, lsp/symbol_utils.h) rather than
-// re-implementing chain parsing here: calling dotCompletionContext with the
-// cursor positioned right at the call name's own end (not the user's actual
-// cursor, which may be deep inside a multi-line argument list) makes it
-// return exactly the receiver chain as `segments` and the call's own name
-// as `prefix` -- precisely what's needed, for free. `resolveChain` then
-// resolves the receiver chain to its declared type, and
-// SymbolDatabase::resolveMethod (plan.md §6.26) finds `prefix` as a
-// Function/Task on that type or one of its ancestors via `extends`, the
-// same inheritance-aware resolution the bare-call and `Class::`-qualified
-// paths above already use. Returns nullopt (fail closed) if the receiver
-// chain or the method itself doesn't resolve -- an undeclared receiver, an
-// unresolvable intermediate segment, or a genuinely unknown method.
-std::optional<DottedCall> parseDottedCallHeader(
-    const std::string& text, size_t parenOffset, SymbolDatabase& db, const std::string& curPath)
+// The call name ending at `nameEnd` resolved as hover/definition resolve it
+// (resolveSymbolAt: `::` qualifiers, `.` receiver chains, bare names
+// innermost-scope-first through imports), kept only if that is exact and a
+// Function/Task. A qualifier or receiver that is understood but has no such
+// method, or isn't understood at all, gives nullopt (plan.md §6.26's
+// fail-closed rule).
+std::optional<SymbolRow> resolveCallName(SymbolDatabase& db, const std::string& curPath,
+                                         const std::string& text, size_t nameEnd,
+                                         const std::string& name)
 {
-    size_t nameEnd = parenOffset;
-    while (nameEnd > 0 && std::isspace(static_cast<unsigned char>(text[nameEnd - 1]))) --nameEnd;
+    const lsp::Position pos = positionForOffset(text, nameEnd - name.size());
+    auto r = resolveSymbolAt(db, curPath, text, pos.line, pos.character);
+    if (!r || !r->exact || (r->row.kind != "Function" && r->row.kind != "Task"))
+        return std::nullopt;
+    return r->row;
+}
 
+// The name of a dotted call (`obj.method(`, `obj.field.method(`) ending at
+// `nameEnd` -- tried only after parseCallHeader fails, i.e. only when a '.'
+// (not '::') precedes it (plan.md §6.27). dotCompletionContext at the name's
+// own end returns the call name as `prefix`.
+std::optional<std::string> dottedCallName(const std::string& text, size_t nameEnd)
+{
     const lsp::Position pos = positionForOffset(text, nameEnd);
     auto dot = dotCompletionContext(text, pos.line, pos.character);
-    if (!dot) return std::nullopt;
-
-    const int line1 = static_cast<int>(pos.line) + 1;
-    auto receiverType = resolveChain(db, curPath, line1, dot->segments);
-    if (!receiverType) return std::nullopt;
-
-    auto method = db.resolveMethod(*receiverType, dot->prefix, curPath);
-    if (!method) return std::nullopt;
-
-    return DottedCall{dot->prefix, *method};
+    if (!dot || dot->prefix.empty()) return std::nullopt;
+    return dot->prefix;
 }
 
 struct ActiveParam {
@@ -441,34 +423,24 @@ lsp::TextDocument_SignatureHelpResult SignatureHelpProvider::getSignatureHelp(
     if (typeRows.empty() && !resolvedCallee) {
         if (auto callee = parseCallHeader(docText, *parenOffset)) {
             calleeName = callee->name;
-            if (callee->scope.empty() && calleeName.front() == '$') systemTaskName = calleeName;
-            if (!callee->scope.empty()) {
-                // Explicitly `Class::`/`pkg::`-qualified -- resolve
-                // strictly within that name's own class hierarchy, and fail
-                // closed if it isn't a known class or doesn't declare this
-                // method anywhere in it (plan.md §6.26). Never falls back
-                // to a flat whole-database search for this case -- that
-                // fallback is what made `type_id::get()`-style calls
-                // resolve against an unrelated same-named method elsewhere.
-                resolvedCallee = db.resolveMethod(callee->scope, callee->name, curPath);
+            if (!callee->qualified && calleeName.front() == '$') {
+                systemTaskName = calleeName;
             } else {
-                // Unqualified -- try the call site's own enclosing class
-                // hierarchy first (an inherited method called bare), then
-                // fall back to the pre-existing flat search only when
-                // there's no class context at all to have gotten wrong.
-                std::string enclosing = db.enclosingClassNameAt(curPath, line1);
-                if (!enclosing.empty())
-                    resolvedCallee = db.resolveMethod(enclosing, callee->name, curPath);
-                if (!resolvedCallee) {
-                    for (auto& row : db.findSymbolsByName(callee->name))
-                        if (row.kind == "Function" || row.kind == "Task")
-                            typeRows.push_back(row);
-                }
+                resolvedCallee = resolveCallName(db, curPath, docText, nameEnd, calleeName);
             }
-        } else if (auto dotted = parseDottedCallHeader(docText, *parenOffset, db, curPath)) {
-            // A '.' (not '::') precedes the call name -- plan.md §6.27.
-            calleeName = dotted->calleeName;
-            resolvedCallee = dotted->symbol;
+            // Only an unqualified call that nothing visible declares falls
+            // back to a name-only search; a `Class::`/`pkg::`-qualified one
+            // fails closed (plan.md §6.26) -- that fallback is what made
+            // `type_id::get()`-style calls resolve against an unrelated
+            // same-named method elsewhere.
+            if (!resolvedCallee && !callee->qualified) {
+                for (auto& row : db.findSymbolsByName(callee->name))
+                    if (row.kind == "Function" || row.kind == "Task")
+                        typeRows.push_back(row);
+            }
+        } else if (auto dotted = dottedCallName(docText, nameEnd)) {
+            calleeName     = *dotted;
+            resolvedCallee = resolveCallName(db, curPath, docText, nameEnd, calleeName);
         }
     }
     if (!resolvedCallee && typeRows.empty()) {
