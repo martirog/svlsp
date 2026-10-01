@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-09-30 (review follow-up: typedef aliased type resolved from its own scope, shared helpers; committed).
+**Last updated:** 2026-09-30 (review follow-up: typedef aliased type resolved from its own scope, shared helpers; signature help on `resolveSymbolAt`, committed).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -11,9 +11,18 @@ write-up) — read the relevant section there rather than looking for it here.
 
 ## Current state
 
-**The `::`-qualifier fix (the extra UVM `--build-db` diagnostic) is done
-and committed** (plan.md §6.30 "Follow-up: the whole `::` qualifier of a
-call"). Next: pick from "Other open work".
+**PICK UP HERE NEXT TIME — signature help now resolves callees with
+`resolveSymbolAt` (plan.md §6.30, "Follow-up: signature help resolves
+callees with `resolveSymbolAt`"): done and committed.** Files:
+`src/lsp/signature_help.cpp`, `src/lsp/signature_help.h`,
+`tests/unit/lsp/test_signature_help.cpp` (+2 cases), plan.md, this file.
+- Verified: unit 921/921, Emacs 271/271 (debug build rebuilt), UVM
+  corpus 1132 assertions / 28 cases, all passing (2026-10-01).
+- `--build-db` doesn't need a re-run (`svlsp_db` unchanged).
+
+Committed earlier today (2026-09-30), in order: the whole-`::`-qualifier
+fix with multi-level `::` Emacs tests (340f590 + 9d4a8da), then the
+typedef-scope fix and helper merges (0ffe00c + 9dbee21).
 
 In short: a call's recorded qualifier (`CallRecord::calleeScope`,
 signature help's `CallHeader::scope`) is now the whole qualifier,
@@ -29,7 +38,8 @@ that `type_id` lands on the typedef. A review follow-up (plan.md §6.30,
 declared") fixed `baseClassChain` resolving a typedef's bare aliased type
 by name instead of from the typedef's scope, and merged duplicated helpers
 (`SymbolDatabase::scopeChain`, `pickSameFilePreferred`,
-`Resolver::classInScope`).
+`Resolver::classInScope`). Then signature help moved onto `Resolver`
+(uncommitted -- see above).
 
 §6.31 (doc comments on declarations) is done and committed (plan.md §6.31,
 "Implementation").
@@ -44,7 +54,7 @@ by name instead of from the typedef's scope, and merged duplicated helpers
   in workspace symbols, no completion inside comments/strings, and doc
   comments (§6.31) in hover, signature help and completion resolve.
 - Test baselines:
-  - unit: **919 cases**, all passing (no `[!shouldfail]` known gaps left
+  - unit: **921 cases**, all passing (no `[!shouldfail]` known gaps left
     -- the `` `define `` references case passes since the macro follow-up)
   - Emacs functional: **271/271**
   - UVM corpus (opt-in): **1132 assertions / 28 cases**, all passing.
@@ -152,13 +162,11 @@ What §6.29 changed that other work must know about:
 ## Other open work (priority roughly top-down)
 
 0. **§6.30 follow-ups** (none blocking):
-   - two `::`-qualifier resolvers: signature help (and the compile-time
-     missing-argument check) go through `SymbolDatabase::resolveMethod`/
-     `baseClassChain` (textual suffix match + same-file tie-break), while
-     hover/definition/references/rename use `Resolver`
-     (`symbol_resolution.cpp`, scope-aware). Signature help could resolve
-     its callee with `resolveSymbolAt` instead; the compile-time check
-     must stay in `svlsp_db`;
+   - the compile-time missing-argument check (`svlsp_db`, which can't use
+     `svlsp_lib`) still resolves callees through `resolveMethod`/
+     `baseClassChain` (textual qualifier suffix match + same-file
+     tie-break), not `Resolver`, so it can disagree with signature help on
+     same-named classes/functions across packages;
    - completion offers an ancestor's `local` members (qualifiers aren't
      recorded);
    - no constructor resolution for `return new(...)` or `new` passed as an
@@ -300,7 +308,7 @@ Compiler **g++-13** (pinned in `CMakePresets.json`). Debug has ASan+UBSan
 | Hover / Definition | `resolveSymbolAt` (`src/lsp/symbol_resolution.h`, plan.md §6.30): `::` qualifiers, named connections, `.` receiver chains, bare names innermost-scope-first; `exact=false` name-only fallback (`findSymbolsByName` + `pickBestSymbol`) when the qualifier/receiver isn't understood |
 | Completion | `findSymbolsVisibleAt` + keywords (`sv_keywords.h`, scope-kind legality) → fuzzy scoring (toggle: `initializationOptions.svlsp.fuzzyCompletion`). Dot-completion: `dotCompletionContext` → `resolveChain` → `membersAcrossChain` (full `extends` walk), builtin container methods via `sv_builtin_methods.h` |
 | References / Rename | `ReferencesProvider::findOccurrences`: lexical cross-file `findIdentifierOccurrences`, each hit resolved with `resolveSymbolsAt` and kept if it lands on the target row / same method override family (`overrideFamilyId`), or only resolves by fallback. Rename edits exactly that set |
-| Signature help | instantiation ports; bare / `Class::` / `pkg::` calls (`resolveMethod` in enclosing class hierarchy, then flat fallback for unscoped only); dotted calls (`parseDottedCallHeader` → `resolveChain` → `resolveMethod`). Labels from `Port.detail` (`"<dir> <type>"`, optional `\x1F<default>` suffix) |
+| Signature help | instantiation ports; bare / `Class::` / `pkg::` / dotted calls resolved with `resolveSymbolAt` (exact Function/Task only; a qualified or dotted call fails closed, an unqualified one nothing visible declares falls back to a name-only search). Labels from `Port.detail` (`"<dir> <type>"`, optional `\x1F<default>` suffix) |
 
 Chain-resolution helpers (`resolveChain`, `membersAcrossChain`,
 `peelDimensionLayers`, `dotCompletionContext`, `positionForOffset`) live in

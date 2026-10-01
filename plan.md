@@ -5105,6 +5105,29 @@ declared, and shared helpers (2026-09-30).** Fixed.
   symbol rows, 553 macro rows, 163 files, 960 symbol docs + 30 macro docs,
   4.50 MB; 13m43s CPU, 6.96 GB max RSS.
 
+**Follow-up: signature help resolves callees with `resolveSymbolAt`
+(2026-09-30).** Done.
+- *Why.* Signature help had its own callee resolution: `::`-qualified
+  calls through `SymbolDatabase::resolveMethod`/`baseClassChain` (textual
+  qualifier suffix match, same-file tie-break), bare calls through the
+  enclosing class then a name-only search, dotted calls through
+  `resolveChain` + `resolveMethod`. Hover and definition use `Resolver`,
+  so the two could disagree on the same call. Two cases the old path got
+  wrong: a bare `bi_make(` in a module that imports `bi_b::*` showed
+  `bi_a::bi_make` (same file as `bi_b`'s, declared first), and `o.bd_get(`
+  on an `Obj o;` typed through `import bd_b::*` showed `bd_a::Obj`'s.
+- *Change.* `resolveCallName` resolves the call name with `resolveSymbolAt`
+  and keeps only an exact Function/Task. A qualified or dotted call fails
+  closed otherwise (§6.26); an unqualified call that nothing visible
+  declares keeps the name-only fallback (and then the `$` system-task
+  table). `parseDottedCallHeader` became `dottedCallName` (the name only);
+  `CallHeader::scope` became `bool qualified`.
+- *Left open:* the compile-time missing-argument check stays on
+  `resolveMethod`/`baseClassChain` -- `svlsp_db` can't use `svlsp_lib`.
+- *Verification.* Unit: 921 cases, all passing (+2, both failing on the
+  old path). Emacs: 271/271. UVM corpus: 1132 assertions / 28 cases, all
+  passing (unchanged). `--build-db` not re-run: `svlsp_db` is unchanged.
+
 **Ordering:** wildcard-import same-file fix (with its own test, done) → A → B
 (hover/definition first, then references + rename) → C → D. After each
 step, remove the `[!shouldfail]` tag from every test that now passes:
