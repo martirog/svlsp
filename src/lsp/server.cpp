@@ -1,4 +1,5 @@
 #include "server.h"
+#include "lsp/symbol_resolution.h"
 #include "lsp/symbol_utils.h"
 #include "compiler/file_utils.h"
 #include <iostream>
@@ -23,6 +24,7 @@ LanguageServer::LanguageServer(lsp::io::Stream& io, std::ostream* logStream)
       }}
 {
     m_db.initSchema();
+    m_compiler.setCalleeResolver(resolveCallees);
     registerHandlers();
 }
 

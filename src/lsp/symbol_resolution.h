@@ -1,4 +1,5 @@
 #pragma once
+#include "compiler/parse_record.h"
 #include "db/symbol_database.h"
 #include <optional>
 #include <string>
@@ -52,6 +53,19 @@ std::optional<ResolvedSymbol> resolveSymbolAt(SymbolDatabase& db, const std::str
 std::vector<std::optional<ResolvedSymbol>> resolveSymbolsAt(
     SymbolDatabase& db, const std::string& path, const std::string& text,
     const std::vector<std::pair<unsigned, unsigned>>& positions);
+
+// The Function/Task each of `calls` (all in `path`, whose source is `text`)
+// invokes, resolved at the callee name as resolveSymbolsAt resolves it;
+// result[i] is calls[i]'s. A `::`-qualified call fails closed unless that
+// is exact (plan.md §6.26); an unqualified one nothing visible declares
+// falls back to a name-only Function/Task search with a same-file
+// tie-break. nullopt also for a call whose name isn't at its recorded
+// position in `text` (one expanded from a macro). This is
+// CompilationController's CalleeResolver for the missing-argument check
+// (plan.md §6.23).
+std::vector<std::optional<SymbolRow>> resolveCallees(SymbolDatabase& db, const std::string& path,
+                                                     const std::string& text,
+                                                     const std::vector<CallRecord>& calls);
 
 // Identifies `row`'s override family: for a class method (Function/Task
 // scoped to a class), the id of the same-named Function/Task declared by

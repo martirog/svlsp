@@ -325,9 +325,10 @@ static std::vector<CallArgSlot> extractArgSlots(SvParser::List_of_argumentsConte
 // verbatim text (plan.md §6.26), or "" if `idText` has no `::` at all: every
 // segment before the *last* `::` -- "T::type_id" for the doubly-qualified
 // `T::type_id::create` idiom (`class_scope tf_identifier`, see the Sv.g4
-// grammar-quirks table). All of it, not just "type_id": resolution
-// (SymbolDatabase::baseClassChain) then looks for a type_id declared in T,
-// and fails closed when T is a type parameter -- keeping only "type_id"
+// grammar-quirks table). All of it, not just "type_id": a non-empty scope
+// marks the call qualified, and the resolver (lsp/symbol_resolution.h's
+// resolveCallees) looks for a type_id declared in T, failing closed when T
+// is a type parameter -- keeping only "type_id"
 // resolved UVM's `BUSTYPE::type_id::create("t")` against whichever type_id
 // the calling file declared (uvm_reg_predictor.svh:141). `idText` comes from
 // the token stream (m_tokens->getText), not ctx->getText(), so stray
@@ -928,8 +929,16 @@ public:
         auto [file, line] = translateLine(compiledLine, m_sourceMap);
         int col = translateColumn(compiledLine, compiledCol, m_sourceMap);
 
+        auto* nameTok = idCtx->getStop();
+        int compiledNameLine = static_cast<int>(nameTok->getLine());
+        int nameLine = translateLine(compiledNameLine, m_sourceMap).second;
+        int nameCol  = translateColumn(compiledNameLine,
+                                       static_cast<int>(nameTok->getCharPositionInLine()),
+                                       m_sourceMap);
+
         m_calls.push_back({std::move(name), std::move(scope),
-                            extractArgSlots(ctx->list_of_arguments()), line, col, file});
+                            extractArgSlots(ctx->list_of_arguments()), line, col, file,
+                            nameLine, nameCol});
     }
 
     // ---- Parameters ----

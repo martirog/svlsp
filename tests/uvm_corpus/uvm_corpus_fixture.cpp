@@ -2,6 +2,7 @@
 #include "db/database.h"
 #include "db/compilation_controller.h"
 #include "compiler/project_config.h"
+#include "lsp/symbol_resolution.h"
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -55,6 +56,7 @@ SymbolDatabase& uvmCorpusDb() {
         const std::string text = readFileOrThrow(root / "uvm.sv");
 
         CompilationController controller(sdb);
+        controller.setCalleeResolver(resolveCallees);
         ProjectConfig cfg;
         cfg.includeDirs = {"."};
         cfg.defines["UVM_NO_DPI"] = "";

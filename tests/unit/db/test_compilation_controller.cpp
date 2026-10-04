@@ -3,6 +3,7 @@
 #include "db/symbol_database.h"
 #include "db/compilation_controller.h"
 #include "compiler/project_config.h"
+#include "lsp/symbol_resolution.h"
 #include <algorithm>
 #include <fstream>
 #include <sstream>
@@ -30,6 +31,7 @@ struct Fixture {
         , ctrl(sdb)
     {
         db.initSchema();
+        ctrl.setCalleeResolver(resolveCallees);
     }
 };
 }
@@ -846,4 +848,98 @@ TEST_CASE("a class-scoped typedef is followed to the class its own package decla
     REQUIRE(errs.size() == 1);
     CHECK(errs[0].line == 14);
     CHECK(errs[0].message == "missing required argument 'b_parent' in call to 'create'");
+}
+
+// ---------------------------------------------------------------------------
+// Callees resolved as hover/definition/signature help resolve them
+// (resolveCallees -> resolveSymbolsAt), not by name with a same-file
+// tie-break.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+const std::string kSameNamedFns =
+    "package ci_two;\n"
+    "  function int ci_f(int x, int y); endfunction\n"
+    "endpackage\n"
+    "package ci_one;\n"
+    "  function int ci_f(int x); endfunction\n"
+    "endpackage\n";
+
+} // namespace
+
+TEST_CASE("a bare call resolves through the caller's import: the imported function "
+          "takes every argument supplied", "[db][ctrl][call-args]") {
+    Fixture f;
+    REQUIRE(f.ctrl.compile("/pkgs.sv", kSameNamedFns).empty());
+    auto errs = f.ctrl.compile("/top.sv",
+        "module top;\n"
+        "  import ci_one::*;\n"
+        "  int r;\n"
+        "  initial r = ci_f(1);\n"
+        "endmodule\n");
+    CHECK(errs.empty());
+}
+
+TEST_CASE("a bare call resolves through the caller's import: the imported function's "
+          "missing argument is flagged", "[db][ctrl][call-args]") {
+    Fixture f;
+    REQUIRE(f.ctrl.compile("/pkgs.sv",
+        "package ci_one;\n"
+        "  function int ci_g(int x); endfunction\n"
+        "endpackage\n"
+        "package ci_two;\n"
+        "  function int ci_g(int x, int y); endfunction\n"
+        "endpackage\n").empty());
+    auto errs = f.ctrl.compile("/top.sv",
+        "module top;\n"
+        "  import ci_two::*;\n"
+        "  int r;\n"
+        "  initial r = ci_g(1);\n"
+        "endmodule\n");
+    REQUIRE(errs.size() == 1);
+    CHECK(errs[0].line == 4);
+    CHECK(errs[0].message == "missing required argument 'y' in call to 'ci_g'");
+}
+
+TEST_CASE("a pkg::-qualified call resolves in that package", "[db][ctrl][call-args]") {
+    Fixture f;
+    REQUIRE(f.ctrl.compile("/pkgs.sv", kSameNamedFns).empty());
+    auto errs = f.ctrl.compile("/top.sv",
+        "module top;\n"
+        "  int r, s;\n"
+        "  initial r = ci_one::ci_f(1);\n"
+        "  initial s = ci_two::ci_f(1);\n"
+        "endmodule\n");
+    REQUIRE(errs.size() == 1);
+    CHECK(errs[0].line == 4);
+    CHECK(errs[0].message == "missing required argument 'y' in call to 'ci_f'");
+}
+
+TEST_CASE("a call expanded from a macro isn't checked: its name isn't in the source "
+          "where it's reported", "[db][ctrl][call-args]") {
+    Fixture f;
+    auto errs = f.ctrl.compile("/a.sv",
+        "`define CALL_IT ci_h(1)\n"
+        "module top;\n"
+        "  function int ci_h(int a, int b); endfunction\n"
+        "  int r;\n"
+        "  initial r = `CALL_IT;\n"
+        "endmodule\n");
+    CHECK(errs.empty());
+}
+
+TEST_CASE("compile skips the missing-argument check with no callee resolver set",
+          "[db][ctrl][call-args]") {
+    Database db(":memory:");
+    db.initSchema();
+    SymbolDatabase sdb(db);
+    CompilationController ctrl(sdb);
+    auto errs = ctrl.compile("/a.sv",
+        "module top;\n"
+        "  function int ci_k(int a, int b); endfunction\n"
+        "  int r;\n"
+        "  initial r = ci_k(1);\n"
+        "endmodule\n");
+    CHECK(errs.empty());
 }

@@ -2,7 +2,9 @@
 #include "db/symbol_database.h"
 #include "compiler/parse_record.h"
 #include "compiler/project_config.h"
+#include <functional>
 #include <iosfwd>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -68,10 +70,23 @@ public:
     // `--build-db --no-doc-comments`). Applies to files compiled from now on.
     void setCollectDocs(bool collect) { m_collectDocs = collect; }
 
+    // Resolves each of `calls` (all in `path`, whose source text is `text`)
+    // to the Function/Task it invokes, or nullopt; result[i] is calls[i]'s.
+    using CalleeResolver = std::function<std::vector<std::optional<SymbolRow>>(
+        SymbolDatabase&, const std::string& path, const std::string& text,
+        const std::vector<CallRecord>& calls)>;
+
+    // The resolver the missing-required-argument check (plan.md §6.23) finds
+    // callees with -- in practice lsp/symbol_resolution.h's resolveCallees,
+    // which svlsp_db can't link itself. Unset (the default), the check
+    // doesn't run.
+    void setCalleeResolver(CalleeResolver resolver) { m_calleeResolver = std::move(resolver); }
+
 private:
     SymbolDatabase& m_sdb;
     std::ostream*   m_log;
     bool            m_collectDocs{true};
+    CalleeResolver  m_calleeResolver;
 
     static std::string hashContent(const std::string& text);
 };

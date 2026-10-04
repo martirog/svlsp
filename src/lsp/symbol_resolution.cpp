@@ -726,6 +726,46 @@ std::vector<std::optional<ResolvedSymbol>> resolveSymbolsAt(
     return results;
 }
 
+std::vector<std::optional<SymbolRow>> resolveCallees(SymbolDatabase& db, const std::string& path,
+                                                     const std::string& text,
+                                                     const std::vector<CallRecord>& calls)
+{
+    auto isIdentChar = [](char c) {
+        return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '$';
+    };
+    std::vector<std::optional<SymbolRow>> callees(calls.size());
+    std::vector<std::pair<unsigned, unsigned>> positions;
+    std::vector<size_t> callOf; // positions[i] is calls[callOf[i]]'s name
+    for (size_t c = 0; c < calls.size(); ++c) {
+        const CallRecord& call = calls[c];
+        if (call.nameLine < 1 || call.nameColumn < 0) continue;
+        auto offset = offsetOf(text, call.nameLine - 1, call.nameColumn);
+        if (!offset) continue;
+        const size_t end = *offset + call.calleeName.size();
+        if (text.compare(*offset, call.calleeName.size(), call.calleeName) != 0 ||
+            (end < text.size() && isIdentChar(text[end])))
+            continue;
+        positions.emplace_back(call.nameLine - 1, call.nameColumn);
+        callOf.push_back(c);
+    }
+
+    auto resolved = resolveSymbolsAt(db, path, text, positions);
+    for (size_t i = 0; i < resolved.size(); ++i) {
+        const CallRecord& call = calls[callOf[i]];
+        const auto& r = resolved[i];
+        if (r && r->exact && isCallable(r->row)) {
+            callees[callOf[i]] = r->row;
+            continue;
+        }
+        if (!call.calleeScope.empty()) continue;
+        std::vector<SymbolRow> byName;
+        for (auto& row : db.findSymbolsByName(call.calleeName))
+            if (isCallable(row)) byName.push_back(row);
+        if (!byName.empty()) callees[callOf[i]] = SymbolDatabase::pickSameFilePreferred(byName, path);
+    }
+    return callees;
+}
+
 int64_t overrideFamilyId(SymbolDatabase& db, const SymbolRow& row)
 {
     const std::string noText;

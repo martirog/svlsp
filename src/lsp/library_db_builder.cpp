@@ -1,5 +1,6 @@
 #include "lsp/library_db_builder.h"
 #include "lsp/project_manifest_parser.h"
+#include "lsp/symbol_resolution.h"
 #include "compiler/filelist_parser.h"
 #include "compiler/project_config.h"
 #include "db/compilation_controller.h"
@@ -65,6 +66,7 @@ LibraryDbBuilder::Result LibraryDbBuilder::build(
 
         CompilationController controller(sdb, progressLog);
         controller.setCollectDocs(collectDocs);
+        controller.setCalleeResolver(resolveCallees);
 
         result.fileCount = ProjectCompiler::loadProject(config, controller, sdb);
 

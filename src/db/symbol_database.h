@@ -300,19 +300,6 @@ public:
     std::vector<std::string> baseClassChain(const std::string& className,
                                              const std::string& curPath) const;
 
-    // Resolves `methodName` as a Function/Task declared directly on
-    // `className`'s own scope or, failing that, on the nearest ancestor
-    // that declares it (walking baseClassChain outward) -- plan.md §6.26.
-    // Returns nullopt if `className` isn't a known class, or neither it nor
-    // any ancestor declares `methodName` as a Function/Task. Deliberately
-    // never falls back to a name-only search across unrelated classes on a
-    // miss -- that fallback is exactly the false-positive bug this section
-    // fixes; callers that want a flat fallback for a genuinely unscoped
-    // call do so themselves, only when there's no class context at all.
-    std::optional<SymbolRow> resolveMethod(const std::string& className,
-                                            const std::string& methodName,
-                                            const std::string& curPath) const;
-
 private:
     Database& m_db;
     std::vector<std::string> m_attachedLibraryPaths; // dedup guard for attachLibraryDbs

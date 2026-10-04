@@ -979,18 +979,3 @@ std::vector<std::string> SymbolDatabase::baseClassChain(
     }
     return chain;
 }
-
-std::optional<SymbolRow> SymbolDatabase::resolveMethod(
-    const std::string& className, const std::string& methodName,
-    const std::string& curPath) const
-{
-    for (const auto& scope : baseClassChain(className, curPath)) {
-        std::vector<SymbolRow> candidates;
-        for (auto& row : findSymbolsInScope(scope))
-            if ((row.kind == "Function" || row.kind == "Task") && row.name == methodName)
-                candidates.push_back(row);
-        if (!candidates.empty())
-            return pickSameFilePreferred(candidates, curPath);
-    }
-    return std::nullopt;
-}

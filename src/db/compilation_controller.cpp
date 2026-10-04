@@ -1,5 +1,6 @@
 #include "db/compilation_controller.h"
 #include "compiler/compiler_directive_stripper.h"
+#include "compiler/file_utils.h"
 #include "compiler/sv_preprocessor.h"
 #include "compiler/sv_tree_walker.h"
 #include <algorithm>
@@ -26,58 +27,20 @@ bool paramSupplied(size_t portIndex, const std::vector<CallArgSlot>& args,
     return false;
 }
 
-// Resolves a call's callee to the exact Function/Task it invokes -- plan.md
-// §6.26. An explicitly `Class::`/`pkg::`-qualified call (`call.calleeScope`
-// non-empty) is resolved strictly within that name's own class hierarchy
-// via `resolveMethod`, and fails closed (returns nullopt) if that name
-// isn't a known class or neither it nor any ancestor declares the method --
-// deliberately never falls back to a flat whole-database name search for
-// this case, since that fallback was the majority root cause of the 349
-// UVM-corpus false positives this section fixed (dominated by the
-// `type_id::get()` factory idiom -- a typedef'd alias, not a plain class
-// name, so it resolves to nothing here and is correctly skipped rather than
-// guessed at -- resolving against an unrelated same-named method
-// elsewhere). An unqualified call first tries the call site's own enclosing
-// class hierarchy the same way (an inherited method called bare, e.g.
-// `do_write(rw)` from within a subclass's own method body); only when there
-// is no class context at all to have gotten wrong -- no enclosing class, or
-// the enclosing hierarchy doesn't declare this name -- does it fall back to
-// the pre-existing flat `findSymbolsByName` + same-file tie-break, matching
-// this check's original, still-legitimate handling of an ordinary
-// module/program-scope function call.
-std::optional<SymbolRow> resolveCallee(
-    SymbolDatabase& sdb, const CallRecord& call, const std::string& filePath)
-{
-    if (!call.calleeScope.empty())
-        return sdb.resolveMethod(call.calleeScope, call.calleeName, filePath);
-
-    std::string enclosing = sdb.enclosingClassNameAt(filePath, call.line);
-    if (!enclosing.empty()) {
-        if (auto found = sdb.resolveMethod(enclosing, call.calleeName, filePath))
-            return found;
-    }
-
-    std::vector<SymbolRow> callees;
-    for (auto& row : sdb.findSymbolsByName(call.calleeName))
-        if (row.kind == "Function" || row.kind == "Task") callees.push_back(row);
-    if (callees.empty()) return std::nullopt;
-    return SymbolDatabase::pickSameFilePreferred(callees, filePath);
-}
-
-// Resolves each of `calls` (all from the same file, `filePath`) against
-// `sdb`'s Function/Task symbols (via resolveCallee, above) and flags a
-// declared parameter that received no value at the call site and has no
-// default -- plan.md §6.23. A callee that doesn't resolve to any known
-// Function/Task at all is silently skipped, not flagged: that is either a
-// typo/unresolved-reference concern (plan.md §6.21), or a scoped call this
-// section's own fail-closed design deliberately declines to guess at, not
-// this check's job either way.
+// Flags each declared parameter of `calls[i]`'s callee (`callees[i]`, from
+// the controller's CalleeResolver) that received no value at the call site
+// and has no default -- plan.md §6.23. A call whose callee didn't resolve
+// is skipped, not flagged: that is either a typo/unresolved-reference
+// concern (plan.md §6.21) or a qualifier the resolver fails closed on
+// (§6.26), not this check's job either way.
 std::vector<ParseError> checkMissingArguments(
-    SymbolDatabase& sdb, const std::vector<CallRecord>& calls, const std::string& filePath)
+    SymbolDatabase& sdb, const std::vector<CallRecord>& calls,
+    const std::vector<std::optional<SymbolRow>>& callees)
 {
     std::vector<ParseError> diags;
-    for (const auto& call : calls) {
-        auto resolved = resolveCallee(sdb, call, filePath);
+    for (size_t c = 0; c < calls.size() && c < callees.size(); ++c) {
+        const auto& call     = calls[c];
+        const auto& resolved = callees[c];
         if (!resolved) continue;
 
         const std::string scope =
@@ -241,10 +204,17 @@ std::vector<ParseError> CompilationController::compile(const std::string& path,
     // way included files' diagnostics are (LanguageServer::
     // collectIncludedDiagnostics, which runs after this call returns and so
     // sees appendDiagnostics' effect regardless).
+    // The callee is resolved against each file's own source text: `text`
+    // for the primary, the file on disk for an included one (what the
+    // preprocessor read it from).
     std::vector<ParseError> primaryCallDiags;
     for (const auto& [filePath, calls] : callsByFile) {
-        if (calls.empty()) continue;
-        auto diags = checkMissingArguments(m_sdb, calls, filePath.empty() ? path : filePath);
+        if (calls.empty() || !m_calleeResolver) continue;
+        std::optional<std::string> incText;
+        if (!filePath.empty() && !(incText = readFile(filePath))) continue;
+        const auto callees = m_calleeResolver(m_sdb, filePath.empty() ? path : filePath,
+                                              filePath.empty() ? text : *incText, calls);
+        auto diags = checkMissingArguments(m_sdb, calls, callees);
         if (diags.empty()) continue;
         if (filePath.empty()) {
             m_sdb.appendDiagnostics(fid, diags);

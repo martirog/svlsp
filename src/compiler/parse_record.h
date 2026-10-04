@@ -137,4 +137,8 @@ struct CallRecord {
     int         line{0};    // 1-based line in `file`
     int         column{0};  // 0-based
     std::string file{};     // empty = same as compiled file
+    // Where `calleeName` itself is (after any qualifier), same convention as
+    // line/column -- what the callee is resolved at.
+    int         nameLine{0};
+    int         nameColumn{0};
 };

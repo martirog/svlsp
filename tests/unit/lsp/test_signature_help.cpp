@@ -413,10 +413,9 @@ TEST_CASE("SignatureHelpProvider: a default parameter value is rendered after th
 // all exercised together (plan.md §6.27). Every case below deliberately
 // declares its variable with the fully package-qualified type
 // (`pkg_a::ClassB a;`) *and* an `import` on its own separate line -- the
-// import is never actually load-bearing for this resolution (baseClassChain/
-// resolveMethod resolve a bare class name across the whole database
-// regardless of import visibility, same as the qualifiedClassScope logic
-// they replaced), but real UVM-style code writes both together, and this
+// import is never actually load-bearing for this resolution (the qualified
+// type resolves without it), but real UVM-style code writes both together,
+// and this
 // proves the combination parses and resolves correctly end to end rather
 // than assuming it from the import-free unit tests above alone.
 // ---------------------------------------------------------------------------
