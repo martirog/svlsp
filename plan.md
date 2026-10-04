@@ -2993,8 +2993,11 @@ import edges out: there is currently nothing for invalidation to refresh.
   moved with its instantiation, dropped when removed, dropped when declared,
   compiler rows still replaced, resolve twice -> one row; the first three
   fail with the old delete) and the v12 migration in `test_database.cpp`.
-  Unit 928/928, Emacs 271/271. UVM corpus and `--build-db` pending
-  (batched with the next fixes).
+  Unit 928/928, Emacs 271/271. UVM corpus (run with the next fix): 1132
+  assertions / 28 cases, all passing. `--build-db` (with the next fix):
+  unchanged -- 1 diagnostic (the known `base/uvm_transaction.svh` parse
+  error), 15731 symbol rows, 553 macro rows, 163 files, 960 + 30 docs,
+  4.50 MB.
 - **Feeds directly back into §6.4**: once this ships, editing `a.sv` to
   remove `SomeClass` must eventually re-flag `b.sv` — the same
   name-based-diff-and-invalidate shape §6.4 already needs for instantiation
@@ -5156,10 +5159,48 @@ declared, and shared helpers (2026-09-30).** Fixed.
   table). `parseDottedCallHeader` became `dottedCallName` (the name only);
   `CallHeader::scope` became `bool qualified`.
 - *Left open:* the compile-time missing-argument check stays on
-  `resolveMethod`/`baseClassChain` -- `svlsp_db` can't use `svlsp_lib`.
+  `resolveMethod`/`baseClassChain` -- `svlsp_db` can't use `svlsp_lib`
+  (done in the next follow-up).
 - *Verification.* Unit: 921 cases, all passing (+2, both failing on the
   old path). Emacs: 271/271. UVM corpus: 1132 assertions / 28 cases, all
   passing (unchanged). `--build-db` not re-run: `svlsp_db` is unchanged.
+
+**Follow-up: the missing-argument check resolves callees with
+`resolveSymbolAt` (2026-10-01).** Done.
+- *Why.* The compile-time check (§6.23) still had its own callee
+  resolution: `resolveMethod` on the qualifier or the enclosing class,
+  then a name-only search with a same-file tie-break. So it could disagree
+  with hover, definition and signature help on the same call, e.g. a bare
+  `ci_f(1)` in a module importing `ci_one::*` was checked against
+  `ci_two::ci_f(int x, int y)` (declared first, flagging `y`), and the
+  reverse case hid a real missing argument.
+- *Change.* `svlsp_db` can't link `svlsp_lib`, so the resolver is
+  injected: `CompilationController::setCalleeResolver(CalleeResolver)`,
+  and `lsp/symbol_resolution.h`'s `resolveCallees` is the resolver the
+  server, `--build-db` (`LibraryDbBuilder`) and the corpus fixture set.
+  Unset, the check doesn't run. `resolveCallees` resolves each call at the
+  callee name (new `CallRecord::nameLine`/`nameColumn`) with one
+  `resolveSymbolsAt` per file, against the primary's `text` or an included
+  file read from disk, and applies signature help's rule: an exact
+  Function/Task is used; otherwise a qualified call fails closed and an
+  unqualified one falls back to a name-only Function/Task search with the
+  same-file tie-break. `SymbolDatabase::resolveMethod` had no callers left
+  and is gone (with its 3 unit cases).
+- *Behaviour change:* a call expanded from a macro isn't checked any more
+  -- its recorded position is the macro use, where the callee name isn't
+  in the source text, so it can't be resolved there (the old path checked
+  it by name and reported it at the macro use).
+- *Tests.* 5 unit cases in `test_compilation_controller.cpp`: import
+  picks the imported function both ways (both fail on the old path),
+  `pkg::`-qualified calls resolve in that package, a macro-expanded call
+  isn't checked, no resolver -> no check.
+- *Verification.* Unit: 930 cases, all passing (+5, -3 `resolveMethod`).
+  Emacs: 271/271. UVM corpus: 1132 assertions / 28 cases, all passing
+  (unchanged). `--build-db`: unchanged -- 1 diagnostic (the known
+  `base/uvm_transaction.svh` parse error; UVM had no missing-argument
+  diagnostics before either, so dropping macro-expanded calls changed
+  nothing), 15731 symbol rows, 553 macro rows, 163 files, 960 + 30 docs,
+  4.50 MB; 17.4 min, 7.0 GB RSS.
 
 **Ordering:** wildcard-import same-file fix (with its own test, done) → A → B
 (hover/definition first, then references + rename) → C → D. After each

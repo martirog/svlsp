@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-10-01 (per-source diagnostics, schema v12: a live edit no longer wipes `LibraryResolver`'s diagnostics; committed, corpus batch pending).
+**Last updated:** 2026-10-04 (missing-argument check on `resolveSymbolAt` committed; corpus and `--build-db` unchanged).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -11,20 +11,19 @@ write-up) — read the relevant section there rather than looking for it here.
 
 ## Current state
 
-**PICK UP HERE NEXT TIME — per-source diagnostics (plan.md §6.21,
-"Prerequisite done"): a live edit no longer wipes `LibraryResolver`'s
-"unresolved instantiation" diagnostics.** Committed; the corpus batch
-for it is still pending (see below). Files:
-`src/db/schema.h`, `database.cpp`, `symbol_database.{h,cpp}`,
-`compilation_controller.cpp`, `library_resolver.{h,cpp}`,
-`tests/unit/db/test_library_resolver.cpp` (+6),
-`tests/unit/db/test_database.cpp` (+1, version checks -> 12), plan.md,
-this file.
-- Verified: unit 928/928, Emacs 271/271 (debug build).
-- Pending, **batched**: the UVM corpus suite and corpus `--build-db`
-  (`svlsp_db` changed: schema v12). Run them once after the next fix(es),
-  never while a fix is being edited; then replace the pending note in
-  plan.md §6.21 and here with the results.
+**PICK UP HERE NEXT TIME — §6.30 follow-up "completion offers an
+ancestor's `local` members"**: needs the walker to record class item
+qualifiers (`class_item_qualifier`/`method_qualifier`, grammar/Sv.g4
+~line 472).
+
+Committed 2026-10-04: the missing-argument check resolves callees with
+`resolveSymbolAt` (plan.md §6.30, "Follow-up: the missing-argument check
+resolves callees with `resolveSymbolAt`"). Committed 2026-10-01:
+per-source diagnostics, schema v12 (plan.md §6.21, "Prerequisite done";
+047c71d + c0a6300) -- a live edit no longer wipes `LibraryResolver`'s
+"unresolved instantiation" diagnostics. Verified together: unit 930/930,
+Emacs 271/271, UVM corpus 1132 assertions / 28 cases, `--build-db`
+unchanged (see baselines below).
 
 Committed 2026-10-01: signature help resolves callees with
 `resolveSymbolAt` (72a0b75 + b651a58; corpus 1132/28 passing).
@@ -48,7 +47,7 @@ declared") fixed `baseClassChain` resolving a typedef's bare aliased type
 by name instead of from the typedef's scope, and merged duplicated helpers
 (`SymbolDatabase::scopeChain`, `pickSameFilePreferred`,
 `Resolver::classInScope`). Then signature help moved onto `Resolver`
-(uncommitted -- see above).
+(72a0b75 + b651a58).
 
 §6.31 (doc comments on declarations) is done and committed (plan.md §6.31,
 "Implementation").
@@ -63,7 +62,7 @@ by name instead of from the typedef's scope, and merged duplicated helpers
   in workspace symbols, no completion inside comments/strings, and doc
   comments (§6.31) in hover, signature help and completion resolve.
 - Test baselines:
-  - unit: **928 cases**, all passing (no `[!shouldfail]` known gaps left
+  - unit: **930 cases**, all passing (no `[!shouldfail]` known gaps left
     -- the `` `define `` references case passes since the macro follow-up)
   - Emacs functional: **271/271**
   - UVM corpus (opt-in): **1132 assertions / 28 cases**, all passing.
@@ -82,7 +81,7 @@ by name instead of from the typedef's scope, and merged duplicated helpers
     references case checks each of its 313 locations.)
   - UVM corpus `--build-db`: **1 diagnostic, 15731 symbol rows, 553
     macro rows, 163 files, 960 symbol docs + 30 macro docs; 4.50 MB
-    (4.30 MB with `--no-doc-comments`)** (~15 min, ~7 GB RSS; don't run it at the same
+    (4.30 MB with `--no-doc-comments`)** (~17 min, ~7 GB RSS; don't run it at the same
     time as the corpus tests, and a laptop suspend pauses either; when
     waiting on one from a script, don't `pgrep -f` its command line --
     the waiting shell's own command line matches)
@@ -114,6 +113,14 @@ by name instead of from the typedef's scope, and merged duplicated helpers
 - `fixtures/defref_top.sv` has appended sections of same-named decoys
   (`defref_pkg_b`, `defref_top_b`), step-C kinds (`defref_kinds`) and an
   out-of-class body (`defref_ooc_p`); append new cases after them.
+
+**What the missing-argument resolver change needs other work to know:**
+- `CompilationController` runs the missing-argument check only with a
+  callee resolver set: `setCalleeResolver(resolveCallees)`
+  (`lsp/symbol_resolution.h`). A new controller in production code (or
+  a test that expects missing-argument diagnostics) must set it.
+- `SymbolDatabase::resolveMethod` is gone; `baseClassChain` stays
+  (completion, `symbol_utils`).
 
 **What per-source diagnostics (schema v12) changed that other work must know about:**
 - `diagnostics.source` (`'compile'` default, `'library'`) and
@@ -179,11 +186,6 @@ What §6.29 changed that other work must know about:
 ## Other open work (priority roughly top-down)
 
 0. **§6.30 follow-ups** (none blocking):
-   - the compile-time missing-argument check (`svlsp_db`, which can't use
-     `svlsp_lib`) still resolves callees through `resolveMethod`/
-     `baseClassChain` (textual qualifier suffix match + same-file
-     tie-break), not `Resolver`, so it can disagree with signature help on
-     same-named classes/functions across packages;
    - completion offers an ancestor's `local` members (qualifiers aren't
      recorded);
    - no constructor resolution for `return new(...)` or `new` passed as an
