@@ -5047,7 +5047,7 @@ Fixed.
   ancestor (`enclosingClassNameAt` → `baseClassChain`) after the visible
   set. The (name, kind) dedup keeps the class's own member when it
   overrides one. Not filtered: an ancestor's `local` members (qualifiers
-  aren't recorded).
+  aren't recorded) -- filtered since the class-member access follow-up.
 - *Verification.*
   - Unit: 868 cases, all passing.
   - Emacs: 251/251 (typedef dot-completion in test_27, definition through
@@ -5201,6 +5201,66 @@ declared, and shared helpers (2026-09-30).** Fixed.
   diagnostics before either, so dropping macro-expanded calls changed
   nothing), 15731 symbol rows, 553 macro rows, 163 files, 960 + 30 docs,
   4.50 MB; 17.4 min, 7.0 GB RSS.
+- *Emacs correction (2026-10-04).* The 271/271 above can't have run a
+  current binary: test_39's multi-level `::` case fails on this commit in
+  the debug (ASan) build. Not a resolver bug -- its fixture's compile
+  takes ~2.7 s there (the callee check itself 18 ms, measured), and the
+  test read diagnostics after a fixed `sit-for 2`. It now polls for them
+  (up to 15 s); fixed with the access follow-up below.
+
+**Follow-up: an ancestor's `local` members aren't offered by completion
+(2026-10-04).** Done.
+- *Why.* Bare-name completion inside a class appends every `extends`
+  ancestor's members (typedef follow-up above), including the ones an
+  ancestor declares `local`, which a subclass can't access (LRM 8.18).
+  In UVM, e.g. `uvm_object`'s `m_inst_id` was offered in every
+  component.
+- *Recording (schema v13).* `symbols.access` ('local', 'protected' or
+  ''), from `ParseRecord::access`. The walker's
+  `enterClass_property`/`enterClass_method` read the item's
+  `class_item_qualifier` (directly, or inside a `property_qualifier` /
+  `method_qualifier`) and tag only the rows the item declares directly in
+  the class's scope: its variables, or the method itself -- never a
+  method's arguments or locals. An `extern local` prototype carries it;
+  the out-of-class body row has none. Not recorded: the `const
+  class_item_qualifier* data_type const_identifier` alternative (`const
+  local int x = 1;`), which the walker doesn't record at all; `local
+  const int x = 1;` goes through `data_declaration` and is.
+- *Query.* `SymbolDatabase::localMemberNames(scope)`: names declared
+  `local` directly in a class scope, across the main DB and every
+  attached library DB (one built before v13 has no column and
+  contributes none). By name, so an out-of-class body is excluded through
+  its prototype.
+- *Completion.* Each ancestor scope's rows are dropped when their name is
+  in that scope's `localMemberNames`. The class's own `local` members are
+  still offered (they come from the visible set, not the ancestor walk);
+  `protected` members stay.
+- *Not changed:* dot completion (`obj.`, `super.`) still offers
+  `local`/`protected` members -- whether they're accessible depends on
+  the cursor's class, not the receiver; hover/definition/references
+  ignore access (correct: they resolve what is written).
+- *Tests.* Unit (+5): walker qualifiers (`test_sv_listener.cpp`), v13
+  migration (`test_database.cpp`), `localMemberNames` in the main DB and
+  across attached v12/v13 library DBs (`test_symbol_database.cpp`), and
+  completion in a derived class vs the base itself
+  (`test_completion.cpp`). Emacs (+1): test_16, a new `icmpa_` section
+  appended to `fixtures/inherited_completion.sv`.
+- *Verification.* Unit: 935 cases, all passing. Emacs: 272/272 (with the
+  test_39 polling fix). UVM corpus (2026-10-05): all 28 cases pass,
+  1132 → 1125 assertions: the empty-prefix completion case at
+  `uvm_component`'s header lost 7 items, 331 → 324 -- exactly the 7
+  `local` members of its ancestors, `uvm_report_object` (`m_rh_set`,
+  `m_rh_init`) and `uvm_object` (`m_pack`, `m_unpack_pre`,
+  `m_unpack_post`, `m_leaf_name`, `m_inst_id`; `uvm_void` has none),
+  checked against the sources and the new DB's `access` column. None
+  is shadowed by a `uvm_component` member. `m_inst_count` is `static
+  protected` and is still offered, correctly. The case now pins 324
+  items, `m_inst_id` absent and `m_inst_count` present (+2 → 1127;
+  the `[completion]` subset re-run with the pin passes, 337 assertions /
+  4 cases).
+  `--build-db` unchanged: 1 diagnostic, 15731 symbol rows (429
+  `local`, 306 `protected`), 553 macro rows, 163 files, 960 symbol docs
+  + 30 macro docs, 4505600 bytes, ~14 CPU min, 6.96 GB RSS.
 
 **Ordering:** wildcard-import same-file fix (with its own test, done) → A → B
 (hover/definition first, then references + rename) → C → D. After each

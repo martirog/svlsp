@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-10-04 (missing-argument check on `resolveSymbolAt` committed; corpus and `--build-db` unchanged).
+**Last updated:** 2026-10-05 (completion skips an ancestor's `local` members, schema v13; committed with its corpus run).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -11,10 +11,21 @@ write-up) — read the relevant section there rather than looking for it here.
 
 ## Current state
 
-**PICK UP HERE NEXT TIME — §6.30 follow-up "completion offers an
-ancestor's `local` members"**: needs the walker to record class item
-qualifiers (`class_item_qualifier`/`method_qualifier`, grammar/Sv.g4
-~line 472).
+**PICK UP HERE NEXT TIME — dot completion access filtering.** Dot
+completion (`obj.`, `super.`) still offers `local`/`protected` members;
+filtering needs the cursor's enclosing class (local: same class,
+protected: that class or a subclass). Read the access with
+`SymbolDatabase::localMemberNames` (see the schema v13 notes below; a
+`protectedMemberNames` sibling would be needed).
+
+Committed 2026-10-05: completion skips an ancestor's `local` members,
+schema v13 (plan.md §6.30, "Follow-up: an ancestor's `local` members
+aren't offered by completion"). Verified: unit 935/935, Emacs 272/272,
+UVM corpus 1127 assertions / 28 cases (the empty-prefix case lost
+exactly the 7 ancestor `local` members, 331 → 324, now pinned),
+`--build-db` unchanged apart from size. Also fixed with it: test_39's
+multi-level `::` case read diagnostics after a fixed `sit-for 2` while
+its fixture compiles in ~2.7 s under ASan; it now polls (up to 15 s).
 
 Committed 2026-10-04: the missing-argument check resolves callees with
 `resolveSymbolAt` (plan.md §6.30, "Follow-up: the missing-argument check
@@ -62,10 +73,13 @@ by name instead of from the typedef's scope, and merged duplicated helpers
   in workspace symbols, no completion inside comments/strings, and doc
   comments (§6.31) in hover, signature help and completion resolve.
 - Test baselines:
-  - unit: **930 cases**, all passing (no `[!shouldfail]` known gaps left
+  - unit: **935 cases**, all passing (no `[!shouldfail]` known gaps left
     -- the `` `define `` references case passes since the macro follow-up)
-  - Emacs functional: **271/271**
-  - UVM corpus (opt-in): **1132 assertions / 28 cases**, all passing.
+  - Emacs functional: **272/272**
+  - UVM corpus (opt-in): **1127 assertions / 28 cases**, all passing.
+    (1132 → 1127: the empty-prefix completion list lost the 7 ancestor
+    `local` members, 331 → 324, diffed; then +2 for the pinned count's
+    `m_inst_id`-absent / `m_inst_count`-present checks.)
     (+10: three §6.31 doc-comment cases -- prototype/body fallback, a
     tag-only method with no doc, and the corpus doc count pinned at 960.)
     (+16: the workspace-symbol macro case -- 4 fixed checks plus 2 per
@@ -80,7 +94,8 @@ by name instead of from the typedef's scope, and merged duplicated helpers
     duplicates; +10 for §6.29 part A; +633 for the macro follow-up, whose
     references case checks each of its 313 locations.)
   - UVM corpus `--build-db`: **1 diagnostic, 15731 symbol rows, 553
-    macro rows, 163 files, 960 symbol docs + 30 macro docs; 4.50 MB
+    macro rows, 163 files, 960 symbol docs + 30 macro docs; 4.51 MB (v13,
+    4505600 bytes)
     (4.30 MB with `--no-doc-comments`)** (~17 min, ~7 GB RSS; don't run it at the same
     time as the corpus tests, and a laptop suspend pauses either; when
     waiting on one from a script, don't `pgrep -f` its command line --
@@ -113,6 +128,18 @@ by name instead of from the typedef's scope, and merged duplicated helpers
 - `fixtures/defref_top.sv` has appended sections of same-named decoys
   (`defref_pkg_b`, `defref_top_b`), step-C kinds (`defref_kinds`) and an
   out-of-class body (`defref_ooc_p`); append new cases after them.
+
+**What the class-member access change (schema v13) needs other work to know:**
+- `symbols.access` / `ParseRecord::access`: 'local', 'protected' or ''
+  on a class member's own row (variables, the method or its extern
+  prototype; never arguments/locals, never an out-of-class body row).
+  `SymbolRow` does NOT carry it: read it with
+  `SymbolDatabase::localMemberNames(scope)` (per class scope, by name,
+  across attached DBs; a pre-v13 library DB contributes none). Adding it
+  to the shared row projection would break attaching older library DBs.
+- A schema migration test that reshapes the current DB down to an older
+  version keeps newer columns, so each migration that adds a column
+  skips the `ALTER` when it's already there (v12, v13).
 
 **What the missing-argument resolver change needs other work to know:**
 - `CompilationController` runs the missing-argument check only with a
@@ -186,8 +213,9 @@ What §6.29 changed that other work must know about:
 ## Other open work (priority roughly top-down)
 
 0. **§6.30 follow-ups** (none blocking):
-   - completion offers an ancestor's `local` members (qualifiers aren't
-     recorded);
+   - dot completion (`obj.`, `super.`) offers `local`/`protected`
+     members regardless of the cursor's class (bare-name completion
+     skips an ancestor's `local` ones since 2026-10-04);
    - no constructor resolution for `return new(...)` or `new` passed as an
      argument; `super.` completion doesn't offer `new`;
    - disclosed limits kept from the plan: `begin`/`end` and generate
@@ -232,7 +260,7 @@ src/lsp/           server, server_state, document_store, diagnostics, change_deb
 src/compiler/      compiler_directive_stripper, sv_preprocessor, sv_tree_walker,
                    parse_record, parse_cache, filelist_parser, project_config, file_utils
 src/db/            database, symbol_database, compilation_controller,
-                   library_resolver, project_compiler, schema (v10)
+                   library_resolver, project_compiler, schema (v13)
 src/main.cpp       entry point (--version, --log-files, --build-db/--output)
 tests/unit/        Catch2 unit tests
 tests/integration/ Emacs functional tests + fixtures/
@@ -296,7 +324,7 @@ Compiler **g++-13** (pinned in `CMakePresets.json`). Debug has ASan+UBSan
 | LSP framework | lsp-framework v1.3.1 (submodule) |
 | Unit tests | Catch2 v3.8.1 (FetchContent) |
 | Parser | ANTLR4 v4.13.2 (FetchContent) |
-| Database | SQLite3 amalgamation, schema v10 |
+| Database | SQLite3 amalgamation, schema v13 |
 | Preprocessor | in-house C++ (not slang) |
 | Transport | stdio |
 
@@ -348,10 +376,10 @@ uses `SymbolDatabase::pickSameFilePreferred` (the simpler half of
 - `""` as a *scope* means top level — `findSymbolsInScope("")` returns every
   top-level symbol, so guard against an empty resolved type.
 
-### Database (`src/db/`, schema v10)
+### Database (`src/db/`, schema v13)
 
 Tables: `files`, `symbols (kind, name, line, col, parent, detail, end_line,
-scope)`, `diagnostics`, `imports (pkg_name, item, is_export)`,
+scope, access)`, `diagnostics (… source, subject)`, `symbol_docs`, `imports (pkg_name, item, is_export)`,
 `instantiations`, `library_include_dirs`, `library_build_info`,
 `file_includes`, `macros`. Migrations run automatically in `database.cpp`.
 
