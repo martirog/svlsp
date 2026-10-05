@@ -240,9 +240,10 @@ std::string SymbolDatabase::docFor(const SymbolRow& sym) const
     return "";
 }
 
-std::unordered_set<std::string> SymbolDatabase::localMemberNames(const std::string& scope) const
+std::unordered_map<std::string, std::string> SymbolDatabase::memberAccess(
+    const std::string& scope) const
 {
-    std::unordered_set<std::string> names;
+    std::unordered_map<std::string, std::string> access;
     for (size_t i = 0; i <= m_attachedLibraryPaths.size(); ++i) {
         const std::string schema = i == 0 ? "main" : "lib" + std::to_string(i - 1);
         if (i > 0) {
@@ -250,12 +251,12 @@ std::unordered_set<std::string> SymbolDatabase::localMemberNames(const std::stri
                                     "') WHERE name = 'access'");
             if (!chk.step()) continue; // built before schema v13
         }
-        auto stmt = m_db.prepare("SELECT name FROM " + schema +
-                                 ".symbols WHERE scope = ? AND access = 'local'");
+        auto stmt = m_db.prepare("SELECT name, access FROM " + schema +
+                                 ".symbols WHERE scope = ? AND access <> ''");
         stmt.bind(1, scope);
-        while (stmt.step()) names.insert(stmt.columnText(0));
+        while (stmt.step()) access.emplace(stmt.columnText(0), stmt.columnText(1));
     }
-    return names;
+    return access;
 }
 
 void SymbolDatabase::replaceDiagnostics(int64_t fileId,
@@ -760,6 +761,28 @@ std::string SymbolDatabase::scopeKindAtPosition(
     stmt.bind(1, path).bind(2, line).bind(3, line);
     if (stmt.step()) return stmt.columnText(0);
     return {};
+}
+
+std::vector<std::string> SymbolDatabase::enclosingClassScopesAt(
+    const std::string& path, int line) const
+{
+    // scopeAtPosition already lands inside an out-of-class body's class
+    // ("p::C::m"); keep each scope on its chain that is a Class row.
+    std::vector<std::string> classes;
+    const std::string innermost = scopeAtPosition(path, line);
+    if (innermost.empty()) return classes;
+    for (const auto& cur : scopeChain(innermost)) {
+        if (cur.empty()) break;
+        const auto sep = cur.rfind("::");
+        const std::string name  = sep == std::string::npos ? cur : cur.substr(sep + 2);
+        const std::string scope = sep == std::string::npos ? "" : cur.substr(0, sep);
+        for (const auto& r : findSymbolsByName(name))
+            if (r.kind == "Class" && r.scope == scope) {
+                classes.push_back(cur);
+                break;
+            }
+    }
+    return classes;
 }
 
 std::string SymbolDatabase::enclosingClassNameAt(

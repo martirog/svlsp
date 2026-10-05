@@ -1431,6 +1431,118 @@ TEST_CASE("CompletionProvider: bare-name completion skips an ancestor's local me
     CHECK(hasItem(base, "lacc_base_ext"));
 }
 
+TEST_CASE("CompletionProvider: dot-completion offers local/protected members only where "
+          "the cursor's class may access them",
+          "[completion][dot][access]")
+{
+    Fixture f;
+    CompilationController ctrl{f.sdb};
+    // Compiled with complete statements; each query cuts its line right
+    // after the dot (the prefix would otherwise take the word after it).
+    // Receivers are class properties: a function argument (Port row) isn't
+    // a dot receiver yet.
+    const std::string text =
+        "package dacc_p;\n"                                  // 0
+        "  class DaccBase;\n"
+        "    local int dacc_loc;\n"
+        "    protected int dacc_prot;\n"
+        "    int dacc_pub;\n"
+        "    int dacc_shadow;\n"                             // 5
+        "    DaccBase peer;\n"
+        "    extern local function void dacc_ext();\n"
+        "    function void same();\n"
+        "      peer.dacc_pub = 1;\n"                         // 9
+        "    endfunction\n"
+        "    class DaccNested;\n"
+        "      DaccBase nb;\n"
+        "      function void nest();\n"
+        "        nb.dacc_pub = 1;\n"                         // 14
+        "      endfunction\n"
+        "    endclass\n"
+        "  endclass\n"
+        "  function void DaccBase::dacc_ext();\n"
+        "    this.dacc_pub = 1;\n"                           // 19
+        "  endfunction\n"
+        "  class DaccDerived extends DaccBase;\n"
+        "    local int dacc_shadow;\n"
+        "    DaccBase ob;\n"
+        "    function void run();\n"
+        "      super.dacc_pub = 1;\n"                        // 25
+        "      this.dacc_pub = 1;\n"                         // 26
+        "      ob.dacc_pub = 1;\n"                           // 27
+        "    endfunction\n"
+        "  endclass\n"
+        "endpackage\n"
+        "module dacc_top;\n"
+        "  dacc_p::DaccDerived dd;\n"
+        "  dacc_p::DaccBase db;\n"
+        "  initial begin\n"
+        "    dd.dacc_pub = 1;\n"                             // 35
+        "    db.dacc_pub = 1;\n"                             // 36
+        "  end\n"
+        "endmodule\n";
+    ctrl.compile("/dacc.sv", text);
+
+    auto itemsAt = [&](unsigned line) {
+        size_t start = 0;
+        for (unsigned i = 0; i < line; ++i) start = text.find('\n', start) + 1;
+        const size_t dot = text.find('.', start);
+        const std::string query = text.substr(0, dot + 1) + text.substr(text.find('\n', dot));
+        auto result = CompletionProvider::getCompletion(
+            makeParams("/dacc.sv", line, static_cast<unsigned>(dot + 1 - start)), f.sdb, query);
+        REQUIRE_FALSE(result.isNull());
+        return result.get<lsp::Array<lsp::CompletionItem>>();
+    };
+
+    SECTION("inside the class, through another instance: everything") {
+        const auto items = itemsAt(9);
+        CHECK(hasItem(items, "dacc_loc"));
+        CHECK(hasItem(items, "dacc_prot"));
+        CHECK(hasItem(items, "dacc_ext"));
+        CHECK(hasItem(items, "dacc_pub"));
+    }
+    SECTION("a nested class has its containing class's access") {
+        const auto items = itemsAt(14);
+        CHECK(hasItem(items, "dacc_loc"));
+        CHECK(hasItem(items, "dacc_prot"));
+    }
+    SECTION("an out-of-class body of the declaring class") {
+        const auto items = itemsAt(19);
+        CHECK(hasItem(items, "dacc_loc"));
+        CHECK(hasItem(items, "dacc_ext"));
+    }
+    SECTION("a subclass: the parent's protected members, not its local ones") {
+        for (unsigned line : {25u, 27u}) {
+            const auto items = itemsAt(line);
+            CHECK(hasItem(items, "dacc_prot"));
+            CHECK(hasItem(items, "dacc_pub"));
+            CHECK(hasItem(items, "dacc_shadow")); // DaccBase's public one
+            CHECK_FALSE(hasItem(items, "dacc_loc"));
+            CHECK_FALSE(hasItem(items, "dacc_ext"));
+        }
+        const auto self = itemsAt(26);
+        CHECK(hasItem(self, "dacc_shadow")); // its own local one
+        CHECK(hasItem(self, "dacc_prot"));
+        CHECK_FALSE(hasItem(self, "dacc_loc"));
+    }
+    SECTION("outside any class: public members only") {
+        const auto base = itemsAt(36);
+        CHECK(hasItem(base, "dacc_pub"));
+        CHECK(hasItem(base, "dacc_shadow"));
+        CHECK_FALSE(hasItem(base, "dacc_loc"));
+        CHECK_FALSE(hasItem(base, "dacc_prot"));
+        CHECK_FALSE(hasItem(base, "dacc_ext"));
+        CHECK(hasItem(base, "randomize"));
+
+        // DaccDerived's local dacc_shadow hides DaccBase's public one: the
+        // name isn't offered at all.
+        const auto derived = itemsAt(35);
+        CHECK(hasItem(derived, "dacc_pub"));
+        CHECK_FALSE(hasItem(derived, "dacc_shadow"));
+        CHECK_FALSE(hasItem(derived, "dacc_prot"));
+    }
+}
+
 TEST_CASE("CompletionProvider: an overriding member is offered once, not also from the parent",
           "[completion][phase6.30][inherited]")
 {

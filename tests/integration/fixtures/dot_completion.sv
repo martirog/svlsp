@@ -27,3 +27,27 @@ module dot_completion_top;
      probe: plain_int.
 `endif
 endmodule
+
+// Access (plan.md §6.30, dot completion filters local/protected members):
+// `super.` in a subclass offers the parent's protected member but not its
+// local one; `b.` in a module offers neither.
+class DotAccBase;
+  local int dacc_loc;
+  protected int dacc_prot;
+  int dacc_pub;
+endclass
+
+class DotAccChild extends DotAccBase;
+  function void run();
+`ifdef SVLSP_TEST_PROBES
+     probe: super.
+`endif
+  endfunction
+endclass
+
+module dot_access_top;
+  DotAccBase b;
+`ifdef SVLSP_TEST_PROBES
+     probe: b.
+`endif
+endmodule

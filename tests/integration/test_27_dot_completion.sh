@@ -186,3 +186,27 @@ run_test "h. through a typedef of a typedef offers the aliased class's members" 
              t nil))
      (error (format \"elisp-error: %s\" (error-message-string err))))" \
     "t"
+
+run_test "super. in a subclass offers protected, not local; b. in a module offers neither" \
+    "(condition-case err
+       (let* ((buf    (svlsp-test/open-file \"${SV_FIXTURE}\"))
+              (ok     (with-current-buffer buf (svlsp-test/wait-for-lsp 15)))
+              (labels-at (lambda (line col)
+                           (let* ((result (with-current-buffer buf
+                                            (lsp-request \"textDocument/completion\"
+                                                         (list :textDocument (list :uri (lsp--buffer-uri))
+                                                               :position     (list :line line :character col)))))
+                                  (items  (when (hash-table-p result) (gethash \"items\" result))))
+                             (when (listp items)
+                               (mapcar (lambda (i) (gethash \"label\" i)) items)))))
+              (sup    (when ok (funcall labels-at 42 18)))
+              (mod    (when ok (funcall labels-at 50 14))))
+         (svlsp-test/close-file buf)
+         (if (and ok
+                  (member \"dacc_prot\" sup) (member \"dacc_pub\" sup)
+                  (not (member \"dacc_loc\" sup))
+                  (member \"dacc_pub\" mod)
+                  (not (member \"dacc_prot\" mod)) (not (member \"dacc_loc\" mod)))
+             t nil))
+     (error (format \"elisp-error: %s\" (error-message-string err))))" \
+    "t"

@@ -147,7 +147,8 @@ lsp::TextDocument_CompletionResult buildCompletionItems(
 // top-level symbols instead of nothing (plan.md §6.14's own documented
 // landmine).
 std::vector<Candidate> candidatesForResolvedType(SymbolDatabase& db, const std::string& detail,
-                                                  const std::string& curPath)
+                                                  const std::string& curPath,
+                                                  const std::vector<std::string>& cursorClasses)
 {
     if (detail.empty()) return {};
 
@@ -174,23 +175,45 @@ std::vector<Candidate> candidatesForResolvedType(SymbolDatabase& db, const std::
     auto chain = db.baseClassChain(detail, curPath);
     if (chain.empty()) return {};
 
+    // Access (LRM 8.18): a `local` member is reachable only from inside its
+    // own class, a `protected` one from its class or a subclass. A nested
+    // class has its containing class's access rights (LRM 8.23), so every
+    // enclosing class counts. Applied after the first-name-wins dedup: if
+    // the nearest `x` up the chain is inaccessible, `obj.x` names it all
+    // the same, so a farther `x` isn't offered in its place.
+    std::unordered_set<std::string> protectedVisible;
+    for (const auto& cls : cursorClasses)
+        for (auto& scope : db.baseClassChain(cls.find("::") == std::string::npos
+                                                 ? "$unit::" + cls : cls, curPath))
+            protectedVisible.insert(std::move(scope));
+    auto accessible = [&](const std::string& scope, const std::string& access) {
+        if (access == "local")
+            return std::find(cursorClasses.begin(), cursorClasses.end(), scope) !=
+                   cursorClasses.end();
+        if (access == "protected") return protectedVisible.count(scope) > 0;
+        return true;
+    };
+
     std::vector<SymbolRow> memberRows;
     std::unordered_set<std::string> seenNames;
-    for (auto& scope : chain)
-        for (auto& row : db.findSymbolsInScope(scope))
-            if (seenNames.insert(row.name).second) memberRows.push_back(row);
+    for (auto& scope : chain) {
+        const auto access = db.memberAccess(scope);
+        for (auto& row : db.findSymbolsInScope(scope)) {
+            if (!seenNames.insert(row.name).second) continue;
+            const auto it = access.find(row.name);
+            if (it == access.end() || accessible(scope, it->second)) memberRows.push_back(row);
+        }
+    }
     auto candidates = candidatesFromRows(memberRows);
 
     // Union the randomize-family methods the LRM implicitly grants every
     // class. A user class that declares its own `randomize` override
     // keeps the real (DB) one -- skip the synthetic entry on a name
-    // collision rather than duplicating it.
-    for (auto& m : RANDOMIZE_METHODS) {
-        bool collides = std::any_of(memberRows.begin(), memberRows.end(),
-            [&](const SymbolRow& row) { return row.name == m.name; });
-        if (!collides)
+    // collision rather than duplicating it (seenNames: an inaccessible
+    // override still replaces the built-in).
+    for (auto& m : RANDOMIZE_METHODS)
+        if (!seenNames.count(std::string(m.name)))
             candidates.push_back({std::string(m.name), m.kind, std::string(m.detail)});
-    }
 
     return candidates;
 }
@@ -213,8 +236,9 @@ lsp::TextDocument_CompletionResult CompletionProvider::getCompletion(
     if (auto dot = dotCompletionContext(docText, params.position.line, params.position.character)) {
         auto resolved = resolveChain(db, path, line1, dot->segments);
         if (!resolved) return nullptr;
-        return buildCompletionItems(candidatesForResolvedType(db, *resolved, path), dot->prefix,
-                                     fuzzyEnabled);
+        return buildCompletionItems(
+            candidatesForResolvedType(db, *resolved, path, db.enclosingClassScopesAt(path, line1)),
+            dot->prefix, fuzzyEnabled);
     }
 
     const std::string prefix = wordAtPosition(docText,
@@ -233,9 +257,11 @@ lsp::TextDocument_CompletionResult CompletionProvider::getCompletion(
     if (const std::string cls = db.enclosingClassNameAt(path, line1); !cls.empty()) {
         const auto chain = db.baseClassChain(cls, path);
         for (size_t i = 1; i < chain.size(); ++i) {
-            const auto local = db.localMemberNames(chain[i]);
-            for (auto& row : db.findSymbolsInScope(chain[i]))
-                if (!local.count(row.name)) rows.push_back(std::move(row));
+            const auto access = db.memberAccess(chain[i]);
+            for (auto& row : db.findSymbolsInScope(chain[i])) {
+                const auto it = access.find(row.name);
+                if (it == access.end() || it->second != "local") rows.push_back(std::move(row));
+            }
         }
     }
     auto candidates = candidatesFromRows(rows);

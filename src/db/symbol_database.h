@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -153,11 +154,12 @@ public:
     // library was built before schema v11).
     std::string docFor(const SymbolRow& sym) const;
 
-    // Names of the members declared `local` directly in class scope `scope`
-    // (schema v13), across this DB and every attached library DB (one built
-    // before v13 contributes none). An extern prototype carries the
-    // qualifier, so its out-of-class body's name is included through it.
-    std::unordered_set<std::string> localMemberNames(const std::string& scope) const;
+    // Name -> access ('local' or 'protected') of the members declared with
+    // one directly in class scope `scope` (schema v13), across this DB and
+    // every attached library DB (one built before v13 contributes none).
+    // Members without a qualifier are absent. An extern prototype carries
+    // the qualifier, so its out-of-class body's name is included through it.
+    std::unordered_map<std::string, std::string> memberAccess(const std::string& scope) const;
 
     // Delete `fileId`'s diagnostics from `source` (schema.h's
     // diagnostics.source) then insert `errors` as that source's. Other
@@ -272,6 +274,12 @@ public:
     // body's scope chain. "" when no enclosing class exists. Powers
     // `this`/`super` resolution in chained dot-completion (plan.md §6.14).
     std::string enclosingClassNameAt(const std::string& path, int line) const;
+
+    // The qualified scopes of the classes enclosing `line` in `path`,
+    // innermost first: the class itself, then any class it's nested in
+    // ("p::Outer::Inner", "p::Outer"). Inside an out-of-class method body
+    // that's the body's class. Empty outside any class.
+    std::vector<std::string> enclosingClassScopesAt(const std::string& path, int line) const;
 
     // `innermost` followed by each enclosing scope, ending with "" (top
     // level): "p::C::m" -> {"p::C::m", "p::C", "p", ""}.

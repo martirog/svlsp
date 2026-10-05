@@ -134,3 +134,36 @@ TEST_CASE("completion: true fuzzy (skip-tolerant, non-prefix) pattern matches a 
     auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
     CHECK(hasItem(items, "uvm_component"));
 }
+
+TEST_CASE("completion: dot completion offers local/protected members only where the cursor's "
+          "class may access them",
+          "[uvm_corpus][completion][access]") {
+    // `this.` inside uvm_component::m_set_full_name's out-of-class body
+    // (line 1962): its own local members and uvm_object's protected
+    // m_inst_count, but not uvm_object's local m_inst_id.
+    {
+        const std::string docText = std::string(1961, '\n') + "    this.";
+        auto result = CompletionProvider::getCompletion(
+            makeParams("base/uvm_component.svh", 1961, 9), uvmCorpusDb(), docText);
+        REQUIRE_FALSE(result.isNull());
+        auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+        CHECK(hasItem(items, "m_tr_h"));
+        CHECK(hasItem(items, "m_inst_count"));
+        CHECK(hasItem(items, "get_name"));
+        CHECK_FALSE(hasItem(items, "m_inst_id"));
+    }
+    // `comp.` on uvm_port_base::new's local `uvm_component comp` (line 300):
+    // uvm_port_base isn't a uvm_object, so only public members.
+    {
+        const std::string docText = std::string(299, '\n') + "    comp.";
+        auto result = CompletionProvider::getCompletion(
+            makeParams("base/uvm_port_base.svh", 299, 9), uvmCorpusDb(), docText);
+        REQUIRE_FALSE(result.isNull());
+        auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+        CHECK(hasItem(items, "get_name"));
+        CHECK(hasItem(items, "get_children"));
+        CHECK_FALSE(hasItem(items, "m_tr_h"));
+        CHECK_FALSE(hasItem(items, "m_inst_count"));
+        CHECK_FALSE(hasItem(items, "m_inst_id"));
+    }
+}

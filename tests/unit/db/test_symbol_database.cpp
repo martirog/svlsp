@@ -577,6 +577,28 @@ TEST_CASE("enclosingClassNameAt finds the class of an out-of-class method body",
     CHECK(f.sdb.enclosingClassNameAt("/a.sv", 12) == "");
 }
 
+TEST_CASE("enclosingClassScopesAt lists the qualified enclosing classes, innermost first",
+          "[db][symbol-db][chain][access]") {
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/a.sv", "h"), {
+        {ParseRecordKind::Package,  "p",     1, 8,  "",      "",     30, ""},
+        {ParseRecordKind::Class,    "Outer", 2, 8,  "p",     "",     12, "p"},
+        {ParseRecordKind::Class,    "Inner", 4, 10, "Outer", "",     10, "p::Outer"},
+        {ParseRecordKind::Function, "f",     5, 20, "Inner", "void",  8, "p::Outer::Inner"},
+        {ParseRecordKind::Function, "m",     3, 25, "Outer", "void",  0, "p::Outer"},
+        {ParseRecordKind::Function, "m",    14, 22, "Outer", "void", 16, "p::Outer"},
+        // A non-class scope named like a class one level up isn't a class.
+        {ParseRecordKind::Function, "g",    20, 15, "p",     "void", 22, "p"},
+    });
+    using V = std::vector<std::string>;
+    CHECK(f.sdb.enclosingClassScopesAt("/a.sv", 6) == V{"p::Outer::Inner", "p::Outer"});
+    CHECK(f.sdb.enclosingClassScopesAt("/a.sv", 4) == V{"p::Outer::Inner", "p::Outer"});
+    CHECK(f.sdb.enclosingClassScopesAt("/a.sv", 11) == V{"p::Outer"});
+    CHECK(f.sdb.enclosingClassScopesAt("/a.sv", 15) == V{"p::Outer"}); // out-of-class body
+    CHECK(f.sdb.enclosingClassScopesAt("/a.sv", 21).empty());
+    CHECK(f.sdb.enclosingClassScopesAt("/a.sv", 40).empty());
+}
+
 TEST_CASE("portsOf lists one declaration's ports in order when a prototype and its body share "
           "the scope",
           "[db][symbol-db][ports][outofclass]") {
@@ -973,7 +995,7 @@ ParseRecord member(const std::string& name, int line, const std::string& scope,
 }
 } // namespace
 
-TEST_CASE("localMemberNames returns the names declared local directly in a scope",
+TEST_CASE("memberAccess returns the qualified members declared directly in a scope",
           "[db][symbol-db][access]") {
     Fixture f;
     auto fid = f.sdb.upsertFile("/p/a.sv", "h");
@@ -982,12 +1004,12 @@ TEST_CASE("localMemberNames returns the names declared local directly in a scope
                                member("lm_pub", 4, "p::C", ""),
                                member("lm_other", 5, "p::D", "local"),
                                member("lm_nested", 6, "p::C::f", "local")});
-    auto names = f.sdb.localMemberNames("p::C");
-    CHECK(names == std::unordered_set<std::string>{"lm_loc"});
-    CHECK(f.sdb.localMemberNames("p::E").empty());
+    using Access = std::unordered_map<std::string, std::string>;
+    CHECK(f.sdb.memberAccess("p::C") == Access{{"lm_loc", "local"}, {"lm_prot", "protected"}});
+    CHECK(f.sdb.memberAccess("p::E").empty());
 }
 
-TEST_CASE("localMemberNames reads attached library DBs, with or without the column",
+TEST_CASE("memberAccess reads attached library DBs, with or without the column",
           "[db][symbol-db][access][library-attach]") {
     const std::string root = "/tmp/svlsp_test_local_members";
     std::filesystem::create_directories(root);
@@ -1008,5 +1030,6 @@ TEST_CASE("localMemberNames reads attached library DBs, with or without the colu
 
     Fixture f;
     f.sdb.attachLibraryDbs({oldPath, libPath});
-    CHECK(f.sdb.localMemberNames("q::C") == std::unordered_set<std::string>{"lm_lib"});
+    CHECK(f.sdb.memberAccess("q::C") ==
+          std::unordered_map<std::string, std::string>{{"lm_lib", "local"}});
 }
