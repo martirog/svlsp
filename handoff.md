@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-10-05 (completion skips an ancestor's `local` members, schema v13; committed with its corpus run).
+**Last updated:** 2026-10-05 (dot completion access filtering implemented, uncommitted; corpus pending).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -11,12 +11,22 @@ write-up) — read the relevant section there rather than looking for it here.
 
 ## Current state
 
-**PICK UP HERE NEXT TIME — dot completion access filtering.** Dot
-completion (`obj.`, `super.`) still offers `local`/`protected` members;
-filtering needs the cursor's enclosing class (local: same class,
-protected: that class or a subclass). Read the access with
-`SymbolDatabase::localMemberNames` (see the schema v13 notes below; a
-`protectedMemberNames` sibling would be needed).
+**PICK UP HERE NEXT TIME — dot completion access filtering is
+implemented, NOT committed; UVM corpus pending** (plan.md §6.30,
+"Follow-up: dot completion filters `local`/`protected` members by the
+cursor's class"). Files: `src/db/symbol_database.{h,cpp}`
+(`memberAccess` replaces `localMemberNames`; new
+`enclosingClassScopesAt`), `src/lsp/completion.cpp`; tests
+`test_symbol_database.cpp`, `test_completion.cpp` (+2 cases),
+`fixtures/dot_completion.sv` + test_27 (+1), and a new UVM corpus case in
+`tests/uvm_corpus/test_completion_uvm.cpp`.
+- Verified: unit 937/937, Emacs 273/273.
+- Pending, batched: UVM corpus suite (expect 28 → 29 cases, +11
+  assertions → 1138). No schema change, so `--build-db` needn't rerun.
+  Then commit as `feat(completion): ...` + `docs(plan,handoff): ...`.
+- Found, not fixed: a function/task argument isn't a dot receiver
+  (`resolveFirstSegment` takes Signal/Parameter only), so `obj.` on an
+  argument completes nothing. Good next item.
 
 Committed 2026-10-05: completion skips an ancestor's `local` members,
 schema v13 (plan.md §6.30, "Follow-up: an ancestor's `local` members
@@ -73,9 +83,9 @@ by name instead of from the typedef's scope, and merged duplicated helpers
   in workspace symbols, no completion inside comments/strings, and doc
   comments (§6.31) in hover, signature help and completion resolve.
 - Test baselines:
-  - unit: **935 cases**, all passing (no `[!shouldfail]` known gaps left
+  - unit: **937 cases**, all passing (no `[!shouldfail]` known gaps left
     -- the `` `define `` references case passes since the macro follow-up)
-  - Emacs functional: **272/272**
+  - Emacs functional: **273/273**
   - UVM corpus (opt-in): **1127 assertions / 28 cases**, all passing.
     (1132 → 1127: the empty-prefix completion list lost the 7 ancestor
     `local` members, 331 → 324, diffed; then +2 for the pinned count's

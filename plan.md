@@ -5262,6 +5262,62 @@ declared, and shared helpers (2026-09-30).** Fixed.
   `local`, 306 `protected`), 553 macro rows, 163 files, 960 symbol docs
   + 30 macro docs, 4505600 bytes, ~14 CPU min, 6.96 GB RSS.
 
+**Follow-up: dot completion filters `local`/`protected` members by the
+cursor's class (2026-10-05).** Done (corpus pending).
+- *Why.* `obj.`, `this.`, `super.` and chained receivers offered every
+  member of the receiver's class and its ancestors
+  (`candidatesForResolvedType`), including ones the cursor can't access
+  (LRM 8.18). E.g. `comp.` outside the class hierarchy offered
+  `uvm_object`'s `m_inst_id`.
+- *Rule.* For a member row in class scope `S` (one of the receiver's
+  `baseClassChain` scopes), with the cursor's enclosing class scopes `E`
+  (innermost first: the class, then any class it's nested in):
+  - no qualifier → always offered;
+  - `local` → offered iff `S ∈ E` (same class -- `other.m_x` inside `C`
+    is legal for another instance of `C`; a nested class has its
+    containing class's access rights, LRM 8.23);
+  - `protected` → offered iff `S` is on `baseClassChain(e)` for some
+    `e ∈ E`.
+  Outside any class `E` is empty: public members only. Deliberately
+  lenient on `protected` through a handle of a sibling type (tools
+  differ; over-offering beats hiding a legal member).
+- *Shadowing.* Filtered *after* the first-name-wins dedup: `obj.x` names
+  the nearest `x` up the chain, so if that one is inaccessible no
+  farther `x` is offered in its place. The randomize-family collision
+  check uses the unfiltered names (an inaccessible `randomize` override
+  still replaces the built-in).
+- *Query.* `localMemberNames(scope)` became `memberAccess(scope)`: name →
+  'local'/'protected' (qualified members only), same per-attached-DB
+  v13 column check. Bare-name completion reads `local` from it.
+- *Cursor classes.* `SymbolDatabase::enclosingClassScopesAt(path, line)`:
+  qualified class scopes, innermost first, from
+  `scopeChain(scopeAtPosition(...))` filtered to entries that are a
+  Class row. `scopeAtPosition` already gives `p::C::m` inside an
+  out-of-class body and `p::C` on a class header or between members, so
+  no fallback was needed. A top-level class (scope "") is passed to
+  `baseClassChain` as `$unit::C`, so it can't pick a same-named class
+  elsewhere. Bare-name completion still uses `enclosingClassNameAt`.
+- *Not changed:* hover/definition/references/signature help ignore
+  access; there is no `::` scope completion yet (when there is, `C::`
+  should apply the same rule).
+- *Found, not fixed:* a function/task argument isn't a dot receiver --
+  `resolveFirstSegment` accepts only Signal/Parameter rows, so in
+  `function void f(C obj); obj.` dot completion returns nothing. Separate
+  follow-up.
+- *Tests.* Unit (+2 cases): `enclosingClassScopesAt`
+  (`test_symbol_database.cpp`: nested class, out-of-class body, a
+  non-class scope), and dot completion (`test_completion.cpp`, compiled
+  source: same class through another instance, a nested class, an
+  out-of-class body, a subclass via `super.`/`this.`/a handle, a module,
+  the shadowing case, `randomize` kept). The `localMemberNames` tests
+  became `memberAccess` tests (attached v12/v13 library DBs). Emacs
+  (+1): test_27, a `DotAcc*` section appended to
+  `fixtures/dot_completion.sv`. UVM corpus (+1 case, pending): `this.`
+  in `uvm_component::m_set_full_name`'s body and `comp.` in
+  `uvm_port_base::new`.
+- *Verification.* Unit: 937 cases, all passing. Emacs: 273/273 (debug
+  build, rebuilt `svlsp`). UVM corpus: pending, next batch.
+
 **Ordering:** wildcard-import same-file fix (with its own test, done) → A → B
 (hover/definition first, then references + rename) → C → D. After each
 step, remove the `[!shouldfail]` tag from every test that now passes:
