@@ -191,8 +191,8 @@ void SymbolDatabase::replaceSymbols(int64_t fileId,
     del.step();
 
     auto ins = m_db.prepare(
-        "INSERT INTO symbols (file_id,kind,name,line,col,parent,detail,end_line,scope) "
-        "VALUES (?,?,?,?,?,?,?,?,?)");
+        "INSERT INTO symbols (file_id,kind,name,line,col,parent,detail,end_line,scope,access) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?)");
     for (const auto& r : records) {
         ins.reset();
         ins.bind(1, fileId)
@@ -203,7 +203,8 @@ void SymbolDatabase::replaceSymbols(int64_t fileId,
            .bind(6, r.parent)
            .bind(7, r.detail)
            .bind(8, r.endLine)
-           .bind(9, r.scope);
+           .bind(9, r.scope)
+           .bind(10, r.access);
         ins.step();
     }
 
@@ -237,6 +238,24 @@ std::string SymbolDatabase::docFor(const SymbolRow& sym) const
         if (stmt.step()) return stmt.columnText(0);
     }
     return "";
+}
+
+std::unordered_set<std::string> SymbolDatabase::localMemberNames(const std::string& scope) const
+{
+    std::unordered_set<std::string> names;
+    for (size_t i = 0; i <= m_attachedLibraryPaths.size(); ++i) {
+        const std::string schema = i == 0 ? "main" : "lib" + std::to_string(i - 1);
+        if (i > 0) {
+            auto chk = m_db.prepare("SELECT 1 FROM pragma_table_info('symbols', '" + schema +
+                                    "') WHERE name = 'access'");
+            if (!chk.step()) continue; // built before schema v13
+        }
+        auto stmt = m_db.prepare("SELECT name FROM " + schema +
+                                 ".symbols WHERE scope = ? AND access = 'local'");
+        stmt.bind(1, scope);
+        while (stmt.step()) names.insert(stmt.columnText(0));
+    }
+    return names;
 }
 
 void SymbolDatabase::replaceDiagnostics(int64_t fileId,

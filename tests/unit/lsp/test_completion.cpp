@@ -1380,6 +1380,57 @@ TEST_CASE("CompletionProvider: bare-name completion inside a class offers inheri
     }
 }
 
+TEST_CASE("CompletionProvider: bare-name completion skips an ancestor's local members, "
+          "keeps protected ones and the class's own local ones",
+          "[completion][access][inherited]")
+{
+    Fixture f;
+    CompilationController ctrl{f.sdb};
+    const std::string text =
+        "package lacc_p;\n"
+        "  class LaccBase;\n"
+        "    local int lacc_base_loc;\n"
+        "    protected int lacc_base_prot;\n"
+        "    int lacc_base_pub;\n"
+        "    local function void lacc_base_lf(); endfunction\n"
+        "    extern local function void lacc_base_ext();\n"
+        "    function void base_run();\n"
+        "      lacc\n"            // line 8
+        "    endfunction\n"
+        "  endclass\n"
+        "  function void LaccBase::lacc_base_ext(); endfunction\n"
+        "  class LaccMid extends LaccBase;\n"
+        "    local int lacc_mid_loc;\n"
+        "  endclass\n"
+        "  class LaccC extends LaccMid;\n"
+        "    local int lacc_own_loc;\n"
+        "    function void run();\n"
+        "      lacc\n"            // line 18
+        "    endfunction\n"
+        "  endclass\n"
+        "endpackage\n";
+    ctrl.compile("/lacc.sv", text);
+
+    auto labels = [&](unsigned line) {
+        auto result = CompletionProvider::getCompletion(makeParams("/lacc.sv", line, 10), f.sdb, text);
+        REQUIRE_FALSE(result.isNull());
+        return result.get<lsp::Array<lsp::CompletionItem>>();
+    };
+    const auto derived = labels(18);
+    CHECK(hasItem(derived, "lacc_own_loc"));
+    CHECK(hasItem(derived, "lacc_base_prot"));
+    CHECK(hasItem(derived, "lacc_base_pub"));
+    CHECK_FALSE(hasItem(derived, "lacc_mid_loc"));
+    CHECK_FALSE(hasItem(derived, "lacc_base_loc"));
+    CHECK_FALSE(hasItem(derived, "lacc_base_lf"));
+    CHECK_FALSE(hasItem(derived, "lacc_base_ext")); // the body row has no qualifier
+
+    const auto base = labels(8);
+    CHECK(hasItem(base, "lacc_base_loc"));
+    CHECK(hasItem(base, "lacc_base_lf"));
+    CHECK(hasItem(base, "lacc_base_ext"));
+}
+
 TEST_CASE("CompletionProvider: an overriding member is offered once, not also from the parent",
           "[completion][phase6.30][inherited]")
 {

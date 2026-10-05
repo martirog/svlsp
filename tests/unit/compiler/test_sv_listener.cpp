@@ -1998,3 +1998,56 @@ TEST_CASE("a dynamic array initialized with new[] is recorded and tagged",
     CHECK(arr->detail == "$dynamic_array");
     CHECK(objs->detail == "$dynamic_array:$queue:A");
 }
+
+// ---------------------------------------------------------------------------
+// Class member access (`local` / `protected`): recorded on the member's own
+// row only -- a method's arguments and locals, and plain members, get "".
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a class member's local/protected qualifier is recorded as its access",
+          "[compiler][listener][access]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "class acc_C;\n"
+        "  local int acc_a, acc_b;\n"
+        "  protected static int acc_p;\n"
+        "  static local int acc_sl;\n"
+        "  rand local int acc_r;\n"
+        "  int acc_plain;\n"
+        "  local const int acc_k = 1;\n"
+        "  local function void acc_f(int acc_arg);\n"
+        "    int acc_tmp;\n"
+        "  endfunction\n"
+        "  protected virtual task acc_t(); endtask\n"
+        "  extern local function void acc_ext();\n"
+        "  pure virtual protected function void acc_pv();\n"
+        "  function void acc_pub(); endfunction\n"
+        "endclass\n"
+        "function void acc_C::acc_ext(); endfunction\n");
+    REQUIRE(errs.empty());
+    auto access = [&](ParseRecordKind kind, const char* name) {
+        auto* r = findRecord(recs, kind, name);
+        REQUIRE(r != nullptr);
+        return r->access;
+    };
+    CHECK(access(ParseRecordKind::Signal, "acc_a") == "local");
+    CHECK(access(ParseRecordKind::Signal, "acc_b") == "local");
+    CHECK(access(ParseRecordKind::Signal, "acc_p") == "protected");
+    CHECK(access(ParseRecordKind::Signal, "acc_sl") == "local");
+    CHECK(access(ParseRecordKind::Signal, "acc_r") == "local");
+    CHECK(access(ParseRecordKind::Signal, "acc_plain").empty());
+    CHECK(access(ParseRecordKind::Signal, "acc_k") == "local");
+    CHECK(access(ParseRecordKind::Function, "acc_f") == "local");
+    CHECK(access(ParseRecordKind::Port, "acc_arg").empty());
+    CHECK(access(ParseRecordKind::Signal, "acc_tmp").empty());
+    CHECK(access(ParseRecordKind::Task, "acc_t") == "protected");
+    CHECK(access(ParseRecordKind::Function, "acc_pv") == "protected");
+    CHECK(access(ParseRecordKind::Function, "acc_pub").empty());
+    // The extern prototype carries it; the out-of-class body has no qualifier.
+    int ext = 0;
+    for (const auto& r : recs)
+        if (r.kind == ParseRecordKind::Function && r.name == "acc_ext") {
+            ++ext;
+            CHECK(r.access == (r.line == 12 ? "local" : ""));
+        }
+    CHECK(ext == 2);
+}

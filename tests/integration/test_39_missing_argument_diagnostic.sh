@@ -70,7 +70,13 @@ else
                   (got
                     (when ok
                       (with-current-buffer buf
-                        (sit-for 2)
+                        ;; Its compile takes ~2.7 s in the ASan build: wait
+                        ;; for both diagnostics rather than a fixed delay.
+                        (let ((deadline (+ (float-time) 15)))
+                          (while (and (< (length (lsp--get-buffer-diagnostics)) 2)
+                                      (< (float-time) deadline))
+                            (sit-for 0.1)))
+                        (sit-for 0.5) ; and for any extra (wrong) ones
                         (mapconcat
                          (lambda (d)
                            (format \"%s:%s\"

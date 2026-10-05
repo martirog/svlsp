@@ -89,7 +89,13 @@ TEST_CASE("completion: empty prefix at real scope returns the full unranked cand
     REQUIRE_FALSE(result.isNull());
     auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
 
-    CHECK(items.size() > 20); // sanity: real file scale, not a handful of rows
+    // Pinned (plan.md §6.30, "an ancestor's `local` members"): 331 -> 324,
+    // the 7 `local` members of uvm_report_object (m_rh_set, m_rh_init) and
+    // uvm_object (m_pack, m_unpack_pre, m_unpack_post, m_leaf_name,
+    // m_inst_id) are no longer offered in uvm_component.
+    CHECK(items.size() == 324);
+    CHECK_FALSE(hasItem(items, "m_inst_id"));
+    CHECK(hasItem(items, "m_inst_count")); // static protected: still offered
     CHECK(hasItem(items, "uvm_component"));
     // "get_children" is an extern method: prototype at line 117, body
     // `function void uvm_component::get_children(...)` at line 1847, after

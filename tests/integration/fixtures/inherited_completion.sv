@@ -16,3 +16,17 @@ endclass
 class icmp_Unrelated;
   int icmp_unrelated_fld;
 endclass
+
+// Access: an ancestor's `local` members are not inherited, `protected`
+// ones are. The cursor is at char 0 of the `icmpa_own = 1;` line.
+class icmpa_Base;
+  local int icmpa_loc;
+  protected int icmpa_prot;
+  local function void icmpa_lf(); endfunction
+endclass
+class icmpa_C extends icmpa_Base;
+  int icmpa_own;
+  function void run();
+    icmpa_own = 1;
+  endfunction
+endclass

@@ -82,6 +82,12 @@ void Database::initSchema()
         execute(col.step() ? "UPDATE schema_version SET version = 12;"
                            : db::MIGRATION_V11_TO_V12);
     }
+    if (v < 13) {
+        // Same guard as v12.
+        auto col = prepare("SELECT 1 FROM pragma_table_info('symbols') WHERE name = 'access'");
+        execute(col.step() ? "UPDATE schema_version SET version = 13;"
+                           : db::MIGRATION_V12_TO_V13);
+    }
 }
 
 void Database::execute(const std::string& sql)

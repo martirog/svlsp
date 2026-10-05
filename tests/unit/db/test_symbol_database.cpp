@@ -3,6 +3,8 @@
 #include "db/symbol_database.h"
 #include "compiler/parse_record.h"
 #include <algorithm>
+#include <filesystem>
+#include <unordered_set>
 
 // ---------------------------------------------------------------------------
 // Phase 5.3 — SymbolDatabase typed query API
@@ -956,4 +958,55 @@ TEST_CASE("findMacrosByNamePrefix returns macros whose name starts with the pref
     CHECK(rows[1].line == 1);
     CHECK(rows[1].col == 8);
     CHECK(f.sdb.findMacrosByNamePrefix("").size() == 3);
+}
+
+// ---------------------------------------------------------------------------
+// Class member access (schema v13)
+// ---------------------------------------------------------------------------
+
+namespace {
+ParseRecord member(const std::string& name, int line, const std::string& scope,
+                   const std::string& access) {
+    ParseRecord r{ParseRecordKind::Signal, name, line, 4, "", "", 0, scope};
+    r.access = access;
+    return r;
+}
+} // namespace
+
+TEST_CASE("localMemberNames returns the names declared local directly in a scope",
+          "[db][symbol-db][access]") {
+    Fixture f;
+    auto fid = f.sdb.upsertFile("/p/a.sv", "h");
+    f.sdb.replaceSymbols(fid, {member("lm_loc", 2, "p::C", "local"),
+                               member("lm_prot", 3, "p::C", "protected"),
+                               member("lm_pub", 4, "p::C", ""),
+                               member("lm_other", 5, "p::D", "local"),
+                               member("lm_nested", 6, "p::C::f", "local")});
+    auto names = f.sdb.localMemberNames("p::C");
+    CHECK(names == std::unordered_set<std::string>{"lm_loc"});
+    CHECK(f.sdb.localMemberNames("p::E").empty());
+}
+
+TEST_CASE("localMemberNames reads attached library DBs, with or without the column",
+          "[db][symbol-db][access][library-attach]") {
+    const std::string root = "/tmp/svlsp_test_local_members";
+    std::filesystem::create_directories(root);
+    const std::string libPath = root + "/lib.db", oldPath = root + "/old.db";
+    for (const auto& p : {libPath, oldPath}) {
+        std::filesystem::remove(p);
+        Database db(p);
+        db.initSchema();
+        SymbolDatabase sdb(db);
+        auto fid = sdb.upsertFile(p == libPath ? "/lib/a.sv" : "/old/a.sv", "h");
+        sdb.replaceSymbols(fid, {member(p == libPath ? "lm_lib" : "lm_old", 2, "q::C", "local")});
+    }
+    {
+        // Reshape into a v12 library: symbols without access.
+        Database db(oldPath);
+        db.execute("ALTER TABLE symbols DROP COLUMN access; UPDATE schema_version SET version = 12;");
+    }
+
+    Fixture f;
+    f.sdb.attachLibraryDbs({oldPath, libPath});
+    CHECK(f.sdb.localMemberNames("q::C") == std::unordered_set<std::string>{"lm_lib"});
 }

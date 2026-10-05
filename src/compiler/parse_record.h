@@ -76,6 +76,7 @@ struct ParseRecord {
     std::string     scope{};       // full enclosing scope chain, e.g. "MyModule::MyClass"
     std::string     file{};        // original source file; empty = same as compiled file
     std::string     doc{};         // cleaned doc comment (plan.md §6.31); "" = none
+    std::string     access{};      // class member's "local" / "protected"; "" = public
 };
 
 struct ParseError {

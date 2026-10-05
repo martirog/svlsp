@@ -226,15 +226,16 @@ lsp::TextDocument_CompletionResult CompletionProvider::getCompletion(
     // with zero DB symbols (e.g. a brand-new buffer) still offers top-level
     // keywords instead of returning null.
     // Inside a class (or an out-of-class method body), its ancestors'
-    // members are in scope too. Appended after the visible set, so the
-    // (name, kind) dedup lets a class's own member shadow an inherited one.
+    // members are in scope too, except the ones they declare `local`.
+    // Appended after the visible set, so the (name, kind) dedup lets a
+    // class's own member shadow an inherited one.
     auto rows = db.findSymbolsVisibleAt(path, line1);
     if (const std::string cls = db.enclosingClassNameAt(path, line1); !cls.empty()) {
         const auto chain = db.baseClassChain(cls, path);
         for (size_t i = 1; i < chain.size(); ++i) {
-            auto inherited = db.findSymbolsInScope(chain[i]);
-            rows.insert(rows.end(), std::make_move_iterator(inherited.begin()),
-                        std::make_move_iterator(inherited.end()));
+            const auto local = db.localMemberNames(chain[i]);
+            for (auto& row : db.findSymbolsInScope(chain[i]))
+                if (!local.count(row.name)) rows.push_back(std::move(row));
         }
     }
     auto candidates = candidatesFromRows(rows);

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 // Typed rows returned by query methods.
@@ -151,6 +152,12 @@ public:
     // the attached library DB it came from; "" when it has none (or its
     // library was built before schema v11).
     std::string docFor(const SymbolRow& sym) const;
+
+    // Names of the members declared `local` directly in class scope `scope`
+    // (schema v13), across this DB and every attached library DB (one built
+    // before v13 contributes none). An extern prototype carries the
+    // qualifier, so its out-of-class body's name is included through it.
+    std::unordered_set<std::string> localMemberNames(const std::string& scope) const;
 
     // Delete `fileId`'s diagnostics from `source` (schema.h's
     // diagnostics.source) then insert `errors` as that source's. Other

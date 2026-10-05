@@ -4,7 +4,7 @@ namespace db {
 
 // Current schema version.  Increment and add a migration in Database::initSchema
 // whenever the schema changes.
-inline constexpr int SCHEMA_VERSION = 12;
+inline constexpr int SCHEMA_VERSION = 13;
 
 // DDL executed on a fresh (version-0) database — always reflects the latest schema.
 inline constexpr const char* SCHEMA_DDL = R"sql(
@@ -19,6 +19,8 @@ CREATE TABLE files (
     parsed_at    INTEGER NOT NULL DEFAULT (strftime('%s','now'))
 );
 
+-- `access` is a class member's access qualifier: 'local', 'protected' or ''
+-- (schema v13).
 CREATE TABLE symbols (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
     file_id  INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
@@ -29,7 +31,8 @@ CREATE TABLE symbols (
     parent   TEXT    NOT NULL DEFAULT '',
     detail   TEXT    NOT NULL DEFAULT '',
     end_line INTEGER NOT NULL DEFAULT 0,
-    scope    TEXT    NOT NULL DEFAULT ''
+    scope    TEXT    NOT NULL DEFAULT '',
+    access   TEXT    NOT NULL DEFAULT ''
 );
 
 -- Exact-name lookup (workspace/definition queries).
@@ -165,6 +168,12 @@ CREATE TABLE symbol_docs (
     doc     TEXT    NOT NULL,
     PRIMARY KEY (file_id, line, col)
 ) WITHOUT ROWID;
+)sql";
+
+// SQL applied when migrating an existing v12 database to v13.
+inline constexpr const char* MIGRATION_V12_TO_V13 = R"sql(
+ALTER TABLE symbols ADD COLUMN access TEXT NOT NULL DEFAULT '';
+UPDATE schema_version SET version = 13;
 )sql";
 
 // SQL applied when migrating an existing v11 database to v12.

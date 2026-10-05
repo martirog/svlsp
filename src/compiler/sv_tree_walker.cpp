@@ -499,6 +499,19 @@ public:
         popScope();
     }
 
+    // ---- Class member access ----
+    // A class property's or method's `local` / `protected` qualifier is
+    // recorded as `access` on the rows the item declares directly in the
+    // class's scope (its variables, the method itself) -- never on a
+    // method's arguments or locals, which are in the method's own scope.
+
+    void enterClass_property(SvParser::Class_propertyContext* ctx) override {
+        beginClassItem(ctx);
+    }
+    void exitClass_property(SvParser::Class_propertyContext*) override { m_itemAccess.clear(); }
+    void enterClass_method(SvParser::Class_methodContext* ctx) override { beginClassItem(ctx); }
+    void exitClass_method(SvParser::Class_methodContext*) override { m_itemAccess.clear(); }
+
     // ---- Interface classes (plan.md §6.16) ----
     // Reuses ParseRecordKind::Class -- no new enum value, no dispatch
     // changes anywhere else (hover/completion/etc. already treat every
@@ -962,6 +975,8 @@ private:
     std::vector<CallRecord>   m_calls;
     std::vector<std::string>  m_scopeStack;
     bool                      m_inExport{false};
+    std::string               m_itemAccess;      // current class item's access ("" outside one)
+    std::string               m_itemAccessScope; // the class scope chain it applies in
 
     // One tf_port_item's name, direction and type after LRM 13.3's
     // inheritance rules. A default-constructed TfPort stands for "no
@@ -1070,6 +1085,23 @@ private:
         pushScope(rel + "::" + id->getText());
     }
 
+    // The class item's access: its `local` / `protected` qualifier, written
+    // directly or inside a property_qualifier / method_qualifier.
+    void beginClassItem(antlr4::ParserRuleContext* ctx) {
+        m_itemAccess.clear();
+        m_itemAccessScope = currentScopeChain();
+        for (auto* child : ctx->children) {
+            auto* q = dynamic_cast<SvParser::Class_item_qualifierContext*>(child);
+            if (auto* pq = dynamic_cast<SvParser::Property_qualifierContext*>(child))
+                q = pq->class_item_qualifier();
+            else if (auto* mq = dynamic_cast<SvParser::Method_qualifierContext*>(child))
+                q = mq->class_item_qualifier();
+            if (!q) continue;
+            if (const std::string text = q->getText(); text == "local" || text == "protected")
+                m_itemAccess = text;
+        }
+    }
+
     static std::string lastScopeSegment(const std::string& frame) {
         auto sep = frame.rfind("::");
         return sep == std::string::npos ? frame : frame.substr(sep + 2);
@@ -1089,7 +1121,8 @@ private:
         auto [file, line] = translateLine(compiledLine, m_sourceMap);
         int col = translateColumn(compiledLine, compiledCol, m_sourceMap);
         m_records.push_back({kind, id->getText(), line, col, parent, detail, 0, scope, file,
-                             ctx && m_collectDocs ? docFor(ctx) : std::string{}});
+                             ctx && m_collectDocs ? docFor(ctx) : std::string{},
+                             scope == m_itemAccessScope ? m_itemAccess : std::string{}});
     }
 
     // ---- Doc comments (plan.md §6.31) ----
