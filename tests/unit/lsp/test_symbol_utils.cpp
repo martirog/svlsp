@@ -420,3 +420,48 @@ TEST_CASE("insideCommentOrString: the cursor (between offset-1 and offset) in a 
     CHECK_FALSE(insideCommentOrString(t, t.size()));         // after `c`
     CHECK_FALSE(insideCommentOrString(t, 0));
 }
+
+// ---------------------------------------------------------------------------
+// Function/task arguments as dot receivers (plan.md §6.30)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("portValueType: a Port's detail in layered form", "[symbol_utils][layers][port]")
+{
+    const std::string sep(1, PARAM_DEFAULT_VALUE_SEP);
+    CHECK(portValueType("C") == "C");
+    CHECK(portValueType("ref C") == "C");
+    CHECK(portValueType("const ref p::C") == "p::C");
+    CHECK(portValueType("constref C") == "C");
+    CHECK(portValueType("output C #(int, 4)") == "C");
+    CHECK(portValueType("C#(T)") == "C");
+    CHECK(portValueType("string") == "$string");
+    CHECK(portValueType("inout event") == "$event");
+    CHECK(portValueType("bit [7:0]") == "bit");
+    CHECK(portValueType("C" + sep + " = null") == "C");
+    CHECK(portValueType("ref C" + sep + "[$]") == "$queue:C");
+    CHECK(portValueType("C" + sep + "[$:7]") == "$queue:C");
+    CHECK(portValueType("C" + sep + "[]") == "$dynamic_array:C");
+    CHECK(portValueType("C" + sep + "[*]") == "$assoc_array:C");
+    CHECK(portValueType("C" + sep + "[string]") == "$assoc_array:C");
+    CHECK(portValueType("C" + sep + "[int unsigned]") == "$assoc_array:C");
+    CHECK(portValueType("C" + sep + "[4][$]") == "$fixed_array:$queue:C");
+    CHECK(portValueType("C" + sep + "[N-1:0] = '{}") == "$fixed_array:C");
+    CHECK(portValueType("C" + sep + "[a[0]]") == "$fixed_array:C");
+    CHECK(portValueType("input") == "");
+}
+
+TEST_CASE("displayDetail drops a Port's separator, leaves other rows alone",
+          "[symbol_utils][port]")
+{
+    const std::string sep(1, PARAM_DEFAULT_VALUE_SEP);
+    SymbolRow port{};
+    port.kind   = "Port";
+    port.detail = "ref C" + sep + "[$]";
+    CHECK(displayDetail(port) == "ref C[$]");
+    port.detail = "int" + sep + " = 8";
+    CHECK(displayDetail(port) == "int = 8");
+    SymbolRow sig{};
+    sig.kind   = "Signal";
+    sig.detail = "$queue:C";
+    CHECK(displayDetail(sig) == "$queue:C");
+}

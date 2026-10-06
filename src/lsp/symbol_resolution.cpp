@@ -419,10 +419,12 @@ std::optional<SymbolRow> Resolver::typeOfRow(const SymbolRow& row, int indexDept
     std::string type;
     if (row.kind == "Signal" || row.kind == "Parameter")
         type = peelDimensionLayers(row.detail, indexDepth);
+    else if (row.kind == "Port")
+        type = peelDimensionLayers(portValueType(row.detail), indexDepth);
     else if (isCallable(row) && indexDepth == 0)
         type = row.detail; // return type
     else
-        return std::nullopt; // Ports: not tracked as receivers yet (plan.md §6.30)
+        return std::nullopt;
     if (type.empty()) return std::nullopt;
     if (firstTypeLayer(type) != type) return std::nullopt; // still a container, not a class
     return resolveTypeName(type, row.filePath, row.line);

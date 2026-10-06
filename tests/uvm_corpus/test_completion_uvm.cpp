@@ -167,3 +167,24 @@ TEST_CASE("completion: dot completion offers local/protected members only where 
         CHECK_FALSE(hasItem(items, "m_inst_id"));
     }
 }
+
+TEST_CASE("completion: a function argument is a dot receiver, its dimensions included",
+          "[uvm_corpus][completion][port]") {
+    // uvm_component::get_children(ref uvm_component children[$]) -- the
+    // out-of-class body at line 1847; line 1850 is inside it.
+    auto itemsAt = [](const std::string& probe) {
+        const std::string docText = std::string(1849, '\n') + probe;
+        auto result = CompletionProvider::getCompletion(
+            makeParams("base/uvm_component.svh", 1849, static_cast<unsigned>(probe.size())),
+            uvmCorpusDb(), docText);
+        REQUIRE_FALSE(result.isNull());
+        return result.get<lsp::Array<lsp::CompletionItem>>();
+    };
+    const auto queue = itemsAt("    children.");
+    CHECK(hasItem(queue, "push_back"));
+    CHECK_FALSE(hasItem(queue, "get_name"));
+    const auto elem = itemsAt("    children[0].");
+    CHECK(hasItem(elem, "get_name"));
+    CHECK(hasItem(elem, "m_tr_h")); // uvm_component's own local: cursor is inside it
+    CHECK_FALSE(hasItem(elem, "push_back"));
+}

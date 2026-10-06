@@ -117,6 +117,21 @@ std::optional<size_t> offsetForPosition(const std::string& text, unsigned line,
 // full rationale. depth <= 0 is a no-op.
 std::string peelDimensionLayers(const std::string& detail, int depth);
 
+// A function/task argument's (Port row's) value type in Signal's layered
+// detail form (plan.md §6.15), so it can be a dot receiver: direction
+// dropped, `#(...)` dropped, string/event mapped to their tags, and the
+// unpacked dimensions recorded after PARAM_DEFAULT_VALUE_SEP turned into
+// container tags, outermost first ("ref C\x1F[$]" -> "$queue:C"). A `[...]`
+// whose content starts with a built-in type keyword (or is `*`) is an
+// associative array; any other sized one is fixed-size, the way the
+// grammar itself reads `[N]`.
+std::string portValueType(const std::string& detail);
+
+// A row's detail for display (hover, completion, document symbols): a
+// Port's PARAM_DEFAULT_VALUE_SEP removed ("int = 8", "ref C[$]"); any other
+// row's detail unchanged.
+std::string displayDetail(const SymbolRow& row);
+
 // The outermost layer of a (possibly layered) detail string -- what
 // container/element-tag dispatch (builtinMethodsFor) keys off. Splits on a
 // single ':' only, so a `pkg::`-qualified type name (plan.md §6.30 step A)

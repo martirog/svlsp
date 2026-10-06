@@ -743,7 +743,25 @@ TEST_CASE("a comma-shorthand parameter with a default or dimension inherits the 
     REQUIRE(pb != nullptr);
     REQUIRE(pc != nullptr);
     CHECK(pb->detail == std::string("int") + PARAM_DEFAULT_VALUE_SEP + " = 2");
-    CHECK(pc->detail == "int");
+    // Unpacked dimensions are recorded after the separator (rendered after
+    // the name, like a default).
+    CHECK(pc->detail == std::string("int") + PARAM_DEFAULT_VALUE_SEP + "[4]");
+}
+
+TEST_CASE("a parameter's unpacked dimensions are recorded before its default",
+          "[compiler][listener][tf_port]") {
+    auto [recs, errs, imps, insts, calls] = walkSource(
+        "function void f(ref MyClass q[$], input int m[string][2] = '{default: 0});\n"
+        "endfunction\n");
+    REQUIRE(errs.empty());
+    auto* pq = findRecord(recs, ParseRecordKind::Port, "q");
+    auto* pm = findRecord(recs, ParseRecordKind::Port, "m");
+    REQUIRE(pq != nullptr);
+    REQUIRE(pm != nullptr);
+    CHECK(pq->detail == std::string("ref MyClass") + PARAM_DEFAULT_VALUE_SEP + "[$]");
+    CHECK(pm->detail.rfind(std::string("int") + PARAM_DEFAULT_VALUE_SEP + "[string][2] = ", 0) == 0);
+    CHECK(portHasDefault(pm->detail));
+    CHECK_FALSE(portHasDefault(pq->detail));
 }
 
 TEST_CASE("a comma-shorthand parameter inherits a class or packed type",

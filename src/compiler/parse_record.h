@@ -54,14 +54,23 @@ inline constexpr const char* CONTAINER_EVENT         = "$event";
 
 // Separator byte inside a function/task parameter's Port::detail (plan.md
 // §6.22 follow-up), splitting the "<direction> <type>" prefix (rendered
-// before the parameter name) from a "= <default value>" suffix (rendered
-// after it) -- e.g. "int\x1F = 8" for "int width = 8". A real SV source
-// character sequence can never contain this byte, so a plain module/
-// interface/program port's detail (just "input"/"output"/...) is never
-// mistaken for having a suffix. See portLabel() in src/lsp/signature_help.cpp
-// for the split, and enterTf_port_item in src/compiler/sv_tree_walker.cpp
-// for where it's written.
+// before the parameter name) from the suffix rendered after it: the
+// argument's unpacked dimensions as written, then an optional
+// " = <default value>" -- e.g. "int\x1F = 8" for "int width = 8",
+// "ref C\x1F[$]" for "ref C q[$]". A real SV source character sequence can
+// never contain this byte, so a plain module/interface/program port's
+// detail (just "input"/"output"/...) is never mistaken for having a suffix.
+// Read it with portHasDefault() below, and portLabel()
+// (src/lsp/signature_help.cpp) / portValueType() (src/lsp/symbol_utils.h);
+// enterTf_port_item in src/compiler/sv_tree_walker.cpp writes it.
 inline constexpr char PARAM_DEFAULT_VALUE_SEP = '\x1F';
+
+// True if a Port's detail records a default value (see above).
+inline bool portHasDefault(const std::string& detail)
+{
+    const auto sep = detail.find(PARAM_DEFAULT_VALUE_SEP);
+    return sep != std::string::npos && detail.find(" = ", sep) != std::string::npos;
+}
 
 struct ParseRecord {
     ParseRecordKind kind;

@@ -3,6 +3,7 @@
 #include <lsp/fileuri.h>
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <unordered_set>
 
 namespace {
@@ -365,6 +366,84 @@ std::string peelDimensionLayers(const std::string& detail, int depth)
     return result;
 }
 
+std::string portValueType(const std::string& detail)
+{
+    const auto sep = detail.find(PARAM_DEFAULT_VALUE_SEP);
+    std::string type = detail.substr(0, sep);
+    std::string suffix = sep == std::string::npos ? "" : detail.substr(sep + 1);
+
+    auto trim = [](std::string& t) {
+        const auto b = t.find_first_not_of(' ');
+        const auto e = t.find_last_not_of(' ');
+        t = b == std::string::npos ? "" : t.substr(b, e - b + 1);
+    };
+    // Leading direction words: input/output/inout/ref, `const ref` (with or
+    // without the space the token text may have kept), `var`.
+    for (bool stripped = true; stripped;) {
+        stripped = false;
+        trim(type);
+        for (const char* word : {"input", "output", "inout", "constref", "const", "ref", "var"}) {
+            const size_t n = std::strlen(word);
+            if (type.compare(0, n, word) == 0 && (type.size() == n || type[n] == ' ')) {
+                type.erase(0, n);
+                stripped = true;
+                break;
+            }
+        }
+    }
+    // `C #(T)` -> C; a packed dimension (`bit [7:0]`) can't be a class.
+    if (const auto cut = type.find_first_of("#["); cut != std::string::npos) type.erase(cut);
+    trim(type);
+    if (type == "string") type = CONTAINER_STRING;
+    if (type == "event")  type = CONTAINER_EVENT;
+
+    std::vector<std::string> layers;
+    static const char* const kBuiltinIndexTypes[] = {
+        "string", "int", "integer", "byte", "shortint", "longint", "bit", "logic", "reg"};
+    for (size_t i = 0; i < suffix.size() && suffix[i] == '[';) {
+        size_t depth = 0, j = i;
+        for (; j < suffix.size(); ++j) {
+            if (suffix[j] == '[') ++depth;
+            else if (suffix[j] == ']' && --depth == 0) break;
+        }
+        if (j == suffix.size()) break; // unbalanced -- not a dimension list
+        std::string inner = suffix.substr(i + 1, j - i - 1);
+        trim(inner);
+        std::string tag = CONTAINER_FIXED_ARRAY;
+        if (inner.empty())                 tag = CONTAINER_DYNAMIC_ARRAY;
+        else if (inner.front() == '$')     tag = CONTAINER_QUEUE;
+        else if (inner == "*")             tag = CONTAINER_ASSOC;
+        else
+            for (const char* kw : kBuiltinIndexTypes) {
+                const size_t n = std::strlen(kw);
+                if (inner.compare(0, n, kw) == 0 &&
+                    (inner.size() == n || !isIdChar(inner[n]))) {
+                    tag = CONTAINER_ASSOC;
+                    break;
+                }
+            }
+        layers.push_back(tag);
+        i = j + 1;
+        while (i < suffix.size() && suffix[i] == ' ') ++i;
+    }
+    if (!type.empty()) layers.push_back(type);
+
+    std::string result;
+    for (size_t i = 0; i < layers.size(); ++i) {
+        if (i) result += ':';
+        result += layers[i];
+    }
+    return result;
+}
+
+std::string displayDetail(const SymbolRow& row)
+{
+    if (row.kind != "Port") return row.detail;
+    std::string d = row.detail;
+    d.erase(std::remove(d.begin(), d.end(), PARAM_DEFAULT_VALUE_SEP), d.end());
+    return d;
+}
+
 std::vector<SymbolRow> membersAcrossChain(SymbolDatabase& db, const std::string& className,
                                            const std::string& curPath)
 {
@@ -396,9 +475,11 @@ std::string resolveFirstSegment(SymbolDatabase& db, const std::string& path, int
     const char* wantKind = seg.isCall ? "Function" : nullptr;
     for (auto& row : visible) {
         bool kindMatches = wantKind ? row.kind == wantKind
-                                     : (row.kind == "Signal" || row.kind == "Parameter");
+                                     : (row.kind == "Signal" || row.kind == "Parameter" ||
+                                        row.kind == "Port");
         if (kindMatches && row.name == seg.name)
-            return peelDimensionLayers(row.detail, seg.indexDepth);
+            return peelDimensionLayers(row.kind == "Port" ? portValueType(row.detail) : row.detail,
+                                       seg.indexDepth);
     }
     return "";
 }

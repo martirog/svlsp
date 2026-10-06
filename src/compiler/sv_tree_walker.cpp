@@ -690,17 +690,19 @@ public:
                             : type.empty()     ? dir
                                                 : dir + " " + type;
 
-        // A default value is rendered *after* the name ("int width = 8"),
-        // unlike direction/type which precede it -- stored past a sentinel
-        // byte (never produced by real SV source) so portLabel() in
-        // signature_help.cpp can split prefix/suffix back apart. Module/
-        // interface/program ports never contain this sentinel, so their
-        // existing "<direction> <name>" rendering is unaffected.
+        // Unpacked dimensions and a default value are rendered *after* the
+        // name ("C q[$]", "int width = 8"), unlike direction/type which
+        // precede it -- stored past a sentinel byte (never produced by real
+        // SV source) so portLabel() in signature_help.cpp can split
+        // prefix/suffix back apart, and portValueType() can tell `q.` is a
+        // queue. Module/interface/program ports never contain this
+        // sentinel, so their existing "<direction> <name>" rendering is
+        // unaffected.
+        std::string suffix;
+        for (auto* dim : ctx->variable_dimension()) suffix += m_tokens->getText(dim);
+        if (auto* expr = ctx->expression()) suffix += " = " + m_tokens->getText(expr);
         std::string detail = prefix;
-        if (auto* expr = ctx->expression()) {
-            detail += PARAM_DEFAULT_VALUE_SEP;
-            detail += " = " + m_tokens->getText(expr);
-        }
+        if (!suffix.empty()) detail += PARAM_DEFAULT_VALUE_SEP + suffix;
 
         pushId(ParseRecordKind::Port, port.name, ctx, currentScope(), detail);
     }

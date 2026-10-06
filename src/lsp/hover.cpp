@@ -46,8 +46,8 @@ lsp::TextDocument_HoverResult HoverProvider::getHover(
     const SymbolRow& best = resolved->row;
 
     std::string content = "**" + best.kind + "** `" + best.name + "`";
-    if (!best.detail.empty())
-        content += " → `" + best.detail + "`";  // →
+    if (const std::string detail = displayDetail(best); !detail.empty())
+        content += " → `" + detail + "`";  // →
     if (const std::string doc = symbolDoc(db, best); !doc.empty())
         content += "\n\n" + docMarkdown(doc);
     if (!best.scope.empty())

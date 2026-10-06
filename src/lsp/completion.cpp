@@ -35,7 +35,7 @@ std::vector<Candidate> candidatesFromRows(const std::vector<SymbolRow>& rows)
     for (auto& row : rows)
         if (!(row.kind == "Function" && row.name == "new") &&
             seen.emplace(row.name, row.kind).second)
-            out.push_back({row.name, completionKindFor(row.kind), row.detail, row});
+            out.push_back({row.name, completionKindFor(row.kind), displayDetail(row), row});
     return out;
 }
 

@@ -3,6 +3,7 @@
 #include "db/database.h"
 #include "db/symbol_database.h"
 #include "compiler/parse_record.h"
+#include "db/compilation_controller.h"
 
 namespace {
 
@@ -249,4 +250,33 @@ TEST_CASE("HoverProvider: an unknown macro is null, never a same-named symbol",
     auto fid = f.sdb.upsertFile("/t.sv", "h");
     f.sdb.replaceSymbols(fid, {{ParseRecordKind::Module, "NOPE", 1, 7, "", "", 2, ""}});
     CHECK(HoverProvider::getHover(makeParams("/t.sv", 0, 2), f.sdb, "`NOPE").isNull());
+}
+
+TEST_CASE("HoverProvider: a member reached through a function argument resolves, "
+          "and an argument's detail has no separator byte",
+          "[hover][port]")
+{
+    Fixture f;
+    CompilationController ctrl{f.sdb};
+    const std::string text =
+        "class HvArg; int hv_fld; endclass\n"
+        "function void hv_f(HvArg a, ref HvArg q[$], input int n = 8);\n"
+        "  a.hv_fld = 1;\n"                         // line 2
+        "endfunction\n";
+    ctrl.compile("/hvarg.sv", text);
+
+    auto hoverText = [&](unsigned line, unsigned col) {
+        auto result = HoverProvider::getHover(makeParams("/hvarg.sv", line, col), f.sdb, text);
+        REQUIRE_FALSE(result.isNull());
+        return std::get<lsp::MarkupContent>(result->contents).value;
+    };
+    const std::string member = hoverText(2, 5);
+    CHECK(member.find("`hv_fld`") != std::string::npos);
+    CHECK(member.find("HvArg") != std::string::npos); // in *HvArg*
+
+    const std::string q = hoverText(1, 38);
+    CHECK(q.find("`ref HvArg[$]`") != std::string::npos);
+    const std::string n = hoverText(1, 54);
+    CHECK(n.find("`int = 8`") != std::string::npos);
+    CHECK(n.find(PARAM_DEFAULT_VALUE_SEP) == std::string::npos);
 }

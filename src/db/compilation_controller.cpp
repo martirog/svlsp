@@ -50,7 +50,7 @@ std::vector<ParseError> checkMissingArguments(
 
         for (size_t i = 0; i < ports.size(); ++i) {
             if (paramSupplied(i, call.args, ports[i].name)) continue;
-            if (ports[i].detail.find(PARAM_DEFAULT_VALUE_SEP) != std::string::npos) continue;
+            if (portHasDefault(ports[i].detail)) continue;
             diags.push_back({call.line, call.column,
                 "missing required argument '" + ports[i].name + "' in call to '" +
                 call.calleeName + "'"});

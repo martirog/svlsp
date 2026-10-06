@@ -1439,8 +1439,6 @@ TEST_CASE("CompletionProvider: dot-completion offers local/protected members onl
     CompilationController ctrl{f.sdb};
     // Compiled with complete statements; each query cuts its line right
     // after the dot (the prefix would otherwise take the word after it).
-    // Receivers are class properties: a function argument (Port row) isn't
-    // a dot receiver yet.
     const std::string text =
         "package dacc_p;\n"                                  // 0
         "  class DaccBase;\n"
@@ -1541,6 +1539,58 @@ TEST_CASE("CompletionProvider: dot-completion offers local/protected members onl
         CHECK_FALSE(hasItem(derived, "dacc_shadow"));
         CHECK_FALSE(hasItem(derived, "dacc_prot"));
     }
+}
+
+TEST_CASE("CompletionProvider: a function/task argument is a dot receiver, dimensions included",
+          "[completion][dot][port]")
+{
+    Fixture f;
+    CompilationController ctrl{f.sdb};
+    const std::string text =
+        "class ArgItem;\n"                                                  // 0
+        "  int ai_fld;\n"
+        "  function void ai_m(); endfunction\n"
+        "endclass\n"
+        "class ArgUser;\n"
+        "  function void use_it(ArgItem it, ref ArgItem q[$], ArgItem fa[4], string s);\n"
+        "    it.ai_fld = 1;\n"                                              // 6
+        "    q.push_back(it);\n"                                            // 7
+        "    q[0].ai_fld = 1;\n"                                            // 8
+        "    fa[1].ai_fld = 1;\n"                                           // 9
+        "    s.len();\n"                                                    // 10
+        "  endfunction\n"
+        "  extern function void ext(ArgItem other);\n"
+        "endclass\n"
+        "function void ArgUser::ext(ArgItem other);\n"
+        "  other.ai_m();\n"                                                 // 15
+        "endfunction\n";
+    ctrl.compile("/arg.sv", text);
+
+    // Cuts the line right after its last '.', as in the access case above.
+    auto itemsAt = [&](unsigned line) {
+        size_t start = 0;
+        for (unsigned i = 0; i < line; ++i) start = text.find('\n', start) + 1;
+        const size_t end = text.find('\n', start);
+        const size_t dot = text.rfind('.', end);
+        const std::string query = text.substr(0, dot + 1) + text.substr(end);
+        auto result = CompletionProvider::getCompletion(
+            makeParams("/arg.sv", line, static_cast<unsigned>(dot + 1 - start)), f.sdb, query);
+        REQUIRE_FALSE(result.isNull());
+        return result.get<lsp::Array<lsp::CompletionItem>>();
+    };
+
+    for (unsigned line : {6u, 8u, 9u, 15u}) {
+        const auto items = itemsAt(line);
+        CHECK(hasItem(items, "ai_fld"));
+        CHECK(hasItem(items, "ai_m"));
+        CHECK_FALSE(hasItem(items, "push_back"));
+    }
+    const auto queue = itemsAt(7);
+    CHECK(hasItem(queue, "push_back"));
+    CHECK_FALSE(hasItem(queue, "ai_fld"));
+    const auto str = itemsAt(10);
+    CHECK(hasItem(str, "len"));
+    CHECK_FALSE(hasItem(str, "ai_fld"));
 }
 
 TEST_CASE("CompletionProvider: an overriding member is offered once, not also from the parent",

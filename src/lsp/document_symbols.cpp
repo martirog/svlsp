@@ -24,8 +24,8 @@ lsp::TextDocument_DocumentSymbolResult DocumentSymbolsProvider::getDocumentSymbo
         sym.kind           = symbolKindFor(row.kind);
         sym.range          = symRange;
         sym.selectionRange = selRange;
-        if (!row.detail.empty())
-            sym.detail = row.detail;
+        if (std::string detail = displayDetail(row); !detail.empty())
+            sym.detail = std::move(detail);
         result.push_back(std::move(sym));
     }
     return result;
