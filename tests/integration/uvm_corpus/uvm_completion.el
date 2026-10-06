@@ -12,6 +12,26 @@
 
 (defvar svlsp-uvm/buf nil "The fixture buffer.")
 (defvar svlsp-uvm/perf-log nil "File each request's timing is appended to.")
+(defvar svlsp-uvm/server-log nil
+  "The fixture server's `--log-requests' file (its own time per request).")
+
+(defun svlsp-uvm/last-server-line (what)
+  "The server's \"wait W ms, run R ms\" for its latest WHAT line, or \"\".
+The server writes the line before it responds, so after a request returns
+its line is the latest one."
+  (if (not (and svlsp-uvm/server-log (file-exists-p svlsp-uvm/server-log)))
+      ""
+    (with-temp-buffer
+      (insert-file-contents svlsp-uvm/server-log)
+      (goto-char (point-max))
+      (if (re-search-backward
+           (concat "^\\[request\\] " (regexp-quote what)
+                   " .*wait \\([0-9.]+\\) ms, run \\([0-9.]+\\) ms$")
+           nil t)
+          (format "server %9.1f ms (wait %.1f)"
+                  (string-to-number (match-string 2))
+                  (string-to-number (match-string 1)))
+        ""))))
 
 (defun svlsp-uvm/log (fmt &rest args)
   (when svlsp-uvm/perf-log
@@ -40,18 +60,23 @@
                       ((listp result) result)
                       ((vectorp result) (append result nil))))
          (labels (mapcar (lambda (i) (gethash "label" i)) items)))
-    (svlsp-uvm/log "  %-34s %9.1f ms %6d items" probe ms (length labels))
+    (svlsp-uvm/log "  %-34s %9.1f ms %6d items   %s" probe ms (length labels)
+                   (svlsp-uvm/last-server-line "textDocument/completion"))
     labels))
 
 (defun svlsp-uvm/open (dir timeout)
   "Open DIR/uvm_tb.sv in its own workspace; wait until the library is loaded.
 Returns t, or a string saying what didn't happen within TIMEOUT seconds."
   (lsp-workspace-folders-add dir)
+  (setq svlsp-uvm/server-log (expand-file-name "requests.log" dir))
   (let ((t0 (float-time)))
     (setq svlsp-uvm/buf (find-file-noselect (expand-file-name "uvm_tb.sv" dir)))
-    (with-current-buffer svlsp-uvm/buf
-      (normal-mode)
-      (lsp))
+    ;; Only this workspace's server is started here, so the arguments
+    ;; apply to it alone.
+    (let ((svlsp-test-server-args (list "--log-requests" svlsp-uvm/server-log)))
+      (with-current-buffer svlsp-uvm/buf
+        (normal-mode)
+        (lsp)))
     (if (not (with-current-buffer svlsp-uvm/buf (svlsp-test/wait-for-lsp timeout)))
         "no initialized workspace"
       (svlsp-uvm/log "  %-34s %9.1f ms" "initialize" (* 1000 (- (float-time) t0)))
@@ -61,7 +86,10 @@ Returns t, or a string saying what didn't happen within TIMEOUT seconds."
         (while (and (not found) (< (float-time) deadline))
           (setq found (member "uvm_component" (svlsp-uvm/labels "probe-lib: uvm_comp")))
           (unless found (sit-for 1)))
-        (svlsp-uvm/log "  %-34s %9.1f ms" "library visible after" (* 1000 (- (float-time) t0)))
+        (svlsp-uvm/log "  %-34s %9.1f ms   %s" "library visible after"
+                       (* 1000 (- (float-time) t0))
+                       (replace-regexp-in-string
+                        "^server" "first compile" (svlsp-uvm/last-server-line "compile")))
         (if found t "uvm_component never offered at probe-lib")))))
 
 (defun svlsp-uvm/check (probe want &optional dont-want)

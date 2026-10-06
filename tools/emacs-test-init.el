@@ -59,9 +59,15 @@ running -- most tests should prefer letting ProjectRegistry's upward
 directory search discover a `.svlsp.json'/`.svlsp.f' instead, which works
 regardless of when the server was started.")
 
+(defvar svlsp-test-server-args nil
+  "Extra command-line arguments for the next svlsp process started.
+Read when a workspace's server is launched, so setting it only affects a
+new workspace (the UVM test sets `--log-requests' for its own one).")
+
 (lsp-register-client
  (make-lsp-client
-  :new-connection (lsp-stdio-connection (lambda () (list svlsp-test-server-bin)))
+  :new-connection (lsp-stdio-connection
+                   (lambda () (cons svlsp-test-server-bin svlsp-test-server-args)))
   :major-modes    '(verilog-mode)
   :server-id      'svlsp
   :priority        1
