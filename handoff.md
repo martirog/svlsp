@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-10-05 (dot completion access filtering implemented, uncommitted; corpus pending).
+**Last updated:** 2026-10-05 (function/task arguments as dot receivers + opt-in Emacs UVM test, uncommitted; corpus pending).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -11,22 +11,35 @@ write-up) — read the relevant section there rather than looking for it here.
 
 ## Current state
 
-**PICK UP HERE NEXT TIME — dot completion access filtering is
-implemented, NOT committed; UVM corpus pending** (plan.md §6.30,
-"Follow-up: dot completion filters `local`/`protected` members by the
-cursor's class"). Files: `src/db/symbol_database.{h,cpp}`
-(`memberAccess` replaces `localMemberNames`; new
-`enclosingClassScopesAt`), `src/lsp/completion.cpp`; tests
-`test_symbol_database.cpp`, `test_completion.cpp` (+2 cases),
-`fixtures/dot_completion.sv` + test_27 (+1), and a new UVM corpus case in
-`tests/uvm_corpus/test_completion_uvm.cpp`.
-- Verified: unit 937/937, Emacs 273/273.
-- Pending, batched: UVM corpus suite (expect 28 → 29 cases, +11
-  assertions → 1138). No schema change, so `--build-db` needn't rerun.
-  Then commit as `feat(completion): ...` + `docs(plan,handoff): ...`.
-- Found, not fixed: a function/task argument isn't a dot receiver
-  (`resolveFirstSegment` takes Signal/Parameter only), so `obj.` on an
-  argument completes nothing. Good next item.
+**PICK UP HERE NEXT TIME — run the UVM corpus batch, then commit the
+argument-receiver change.** NOT committed (plan.md §6.30, "Follow-up: a
+function/task argument is a dot receiver" and "Emacs test against the UVM
+library DB"). Files: `src/compiler/parse_record.h` (`portHasDefault`),
+`sv_tree_walker.cpp` (Port dims), `src/db/compilation_controller.cpp`,
+`src/lsp/symbol_utils.{h,cpp}` (`portValueType`, `displayDetail`),
+`symbol_resolution.cpp`, `completion.cpp`, `hover.cpp`,
+`document_symbols.cpp`; unit tests in `test_sv_listener.cpp`,
+`test_symbol_utils.cpp`, `test_completion.cpp`, `test_hover.cpp`; a
+corpus case in `tests/uvm_corpus/test_completion_uvm.cpp`; the new
+`tests/integration/uvm_corpus/` (Emacs UVM test), `Makefile`
+(`test-integration-uvm`), `tools/emacs-test-daemon.sh` (`SVLSP_BIN`
+override).
+- Verified: unit 942/942, Emacs 273/273, `make test-integration-uvm`
+  13/13 (debug and release).
+- Pending, batched: the UVM corpus suite covers two unrun cases (the
+  committed dot-access case f80648e, and the argument case). Expect 30
+  cases, 1127 + 11 + 7 = 1145 assertions. `--build-db` should be
+  unchanged apart from Port details (dims); afterwards copy the new DB
+  to `<corpus>/uvm.db` (the Emacs UVM test's default library DB --
+  replaced 2026-10-05 with a v13 build, old v11 kept as
+  `uvm.db.v11.bak`). Then commit `feat(completion): ...` +
+  `test(integration): ...` + `docs(plan,handoff): ...`.
+- Profiling: `SVLSP_BIN=$PWD/build/release/svlsp make
+  test-integration-uvm` prints per-request client-observed times; the
+  server's own time isn't logged yet.
+
+Committed 2026-10-05: dot completion filters `local`/`protected` members
+by the cursor's class (f80648e + a2a7af6; corpus case pending, above).
 
 Committed 2026-10-05: completion skips an ancestor's `local` members,
 schema v13 (plan.md §6.30, "Follow-up: an ancestor's `local` members
@@ -83,7 +96,7 @@ by name instead of from the typedef's scope, and merged duplicated helpers
   in workspace symbols, no completion inside comments/strings, and doc
   comments (§6.31) in hover, signature help and completion resolve.
 - Test baselines:
-  - unit: **937 cases**, all passing (no `[!shouldfail]` known gaps left
+  - unit: **942 cases**, all passing (no `[!shouldfail]` known gaps left
     -- the `` `define `` references case passes since the macro follow-up)
   - Emacs functional: **273/273**
   - UVM corpus (opt-in): **1127 assertions / 28 cases**, all passing.

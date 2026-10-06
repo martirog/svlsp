@@ -5300,10 +5300,8 @@ cursor's class (2026-10-05).** Done (corpus pending).
 - *Not changed:* hover/definition/references/signature help ignore
   access; there is no `::` scope completion yet (when there is, `C::`
   should apply the same rule).
-- *Found, not fixed:* a function/task argument isn't a dot receiver --
-  `resolveFirstSegment` accepts only Signal/Parameter rows, so in
-  `function void f(C obj); obj.` dot completion returns nothing. Separate
-  follow-up.
+- *Found:* a function/task argument wasn't a dot receiver -- fixed by
+  the next follow-up.
 - *Tests.* Unit (+2 cases): `enclosingClassScopesAt`
   (`test_symbol_database.cpp`: nested class, out-of-class body, a
   non-class scope), and dot completion (`test_completion.cpp`, compiled
@@ -5317,6 +5315,73 @@ cursor's class (2026-10-05).** Done (corpus pending).
   `uvm_port_base::new`.
 - *Verification.* Unit: 937 cases, all passing. Emacs: 273/273 (debug
   build, rebuilt `svlsp`). UVM corpus: pending, next batch.
+
+**Follow-up: a function/task argument is a dot receiver (2026-10-05).**
+Done (corpus pending).
+- *Why.* `resolveFirstSegment` (completion) and `Resolver::typeOfRow`
+  (hover/definition/references on `obj.member`) took only Signal/
+  Parameter rows, so in `function void f(C obj); obj.` dot completion
+  returned nothing and `obj.m` didn't resolve. UVM code is full of these
+  (`phase.`, `parent.`).
+- *Recording.* A Port's detail dropped its unpacked dimensions
+  (`ref uvm_component children[$]` was `ref uvm_component`), so a queue
+  argument looked like its element. `enterTf_port_item` now writes them,
+  as written, into the suffix after `PARAM_DEFAULT_VALUE_SEP`, before any
+  default: `ref C\x1F[$]`, `int\x1F[4] = '{...}`. Signature help labels
+  show them (`ref uvm_component children[$]`). No schema change, but a
+  library DB built before this has no dims on its Ports (a container
+  argument from such a DB resolves as its element type until rebuilt).
+  Module/ANSI ports are unchanged.
+- *Reading.* `portHasDefault(detail)` (parse_record.h) replaces "has a
+  separator" in the missing-argument check -- a separator alone no longer
+  means a default. `portValueType(detail)` (symbol_utils) gives the
+  Signal-style layered type: direction words (`input`/`output`/`inout`/
+  `ref`/`const ref`/`var`), `#(...)` and packed dims dropped, string/event
+  mapped to their tags, each `[...]` mapped to a container tag (`[$...]`
+  queue, `[]` dynamic, `[*]` or a leading built-in type keyword assoc,
+  anything else fixed -- the grammar's own reading of `[N]`). Both
+  receiver paths use it. `displayDetail(row)` drops a Port's separator
+  for hover, completion and document symbols, which showed the raw byte
+  before (`int\x1F = 8`); now `int = 8`, `ref C[$]`.
+- *Tests.* Unit (+5 cases): walker dims/default order and
+  `portHasDefault` (`test_sv_listener.cpp`; the comma-shorthand case's
+  `c[4]` now records `[4]`), `portValueType`/`displayDetail`
+  (`test_symbol_utils.cpp`), completion on argument receivers (class,
+  queue, indexed queue and fixed array, string, an out-of-class body;
+  `test_completion.cpp`), hover through an argument and its display
+  (`test_hover.cpp`). UVM corpus (+1 case, pending):
+  `uvm_component::get_children`'s `children.` / `children[0].`. Emacs:
+  the opt-in UVM test below (`phase.`, `kids.`, `kids[0].`).
+- *Verification.* Unit: 942 cases, all passing. Emacs: 273/273, and the
+  opt-in UVM test 13/13 (debug and release). UVM corpus: pending, next
+  batch.
+
+**Emacs test against the UVM library DB (2026-10-05).** Opt-in, for
+library-scale behavior and profiling.
+- `tests/integration/uvm_corpus/uvm_completion.sh` (+ `uvm_completion.el`
+  helpers, `uvm_tb.sv` fixture), run by `make test-integration-uvm`. Not
+  a `test_*.sh`, so the default suite doesn't pick it up. Needs a v13+
+  UVM library DB: `SVLSP_UVM_DB`, default `$SVLSP_UVM_CORPUS_DIR/uvm.db`;
+  skipped with the reason otherwise.
+- Isolation: the fixture is copied into a temp dir with a generated
+  `.svlsp.json` (`libraryDbs`) and added as its own workspace folder, so
+  lsp-mode starts a separate svlsp for it -- library DBs attach to the
+  server's one DB, and the rest of the suite shares one server. Probes
+  are found by their text, so the fixture's lines can move.
+- Covers (13 checks): library class by prefix and by fuzzy pattern,
+  inherited members by prefix, an ancestor's protected vs local, empty
+  prefix in a `uvm_component` subclass (1067 items), dot on an argument,
+  a property, `super.`, a chained call, a queue argument and its
+  element, and dot from a module (public members only).
+- Profiling: each request's client-observed time and item count go to a
+  log printed at the end (`SVLSP_UVM_PERF_LOG` keeps it);
+  `SVLSP_BIN=$PWD/build/release/svlsp` profiles the release build
+  (`emacs-test-daemon.sh` now honors an `SVLSP_BIN` override). Release,
+  2026-10-05: initialize 853 ms (lsp-mode), library visible 874 ms,
+  bare prefix 6-59 ms, empty prefix 361 ms / 1067 items, dot 5-114 ms
+  (227-item class lists 68-114 ms). End to end, including lsp-mode's
+  JSON handling; server-side time isn't split out yet (next step for
+  real profiling: have the server log per-request time).
 
 **Ordering:** wildcard-import same-file fix (with its own test, done) → A → B
 (hover/definition first, then references + rename) → C → D. After each
