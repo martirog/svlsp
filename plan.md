@@ -5263,7 +5263,7 @@ declared, and shared helpers (2026-09-30).** Fixed.
   + 30 macro docs, 4505600 bytes, ~14 CPU min, 6.96 GB RSS.
 
 **Follow-up: dot completion filters `local`/`protected` members by the
-cursor's class (2026-10-05).** Done (corpus pending).
+cursor's class (2026-10-05).** Done.
 - *Why.* `obj.`, `this.`, `super.` and chained receivers offered every
   member of the receiver's class and its ancestors
   (`candidatesForResolvedType`), including ones the cursor can't access
@@ -5314,10 +5314,11 @@ cursor's class (2026-10-05).** Done (corpus pending).
   in `uvm_component::m_set_full_name`'s body and `comp.` in
   `uvm_port_base::new`.
 - *Verification.* Unit: 937 cases, all passing. Emacs: 273/273 (debug
-  build, rebuilt `svlsp`). UVM corpus: pending, next batch.
+  build, rebuilt `svlsp`). UVM corpus (2026-10-06): passing, +1 case
+  (+11 assertions).
 
 **Follow-up: a function/task argument is a dot receiver (2026-10-05).**
-Done (corpus pending).
+Done.
 - *Why.* `resolveFirstSegment` (completion) and `Resolver::typeOfRow`
   (hover/definition/references on `obj.member`) took only Signal/
   Parameter rows, so in `function void f(C obj); obj.` dot completion
@@ -5353,8 +5354,12 @@ Done (corpus pending).
   `uvm_component::get_children`'s `children.` / `children[0].`. Emacs:
   the opt-in UVM test below (`phase.`, `kids.`, `kids[0].`).
 - *Verification.* Unit: 942 cases, all passing. Emacs: 273/273, and the
-  opt-in UVM test 13/13 (debug and release). UVM corpus: pending, next
-  batch.
+  opt-in UVM test 13/13 (debug and release). UVM corpus (2026-10-06):
+  1145 assertions / 30 cases, all passing (+1 case, +7). `--build-db`:
+  unchanged counts; exactly 190 Port rows differ, each only by its new
+  dimensions (`output string\x1F[$]`, `ref int\x1F[]`, ...), checked
+  row by row; same size, 4505600 bytes. The rebuilt DB is installed as
+  `<corpus>/uvm.db` and the UVM Emacs test passes 13/13 against it.
 
 **Emacs test against the UVM library DB (2026-10-05).** Opt-in, for
 library-scale behavior and profiling.

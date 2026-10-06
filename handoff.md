@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-10-05 (function/task arguments as dot receivers + opt-in Emacs UVM test, uncommitted; corpus pending).
+**Last updated:** 2026-10-06 (arguments as dot receivers + opt-in Emacs UVM test committed; corpus and `--build-db` verified).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -11,35 +11,29 @@ write-up) — read the relevant section there rather than looking for it here.
 
 ## Current state
 
-**PICK UP HERE NEXT TIME — run the UVM corpus batch, then commit the
-argument-receiver change.** NOT committed (plan.md §6.30, "Follow-up: a
-function/task argument is a dot receiver" and "Emacs test against the UVM
-library DB"). Files: `src/compiler/parse_record.h` (`portHasDefault`),
-`sv_tree_walker.cpp` (Port dims), `src/db/compilation_controller.cpp`,
-`src/lsp/symbol_utils.{h,cpp}` (`portValueType`, `displayDetail`),
-`symbol_resolution.cpp`, `completion.cpp`, `hover.cpp`,
-`document_symbols.cpp`; unit tests in `test_sv_listener.cpp`,
-`test_symbol_utils.cpp`, `test_completion.cpp`, `test_hover.cpp`; a
-corpus case in `tests/uvm_corpus/test_completion_uvm.cpp`; the new
-`tests/integration/uvm_corpus/` (Emacs UVM test), `Makefile`
-(`test-integration-uvm`), `tools/emacs-test-daemon.sh` (`SVLSP_BIN`
-override).
-- Verified: unit 942/942, Emacs 273/273, `make test-integration-uvm`
-  13/13 (debug and release).
-- Pending, batched: the UVM corpus suite covers two unrun cases (the
-  committed dot-access case f80648e, and the argument case). Expect 30
-  cases, 1127 + 11 + 7 = 1145 assertions. `--build-db` should be
-  unchanged apart from Port details (dims); afterwards copy the new DB
-  to `<corpus>/uvm.db` (the Emacs UVM test's default library DB --
-  replaced 2026-10-05 with a v13 build, old v11 kept as
-  `uvm.db.v11.bak`). Then commit `feat(completion): ...` +
-  `test(integration): ...` + `docs(plan,handoff): ...`.
-- Profiling: `SVLSP_BIN=$PWD/build/release/svlsp make
-  test-integration-uvm` prints per-request client-observed times; the
-  server's own time isn't logged yet.
+**PICK UP HERE NEXT TIME — pick the next item** from "Other open work"
+below. Candidate from this session: server-side request timing for the
+UVM Emacs test, so profiling separates server time from lsp-mode's.
+
+Committed 2026-10-05/06: function/task arguments as dot receivers
+(2fd1afa), the opt-in Emacs UVM completion test (7a784d9), docs
+(1837759) -- plan.md §6.30, "Follow-up: a function/task argument is a
+dot receiver" and "Emacs test against the UVM library DB". Verified:
+unit 942/942, Emacs 273/273, `make test-integration-uvm` 13/13 (debug
+and release), UVM corpus 1145 / 30 cases, `--build-db` changed only
+in 190 Port details (dims added).
+- Run the UVM Emacs test with `make test-integration-uvm`; profile with
+  `SVLSP_BIN=$PWD/build/release/svlsp make test-integration-uvm`. Its
+  default library DB is `<corpus>/uvm.db`, rebuilt 2026-10-06 at this
+  commit (the old v11 one is `uvm.db.v11.bak`); rebuild it after any
+  change to what the walker records.
+- Port details now carry unpacked dims after `PARAM_DEFAULT_VALUE_SEP`:
+  test for a default with `portHasDefault`, read the type with
+  `portValueType`, display with `displayDetail` -- never test for the
+  separator alone.
 
 Committed 2026-10-05: dot completion filters `local`/`protected` members
-by the cursor's class (f80648e + a2a7af6; corpus case pending, above).
+by the cursor's class (f80648e + a2a7af6; its corpus case passed 2026-10-06).
 
 Committed 2026-10-05: completion skips an ancestor's `local` members,
 schema v13 (plan.md §6.30, "Follow-up: an ancestor's `local` members
@@ -99,7 +93,8 @@ by name instead of from the typedef's scope, and merged duplicated helpers
   - unit: **942 cases**, all passing (no `[!shouldfail]` known gaps left
     -- the `` `define `` references case passes since the macro follow-up)
   - Emacs functional: **273/273**
-  - UVM corpus (opt-in): **1127 assertions / 28 cases**, all passing.
+  - UVM corpus (opt-in): **1145 assertions / 30 cases**, all passing.
+    (+18: the dot-access case, 11, and the argument-receiver case, 7.)
     (1132 → 1127: the empty-prefix completion list lost the 7 ancestor
     `local` members, 331 → 324, diffed; then +2 for the pinned count's
     `m_inst_id`-absent / `m_inst_count`-present checks.)
