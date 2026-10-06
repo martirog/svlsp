@@ -12,7 +12,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export SVLSP_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-export SVLSP_BIN="${SVLSP_ROOT}/build/debug/svlsp"
+export SVLSP_BIN="${SVLSP_BIN:-${SVLSP_ROOT}/build/debug/svlsp}"  # override to profile a release build
 
 DAEMON_NAME="svlsp-test-$$"   # unique per invocation; allows parallel runs
 export DAEMON_NAME

@@ -55,7 +55,7 @@ build: configure
 # Tests
 # ---------------------------------------------------------------------------
 
-.PHONY: test test-unit test-integration
+.PHONY: test test-unit test-integration test-integration-uvm
 
 test: test-unit test-integration
 
@@ -64,6 +64,12 @@ test-unit: build
 
 test-integration:
 	bash tools/emacs-test-daemon.sh
+
+# Opt-in: completion against the full UVM library DB (needs SVLSP_UVM_DB or
+# the default corpus uvm.db; see tests/integration/uvm_corpus/uvm_completion.sh).
+# Profile with SVLSP_BIN=build/release/svlsp.
+test-integration-uvm:
+	bash tools/emacs-test-daemon.sh tests/integration/uvm_corpus/uvm_completion.sh
 
 # ---------------------------------------------------------------------------
 # Housekeeping
