@@ -5385,8 +5385,42 @@ library-scale behavior and profiling.
   2026-10-05: initialize 853 ms (lsp-mode), library visible 874 ms,
   bare prefix 6-59 ms, empty prefix 361 ms / 1067 items, dot 5-114 ms
   (227-item class lists 68-114 ms). End to end, including lsp-mode's
-  JSON handling; server-side time isn't split out yet (next step for
-  real profiling: have the server log per-request time).
+  JSON handling; the server's own share is in the next section.
+
+**Server-side request timing: `--log-requests` (2026-10-06).** Done.
+- *Why.* The UVM Emacs test's times are client-observed, so they couldn't
+  say whether a slow request was the server or lsp-mode.
+- *What.* `svlsp --log-requests <path>` appends one line per request and
+  compile: `[request] textDocument/completion /p/tb.sv:21:13 wait 0.001
+  ms, run 3.712 ms`. `TimedLock` (`src/lsp/request_log.h`) replaces the
+  handler's `lock_guard` on `m_dataMutex`: `wait` is the time to acquire
+  it, `run` the time it's held; the line is written before unlocking, so
+  the mutex serializes log writes from the debounce threads too. Covered:
+  hover, definition, references, completion, completionItem/resolve,
+  documentSymbol, workspace/symbol, rename, signatureHelp (positional
+  ones log `path:line:char`), `compile` (didOpen/didChange/didSave) and
+  `recompile` (an includer of a saved file). Not covered: the trivial
+  store updates. Excluded from `run`: JSON (de)serialization and
+  transport. Documented in docs/usage.md.
+- *Harness.* `emacs-test-init.el`'s client takes `svlsp-test-server-args`
+  (read when a server starts); the UVM test starts its own server with
+  `--log-requests` and prints each request's server time next to the
+  client's.
+- *Finding (release, 2026-10-06).* The server's own completion time is
+  2-7 ms for every probe, including the 1067-item empty prefix (5.6 ms);
+  the first compile (project load + library attach) is 306 ms. The
+  client-observed 50-364 ms is almost all serialization, transport and
+  lsp-mode's JSON parsing, and grows with the item count (227 items ~70-115
+  ms, 1067 items ~364 ms). So the next profiling target is the response
+  size, not the queries: each DB item carries a `data` object (path, line,
+  col, kind, scope) for `completionItem/resolve`; candidates are a compact
+  `data` (a row id) and capping a large unfiltered list with
+  `isIncomplete: true`. Measure the payload first.
+- *Tests.* Unit (+2 cases, `test_request_log.cpp`): the line format with
+  and without a position, unlocking, and no log = plain lock.
+- *Verification.* Unit: 944 cases, all passing. Emacs: 273/273;
+  `make test-integration-uvm` 13/13 (release). No corpus impact (server
+  wiring only).
 
 **Ordering:** wildcard-import same-file fix (with its own test, done) → A → B
 (hover/definition first, then references + rename) → C → D. After each

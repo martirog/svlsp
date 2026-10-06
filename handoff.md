@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-10-06 (arguments as dot receivers + opt-in Emacs UVM test committed; corpus and `--build-db` verified).
+**Last updated:** 2026-10-06 (`--log-requests` server-side timing; completion is 2-7 ms server-side on UVM).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -11,9 +11,14 @@ write-up) — read the relevant section there rather than looking for it here.
 
 ## Current state
 
-**PICK UP HERE NEXT TIME — pick the next item** from "Other open work"
-below. Candidate from this session: server-side request timing for the
-UVM Emacs test, so profiling separates server time from lsp-mode's.
+**PICK UP HERE NEXT TIME — completion response size.** Server-side
+timing (plan.md §6.30, "Server-side request timing: `--log-requests`")
+showed the server spends 2-7 ms per completion on the UVM library, while
+Emacs sees 50-364 ms, growing with the item count. Measure the
+completion payload (bytes per item, the `data` object), then try a
+compact `data` and/or `isIncomplete` capping, and check with
+`SVLSP_BIN=$PWD/build/release/svlsp make test-integration-uvm` (prints
+client and server time per request).
 
 Committed 2026-10-05/06: function/task arguments as dot receivers
 (2fd1afa), the opt-in Emacs UVM completion test (7a784d9), docs
@@ -90,7 +95,7 @@ by name instead of from the typedef's scope, and merged duplicated helpers
   in workspace symbols, no completion inside comments/strings, and doc
   comments (§6.31) in hover, signature help and completion resolve.
 - Test baselines:
-  - unit: **942 cases**, all passing (no `[!shouldfail]` known gaps left
+  - unit: **944 cases**, all passing (no `[!shouldfail]` known gaps left
     -- the `` `define `` references case passes since the macro follow-up)
   - Emacs functional: **273/273**
   - UVM corpus (opt-in): **1145 assertions / 30 cases**, all passing.
@@ -299,6 +304,7 @@ build/debug/unit_tests "[compiler][parser]"   # subset by tag
 
 DISPLAY=:99 make test-integration             # Emacs functional suite (needs Xvfb :99)
 bash tools/emacs-test-daemon.sh tests/integration/test_12_signature_help.sh
+make test-integration-uvm                     # opt-in Emacs UVM completion + timings (SVLSP_BIN to profile release)
 
 cmake --build --preset release --target uvm_corpus_tests && ./build/release/uvm_corpus_tests
                                               # corpus root: SVLSP_UVM_CORPUS_DIR
@@ -306,6 +312,7 @@ cmake --build --preset release --target uvm_corpus_tests && ./build/release/uvm_
 
 build/release/svlsp --build-db <config.f|.svlsp.json> --output <lib.db>
 build/release/svlsp --log-files /path/to/log.txt
+build/release/svlsp --log-requests /path/to/requests.log   # per-request server time
 ```
 
 Compiler **g++-13** (pinned in `CMakePresets.json`). Debug has ASan+UBSan
