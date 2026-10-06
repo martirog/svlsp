@@ -40,7 +40,9 @@ if [ ! -x "${SVLSP_BIN}" ]; then
         "w.spi includes spin_up (prefix match)" \
         "w.spi excludes speed_val (prefix doesn't match)" \
         "plain_int. (built-in type) returns no completions" \
-        "h. through a typedef of a typedef offers the aliased class's members"
+        "h. through a typedef of a typedef offers the aliased class's members" \
+        "super. in a subclass offers protected, not local; b. in a module offers neither" \
+        "super. offers new inside a constructor, not inside a method"
     do
         skip_test "$name" "svlsp binary not found at ${SVLSP_BIN}"
     done
@@ -207,6 +209,27 @@ run_test "super. in a subclass offers protected, not local; b. in a module offer
                   (not (member \"dacc_loc\" sup))
                   (member \"dacc_pub\" mod)
                   (not (member \"dacc_prot\" mod)) (not (member \"dacc_loc\" mod)))
+             t nil))
+     (error (format \"elisp-error: %s\" (error-message-string err))))" \
+    "t"
+
+run_test "super. offers new inside a constructor, not inside a method" \
+    "(condition-case err
+       (let* ((buf    (svlsp-test/open-file \"${SV_FIXTURE}\"))
+              (ok     (with-current-buffer buf (svlsp-test/wait-for-lsp 15)))
+              (labels-at (lambda (line col)
+                           (let* ((result (with-current-buffer buf
+                                            (lsp-request \"textDocument/completion\"
+                                                         (list :textDocument (list :uri (lsp--buffer-uri))
+                                                               :position     (list :line line :character col)))))
+                                  (items  (when (hash-table-p result) (gethash \"items\" result))))
+                             (when (listp items)
+                               (mapcar (lambda (i) (gethash \"label\" i)) items)))))
+              (ctor   (when ok (funcall labels-at 59 18)))
+              (meth   (when ok (funcall labels-at 42 18))))
+         (svlsp-test/close-file buf)
+         (if (and ok (member \"new\" ctor) (member \"dacc_pub\" ctor)
+                  (not (member \"new\" meth)))
              t nil))
      (error (format \"elisp-error: %s\" (error-message-string err))))" \
     "t"

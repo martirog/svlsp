@@ -158,7 +158,9 @@ private:
     std::optional<SymbolRow> resolveReceiver(const std::vector<ChainSegment>& segs,
                                              int line1) const;
     std::optional<SymbolRow> constructorIn(const std::string& classScope) const;
-    std::optional<ResolvedSymbol> resolveNew(size_t start, size_t before, int line1) const;
+    std::optional<ResolvedSymbol> resolveNew(size_t start, size_t before, int line1, int depth);
+    std::optional<SymbolRow> enclosingFunctionRow(int line1) const;
+    std::optional<SymbolRow> argumentType(size_t before, size_t start, int depth);
     struct Owner { SymbolRow row; bool paramList; };
     std::optional<Owner> connectionOwner(size_t paren, int depth);
 };
@@ -497,10 +499,12 @@ std::optional<SymbolRow> Resolver::constructorIn(const std::string& classScope) 
 //   - a constructor's own declaration (`function new`, `function C::new`);
 //   - `super.new` (the parent class's), `C::new` / `p::C::new`;
 //   - `lhs = new` / `T v = new` (the class of `lhs`, resolved as a value
-//     chain; a declaration's own variable row gives its type).
-// Anything else (`new[n]`, a copy `new obj`, `return new`, an argument) is
-// nullopt.
-std::optional<ResolvedSymbol> Resolver::resolveNew(size_t start, size_t before, int line1) const
+//     chain; a declaration's own variable row gives its type);
+//   - `return new` (the enclosing function's return type);
+//   - an argument, `f(x, new)` / `f(.p(new))` (the callee's parameter type).
+// Anything else (`new[n]`, a copy `new obj`) is nullopt.
+std::optional<ResolvedSymbol> Resolver::resolveNew(size_t start, size_t before, int line1,
+                                                   int depth)
 {
     const auto pos = positionForOffset(m_text, start);
     for (auto& r : m_db.findSymbolsByName("new"))
@@ -541,6 +545,15 @@ std::optional<ResolvedSymbol> Resolver::resolveNew(size_t start, size_t before, 
         return ctorOf(resolveReceiver(dotCtx->segments, line1));
     }
 
+    if (const size_t kw = identStartBefore(m_text, before);
+        m_text.compare(kw, before - kw, "return") == 0) {
+        auto fn = enclosingFunctionRow(line1);
+        return fn ? ctorOf(typeOfRow(*fn, 0)) : std::nullopt;
+    }
+
+    if (before > 0 && (m_text[before - 1] == '(' || m_text[before - 1] == ','))
+        return ctorOf(argumentType(before, start, depth));
+
     // `lhs = new`: re-read `lhs` as a receiver chain by appending a '.'.
     if (before < 2 || m_text[before - 1] != '=' ||
         std::string_view("=!<>+-*/%&|^").find(m_text[before - 2]) != std::string_view::npos)
@@ -552,6 +565,67 @@ std::optional<ResolvedSymbol> Resolver::resolveNew(size_t start, size_t before, 
     auto lhs = dotCompletionContext(probe, probePos.line, probePos.character);
     if (!lhs || lhs->segments.empty()) return std::nullopt;
     return ctorOf(resolveReceiver(lhs->segments, line1));
+}
+
+// The Function whose body holds `line1`: the innermost function frame on
+// the scope chain, its first declaration (an extern prototype before its
+// out-of-class body). nullopt inside a task, or outside any function.
+std::optional<SymbolRow> Resolver::enclosingFunctionRow(int line1) const
+{
+    for (const auto& scope : scopeChain(m_path, line1)) {
+        const auto sep = scope.rfind("::");
+        if (sep == std::string::npos) continue; // a top-level unit, not a body
+        const std::string parent = scope.substr(0, sep), name = scope.substr(sep + 2);
+        std::vector<SymbolRow> rows;
+        for (auto& r : m_db.findSymbolsInScope(parent))
+            if (r.name == name && isCallable(r)) rows.push_back(r);
+        if (rows.empty()) continue;
+        std::vector<const SymbolRow*> ptrs;
+        for (auto& r : rows) ptrs.push_back(&r);
+        const SymbolRow* fn = earliest(ptrs);
+        if (fn->kind != "Function") return std::nullopt;
+        return *fn;
+    }
+    return std::nullopt;
+}
+
+// The class of the argument `new` at `start` is passed as -- `before` is
+// just past the '(' or ',' in front of it: the callee's parameter named by
+// `.name(`, else the one at its comma position. Only a call whose callee
+// resolves exactly to a Function/Task (a constructor included).
+std::optional<SymbolRow> Resolver::argumentType(size_t before, size_t start, int depth)
+{
+    std::optional<std::string> named;
+    size_t argStart = start;
+    if (m_text[before - 1] == '(' && isNamedConnectionParen(m_text, before - 1)) {
+        size_t i = before - 1;
+        skipWsBack(m_text, i);
+        const size_t idStart = identStartBefore(m_text, i);
+        named = m_text.substr(idStart, i - idStart);
+        argStart = before - 1;
+    }
+    auto paren = findEnclosingParen(m_text, argStart);
+    if (!paren) return std::nullopt;
+    auto owner = connectionOwner(*paren, depth);
+    if (!owner || owner->paramList || !isCallable(owner->row)) return std::nullopt;
+    const auto ports = m_db.portsOf(qualifiedScopeOf(owner->row));
+
+    const SymbolRow* port = nullptr;
+    if (named) {
+        for (auto& p : ports)
+            if (p.name == *named) port = &p;
+    } else {
+        size_t index = 0;
+        int nest = 0;
+        for (size_t i = *paren + 1; i < start; ++i) {
+            const char c = m_text[i];
+            if (c == '(' || c == '[' || c == '{') ++nest;
+            else if (c == ')' || c == ']' || c == '}') --nest;
+            else if (c == ',' && nest == 0) ++index;
+        }
+        if (index < ports.size()) port = &ports[index];
+    }
+    return port ? typeOfRow(*port, 0) : std::nullopt;
 }
 
 // For a named connection inside the parens at `paren`: the module/interface/
@@ -631,7 +705,7 @@ std::optional<ResolvedSymbol> Resolver::resolveAt(size_t offset, int depth)
     size_t before = start;
     skipWsBack(m_text, before);
 
-    if (word == "new") return resolveNew(start, before, line1);
+    if (word == "new") return resolveNew(start, before, line1, depth);
 
     // 1. `A::B::word`
     if (scopeOpBefore(m_text, before)) {

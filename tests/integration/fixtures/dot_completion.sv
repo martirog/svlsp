@@ -51,3 +51,13 @@ module dot_access_top;
      probe: b.
 `endif
 endmodule
+
+// super.new (plan.md §6.30 follow-up): offered inside a constructor (the
+// parent's own one), not inside an ordinary method (DotAccChild above).
+class DotNewChild extends DotAccBase;
+  function new();
+`ifdef SVLSP_TEST_PROBES
+     probe: super.
+`endif
+  endfunction
+endclass

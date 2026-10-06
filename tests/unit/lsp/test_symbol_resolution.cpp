@@ -676,6 +676,80 @@ TEST_CASE("resolveSymbolAt: `new` with no class context resolves to nothing",
     CHECK_FALSE(resolveAt(f, "/ctor.sv", posOf(text, "@dyn", "new")).has_value());
 }
 
+// §6.30 follow-up: `return new` takes the enclosing function's return type,
+// and `new` as an argument the callee's parameter type (by position or by
+// `.name(`). Two classes with constructors, so a name-only pick is wrong
+// half the time.
+const std::string kCtorCtx =
+    "package ctx_p;\n"
+    "  class CxA;\n"
+    "    function new(string a); endfunction // @a_new\n"
+    "  endclass\n"
+    "  class CxB;\n"
+    "    function new(int b); endfunction // @b_new\n"
+    "  endclass\n"
+    "  class CxW;\n"
+    "    function new(CxB wb); endfunction // @w_new\n"
+    "  endclass\n"
+    "  class CxUser;\n"
+    "    function void take(int n, CxA a, CxB b); endfunction\n"
+    "    function CxB make_b();\n"
+    "      return new(1); // @ret\n"
+    "    endfunction\n"
+    "    extern function CxA make_ooc();\n"
+    "    function void make_none();\n"
+    "      return new(2); // @ret_void\n"
+    "    endfunction\n"
+    "    function void use();\n"
+    "      take(1, new(\"p\"), new(2)); // @pos\n"
+    "      take(.b(new(3)), .a(new(\"n\")), .n(0)); // @named\n"
+    "      CxW w = new(new(4)); // @ctor_arg\n"
+    "      unknown_f(new(5)); // @unknown\n"
+    "    endfunction\n"
+    "  endclass\n"
+    "  function CxA CxUser::make_ooc();\n"
+    "    return new(\"o\"); // @ret_ooc\n"
+    "  endfunction\n"
+    "endpackage\n";
+
+TEST_CASE("resolveSymbolAt: `return new` resolves to the constructor of the function's "
+          "return type",
+          "[resolution][ctor]")
+{
+    F f;
+    f.add("/ctx.sv", kCtorCtx);
+    requireResolves(f, "/ctx.sv", "@ret", "new", "/ctx.sv", "@b_new");
+    // An out-of-class body: the return type comes from its own scope chain.
+    requireResolves(f, "/ctx.sv", "@ret_ooc", "new", "/ctx.sv", "@a_new");
+    // A void function returns no class.
+    const std::string& text = f.files.at("/ctx.sv");
+    CHECK_FALSE(resolveAt(f, "/ctx.sv", posOf(text, "@ret_void", "new")).has_value());
+}
+
+TEST_CASE("resolveSymbolAt: `new` as an argument resolves to the constructor of the "
+          "parameter's type",
+          "[resolution][ctor]")
+{
+    F f;
+    f.add("/ctx.sv", kCtorCtx);
+    requireResolvesTo(f, "/ctx.sv", "@pos", "new(\"p\")", "/ctx.sv", "@a_new",
+                      "new");
+    requireResolvesTo(f, "/ctx.sv", "@pos", "new(2)", "/ctx.sv", "@b_new",
+                      "new");
+    requireResolvesTo(f, "/ctx.sv", "@named", "new(3)", "/ctx.sv", "@b_new",
+                      "new");
+    requireResolvesTo(f, "/ctx.sv", "@named", "new(\"n\")", "/ctx.sv", "@a_new",
+                      "new");
+    // An argument to a constructor: the outer `new` is resolved first.
+    requireResolvesTo(f, "/ctx.sv", "@ctor_arg", "new(4)", "/ctx.sv", "@b_new",
+                      "new");
+    requireResolvesTo(f, "/ctx.sv", "@ctor_arg", "new(new", "/ctx.sv", "@w_new",
+                      "new");
+    // A callee nothing declares: nothing.
+    const std::string& text = f.files.at("/ctx.sv");
+    CHECK_FALSE(resolveAt(f, "/ctx.sv", posOf(text, "@unknown", "new")).has_value());
+}
+
 TEST_CASE("overrideFamilyId: a constructor is its own family, shared by prototype and body",
           "[resolution][ctor]")
 {

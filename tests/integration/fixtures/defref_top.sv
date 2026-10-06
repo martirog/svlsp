@@ -110,3 +110,13 @@ module defref_ml_top;
   initial r = defref_ml_p::defref_MlUser::type_id::defref_ml_create("x");
   initial r = defref_ml_q::defref_MlOuter::defref_ml_make();
 endmodule
+// Appended for the §6.30 follow-up: `return new` and `new` as an argument.
+class defref_CtxUser;
+  function void take(defref_CtorB b); endfunction
+  function defref_CtorA mk_a();
+    return new(3);
+  endfunction
+  function void use();
+    take(new(1));
+  endfunction
+endclass

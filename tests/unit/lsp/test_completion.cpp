@@ -5,6 +5,8 @@
 #include "compiler/parse_record.h"
 #include "db/compilation_controller.h"
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
 
 namespace {
 
@@ -1267,8 +1269,7 @@ TEST_CASE("CompletionProvider: inside an out-of-class body, the class's own fiel
     REQUIRE_FALSE(result.isNull());
     const auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
     CHECK(hasItem(items, "occ_fld"));
-    // Inherited members (occ_inh) aren't offered as bare names anywhere,
-    // not just here -- a separate, pre-existing completion gap.
+    CHECK(hasItem(items, "occ_inh"));
     CHECK(std::count_if(items.begin(), items.end(), [](const lsp::CompletionItem& i) {
               return std::string(i.label) == "occ_run";
           }) == 1);
@@ -1640,4 +1641,89 @@ TEST_CASE("CompletionProvider: nothing is offered inside a comment or string lit
     auto code = at(6, 13);
     REQUIRE_FALSE(code.isNull());
     CHECK(hasItem(code.get<lsp::Array<lsp::CompletionItem>>(), "cmt_x"));
+}
+
+TEST_CASE("CompletionProvider: super. inside a constructor offers the parent's new",
+          "[completion][dot][ctor]")
+{
+    Fixture f;
+    CompilationController ctrl{f.sdb};
+    const std::string text =
+        "package sn_p;\n"
+        "  class SnBase;\n"
+        "    int sn_fld;\n"
+        "    function new(int sn_arg); endfunction\n"
+        "  endclass\n"
+        "  class SnC extends SnBase;\n"
+        "    function new();\n"
+        "      super.\n"         // line 7
+        "    endfunction\n"
+        "    function void sn_m();\n"
+        "      super.\n"         // line 10
+        "    endfunction\n"
+        "  endclass\n"
+        "  class SnPlainBase; endclass\n"
+        "  class SnD extends SnPlainBase;\n"
+        "    function new();\n"
+        "      super.\n"         // line 16
+        "    endfunction\n"
+        "  endclass\n"
+        "endpackage\n";
+    ctrl.compile("/sn.sv", text);
+
+    auto inCtor = CompletionProvider::getCompletion(makeParams("/sn.sv", 7, 12), f.sdb, text);
+    REQUIRE_FALSE(inCtor.isNull());
+    const auto& items = inCtor.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "sn_fld"));
+    auto it = std::find_if(items.begin(), items.end(),
+                           [](const auto& i) { return i.label == "new"; });
+    REQUIRE(it != items.end());
+    CHECK(it->data.has_value()); // the parent's own constructor row, for resolve
+
+    // `super.new` is legal only in a constructor.
+    auto inMethod = CompletionProvider::getCompletion(makeParams("/sn.sv", 10, 12), f.sdb, text);
+    REQUIRE_FALSE(inMethod.isNull());
+    CHECK_FALSE(hasItem(inMethod.get<lsp::Array<lsp::CompletionItem>>(), "new"));
+
+    // A parent with no explicit constructor still has the implicit one.
+    auto implicit = CompletionProvider::getCompletion(makeParams("/sn.sv", 16, 12), f.sdb, text);
+    REQUIRE_FALSE(implicit.isNull());
+    CHECK(hasItem(implicit.get<lsp::Array<lsp::CompletionItem>>(), "new"));
+}
+
+TEST_CASE("CompletionProvider: an out-of-class body in another file offers the class's own "
+          "members",
+          "[completion][phase6.30][outofclass]")
+{
+    const auto dir = std::filesystem::temp_directory_path() / "svlsp_test_completion_xf";
+    std::filesystem::create_directories(dir);
+    const std::string cls = (dir / "xf_c.svh").string();
+    const std::string impl = (dir / "xf_c_impl.svh").string();
+    const std::string pkg = (dir / "xf_pkg.sv").string();
+    const std::string implText =
+        "function void XfC::xf_run();\n"
+        "  xf\n"   // line 1
+        "endfunction\n";
+    std::ofstream(cls) << "class XfBase; int xf_inh; endclass\n"
+                          "class XfC extends XfBase;\n"
+                          "  int xf_fld;\n"
+                          "  extern function void xf_run();\n"
+                          "endclass\n";
+    std::ofstream(impl) << implText;
+    const std::string pkgText = "package xf_p;\n"
+                                "  `include \"xf_c.svh\"\n"
+                                "  `include \"xf_c_impl.svh\"\n"
+                                "endpackage\n";
+    std::ofstream(pkg) << pkgText;
+
+    Fixture f;
+    CompilationController ctrl{f.sdb};
+    ctrl.compile(pkg, pkgText);
+
+    auto result = CompletionProvider::getCompletion(makeParams(impl, 1, 4), f.sdb, implText);
+    REQUIRE_FALSE(result.isNull());
+    const auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(hasItem(items, "xf_fld"));
+    CHECK(hasItem(items, "xf_inh"));
+    CHECK(hasItem(items, "xf_run"));
 }

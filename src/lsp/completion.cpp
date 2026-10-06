@@ -218,6 +218,34 @@ std::vector<Candidate> candidatesForResolvedType(SymbolDatabase& db, const std::
     return candidates;
 }
 
+// `super.` inside a constructor body, where `super.new` is legal (LRM 8.15).
+bool isSuperInConstructor(SymbolDatabase& db, const std::string& path, int line1,
+                          const std::vector<ChainSegment>& segments)
+{
+    if (segments.size() != 1 || segments[0].name != "super" || segments[0].isCall ||
+        segments[0].indexDepth != 0)
+        return false;
+    const std::string scope = db.scopeAtPosition(path, line1);
+    return scope == "new" || (scope.size() > 5 && scope.compare(scope.size() - 5, 5, "::new") == 0);
+}
+
+// `new` for `super.`: the parent's own constructor (its first declaration,
+// for resolve's doc), else the implicit one every class has.
+Candidate superNewCandidate(SymbolDatabase& db, const std::string& parentScope,
+                            const std::string& curPath)
+{
+    const auto chain = db.baseClassChain(parentScope, curPath);
+    std::optional<SymbolRow> ctor;
+    if (!chain.empty())
+        for (auto& row : db.findSymbolsInScope(chain.front()))
+            if (row.kind == "Function" && row.name == "new" &&
+                (!ctor || row.line < ctor->line ||
+                 (row.line == ctor->line && row.col < ctor->col)))
+                ctor = row;
+    if (ctor) return {"new", completionKindFor("Function"), displayDetail(*ctor), ctor};
+    return {"new", completionKindFor("Function"), ""};
+}
+
 } // namespace
 
 lsp::TextDocument_CompletionResult CompletionProvider::getCompletion(
@@ -236,9 +264,11 @@ lsp::TextDocument_CompletionResult CompletionProvider::getCompletion(
     if (auto dot = dotCompletionContext(docText, params.position.line, params.position.character)) {
         auto resolved = resolveChain(db, path, line1, dot->segments);
         if (!resolved) return nullptr;
-        return buildCompletionItems(
-            candidatesForResolvedType(db, *resolved, path, db.enclosingClassScopesAt(path, line1)),
-            dot->prefix, fuzzyEnabled);
+        auto candidates =
+            candidatesForResolvedType(db, *resolved, path, db.enclosingClassScopesAt(path, line1));
+        if (isSuperInConstructor(db, path, line1, dot->segments))
+            candidates.push_back(superNewCandidate(db, *resolved, path));
+        return buildCompletionItems(candidates, dot->prefix, fuzzyEnabled);
     }
 
     const std::string prefix = wordAtPosition(docText,
@@ -253,14 +283,20 @@ lsp::TextDocument_CompletionResult CompletionProvider::getCompletion(
     // members are in scope too, except the ones they declare `local`.
     // Appended after the visible set, so the (name, kind) dedup lets a
     // class's own member shadow an inherited one.
+    // The class's own members are appended too: the visible set's local
+    // chain only covers the cursor's file, and an out-of-class body may live
+    // in another one.
     auto rows = db.findSymbolsVisibleAt(path, line1);
-    if (const std::string cls = db.enclosingClassNameAt(path, line1); !cls.empty()) {
-        const auto chain = db.baseClassChain(cls, path);
-        for (size_t i = 1; i < chain.size(); ++i) {
+    if (const auto classes = db.enclosingClassScopesAt(path, line1); !classes.empty()) {
+        const std::string& cls = classes.front();
+        const auto chain = db.baseClassChain(
+            cls.find("::") == std::string::npos ? "$unit::" + cls : cls, path);
+        for (size_t i = 0; i < chain.size(); ++i) {
             const auto access = db.memberAccess(chain[i]);
             for (auto& row : db.findSymbolsInScope(chain[i])) {
                 const auto it = access.find(row.name);
-                if (it == access.end() || it->second != "local") rows.push_back(std::move(row));
+                if (i == 0 || it == access.end() || it->second != "local")
+                    rows.push_back(std::move(row));
             }
         }
     }

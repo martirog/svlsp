@@ -131,6 +131,8 @@ DEF_TESTS=(
     "definition: pkg::Class::type_id::method -- class segment lands on the class"
     "definition: pkg::Class::type_id::method -- type_id segment lands on that class's typedef"
     "definition: pkg::Class::type_id::method -- method segment lands on the aliased class's method"
+    "definition: return new -- the function's return type's constructor"
+    "definition: new as an argument -- the parameter type's constructor"
 )
 REF_TESTS=(
     "references: signal -- declaration + both named-connection uses"
@@ -197,6 +199,11 @@ else
     def_test "${DEF_TESTS[20]}" 109 27 defref_top.sv 97 8
     def_test "${DEF_TESTS[21]}" 109 42 defref_top.sv 98 25
     def_test "${DEF_TESTS[22]}" 109 51 defref_top.sv 95 24
+    # defref_CtxUser: "    return new(3);" (line 116) in a function returning
+    # defref_CtorA, and "    take(new(1));" (line 119), take's argument a
+    # defref_CtorB (its constructor on line 66).
+    def_test "${DEF_TESTS[23]}" 116 11 defref_top.sv 63 11
+    def_test "${DEF_TESTS[24]}" 119 9  defref_top.sv 66 11
 
     # "  logic defref_sig;" (line 16)
     refs_test "${REF_TESTS[0]}" 16 8 \
@@ -224,7 +231,7 @@ else
         "defref_top.sv:54:8 defref_top.sv:58:4"
     # "  function new(int n); endfunction" in defref_CtorA (line 63)
     refs_test "${REF_TESTS[10]}" 63 11 \
-        "defref_top.sv:63:11 defref_top.sv:68:26 defref_top.sv:71:19"
+        "defref_top.sv:116:11 defref_top.sv:63:11 defref_top.sv:68:26 defref_top.sv:71:19"
     # "  static function int defref_ml_make(); ..." in defref_ml_p (line 92)
     refs_test "${REF_TESTS[11]}" 92 24 \
         "defref_top.sv:108:43 defref_top.sv:92:24"
