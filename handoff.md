@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-10-06 (`--log-requests` server-side timing; completion is 2-7 ms server-side on UVM).
+**Last updated:** 2026-10-06 (§6.30 small follow-ups closed: `return new`, `new` as an argument, `super.new` completion, cross-file out-of-class completion).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -19,6 +19,16 @@ completion payload (bytes per item, the `data` object), then try a
 compact `data` and/or `isIncomplete` capping, and check with
 `SVLSP_BIN=$PWD/build/release/svlsp make test-integration-uvm` (prints
 client and server time per request).
+
+Committed 2026-10-06: the small §6.30 follow-ups (e719dcd; plan.md
+§6.30, "Follow-up: the constructor and out-of-class completion gaps") --
+`return new(...)` and `new` passed as an argument resolve to the right
+constructor (hover/definition/references/signature help), `super.`
+inside a constructor offers `new`, and bare-name completion in an
+out-of-class body in another file offers the class's own members.
+Verified: unit 948/948, Emacs 276/276, `make test-integration-uvm` 13/13
+(release), UVM corpus 1145 / 30 cases (unchanged). No walker change, so no
+`--build-db` rerun.
 
 Committed 2026-10-05/06: function/task arguments as dot receivers
 (2fd1afa), the opt-in Emacs UVM completion test (7a784d9), docs
@@ -95,9 +105,9 @@ by name instead of from the typedef's scope, and merged duplicated helpers
   in workspace symbols, no completion inside comments/strings, and doc
   comments (§6.31) in hover, signature help and completion resolve.
 - Test baselines:
-  - unit: **944 cases**, all passing (no `[!shouldfail]` known gaps left
+  - unit: **948 cases**, all passing (no `[!shouldfail]` known gaps left
     -- the `` `define `` references case passes since the macro follow-up)
-  - Emacs functional: **273/273**
+  - Emacs functional: **276/276**
   - UVM corpus (opt-in): **1145 assertions / 30 cases**, all passing.
     (+18: the dot-access case, 11, and the argument-receiver case, 7.)
     (1132 → 1127: the empty-prefix completion list lost the 7 ancestor
@@ -235,18 +245,11 @@ What §6.29 changed that other work must know about:
 
 ## Other open work (priority roughly top-down)
 
-0. **§6.30 follow-ups** (none blocking):
-   - dot completion (`obj.`, `super.`) offers `local`/`protected`
-     members regardless of the cursor's class (bare-name completion
-     skips an ancestor's `local` ones since 2026-10-04);
-   - no constructor resolution for `return new(...)` or `new` passed as an
-     argument; `super.` completion doesn't offer `new`;
-   - disclosed limits kept from the plan: `begin`/`end` and generate
-     blocks aren't scopes, scope containment is line-granular, struct /
-     interface / hierarchical receivers use the name-only fallback;
-   - a class's own members are found from an out-of-class body in another
-     file, but the visible set's local chain (and so completion) still only
-     covers the cursor's file.
+0. **§6.30 disclosed limits** (large, none blocking; the small
+   follow-ups are all closed): `begin`/`end` and generate blocks aren't
+   scopes, scope containment is line-granular, struct / interface /
+   hierarchical receivers use the name-only fallback. The first two
+   would change the walker and need a `--build-db` rebuild.
 1. **§6.21** semantic reference-resolution diagnostics (unresolved type/import)
    — not started; its prerequisite (per-source diagnostics, v12) is done --
    use `source = 'reference'` with `replaceDiagnostics(..., source)`.

@@ -5422,6 +5422,51 @@ library-scale behavior and profiling.
   `make test-integration-uvm` 13/13 (release). No corpus impact (server
   wiring only).
 
+**Follow-up: the constructor and out-of-class completion gaps
+(2026-10-06).** Done. Closes the small §6.30 follow-ups left open by
+"constructors" and step D.
+- *`return new`.* `resolveNew` resolves `return new(...)` to the
+  constructor of the enclosing function's return type:
+  `enclosingFunctionRow` takes the innermost function frame on the scope
+  chain (`<parent>::<name>`, its first declaration, so an out-of-class
+  body reads its extern prototype). It stops at the first frame: a task,
+  a void function or a non-class return type gives nothing.
+- *`new` as an argument.* After a '(' or ',', `argumentType` finds the
+  call's '(' (`findEnclosingParen`), its callee (`connectionOwner`, which
+  must resolve to a Function/Task, a constructor included, so
+  `CxW w = new(new(4))` resolves the inner `new` to the class of `CxW`'s
+  constructor's parameter) and the parameter, by `.name(` or by
+  top-level comma count, then the parameter's type. Signature help
+  routes `new(` through the resolver, so it gets these shapes too;
+  references to a constructor now include them.
+- *`super.` completion offers `new`*, only inside a constructor body
+  (innermost scope `...::new`; `super.new` is legal nowhere else): the
+  parent's own constructor row (so resolve gets its doc), else a plain
+  item for the implicit constructor.
+- *Bare-name completion in an out-of-class body in another file* now
+  offers the class's own members. It appends the class's own scope
+  (before its ancestors), found with `enclosingClassScopesAt` (qualified)
+  instead of `enclosingClassNameAt` + a by-name `baseClassChain`. The
+  (name, kind) dedup drops the duplicates where the class is in the
+  cursor's file.
+- *Still open (disclosed limits, kept):* `begin`/`end` and generate
+  blocks aren't scopes, scope containment is line-granular, and struct/
+  interface/hierarchical receivers use the name-only fallback.
+- *Tests.* Unit (+4 cases): `return new` (in-class, out-of-class body,
+  void) and argument `new` (positional, named, a constructor's argument,
+  an unknown callee) in `test_symbol_resolution.cpp`; `super.` in a
+  constructor/method/implicit-constructor parent and a cross-file
+  out-of-class body in `test_completion.cpp` (the older out-of-class case
+  now also checks the inherited member it said wasn't offered). Emacs
+  (+3): test_40 definition on `return new` and `take(new(1))` (a
+  `defref_CtxUser` section appended to `defref_top.sv`; the constructor
+  references case gains the `return new` site), test_27 `super.` in a
+  constructor vs a method (`DotNewChild` appended to `dot_completion.sv`).
+- *Verification.* Unit: 948 cases, all passing. Emacs: 276/276;
+  `make test-integration-uvm` 13/13 (release, item counts unchanged).
+  UVM corpus (2026-10-06): 1145 assertions / 30 cases, all passing
+  (unchanged).
+
 **Ordering:** wildcard-import same-file fix (with its own test, done) → A → B
 (hover/definition first, then references + rename) → C → D. After each
 step, remove the `[!shouldfail]` tag from every test that now passes:
