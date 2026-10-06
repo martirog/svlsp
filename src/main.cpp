@@ -160,6 +160,10 @@ int buildDb(const std::string& configPath, const std::string& outputPath, bool c
 // multi-file project's full expected file set actually got parsed, rather
 // than silently missing files (e.g. a misconfigured include path).
 //
+// --log-requests <path>: opens <path> (appending) and logs one line per
+// request and compile with its lock wait and run time (request_log.h) --
+// the server's own share of a request's latency, for profiling.
+//
 // --build-db <config-path> --output <db-path>: an alternate, one-shot mode
 // (see buildDb() above) that compiles a project into a persistent DB file
 // and exits, instead of starting the normal server loop. `<config-path>`/
@@ -189,6 +193,8 @@ int main(int argc, char** argv)
 
     std::ofstream logFile;
     std::ostream* logStream = nullptr;
+    std::ofstream requestLogFile;
+    std::ostream* requestLog = nullptr;
     std::string buildDbConfigPath;
     std::string buildDbOutputPath;
     bool collectDocs = true;
@@ -216,6 +222,19 @@ int main(int argc, char** argv)
                 logStream = &logFile;
             else
                 std::cerr << "svlsp: warning: could not open --log-files path '"
+                          << logPath << "'\n";
+        } else if (std::strcmp(argv[i], "--log-requests") == 0) {
+            if (nextIsMissingOrFlag) {
+                std::cerr << "svlsp: --log-requests requires a <path> argument "
+                             "immediately after it\n";
+                return 1;
+            }
+            const char* logPath = argv[++i];
+            requestLogFile.open(logPath, std::ios::out | std::ios::app);
+            if (requestLogFile)
+                requestLog = &requestLogFile;
+            else
+                std::cerr << "svlsp: warning: could not open --log-requests path '"
                           << logPath << "'\n";
         } else if (std::strcmp(argv[i], "--build-db") == 0) {
             if (nextIsMissingOrFlag) {
@@ -246,6 +265,6 @@ int main(int argc, char** argv)
     }
 
     auto& io = lsp::io::standardIO();
-    LanguageServer server(io, logStream);
+    LanguageServer server(io, logStream, requestLog);
     return server.run();
 }

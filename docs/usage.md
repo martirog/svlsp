@@ -2,8 +2,9 @@
 
 This is a quick reference for the user-facing configuration knobs `svlsp`
 currently has: the completion fuzzy-matching toggle (set by your
-editor/client at connect time), and the `--version`, `--log-files`, and
-`--build-db` command-line flags (all set when you launch the binary). It
+editor/client at connect time), and the `--version`, `--log-files`,
+`--log-requests`, and `--build-db` command-line flags (all set when you
+launch the binary). It
 will grow into the full end-user guide tracked by `plan.md` Phase 6.6 as
 more of that phase lands; for now it only covers what's actually
 implemented.
@@ -138,6 +139,30 @@ compile, so it was skipped rather than reparsed. This is mainly useful for
 confirming a multi-file project's full expected file set is actually being
 parsed — e.g. spotting a misconfigured include path that silently leaves a
 file out.
+
+## Timing requests: `--log-requests`
+
+Pass `--log-requests <path>` to log how long the server itself spends on
+each request and compile (appending, like `--log-files`):
+
+```bash
+svlsp --log-requests /tmp/svlsp-requests.log
+```
+
+```
+[request] compile /home/user/proj/tb.sv wait 0.002 ms, run 812.440 ms
+[request] textDocument/completion /home/user/proj/tb.sv:21:13 wait 0.001 ms, run 41.212 ms
+[request] completionItem/resolve wait 0.001 ms, run 0.310 ms
+```
+
+Positions are the request's own, 0-based. `wait` is the time spent waiting
+for another request or a background compile to finish; `run` is the
+server's own work, excluding JSON (de)serialization and transport -- so the
+latency the editor sees, minus `wait + run`, is transport and client-side
+time. `compile` lines cover `didOpen`/`didChange`/`didSave` compiles (the
+first one in a project also loads its library DBs and project files);
+`recompile` lines are files recompiled because an `` `include``d file
+was saved.
 
 ## Pre-building a library database: `--build-db`
 

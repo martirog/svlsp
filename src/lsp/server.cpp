@@ -8,7 +8,8 @@
 #include <lsp/process.h>
 #include <lsp/uri.h>
 
-LanguageServer::LanguageServer(lsp::io::Stream& io, std::ostream* logStream)
+LanguageServer::LanguageServer(lsp::io::Stream& io, std::ostream* logStream,
+                               std::ostream* requestLog)
     : m_db{":memory:"}
     , m_symbolDb{m_db}
     , m_compiler{m_symbolDb, logStream}
@@ -16,6 +17,7 @@ LanguageServer::LanguageServer(lsp::io::Stream& io, std::ostream* logStream)
     , m_connection{io}
     , m_messageHandler{m_connection}
     , m_diagnostics{m_messageHandler}
+    , m_requestLog{requestLog}
     , m_debouncer{[this](const std::string& uriStr) {
           compileAndPublish(lsp::DocumentUri{lsp::Uri::parse(uriStr)});
       }}
@@ -82,7 +84,8 @@ void LanguageServer::compileAndPublish(const lsp::DocumentUri& uri)
     // persisted to the DB per file, just never sent).
     std::vector<std::pair<lsp::DocumentUri, lsp::Array<lsp::Diagnostic>>> includedDiags;
     {
-        std::lock_guard lock{m_dataMutex};
+        TimedLock lock{m_dataMutex, m_requestLog, "compile",
+                       m_requestLog ? std::string{uri.path()} : std::string{}};
         if (!m_store.contains(uri))
             return; // closed before this fired (didClose cancels the pending
                      // debounce entry, but guard here too for the narrow race)
@@ -95,6 +98,14 @@ void LanguageServer::compileAndPublish(const lsp::DocumentUri& uri)
     m_diagnostics.publish(uri, version, diags);
     for (auto& [incUri, incDiags] : includedDiags)
         m_diagnostics.publish(incUri, std::nullopt, std::move(incDiags));
+}
+
+std::string LanguageServer::requestWhere(const lsp::DocumentUri& uri,
+                                         const lsp::Position& pos) const
+{
+    if (!m_requestLog) return {};
+    return std::string{uri.path()} + ':' + std::to_string(pos.line) + ':' +
+           std::to_string(pos.character);
 }
 
 std::optional<std::string> LanguageServer::currentTextFor(const std::string& path)
@@ -113,7 +124,7 @@ void LanguageServer::forceRecompileAndPublish(const std::string& path)
     lsp::Array<lsp::Diagnostic> diags;
     std::vector<std::pair<lsp::DocumentUri, lsp::Array<lsp::Diagnostic>>> includedDiags;
     {
-        std::lock_guard lock{m_dataMutex};
+        TimedLock lock{m_dataMutex, m_requestLog, "recompile", m_requestLog ? path : std::string{}};
         if (m_store.contains(uri))
             version = m_store.get(uri).version;
         auto text = currentTextFor(path);
@@ -208,7 +219,8 @@ void LanguageServer::registerHandlers()
             })
         .add<lsp::requests::TextDocument_Hover>(
             [this](lsp::HoverParams&& params) {
-                std::lock_guard lock{m_dataMutex};
+                TimedLock lock{m_dataMutex, m_requestLog, "textDocument/hover",
+                               requestWhere(params.textDocument.uri, params.position)};
                 if (!m_store.contains(params.textDocument.uri))
                     return lsp::TextDocument_HoverResult{nullptr};
                 return HoverProvider::getHover(
@@ -216,7 +228,8 @@ void LanguageServer::registerHandlers()
             })
         .add<lsp::requests::TextDocument_Definition>(
             [this](lsp::DefinitionParams&& params) {
-                std::lock_guard lock{m_dataMutex};
+                TimedLock lock{m_dataMutex, m_requestLog, "textDocument/definition",
+                               requestWhere(params.textDocument.uri, params.position)};
                 if (!m_store.contains(params.textDocument.uri))
                     return lsp::TextDocument_DefinitionResult{nullptr};
                 return DefinitionProvider::getDefinition(
@@ -224,7 +237,8 @@ void LanguageServer::registerHandlers()
             })
         .add<lsp::requests::TextDocument_References>(
             [this](lsp::ReferenceParams&& params) {
-                std::lock_guard lock{m_dataMutex};
+                TimedLock lock{m_dataMutex, m_requestLog, "textDocument/references",
+                               requestWhere(params.textDocument.uri, params.position)};
                 if (!m_store.contains(params.textDocument.uri))
                     return lsp::TextDocument_ReferencesResult{nullptr};
                 return ReferencesProvider::getReferences(
@@ -233,7 +247,8 @@ void LanguageServer::registerHandlers()
             })
         .add<lsp::requests::TextDocument_Completion>(
             [this](lsp::CompletionParams&& params) {
-                std::lock_guard lock{m_dataMutex};
+                TimedLock lock{m_dataMutex, m_requestLog, "textDocument/completion",
+                               requestWhere(params.textDocument.uri, params.position)};
                 if (!m_store.contains(params.textDocument.uri))
                     return lsp::TextDocument_CompletionResult{nullptr};
                 return CompletionProvider::getCompletion(
@@ -242,22 +257,23 @@ void LanguageServer::registerHandlers()
             })
         .add<lsp::requests::CompletionItem_Resolve>(
             [this](lsp::CompletionItem&& item) {
-                std::lock_guard lock{m_dataMutex};
+                TimedLock lock{m_dataMutex, m_requestLog, "completionItem/resolve"};
                 return CompletionProvider::resolve(std::move(item), m_symbolDb);
             })
         .add<lsp::requests::TextDocument_DocumentSymbol>(
             [this](lsp::DocumentSymbolParams&& params) {
-                std::lock_guard lock{m_dataMutex};
+                TimedLock lock{m_dataMutex, m_requestLog, "textDocument/documentSymbol"};
                 return DocumentSymbolsProvider::getDocumentSymbols(params, m_symbolDb);
             })
         .add<lsp::requests::Workspace_Symbol>(
             [this](lsp::WorkspaceSymbolParams&& params) {
-                std::lock_guard lock{m_dataMutex};
+                TimedLock lock{m_dataMutex, m_requestLog, "workspace/symbol"};
                 return WorkspaceSymbolsProvider::getWorkspaceSymbols(params, m_symbolDb);
             })
         .add<lsp::requests::TextDocument_Rename>(
             [this](lsp::RenameParams&& params) {
-                std::lock_guard lock{m_dataMutex};
+                TimedLock lock{m_dataMutex, m_requestLog, "textDocument/rename",
+                               requestWhere(params.textDocument.uri, params.position)};
                 if (!m_store.contains(params.textDocument.uri))
                     return lsp::TextDocument_RenameResult{nullptr};
                 return RenameProvider::getRename(
@@ -266,7 +282,8 @@ void LanguageServer::registerHandlers()
             })
         .add<lsp::requests::TextDocument_SignatureHelp>(
             [this](lsp::SignatureHelpParams&& params) {
-                std::lock_guard lock{m_dataMutex};
+                TimedLock lock{m_dataMutex, m_requestLog, "textDocument/signatureHelp",
+                               requestWhere(params.textDocument.uri, params.position)};
                 if (!m_store.contains(params.textDocument.uri))
                     return lsp::TextDocument_SignatureHelpResult{nullptr};
                 return SignatureHelpProvider::getSignatureHelp(

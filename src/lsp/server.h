@@ -18,6 +18,7 @@
 #include "signature_help.h"
 #include "workspace_symbols.h"
 #include "project_registry.h"
+#include "request_log.h"
 #include "db/database.h"
 #include "db/symbol_database.h"
 #include "db/compilation_controller.h"
@@ -28,8 +29,10 @@ class LanguageServer {
 public:
     // `logStream`, when non-null, is forwarded to CompilationController so
     // every file it parses/persists gets logged — see
-    // CompilationController's own doc comment.
-    explicit LanguageServer(lsp::io::Stream& io, std::ostream* logStream = nullptr);
+    // CompilationController's own doc comment. `requestLog`, when non-null,
+    // gets one timing line per request and compile (request_log.h).
+    explicit LanguageServer(lsp::io::Stream& io, std::ostream* logStream = nullptr,
+                            std::ostream* requestLog = nullptr);
 
     // Runs the message loop until the client sends 'exit'. Returns the exit
     // code the process should use (0 after clean shutdown, 1 otherwise).
@@ -54,6 +57,10 @@ private:
     // plan.md §6.8. A single coarse mutex is the documented "minimum fix";
     // none of these operations are hot enough to need finer-grained locking.
     std::mutex m_dataMutex;
+    std::ostream* m_requestLog; // `--log-requests`; null = off
+
+    // "<path>:<line>:<character>" for a request's log line ("" with no log).
+    std::string requestWhere(const lsp::DocumentUri& uri, const lsp::Position& pos) const;
 
     // Debounces textDocument/didChange: coalesces a burst of edits into one
     // compileAndPublish() call, fired on its own thread once typing pauses —
