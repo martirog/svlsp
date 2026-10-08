@@ -5672,6 +5672,79 @@ symbols.
   "Signal", which test_26 forbids in the hover); a blank line now separates
   them.
 
+### 6.32 Negative Completion Visibility and Scoped Imports
+
+**Status:** done 2026-10-06. Requested before the completion-size work:
+negative tests proving bare-name completion offers a function, task, class
+or package item only where the LRM makes it visible, and that a class /
+function / task is offered as a declaration only where it may be declared.
+
+**Rules pinned** (`tests/unit/lsp/test_completion_visibility.cpp`, every
+case with an empty prefix so the whole list is checked):
+- A package keeps its items to itself (26.2-26.6): visible inside the
+  package, or through `import p::*` / `import p::item` (that item only);
+  a plain import isn't transitive; `export p::item` re-exports only that
+  item. Same in another file.
+- An import applies only inside the unit it is written in (module,
+  package, program, function); a compilation-unit import applies to the
+  units after it.
+- A class's members are never bare names outside the class and its
+  subclasses; a module's functions, tasks, classes and signals stay in the
+  module; a subroutine's arguments and locals stay in it; a nested class is
+  a bare name inside its outer class only, and its members never are.
+- `class` is offered at the top level and in packages, modules,
+  interfaces and classes (nested, 8.23), not in a function or task body;
+  `function`/`task` aren't offered in a subroutine body (13.3); design-unit
+  keywords never nest; `endclass` only in a class.
+
+**Gaps the tests found, fixed:**
+- *Imports were per file.* `findSymbolsVisibleAt` applied every import in
+  the cursor's file, so one `import p::*` anywhere (another module, a
+  package's own import) made `p` visible everywhere in that file -- which
+  also made plain imports look transitive and a specific import look like
+  a wildcard whenever the file had both. Schema **v14**: `imports.scope`
+  (the walker's scope chain at the import: "" for the compilation unit,
+  `m`, `p`, `m::f`; `ImportRecord::scope`, `ImportRow::scope`). An import
+  applies only if its scope is on the cursor's scope chain; the
+  resolver's specific-import step (`lookupBare`) checks the same. A pre-v14
+  row has scope "" and so behaves as before (file-wide).
+- *Exports were per file too.* `collectExportedImports` read every export
+  in the package's file, crediting `vis_r`'s `export` to `vis_q` in the
+  same file. Now only the package's own exports (scope = the package, or
+  "" for a pre-v14 row).
+- *`class` wasn't offered in a class body.* Nested classes are legal
+  (8.23); `class` gained the Class context.
+- *Program wasn't a scope.* `scopeAtPosition`/`scopeKindAtPosition` skipped
+  Program rows although the walker pushes a program scope, so a program's
+  own declarations had no local chain and -- once imports were scoped -- an
+  import inside a program would have applied nowhere. Both now include
+  Program, which also activates the keyword table's Program bit.
+- Found on the way: SQLite's `DROP COLUMN` finds a column's start by
+  scanning back to the previous comma, so a comment with a comma right
+  above the dropped column broke the v14 migration test ("incomplete
+  input"). The `imports.scope` comment has none, and says why.
+
+**Not changed (disclosed):** a compilation-unit import applies to the
+whole file, not just the lines after it; top-level declarations of other
+files are visible everywhere (one compilation unit); `::` completion
+doesn't exist yet, so `p::` isn't covered.
+
+**Tests.** Unit (+18 cases): 15 in `test_completion_visibility.cpp`, the
+walker's import scope (`test_sv_listener.cpp`), the v14 migration
+(`test_database.cpp`), an import in another module not resolving exactly
+(`test_symbol_resolution.cpp`). Emacs (+4): test_43
+(`fixtures/completion_visibility.sv`): an import's reach, no leak from
+another module, no transitivity, nothing foreign in a class method.
+
+**Verification.** Unit: 966 cases, all passing. Emacs: 280/280. UVM
+corpus: 1147 assertions / 30 cases, all passing (+2: the `class` keyword
+in the empty-prefix list, 324 -> 325, and its explicit check).
+`--build-db`: unchanged apart from the schema -- 1 diagnostic, 15731
+symbol rows, 553 macro rows, 163 files, 960 symbol docs + 30 macro docs,
+4505600 bytes (UVM has no package imports, only DPI ones, so the new
+column is empty). The corpus `uvm.db` is rebuilt at v14 (the v13 one is
+`uvm.db.v13.bak`); `make test-integration-uvm` 13/13 against it.
+
 ---
 
 ## Appendix A — Technology Stack Summary

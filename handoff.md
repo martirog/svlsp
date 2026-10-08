@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-10-06 (§6.30 small follow-ups closed: `return new`, `new` as an argument, `super.new` completion, cross-file out-of-class completion).
+**Last updated:** 2026-10-06 (§6.32: negative completion visibility tests; imports scoped to their unit, schema v14).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -10,6 +10,17 @@ write-up) — read the relevant section there rather than looking for it here.
 ---
 
 ## Current state
+
+Not yet committed (2026-10-06): §6.32 negative completion visibility
+(plan.md §6.32). New suite `test_completion_visibility.cpp` + Emacs
+test_43. It found that imports and exports applied file-wide; schema
+**v14** adds `imports.scope`, so an import applies only where its unit is
+on the cursor's scope chain. Also: `class` is offered in a class body
+(nested classes), and Program is a scope in `scopeAtPosition`/
+`scopeKindAtPosition`. Verified: unit 966/966, Emacs 280/280, UVM corpus
+1147 / 30 cases, `--build-db` unchanged apart from schema (v14 corpus
+`uvm.db` rebuilt, v13 kept as `uvm.db.v13.bak`), `make
+test-integration-uvm` 13/13 (release).
 
 **PICK UP HERE NEXT TIME — completion response size.** Server-side
 timing (plan.md §6.30, "Server-side request timing: `--log-requests`")
@@ -39,8 +50,8 @@ and release), UVM corpus 1145 / 30 cases, `--build-db` changed only
 in 190 Port details (dims added).
 - Run the UVM Emacs test with `make test-integration-uvm`; profile with
   `SVLSP_BIN=$PWD/build/release/svlsp make test-integration-uvm`. Its
-  default library DB is `<corpus>/uvm.db`, rebuilt 2026-10-06 at this
-  commit (the old v11 one is `uvm.db.v11.bak`); rebuild it after any
+  default library DB is `<corpus>/uvm.db`, rebuilt 2026-10-07 at schema
+  v14 (§6.32; the v13 one is `uvm.db.v13.bak`, v11 `uvm.db.v11.bak`); rebuild it after any
   change to what the walker records.
 - Port details now carry unpacked dims after `PARAM_DEFAULT_VALUE_SEP`:
   test for a default with `portHasDefault`, read the type with
@@ -105,10 +116,11 @@ by name instead of from the typedef's scope, and merged duplicated helpers
   in workspace symbols, no completion inside comments/strings, and doc
   comments (§6.31) in hover, signature help and completion resolve.
 - Test baselines:
-  - unit: **948 cases**, all passing (no `[!shouldfail]` known gaps left
+  - unit: **966 cases**, all passing (no `[!shouldfail]` known gaps left
     -- the `` `define `` references case passes since the macro follow-up)
-  - Emacs functional: **276/276**
-  - UVM corpus (opt-in): **1145 assertions / 30 cases**, all passing.
+  - Emacs functional: **280/280**
+  - UVM corpus (opt-in): **1147 assertions / 30 cases**, all passing.
+    (+2: the `class` keyword in the empty-prefix list, 324 -> 325.)
     (+18: the dot-access case, 11, and the argument-receiver case, 7.)
     (1132 → 1127: the empty-prefix completion list lost the 7 ancestor
     `local` members, 331 → 324, diffed; then +2 for the pinned count's
@@ -127,7 +139,7 @@ by name instead of from the typedef's scope, and merged duplicated helpers
     duplicates; +10 for §6.29 part A; +633 for the macro follow-up, whose
     references case checks each of its 313 locations.)
   - UVM corpus `--build-db`: **1 diagnostic, 15731 symbol rows, 553
-    macro rows, 163 files, 960 symbol docs + 30 macro docs; 4.51 MB (v13,
+    macro rows, 163 files, 960 symbol docs + 30 macro docs; 4.51 MB (v14,
     4505600 bytes)
     (4.30 MB with `--no-doc-comments`)** (~17 min, ~7 GB RSS; don't run it at the same
     time as the corpus tests, and a laptop suspend pauses either; when
@@ -162,6 +174,17 @@ by name instead of from the typedef's scope, and merged duplicated helpers
   (`defref_pkg_b`, `defref_top_b`), step-C kinds (`defref_kinds`) and an
   out-of-class body (`defref_ooc_p`); append new cases after them.
 
+**What scoped imports (schema v14, §6.32) need other work to know:**
+- `imports.scope` / `ImportRecord::scope` / `ImportRow::scope`: the scope
+  chain the import is written in ("" = compilation unit). Anything that
+  reads imports must keep only those whose scope is on the position's
+  scope chain (`findSymbolsVisibleAt`, `Resolver::lookupBare`), and a
+  package's exports are the rows scoped to that package
+  (`collectExportedImports`). A pre-v14 row has scope "" (file-wide).
+- `scopeAtPosition`/`scopeKindAtPosition` include Program now.
+- No comma in a schema comment directly above a column a migration test
+  drops: SQLite's `DROP COLUMN` scans back to a comma to find the column.
+
 **What the class-member access change (schema v13) needs other work to know:**
 - `symbols.access` / `ParseRecord::access`: 'local', 'protected' or ''
   on a class member's own row (variables, the method or its extern
@@ -172,7 +195,7 @@ by name instead of from the typedef's scope, and merged duplicated helpers
   to the shared row projection would break attaching older library DBs.
 - A schema migration test that reshapes the current DB down to an older
   version keeps newer columns, so each migration that adds a column
-  skips the `ALTER` when it's already there (v12, v13).
+  skips the `ALTER` when it's already there (v12, v13, v14).
 
 **What the missing-argument resolver change needs other work to know:**
 - `CompilationController` runs the missing-argument check only with a
@@ -286,7 +309,7 @@ src/lsp/           server, server_state, document_store, diagnostics, change_deb
 src/compiler/      compiler_directive_stripper, sv_preprocessor, sv_tree_walker,
                    parse_record, parse_cache, filelist_parser, project_config, file_utils
 src/db/            database, symbol_database, compilation_controller,
-                   library_resolver, project_compiler, schema (v13)
+                   library_resolver, project_compiler, schema (v14)
 src/main.cpp       entry point (--version, --log-files, --build-db/--output)
 tests/unit/        Catch2 unit tests
 tests/integration/ Emacs functional tests + fixtures/
@@ -352,7 +375,7 @@ Compiler **g++-13** (pinned in `CMakePresets.json`). Debug has ASan+UBSan
 | LSP framework | lsp-framework v1.3.1 (submodule) |
 | Unit tests | Catch2 v3.8.1 (FetchContent) |
 | Parser | ANTLR4 v4.13.2 (FetchContent) |
-| Database | SQLite3 amalgamation, schema v13 |
+| Database | SQLite3 amalgamation, schema v14 |
 | Preprocessor | in-house C++ (not slang) |
 | Transport | stdio |
 
@@ -404,10 +427,10 @@ uses `SymbolDatabase::pickSameFilePreferred` (the simpler half of
 - `""` as a *scope* means top level — `findSymbolsInScope("")` returns every
   top-level symbol, so guard against an empty resolved type.
 
-### Database (`src/db/`, schema v13)
+### Database (`src/db/`, schema v14)
 
 Tables: `files`, `symbols (kind, name, line, col, parent, detail, end_line,
-scope, access)`, `diagnostics (… source, subject)`, `symbol_docs`, `imports (pkg_name, item, is_export)`,
+scope, access)`, `diagnostics (… source, subject)`, `symbol_docs`, `imports (pkg_name, item, is_export, scope)`,
 `instantiations`, `library_include_dirs`, `library_build_info`,
 `file_includes`, `macros`. Migrations run automatically in `database.cpp`.
 
