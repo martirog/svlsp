@@ -838,3 +838,109 @@ TEST_CASE("resolveSymbolAt: a class typedef as a `::` qualifier, parameterized o
     requireResolves(f, "/td.sv", "@qual", "td_s", "/td.sv", "@s");
     requireResolves(f, "/td.sv", "@param", "td_ps", "/td.sv", "@ps");
 }
+
+// ---------------------------------------------------------------------------
+// Block scopes (plan.md §6.30, "block scopes")
+// ---------------------------------------------------------------------------
+
+TEST_CASE("resolveSymbolAt: same-named locals in sibling blocks resolve to their own block",
+          "[resolution][block]")
+{
+    F f;
+    const std::string text =
+        "module blk_m;\n"
+        "  initial begin\n"
+        "    int x; // @x1\n"
+        "    x = 1; // @use1\n"
+        "  end\n"
+        "  initial begin\n"
+        "    int x; // @x2\n"
+        "    x = 2; // @use2\n"
+        "  end\n"
+        "endmodule\n";
+    f.add("/blk.sv", text);
+    requireResolves(f, "/blk.sv", "@use1", "x", "/blk.sv", "@x1");
+    requireResolves(f, "/blk.sv", "@use2", "x", "/blk.sv", "@x2");
+}
+
+TEST_CASE("resolveSymbolAt: a block local shadows the enclosing function's",
+          "[resolution][block]")
+{
+    F f;
+    const std::string text =
+        "module blk_s;\n"
+        "  function int f();\n"
+        "    int v; // @outer\n"
+        "    begin : inner\n"
+        "      int v; // @inner\n"
+        "      v = 1; // @use_in\n"
+        "    end\n"
+        "    return v; // @use_out\n"
+        "  endfunction\n"
+        "endmodule\n";
+    f.add("/blks.sv", text);
+    requireResolves(f, "/blks.sv", "@use_in", "v", "/blks.sv", "@inner");
+    requireResolves(f, "/blks.sv", "@use_out", "v", "/blks.sv", "@outer");
+}
+
+TEST_CASE("resolveSymbolAt: for and foreach loop variables resolve to their own loop",
+          "[resolution][block]")
+{
+    F f;
+    const std::string text =
+        "class BlkC;\n"
+        "  int q[$];\n"
+        "  function void f();\n"
+        "    for (int i = 0; i < 2; i++) // @for1\n"
+        "      q.push_back(i); // @use_for1\n"
+        "    for (int i = 0; i < 3; i++) begin // @for2\n"
+        "      q.push_back(i); // @use_for2\n"
+        "    end\n"
+        "    foreach (q[i]) // @fe\n"
+        "      q[i] = 0; // @use_fe\n"
+        "  endfunction\n"
+        "endclass\n";
+    f.add("/blkl.sv", text);
+    requireResolvesTo(f, "/blkl.sv", "@use_for1", "i)", "/blkl.sv", "@for1", "i =");
+    requireResolvesTo(f, "/blkl.sv", "@use_for2", "i)", "/blkl.sv", "@for2", "i =");
+    requireResolvesTo(f, "/blkl.sv", "@use_fe", "i]", "/blkl.sv", "@fe", "i]");
+}
+
+TEST_CASE("resolveSymbolAt: a block local is not visible after its block",
+          "[resolution][block]")
+{
+    F f;
+    const std::string text =
+        "module blk_v;\n"
+        "  int r;\n"
+        "  initial begin\n"
+        "    begin\n"
+        "      int gone;\n"
+        "    end\n"
+        "    r = gone; // @use\n"
+        "  end\n"
+        "endmodule\n";
+    f.add("/blkv.sv", text);
+    // Only the name-only fallback finds it.
+    auto r = resolveAt(f, "/blkv.sv", posOf(text, "@use", "gone"));
+    REQUIRE(r.has_value());
+    CHECK_FALSE(r->exact);
+}
+
+TEST_CASE("resolveSymbolAt: return new(...) in a block resolves the function's return type",
+          "[resolution][block]")
+{
+    F f;
+    const std::string text =
+        "class BlkR; // @cls\n"
+        "  function new(int a); endfunction // @ctor\n"
+        "  static function BlkR make();\n"
+        "    begin\n"
+        "      int tmp;\n"
+        "      return new(tmp); // @use\n"
+        "    end\n"
+        "  endfunction\n"
+        "endclass\n";
+    f.add("/blkr.sv", text);
+    requireResolves(f, "/blkr.sv", "@use", "new", "/blkr.sv", "@ctor");
+}

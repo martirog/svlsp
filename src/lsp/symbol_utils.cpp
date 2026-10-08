@@ -52,6 +52,7 @@ lsp::SymbolKind symbolKindFor(const std::string& kind)
     if (kind == "EnumLiteral") return lsp::SymbolKind::EnumMember;
     if (kind == "Member")      return lsp::SymbolKind::Field;
     if (kind == "Genvar")      return lsp::SymbolKind::Variable;
+    if (kind == "Block")       return lsp::SymbolKind::Namespace;
     return lsp::SymbolKind::Variable;
 }
 
@@ -434,6 +435,19 @@ std::string portValueType(const std::string& detail)
         result += layers[i];
     }
     return result;
+}
+
+std::string displayScope(const std::string& scope)
+{
+    std::string out;
+    for (size_t start = 0; start <= scope.size();) {
+        size_t sep = scope.find("::", start);
+        if (sep == std::string::npos) sep = scope.size();
+        if (sep > start && scope[start] != '@')
+            out += (out.empty() ? "" : "::") + scope.substr(start, sep - start);
+        start = sep + 2;
+    }
+    return out;
 }
 
 std::string displayDetail(const SymbolRow& row)

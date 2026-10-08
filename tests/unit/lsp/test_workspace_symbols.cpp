@@ -4,6 +4,7 @@
 #include "db/symbol_database.h"
 #include "compiler/parse_record.h"
 #include <algorithm>
+#include <map>
 
 namespace {
 
@@ -127,4 +128,27 @@ TEST_CASE("WorkspaceSymbolsProvider: macros are listed by prefix as constants in
     const auto& only = ticked.get<lsp::Array<lsp::WorkspaceSymbol>>();
     REQUIRE(only.size() == 1);
     CHECK(only[0].name == "wsm_LOG");
+}
+
+TEST_CASE("WorkspaceSymbolsProvider: blocks are not listed; a block local's container "
+          "skips unnamed blocks", "[workspace_symbols][block]")
+{
+    Fixture f;
+    int64_t fid = f.sdb.upsertFile("/b.sv", "h");
+    f.sdb.replaceSymbols(fid, {
+        {ParseRecordKind::Module, "wsb_m", 1, 7, "", "", 9, ""},
+        {ParseRecordKind::Block, "wsb_blk", 2, 16, "wsb_m", "", 4, "wsb_m"},
+        {ParseRecordKind::Block, "@6.10", 6, 10, "wsb_m", "", 8, "wsb_m"},
+        {ParseRecordKind::Signal, "wsb_x", 7, 8, "@6.10", "", 0, "wsb_m::@6.10"},
+        {ParseRecordKind::Signal, "wsb_y", 3, 8, "wsb_blk", "", 0, "wsb_m::wsb_blk"},
+    });
+    auto result = WorkspaceSymbolsProvider::getWorkspaceSymbols(makeParams("wsb_"), f.sdb);
+    REQUIRE_FALSE(result.isNull());
+    const auto& syms = result.get<lsp::Array<lsp::WorkspaceSymbol>>();
+    REQUIRE(syms.size() == 3);
+    std::map<std::string, std::string> container;
+    for (const auto& s : syms) container[s.name] = s.containerName.value_or("");
+    CHECK_FALSE(container.count("wsb_blk"));
+    CHECK(container.at("wsb_x") == "wsb_m");
+    CHECK(container.at("wsb_y") == "wsb_blk");
 }

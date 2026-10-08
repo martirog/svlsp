@@ -50,8 +50,8 @@ lsp::TextDocument_HoverResult HoverProvider::getHover(
         content += " → `" + detail + "`";  // →
     if (const std::string doc = symbolDoc(db, best); !doc.empty())
         content += "\n\n" + docMarkdown(doc);
-    if (!best.scope.empty())
-        content += "\n\nin *" + best.scope + "*";
+    if (const std::string scope = displayScope(best.scope); !scope.empty())
+        content += "\n\nin *" + scope + "*";
 
     lsp::Hover hover;
     hover.contents = lsp::MarkupContent{lsp::MarkupKind::Markdown, std::move(content)};

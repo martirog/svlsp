@@ -2084,3 +2084,172 @@ TEST_CASE("a class member's local/protected qualifier is recorded as its access"
         }
     CHECK(ext == 2);
 }
+
+// ---------------------------------------------------------------------------
+// Block scopes (plan.md §6.30, "block scopes"): a begin/end or fork/join
+// block that declares something, a named block, a generate block, and a
+// for/foreach loop's own variables each get a Block scope. An unnamed
+// block's scope segment is "@<line>.<col>" of its `begin`/`fork`/`for`.
+// ---------------------------------------------------------------------------
+
+static const ParseRecord* findScoped(const std::vector<ParseRecord>& recs, ParseRecordKind kind,
+                                     const std::string& name, const std::string& scope) {
+    for (const auto& r : recs)
+        if (r.kind == kind && r.name == name && r.scope == scope) return &r;
+    return nullptr;
+}
+
+TEST_CASE("sibling unnamed blocks each scope their own declarations",
+          "[compiler][listener][block]") {
+    auto result = walkSource(
+        "module m;\n"
+        "  initial begin\n"
+        "    int x;\n"
+        "  end\n"
+        "  initial begin\n"
+        "    int x;\n"
+        "  end\n"
+        "endmodule\n");
+    const auto* b1 = findScoped(result.records, ParseRecordKind::Block, "@2.10", "m");
+    const auto* b2 = findScoped(result.records, ParseRecordKind::Block, "@5.10", "m");
+    REQUIRE(b1);
+    REQUIRE(b2);
+    CHECK(b1->line == 2);
+    CHECK(b1->endLine == 4);
+    CHECK(b2->endLine == 7);
+    CHECK(findScoped(result.records, ParseRecordKind::Signal, "x", "m::@2.10"));
+    CHECK(findScoped(result.records, ParseRecordKind::Signal, "x", "m::@5.10"));
+    CHECK_FALSE(findScoped(result.records, ParseRecordKind::Signal, "x", "m"));
+}
+
+TEST_CASE("a block that declares nothing is not a scope", "[compiler][listener][block]") {
+    auto result = walkSource(
+        "module m;\n"
+        "  int y;\n"
+        "  initial begin\n"
+        "    y = 1;\n"
+        "    fork\n"
+        "      y = 2;\n"
+        "    join\n"
+        "  end\n"
+        "endmodule\n");
+    CHECK(countKind(result.records, ParseRecordKind::Block) == 0);
+}
+
+TEST_CASE("a named block is a scope under its label", "[compiler][listener][block]") {
+    auto result = walkSource(
+        "module m;\n"
+        "  task t();\n"
+        "    begin : blk\n"
+        "      int z;\n"
+        "    end : blk\n"
+        "    fork : par\n"
+        "    join\n"
+        "  endtask\n"
+        "endmodule\n");
+    const auto* blk = findScoped(result.records, ParseRecordKind::Block, "blk", "m::t");
+    REQUIRE(blk);
+    CHECK(blk->line == 3);
+    CHECK(blk->column == 12);
+    CHECK(blk->endLine == 5);
+    CHECK(findScoped(result.records, ParseRecordKind::Signal, "z", "m::t::blk"));
+    CHECK(findScoped(result.records, ParseRecordKind::Block, "par", "m::t"));
+}
+
+TEST_CASE("nested blocks nest their scopes", "[compiler][listener][block]") {
+    auto result = walkSource(
+        "module m;\n"
+        "  function void f();\n"
+        "    begin : outer\n"
+        "      int a;\n"
+        "      begin\n"
+        "        int b;\n"
+        "      end\n"
+        "    end\n"
+        "  endfunction\n"
+        "endmodule\n");
+    CHECK(findScoped(result.records, ParseRecordKind::Signal, "a", "m::f::outer"));
+    CHECK(findScoped(result.records, ParseRecordKind::Block, "@5.6", "m::f::outer"));
+    CHECK(findScoped(result.records, ParseRecordKind::Signal, "b", "m::f::outer::@5.6"));
+}
+
+TEST_CASE("a for loop's variables are scoped to the loop", "[compiler][listener][block]") {
+    auto result = walkSource(
+        "module m;\n"
+        "  function void f();\n"
+        "    for (int i = 0, j = 1; i < 4; i++) begin\n"
+        "      int k;\n"
+        "    end\n"
+        "    for (int i = 0; i < 2; i++) ;\n"
+        "  endfunction\n"
+        "endmodule\n");
+    const auto* loop = findScoped(result.records, ParseRecordKind::Block, "@3.4", "m::f");
+    REQUIRE(loop);
+    CHECK(loop->endLine == 5);
+    const auto* i = findScoped(result.records, ParseRecordKind::Signal, "i", "m::f::@3.4");
+    REQUIRE(i);
+    CHECK(i->column == 13);
+    CHECK(findScoped(result.records, ParseRecordKind::Signal, "j", "m::f::@3.4"));
+    CHECK(findScoped(result.records, ParseRecordKind::Signal, "k", "m::f::@3.4::@3.39"));
+    CHECK(findScoped(result.records, ParseRecordKind::Signal, "i", "m::f::@6.4"));
+    CHECK_FALSE(findScoped(result.records, ParseRecordKind::Signal, "i", "m::f"));
+}
+
+TEST_CASE("a for loop that assigns existing variables is not a scope",
+          "[compiler][listener][block]") {
+    auto result = walkSource(
+        "module m;\n"
+        "  int i;\n"
+        "  initial for (i = 0; i < 4; i++) ;\n"
+        "endmodule\n");
+    CHECK(countKind(result.records, ParseRecordKind::Block) == 0);
+}
+
+TEST_CASE("a foreach loop's index variables are scoped to the loop",
+          "[compiler][listener][block]") {
+    auto result = walkSource(
+        "module m;\n"
+        "  int arr[4][2];\n"
+        "  initial foreach (arr[i, j]) arr[i][j] = 0;\n"
+        "  initial foreach (arr[, j]) ;\n"
+        "endmodule\n");
+    const auto* loop = findScoped(result.records, ParseRecordKind::Block, "@3.10", "m");
+    REQUIRE(loop);
+    const auto* i = findScoped(result.records, ParseRecordKind::Signal, "i", "m::@3.10");
+    REQUIRE(i);
+    CHECK(i->column == 23);
+    CHECK(findScoped(result.records, ParseRecordKind::Signal, "j", "m::@3.10"));
+    CHECK(findScoped(result.records, ParseRecordKind::Signal, "j", "m::@4.10"));
+}
+
+TEST_CASE("a generate block is a scope, named or not", "[compiler][listener][block]") {
+    auto result = walkSource(
+        "module m #(parameter P = 1);\n"
+        "  if (P) begin : g_on\n"
+        "    logic s;\n"
+        "  end else begin\n"
+        "    logic s;\n"
+        "  end\n"
+        "  for (genvar k = 0; k < 2; k++) begin : g_loop\n"
+        "    wire w;\n"
+        "  end\n"
+        "endmodule\n");
+    CHECK(findScoped(result.records, ParseRecordKind::Signal, "s", "m::g_on"));
+    CHECK(findScoped(result.records, ParseRecordKind::Block, "@4.11", "m"));
+    CHECK(findScoped(result.records, ParseRecordKind::Signal, "s", "m::@4.11"));
+    CHECK(findScoped(result.records, ParseRecordKind::Signal, "w", "m::g_loop"));
+    // The inline genvar stays in the module, as before.
+    CHECK(findScoped(result.records, ParseRecordKind::Genvar, "k", "m"));
+}
+
+TEST_CASE("a block's leading assignment doesn't make it a scope",
+          "[compiler][listener][block]") {
+    auto result = walkSource(
+        "module m;\n"
+        "  int x;\n"
+        "  initial begin\n"
+        "    x = 1;\n"
+        "  end\n"
+        "endmodule\n");
+    CHECK(countKind(result.records, ParseRecordKind::Block) == 0);
+}

@@ -33,7 +33,7 @@ std::vector<Candidate> candidatesFromRows(const std::vector<SymbolRow>& rows)
     out.reserve(rows.size());
     std::set<std::pair<std::string, std::string>> seen;
     for (auto& row : rows)
-        if (!(row.kind == "Function" && row.name == "new") &&
+        if (!(row.kind == "Function" && row.name == "new") && row.kind != "Block" &&
             seen.emplace(row.name, row.kind).second)
             out.push_back({row.name, completionKindFor(row.kind), displayDetail(row), row});
     return out;
@@ -225,7 +225,7 @@ bool isSuperInConstructor(SymbolDatabase& db, const std::string& path, int line1
     if (segments.size() != 1 || segments[0].name != "super" || segments[0].isCall ||
         segments[0].indexDepth != 0)
         return false;
-    const std::string scope = db.scopeAtPosition(path, line1);
+    const std::string scope = db.scopeAtPosition(path, line1, /*withBlocks=*/false);
     return scope == "new" || (scope.size() > 5 && scope.compare(scope.size() - 5, 5, "::new") == 0);
 }
 

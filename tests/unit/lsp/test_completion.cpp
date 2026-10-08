@@ -1691,6 +1691,29 @@ TEST_CASE("CompletionProvider: super. inside a constructor offers the parent's n
     CHECK(hasItem(implicit.get<lsp::Array<lsp::CompletionItem>>(), "new"));
 }
 
+TEST_CASE("CompletionProvider: super. in a block inside a constructor still offers new",
+          "[completion][dot][ctor][block]")
+{
+    Fixture f;
+    CompilationController ctrl{f.sdb};
+    const std::string text =
+        "class SnbBase;\n"
+        "  function new(int a); endfunction\n"
+        "endclass\n"
+        "class SnbC extends SnbBase;\n"
+        "  function new();\n"
+        "    begin\n"
+        "      int snb_t;\n"
+        "      super.\n"         // line 7
+        "    end\n"
+        "  endfunction\n"
+        "endclass\n";
+    ctrl.compile("/snb.sv", text);
+    auto r = CompletionProvider::getCompletion(makeParams("/snb.sv", 7, 12), f.sdb, text);
+    REQUIRE_FALSE(r.isNull());
+    CHECK(hasItem(r.get<lsp::Array<lsp::CompletionItem>>(), "new"));
+}
+
 TEST_CASE("CompletionProvider: an out-of-class body in another file offers the class's own "
           "members",
           "[completion][phase6.30][outofclass]")

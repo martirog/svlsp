@@ -15,14 +15,22 @@ lsp::Workspace_SymbolResult WorkspaceSymbolsProvider::getWorkspaceSymbols(
     lsp::Array<lsp::WorkspaceSymbol> result;
     result.reserve(rows.size() + macros.size());
     for (const auto& row : rows) {
+        if (row.kind == "Block") continue; // a scope, not a declaration to jump to
         lsp::WorkspaceSymbol sym;
         sym.name     = row.name;
         sym.kind     = symbolKindFor(row.kind);
         sym.location = lsp::Location{pathToUri(row.filePath),
                                      makeRange(row.line, row.col,
                                                static_cast<int>(row.name.size()))};
-        if (!row.parent.empty())
+        // An unnamed block isn't a name: its nearest named scope contains it.
+        if (!row.parent.empty() && row.parent.front() != '@') {
             sym.containerName = row.parent;
+        } else if (!row.parent.empty()) {
+            const std::string scope = displayScope(row.scope);
+            const auto sep = scope.rfind("::");
+            if (!scope.empty())
+                sym.containerName = sep == std::string::npos ? scope : scope.substr(sep + 2);
+        }
         result.push_back(std::move(sym));
     }
     // Macros live in their own table (plan.md §6.29), never in `symbols`.

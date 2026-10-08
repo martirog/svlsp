@@ -104,6 +104,8 @@ TEST_CASE("doc comments: count recorded across the UVM corpus",
         }
     // Measured 2026-09-28 (the same 960 rows `--build-db` stores in
     // symbol_docs); a change here means the extraction rules changed.
-    CHECK(symbols == 15731);
+    // 15731 -> 18239 (plan.md §6.30, "block scopes"): +1872 Block rows,
+    // +636 for/foreach loop variables.
+    CHECK(symbols == 18239);
     CHECK(documented == 960);
 }

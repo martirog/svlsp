@@ -132,6 +132,11 @@ std::string portValueType(const std::string& detail);
 // row's detail unchanged.
 std::string displayDetail(const SymbolRow& row);
 
+// A scope chain for display (hover, workspace symbols): unnamed block
+// segments ("@<line>.<col>", plan.md §6.30) removed, so "m::f::@12.4" reads
+// "m::f"; a named block's label stays.
+std::string displayScope(const std::string& scope);
+
 // The outermost layer of a (possibly layered) detail string -- what
 // container/element-tag dispatch (builtinMethodsFor) keys off. Splits on a
 // single ':' only, so a `pkg::`-qualified type name (plan.md §6.30 step A)

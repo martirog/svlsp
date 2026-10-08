@@ -112,3 +112,21 @@ TEST_CASE("DocumentSymbolsProvider: detail field populated when present", "[docu
     REQUIRE(syms[0].detail.has_value());
     CHECK(*syms[0].detail == "input");
 }
+
+TEST_CASE("DocumentSymbolsProvider: blocks are not listed, their locals are",
+          "[document_symbols][block]")
+{
+    Fixture f;
+    auto fid = f.addFile("/tmp/blk.sv");
+    ParseRecord mod{ParseRecordKind::Module, "m", 1, 7, "", "", 5, ""};
+    ParseRecord blk{ParseRecordKind::Block, "@2.10", 2, 10, "m", "", 4, "m"};
+    ParseRecord named{ParseRecordKind::Block, "g", 3, 10, "m", "", 3, "m"};
+    ParseRecord x{ParseRecordKind::Signal, "x", 3, 8, "@2.10", "", 0, "m::@2.10"};
+    f.addSymbols(fid, {mod, blk, named, x});
+    auto result = DocumentSymbolsProvider::getDocumentSymbols(makeParams("/tmp/blk.sv"), f.sdb);
+    REQUIRE_FALSE(result.isNull());
+    const auto& syms = result.get<lsp::Array<lsp::DocumentSymbol>>();
+    REQUIRE(syms.size() == 2);
+    CHECK(syms[0].name == "m");
+    CHECK(syms[1].name == "x");
+}

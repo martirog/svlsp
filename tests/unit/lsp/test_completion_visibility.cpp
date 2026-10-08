@@ -517,3 +517,79 @@ TEST_CASE("Completion visibility: `class` is offered where a class may be declar
     CHECK_FALSE(has(labelsAt(f, "/visk.sv", text, "@mod"), "endclass"));
     CHECK_FALSE(has(labelsAt(f, "/visk.sv", text, "@pkg"), "module"));
 }
+
+// ---------------------------------------------------------------------------
+// Block scopes (plan.md §6.30, "block scopes"): a block's locals and a loop's
+// variables are bare names inside it only; blocks themselves are never
+// offered.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("Completion visibility: a block's locals stay in the block", "[completion][visibility][block]")
+{
+    Fixture f;
+    const std::string text =
+        "module visb_m;\n"
+        "  int visb_mod;\n"
+        "  initial begin : visb_named\n"
+        "    int visb_a;\n"
+        "                // @in_a\n"
+        "  end\n"
+        "  initial begin\n"
+        "    int visb_b;\n"
+        "    for (int visb_i = 0; visb_i < 2; visb_i++) begin\n"
+        "                // @in_loop\n"
+        "    end\n"
+        "                // @after_loop\n"
+        "  end\n"
+        "                // @mod\n"
+        "endmodule\n";
+    f.ctrl.compile("/visb.sv", text);
+
+    const auto inA = labelsAt(f, "/visb.sv", text, "@in_a");
+    CHECK(has(inA, "visb_a"));
+    CHECK(has(inA, "visb_mod"));
+    CHECK_FALSE(has(inA, "visb_b"));
+    CHECK_FALSE(has(inA, "visb_i"));
+
+    const auto inLoop = labelsAt(f, "/visb.sv", text, "@in_loop");
+    CHECK(has(inLoop, "visb_i"));
+    CHECK(has(inLoop, "visb_b"));
+    CHECK_FALSE(has(inLoop, "visb_a"));
+
+    const auto after = labelsAt(f, "/visb.sv", text, "@after_loop");
+    CHECK(has(after, "visb_b"));
+    CHECK_FALSE(has(after, "visb_i"));
+
+    const auto mod = labelsAt(f, "/visb.sv", text, "@mod");
+    CHECK(has(mod, "visb_mod"));
+    for (const char* name : {"visb_a", "visb_b", "visb_i"}) {
+        INFO(name);
+        CHECK_FALSE(has(mod, name));
+    }
+    // A block is not a completion candidate, named or not.
+    for (const auto* labels : {&inA, &inLoop, &after, &mod}) {
+        CHECK_FALSE(has(*labels, "visb_named"));
+        for (const auto& l : *labels) CHECK(l.rfind('@', 0) != 0);
+    }
+}
+
+TEST_CASE("Completion visibility: keywords inside a block follow the enclosing unit",
+          "[completion][visibility][block]")
+{
+    Fixture f;
+    const std::string text =
+        "class VisbK;\n"
+        "  function void visbk_f();\n"
+        "    begin\n"
+        "      int visbk_t;\n"
+        "                // @in_block\n"
+        "    end\n"
+        "  endfunction\n"
+        "endclass\n";
+    f.ctrl.compile("/visbk.sv", text);
+    const auto l = labelsAt(f, "/visbk.sv", text, "@in_block");
+    CHECK(has(l, "visbk_t"));
+    CHECK_FALSE(has(l, "function"));
+    CHECK_FALSE(has(l, "class"));
+    CHECK_FALSE(has(l, "endclass"));
+}

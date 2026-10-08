@@ -33,6 +33,9 @@ enum class ParseRecordKind {
     EnumLiteral, // an enum's named value, scoped like the enum declaration
     Member,      // struct/union member, scoped `<enclosing>::<variable-or-typedef>`
     Genvar,      // `genvar g;` or an inline `for (genvar g = ...)`
+    Block,       // a begin/end, fork/join or generate block that is a scope, or a
+                 // for/foreach loop's own variables' scope: named by its label,
+                 // else "@<line>.<col>" of its begin/fork/for/foreach keyword
 };
 
 // Reserved ParseRecord::detail values for built-in container/data types with

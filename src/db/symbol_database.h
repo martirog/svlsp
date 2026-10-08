@@ -255,14 +255,18 @@ public:
 
     // Returns the full scope path (e.g. "MyModule::MyClass::myFunc") of the
     // innermost scope-defining symbol that contains `line` in `path`.
-    // Returns "" when the position is outside all named scopes.
-    std::string scopeAtPosition(const std::string& path, int line) const;
+    // Returns "" when the position is outside all named scopes. Block scopes
+    // (begin/end, fork/join, generate, for/foreach; plan.md §6.30) count
+    // unless `withBlocks` is false, which gives the innermost design unit,
+    // package, class or subroutine instead.
+    std::string scopeAtPosition(const std::string& path, int line, bool withBlocks = true) const;
 
     // Returns the ParseRecordKind string (e.g. "Module", "Class", "Function")
     // of the innermost scope-defining symbol that contains `line` in `path`.
     // Returns "" when the position is outside all named scopes (top level /
     // compilation unit). Sibling of scopeAtPosition, same query shape, used
     // by keyword completion's context-legality check (src/lsp/sv_keywords.h).
+    // Never "Block": inside a block it reports the enclosing unit's kind.
     std::string scopeKindAtPosition(const std::string& path, int line) const;
 
     // Returns the bare name of the nearest enclosing `Class` scope that

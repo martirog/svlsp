@@ -280,3 +280,29 @@ TEST_CASE("HoverProvider: a member reached through a function argument resolves,
     CHECK(n.find("`int = 8`") != std::string::npos);
     CHECK(n.find(PARAM_DEFAULT_VALUE_SEP) == std::string::npos);
 }
+
+TEST_CASE("HoverProvider: a block local's scope hides unnamed blocks, keeps named ones",
+          "[hover][block]")
+{
+    Fixture f;
+    CompilationController ctrl{f.sdb};
+    const std::string text =
+        "module hvb;\n"
+        "  initial begin\n"
+        "    int hvb_u;\n"              // line 2
+        "  end\n"
+        "  initial begin : hvb_blk\n"
+        "    int hvb_n;\n"              // line 5
+        "  end\n"
+        "endmodule\n";
+    ctrl.compile("/hvb.sv", text);
+    auto hoverText = [&](unsigned line, unsigned col) {
+        auto result = HoverProvider::getHover(makeParams("/hvb.sv", line, col), f.sdb, text);
+        REQUIRE_FALSE(result.isNull());
+        return std::get<lsp::MarkupContent>(result->contents).value;
+    };
+    const std::string u = hoverText(2, 9);
+    CHECK(u.find("in *hvb*") != std::string::npos);
+    CHECK(u.find('@') == std::string::npos);
+    CHECK(hoverText(5, 9).find("in *hvb::hvb_blk*") != std::string::npos);
+}

@@ -870,6 +870,59 @@ public:
             pushId(ParseRecordKind::Genvar, gi->IDENTIFIER(), ctx, currentScope());
     }
 
+    // ---- Block scopes (plan.md §6.30, "block scopes") ----
+    // A begin/end or fork/join block is a scope when it is named or declares
+    // something (LRM 9.3.5); a generate block's begin/end form always is
+    // (27.5); a for/foreach loop that declares its own variables is a scope
+    // around them and its body (12.7.1, 12.7.3). Each records a Block row
+    // and pushes a frame; m_blockFrames remembers whether the enter pushed
+    // one, so the exit pops exactly that.
+
+    void enterSeq_block(SvParser::Seq_blockContext* ctx) override {
+        auto ids = ctx->block_identifier();
+        enterBlock(ctx, ids.empty() ? nullptr : ids[0]->IDENTIFIER(),
+                   declaresSomething(ctx->block_item_declaration()));
+    }
+    void exitSeq_block(SvParser::Seq_blockContext*) override { exitBlock(); }
+
+    void enterPar_block(SvParser::Par_blockContext* ctx) override {
+        auto ids = ctx->block_identifier();
+        enterBlock(ctx, ids.empty() ? nullptr : ids[0]->IDENTIFIER(),
+                   declaresSomething(ctx->block_item_declaration()));
+    }
+    void exitPar_block(SvParser::Par_blockContext*) override { exitBlock(); }
+
+    void enterGenerate_block(SvParser::Generate_blockContext* ctx) override {
+        if (!hasToken(ctx, "begin")) {
+            m_blockFrames.push_back(false); // a lone generate item: no begin/end
+            return;
+        }
+        auto ids = ctx->generate_block_identifier();
+        enterBlock(ctx, ids.empty() ? nullptr : ids[0]->IDENTIFIER(), true);
+    }
+    void exitGenerate_block(SvParser::Generate_blockContext*) override { exitBlock(); }
+
+    void enterLoop_statement(SvParser::Loop_statementContext* ctx) override {
+        bool declares = false;
+        if (auto* init = ctx->for_initialization())
+            declares = !init->for_variable_declaration().empty();
+        else if (auto* lv = ctx->loop_variables())
+            declares = !lv->index_variable_identifier().empty();
+        enterBlock(ctx, nullptr, declares, /*namedOnly=*/false);
+    }
+    void exitLoop_statement(SvParser::Loop_statementContext*) override { exitBlock(); }
+
+    void enterFor_variable_declaration(SvParser::For_variable_declarationContext* ctx) override {
+        const std::string type = dataTypeName(ctx->data_type());
+        for (auto* vi : ctx->variable_identifier())
+            pushId(ParseRecordKind::Signal, vi->IDENTIFIER(), ctx, currentScope(), type);
+    }
+
+    void enterLoop_variables(SvParser::Loop_variablesContext* ctx) override {
+        for (auto* ivi : ctx->index_variable_identifier())
+            pushId(ParseRecordKind::Signal, ivi->IDENTIFIER(), nullptr, currentScope());
+    }
+
     // ---- Package imports / exports ----
 
     void enterPackage_export_declaration(
@@ -976,6 +1029,7 @@ private:
     std::vector<InstantiationRecord> m_instantiations;
     std::vector<CallRecord>   m_calls;
     std::vector<std::string>  m_scopeStack;
+    std::vector<bool>         m_blockFrames; // per open block/loop: pushed a scope?
     bool                      m_inExport{false};
     std::string               m_itemAccess;      // current class item's access ("" outside one)
     std::string               m_itemAccessScope; // the class scope chain it applies in
@@ -1102,6 +1156,53 @@ private:
             if (const std::string text = q->getText(); text == "local" || text == "protected")
                 m_itemAccess = text;
         }
+    }
+
+    // A block is a scope if `isScope`, or if it is named (`label`) unless
+    // `namedOnly` is false (a loop has no label). Its row is named by the
+    // label, else "@<line>.<col>" of the block's first token (begin, fork,
+    // for, foreach), and spans the whole block.
+    void enterBlock(antlr4::ParserRuleContext* ctx, antlr4::tree::TerminalNode* label,
+                    bool isScope, bool namedOnly = true) {
+        if (!isScope && !(namedOnly && label)) {
+            m_blockFrames.push_back(false);
+            return;
+        }
+        auto* tok = label ? label->getSymbol() : ctx->getStart();
+        int compiledLine = static_cast<int>(tok->getLine());
+        int compiledCol  = static_cast<int>(tok->getCharPositionInLine());
+        auto [file, line] = translateLine(compiledLine, m_sourceMap);
+        int col = translateColumn(compiledLine, compiledCol, m_sourceMap);
+        const std::string name =
+            label ? label->getText() : "@" + std::to_string(line) + "." + std::to_string(col);
+        m_records.push_back({ParseRecordKind::Block, name, line, col, currentScope(), "",
+                             translatedEndLine(ctx->stop), currentScopeChain(), file});
+        pushScope(name);
+        m_blockFrames.push_back(true);
+    }
+
+    void exitBlock() {
+        if (m_blockFrames.empty()) return;
+        if (m_blockFrames.back()) popScope();
+        m_blockFrames.pop_back();
+    }
+
+    // A block's declarations declare something unless each is a leading
+    // assignment the grammar read as a declaration (`x = 1;`).
+    static bool declaresSomething(
+        const std::vector<SvParser::Block_item_declarationContext*>& items) {
+        for (auto* item : items) {
+            auto* dd = item->data_declaration();
+            if (!dd || !isMisparsedAssignment(dd)) return true;
+        }
+        return false;
+    }
+
+    static bool hasToken(antlr4::ParserRuleContext* ctx, const std::string& text) {
+        for (auto* child : ctx->children)
+            if (auto* t = dynamic_cast<antlr4::tree::TerminalNode*>(child); t && t->getText() == text)
+                return true;
+        return false;
     }
 
     static std::string lastScopeSegment(const std::string& frame) {

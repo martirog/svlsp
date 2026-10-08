@@ -23,6 +23,7 @@ static std::string kindStr(ParseRecordKind k)
     case ParseRecordKind::EnumLiteral: return "EnumLiteral";
     case ParseRecordKind::Member:      return "Member";
     case ParseRecordKind::Genvar:      return "Genvar";
+    case ParseRecordKind::Block:       return "Block";
     }
     return "Unknown";
 }
@@ -730,16 +731,17 @@ std::vector<SymbolRow> SymbolDatabase::findSymbolsByNamePrefix(
 }
 
 std::string SymbolDatabase::scopeAtPosition(
-    const std::string& path, int line) const
+    const std::string& path, int line, bool withBlocks) const
 {
     // Find the innermost scope-defining symbol (Module/Interface/Program/
-    // Package/Class/Function/Task) whose line range contains `line`.  Deepest nesting wins
-    // (longest scope chain).
+    // Package/Class/Function/Task, and Block unless !withBlocks) whose line
+    // range contains `line`.  Deepest nesting wins (longest scope chain).
     auto stmt = m_db.prepare(
-        "SELECT CASE WHEN s.scope = '' THEN s.name ELSE s.scope || '::' || s.name END "
+        std::string("SELECT CASE WHEN s.scope = '' THEN s.name ELSE s.scope || '::' || s.name END "
         "FROM symbols s JOIN files f ON f.id = s.file_id "
         "WHERE f.path = ? "
-        "  AND s.kind IN ('Module','Interface','Program','Package','Class','Function','Task') "
+        "  AND s.kind IN ('Module','Interface','Program','Package','Class','Function','Task'") +
+        (withBlocks ? ",'Block'" : "") + ") "
         "  AND s.line <= ? AND s.end_line >= ? "
         "ORDER BY length(s.scope) DESC, s.line DESC "
         "LIMIT 1");
