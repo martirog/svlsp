@@ -103,6 +103,7 @@ struct ImportRecord {
     int         line{0};   // 1-based line in `file`
     std::string file{};    // empty = same as compiled file
     bool        isExport{false}; // true for `export`, false for plain `import`
+    std::string scope{};   // enclosing scope chain ("" = compilation unit)
 };
 
 // One module/interface/program instantiation: `Foo u0 (...);` — a reference

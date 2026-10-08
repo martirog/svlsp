@@ -37,12 +37,8 @@
 // legal) are the accepted failure mode here, never false negatives (a real
 // keyword silently never offered).
 //
-// Note: scopeKindAtPosition never reports "Program" today -- it mirrors
-// scopeAtPosition's existing kind list, which doesn't track Program as a
-// scope kind either (a pre-existing gap, not introduced here). The Program
-// bit below is still assigned wherever a keyword is legal inside a program
-// body, for correctness/future-readiness, but has no observable effect
-// until that pre-existing gap is closed elsewhere.
+// scopeKindAtPosition reports "Program" for a program body (since schema
+// v14's scoped imports), so the Program bit below takes effect there.
 
 enum KeywordContext : unsigned {
     KwTopLevel  = 1u << 0, // scope kind "" (top level / compilation unit)
@@ -126,7 +122,7 @@ inline constexpr std::array<SvKeyword, 254> SV_KEYWORDS = {{
     {"interface",      KW_DECL_ALL},
 
     // --- Class declaration ---
-    {"class",          KW_CLASS_DECL_CONTAINERS},
+    {"class",          KW_CLASS_DECL_CONTAINERS | KwClass}, // nested classes (LRM 8.23)
     {"endclass",       KwClass},
     // extends/implements are typed on the same line as "class Foo", which
     // can resolve as either still-TopLevel-ish (file not yet reparsed) or

@@ -270,12 +270,15 @@ std::optional<SymbolRow> Resolver::lookupBare(const std::string& path, int line1
         return r.filePath == path && std::find(chain.begin(), chain.end(), r.scope) != chain.end();
     };
 
-    // 2. A specific import (`import pkg::name;`).
+    // 2. A specific import (`import pkg::name;`) written in a scope on the
+    //    chain (an import in another module of the file doesn't apply).
     const auto imports = m_db.importsForFile(path);
     for (const auto& r : visible) {
         if (isLocal(r) || r.name != name || !kindMatches(r, filter)) continue;
         for (const auto& imp : imports)
-            if (imp.item == name && imp.pkgName == r.scope) return r;
+            if (imp.item == name && imp.pkgName == r.scope &&
+                std::find(chain.begin(), chain.end(), imp.scope) != chain.end())
+                return r;
     }
 
     // 3. Wildcard-imported (or re-exported) package members.

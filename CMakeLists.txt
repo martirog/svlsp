@@ -228,6 +228,7 @@ add_executable(unit_tests
     tests/unit/lsp/test_symbol_utils.cpp
     tests/unit/lsp/test_request_log.cpp
     tests/unit/lsp/test_symbol_resolution.cpp
+    tests/unit/lsp/test_completion_visibility.cpp
     tests/unit/lsp/test_fuzzy_match.cpp
     tests/unit/lsp/test_completion.cpp
     tests/unit/lsp/test_doc_comment_providers.cpp

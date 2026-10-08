@@ -34,6 +34,7 @@ struct ImportRow {
     std::string pkgName;
     std::string item;      // symbol name, or "*" for wildcard
     bool        isExport{false};
+    std::string scope;     // where it is written ("" = compilation unit)
 };
 
 struct InstantiationRow {

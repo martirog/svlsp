@@ -1258,6 +1258,21 @@ TEST_CASE("imports from different packages are each recorded",
     CHECK(it2->item == "Foo");
 }
 
+TEST_CASE("an import records the scope it is written in",
+          "[compiler][listener][import]") {
+    auto result = walkSource(
+        "import cu_pkg::*;\n"
+        "package p; import p_pkg::*; endpackage\n"
+        "module m; import m_pkg::X; function void f(); import f_pkg::*; endfunction endmodule\n"
+        "program pr; import pr_pkg::*; endprogram\n");
+    REQUIRE(result.imports.size() == 5);
+    CHECK(result.imports[0].scope == "");
+    CHECK(result.imports[1].scope == "p");
+    CHECK(result.imports[2].scope == "m");
+    CHECK(result.imports[3].scope == "m::f");
+    CHECK(result.imports[4].scope == "pr");
+}
+
 TEST_CASE("file with no imports produces empty imports vector",
           "[compiler][listener][import]") {
     auto result = walkSource("module m; endmodule\n");

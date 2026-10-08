@@ -291,13 +291,14 @@ void SymbolDatabase::replaceImports(int64_t fileId,
     del.step();
 
     auto ins = m_db.prepare(
-        "INSERT INTO imports (file_id, pkg_name, item, is_export) VALUES (?,?,?,?)");
+        "INSERT INTO imports (file_id, pkg_name, item, is_export, scope) VALUES (?,?,?,?,?)");
     for (const auto& imp : imports) {
         ins.reset();
         ins.bind(1, fileId)
            .bind(2, imp.pkgName)
            .bind(3, imp.item)
-           .bind(4, imp.isExport ? 1 : 0);
+           .bind(4, imp.isExport ? 1 : 0)
+           .bind(5, imp.scope);
         ins.step();
     }
     m_db.execute("COMMIT");
@@ -448,11 +449,12 @@ std::vector<ImportRow> SymbolDatabase::importsForFile(const std::string& path) c
 std::vector<ImportRow> SymbolDatabase::importsForFileId(int64_t fileId) const
 {
     auto stmt = m_db.prepare(
-        "SELECT pkg_name, item, is_export FROM imports WHERE file_id = ?");
+        "SELECT pkg_name, item, is_export, scope FROM imports WHERE file_id = ?");
     stmt.bind(1, fileId);
     std::vector<ImportRow> rows;
     while (stmt.step())
-        rows.push_back({stmt.columnText(0), stmt.columnText(1), stmt.columnInt(2) != 0});
+        rows.push_back({stmt.columnText(0), stmt.columnText(1), stmt.columnInt(2) != 0,
+                        stmt.columnText(3)});
     return rows;
 }
 
@@ -632,8 +634,10 @@ void SymbolDatabase::collectExportedImports(
     int64_t fid = fileIdForPackage(pkgName);
     if (fid < 0) return;
 
+    // Only this package's own exports: its file may declare other packages.
+    // (A pre-v14 row has no scope and is taken as before.)
     for (auto& imp : importsForFileId(fid)) {
-        if (!imp.isExport) continue;
+        if (!imp.isExport || (imp.scope != pkgName && !imp.scope.empty())) continue;
         if (imp.item == "*") {
             outWildcardPkgs.push_back(imp.pkgName);
             collectExportedImports(imp.pkgName, outWildcardPkgs, outSpecific, visited);
@@ -728,14 +732,14 @@ std::vector<SymbolRow> SymbolDatabase::findSymbolsByNamePrefix(
 std::string SymbolDatabase::scopeAtPosition(
     const std::string& path, int line) const
 {
-    // Find the innermost scope-defining symbol (Module/Interface/Package/Class/
-    // Function/Task) whose line range contains `line`.  Deepest nesting wins
+    // Find the innermost scope-defining symbol (Module/Interface/Program/
+    // Package/Class/Function/Task) whose line range contains `line`.  Deepest nesting wins
     // (longest scope chain).
     auto stmt = m_db.prepare(
         "SELECT CASE WHEN s.scope = '' THEN s.name ELSE s.scope || '::' || s.name END "
         "FROM symbols s JOIN files f ON f.id = s.file_id "
         "WHERE f.path = ? "
-        "  AND s.kind IN ('Module','Interface','Package','Class','Function','Task') "
+        "  AND s.kind IN ('Module','Interface','Program','Package','Class','Function','Task') "
         "  AND s.line <= ? AND s.end_line >= ? "
         "ORDER BY length(s.scope) DESC, s.line DESC "
         "LIMIT 1");
@@ -747,14 +751,14 @@ std::string SymbolDatabase::scopeAtPosition(
 std::string SymbolDatabase::scopeKindAtPosition(
     const std::string& path, int line) const
 {
-    // Same shape as scopeAtPosition (including its existing kind list, which
-    // doesn't track 'Program' as a scope kind either) but selects the kind
-    // of the innermost scope-defining symbol instead of its full name path.
+    // Same shape as scopeAtPosition (and the same kind list) but selects the
+    // kind of the innermost scope-defining symbol instead of its full name
+    // path.
     auto stmt = m_db.prepare(
         "SELECT s.kind "
         "FROM symbols s JOIN files f ON f.id = s.file_id "
         "WHERE f.path = ? "
-        "  AND s.kind IN ('Module','Interface','Package','Class','Function','Task') "
+        "  AND s.kind IN ('Module','Interface','Program','Package','Class','Function','Task') "
         "  AND s.line <= ? AND s.end_line >= ? "
         "ORDER BY length(s.scope) DESC, s.line DESC "
         "LIMIT 1");
@@ -824,14 +828,18 @@ std::vector<SymbolRow> SymbolDatabase::findSymbolsVisibleAt(
     // The scope chain from innermost outward, ending with "".
     const std::vector<std::string> scopes = scopeChain(scopeAtPosition(path, line));
 
-    // Load imports for this file: wildcard (`import pkg::*`) and specific
-    // (`import pkg::Name`).  Wildcards extend the cross-file scope search;
-    // specific imports are fetched with an extra name-filtered UNION ALL.
+    // Load the imports that apply here: wildcard (`import pkg::*`) and
+    // specific (`import pkg::Name`), each only if the scope it is written
+    // in is on the cursor's scope chain -- an import in one module doesn't
+    // reach the next one (LRM 26.3). Wildcards extend the cross-file scope
+    // search; specific imports are fetched with an extra name-filtered
+    // UNION ALL.
     int64_t fid = fileIdFor(path);
     std::vector<std::string> wildcardPkgs;
     std::vector<std::pair<std::string, std::string>> specificImports; // {pkg, name}
     if (fid >= 0) {
         for (auto& imp : importsForFileId(fid)) {
+            if (std::find(scopes.begin(), scopes.end(), imp.scope) == scopes.end()) continue;
             if (imp.item == "*")
                 wildcardPkgs.push_back(imp.pkgName);
             else

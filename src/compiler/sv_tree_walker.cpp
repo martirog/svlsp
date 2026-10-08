@@ -891,7 +891,7 @@ public:
         std::string item = ctx->IDENTIFIER() ? ctx->IDENTIFIER()->getText() : "*";
         auto* tok = pkgId->getSymbol();
         auto [file, line] = translateLine(static_cast<int>(tok->getLine()), m_sourceMap);
-        m_imports.push_back({pkg, item, line, file, m_inExport});
+        m_imports.push_back({pkg, item, line, file, m_inExport, currentScopeChain()});
     }
 
     // ---- Instantiations (module/interface/program references) ----

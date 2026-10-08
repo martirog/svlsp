@@ -240,6 +240,26 @@ TEST_CASE("resolveSymbolAt: wildcard and specific imports pick the imported pack
     requireResolves(f, "/s.sv", "@type", "Item", "/pkgs.sv", "@b_item");
 }
 
+TEST_CASE("resolveSymbolAt: an import in another module of the same file doesn't apply",
+          "[resolution][import]")
+{
+    F f;
+    f.add("/pkgs.sv", kPkgs);
+    const std::string text =
+        "module imp_a;\n"
+        "  import pkg_b::make;\n"
+        "endmodule\n"
+        "module imp_b;\n"
+        "  int r;\n"
+        "  initial r = make(); // @use\n"
+        "endmodule\n";
+    f.add("/imp.sv", text);
+    // Not imported here: only the name-only fallback finds a `make`.
+    auto r = resolveAt(f, "/imp.sv", posOf(text, "@use", "make"));
+    REQUIRE(r.has_value());
+    CHECK_FALSE(r->exact);
+}
+
 TEST_CASE("resolveSymbolAt: a specific import outranks a wildcard import of another package",
           "[resolution][import]")
 {

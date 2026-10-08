@@ -4,7 +4,7 @@ namespace db {
 
 // Current schema version.  Increment and add a migration in Database::initSchema
 // whenever the schema changes.
-inline constexpr int SCHEMA_VERSION = 13;
+inline constexpr int SCHEMA_VERSION = 14;
 
 // DDL executed on a fresh (version-0) database — always reflects the latest schema.
 inline constexpr const char* SCHEMA_DDL = R"sql(
@@ -68,7 +68,13 @@ CREATE TABLE imports (
     file_id   INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
     pkg_name  TEXT    NOT NULL,
     item      TEXT    NOT NULL,           -- symbol name, or "*" for wildcard import
-    is_export INTEGER NOT NULL DEFAULT 0  -- 1 for `export pkg::item`, 0 for plain import
+    -- 1 for `export pkg::item`, 0 for plain import.
+    is_export INTEGER NOT NULL DEFAULT 0,
+    -- The scope the import is written in (empty for the compilation unit;
+    -- else e.g. m or p or m::f). It applies only where that scope is on
+    -- the scope chain of the position being looked up. (No commas here:
+    -- DROP COLUMN finds the start of this column by scanning back to one.)
+    scope     TEXT    NOT NULL DEFAULT ''
 );
 
 CREATE INDEX idx_imports_file_id ON imports(file_id);
@@ -168,6 +174,12 @@ CREATE TABLE symbol_docs (
     doc     TEXT    NOT NULL,
     PRIMARY KEY (file_id, line, col)
 ) WITHOUT ROWID;
+)sql";
+
+// SQL applied when migrating an existing v13 database to v14.
+inline constexpr const char* MIGRATION_V13_TO_V14 = R"sql(
+ALTER TABLE imports ADD COLUMN scope TEXT NOT NULL DEFAULT '';
+UPDATE schema_version SET version = 14;
 )sql";
 
 // SQL applied when migrating an existing v12 database to v13.

@@ -88,6 +88,12 @@ void Database::initSchema()
         execute(col.step() ? "UPDATE schema_version SET version = 13;"
                            : db::MIGRATION_V12_TO_V13);
     }
+    if (v < 14) {
+        // Same guard as v12.
+        auto col = prepare("SELECT 1 FROM pragma_table_info('imports') WHERE name = 'scope'");
+        execute(col.step() ? "UPDATE schema_version SET version = 14;"
+                           : db::MIGRATION_V13_TO_V14);
+    }
 }
 
 void Database::execute(const std::string& sql)

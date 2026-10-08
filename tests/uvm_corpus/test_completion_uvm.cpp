@@ -92,8 +92,11 @@ TEST_CASE("completion: empty prefix at real scope returns the full unranked cand
     // Pinned (plan.md §6.30, "an ancestor's `local` members"): 331 -> 324,
     // the 7 `local` members of uvm_report_object (m_rh_set, m_rh_init) and
     // uvm_object (m_pack, m_unpack_pre, m_unpack_post, m_leaf_name,
-    // m_inst_id) are no longer offered in uvm_component.
-    CHECK(items.size() == 324);
+    // m_inst_id) are no longer offered in uvm_component. Then 324 -> 325
+    // (plan.md §6.32): the `class` keyword, legal in a class body (nested
+    // classes).
+    CHECK(items.size() == 325);
+    CHECK(hasItem(items, "class"));
     CHECK_FALSE(hasItem(items, "m_inst_id"));
     CHECK(hasItem(items, "m_inst_count")); // static protected: still offered
     CHECK(hasItem(items, "uvm_component"));
