@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-10-06 (§6.32: negative completion visibility tests; imports scoped to their unit, schema v14).
+**Last updated:** 2026-10-08 (§6.30 follow-up: block scopes -- begin/end, fork/join, generate, for/foreach).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -11,8 +11,16 @@ write-up) — read the relevant section there rather than looking for it here.
 
 ## Current state
 
-Not yet committed (2026-10-06): §6.32 negative completion visibility
-(plan.md §6.32). New suite `test_completion_visibility.cpp` + Emacs
+Not yet committed (2026-10-08): block scopes (plan.md §6.30, "Follow-up:
+block scopes"). `begin`/`end`, `fork`/`join` and generate blocks and
+for/foreach loops are scopes now (new kind `Block`, no schema change), and
+loop variables are recorded. Verified: unit 986/986, Emacs 285/285 (new
+test_44), UVM corpus 1147 / 30 cases (the pinned symbol count 15731 -> 18239), `--build-db` +2508 rows (1872 Block,
+636 loop variables; corpus `uvm.db` rebuilt, the v14 one before blocks is
+`uvm.db.v14.bak`), `make test-integration-uvm` 13/13 (release, item counts unchanged).
+
+Committed 2026-10-08: §6.32 negative completion visibility (63b75df +
+ea7e711; plan.md §6.32). New suite `test_completion_visibility.cpp` + Emacs
 test_43. It found that imports and exports applied file-wide; schema
 **v14** adds `imports.scope`, so an import applies only where its unit is
 on the cursor's scope chain. Also: `class` is offered in a class body
@@ -50,8 +58,9 @@ and release), UVM corpus 1145 / 30 cases, `--build-db` changed only
 in 190 Port details (dims added).
 - Run the UVM Emacs test with `make test-integration-uvm`; profile with
   `SVLSP_BIN=$PWD/build/release/svlsp make test-integration-uvm`. Its
-  default library DB is `<corpus>/uvm.db`, rebuilt 2026-10-07 at schema
-  v14 (§6.32; the v13 one is `uvm.db.v13.bak`, v11 `uvm.db.v11.bak`); rebuild it after any
+  default library DB is `<corpus>/uvm.db`, rebuilt 2026-10-08 with block
+  scopes (v14; before blocks `uvm.db.v14.bak`, v13 `uvm.db.v13.bak`, v11
+  `uvm.db.v11.bak`); rebuild it after any
   change to what the walker records.
 - Port details now carry unpacked dims after `PARAM_DEFAULT_VALUE_SEP`:
   test for a default with `portHasDefault`, read the type with
@@ -116,9 +125,9 @@ by name instead of from the typedef's scope, and merged duplicated helpers
   in workspace symbols, no completion inside comments/strings, and doc
   comments (§6.31) in hover, signature help and completion resolve.
 - Test baselines:
-  - unit: **966 cases**, all passing (no `[!shouldfail]` known gaps left
+  - unit: **986 cases**, all passing (no `[!shouldfail]` known gaps left
     -- the `` `define `` references case passes since the macro follow-up)
-  - Emacs functional: **280/280**
+  - Emacs functional: **285/285**
   - UVM corpus (opt-in): **1147 assertions / 30 cases**, all passing.
     (+2: the `class` keyword in the empty-prefix list, 324 -> 325.)
     (+18: the dot-access case, 11, and the argument-receiver case, 7.)
@@ -138,10 +147,10 @@ by name instead of from the typedef's scope, and merged duplicated helpers
     case checks each item and step D's (name, kind) dedup removed 124
     duplicates; +10 for §6.29 part A; +633 for the macro follow-up, whose
     references case checks each of its 313 locations.)
-  - UVM corpus `--build-db`: **1 diagnostic, 15731 symbol rows, 553
-    macro rows, 163 files, 960 symbol docs + 30 macro docs; 4.51 MB (v14,
-    4505600 bytes)
-    (4.30 MB with `--no-doc-comments`)** (~17 min, ~7 GB RSS; don't run it at the same
+  - UVM corpus `--build-db`: **1 diagnostic, 18239 symbol rows (1872
+    Block), 553 macro rows, 163 files, 960 symbol docs + 30 macro docs;
+    5.27 MB (v14, 5271552 bytes)** (before block scopes: 15731 rows,
+    4.51 MB; 4.30 MB with `--no-doc-comments`) (~17 min, ~7 GB RSS; don't run it at the same
     time as the corpus tests, and a laptop suspend pauses either; when
     waiting on one from a script, don't `pgrep -f` its command line --
     the waiting shell's own command line matches)
@@ -173,6 +182,20 @@ by name instead of from the typedef's scope, and merged duplicated helpers
 - `fixtures/defref_top.sv` has appended sections of same-named decoys
   (`defref_pkg_b`, `defref_top_b`), step-C kinds (`defref_kinds`) and an
   out-of-class body (`defref_ooc_p`); append new cases after them.
+
+**What block scopes (§6.30 follow-up) need other work to know:**
+- Kind `Block`: a scope row, never a declaration a user points at.
+  Named by its label, else `@<line>.<col>` of its first token; locals
+  inside are scoped `m::f::@12.4` / `m::t::blk`. Anything listing rows to
+  a user must skip Block (completion, document/workspace symbols do), and
+  show a scope through `displayScope` (drops `@` segments).
+- `scopeAtPosition` includes blocks; pass `withBlocks = false` for the
+  enclosing unit/class/subroutine. `scopeKindAtPosition` never reports
+  Block. Code that tests the innermost scope's last segment (like
+  "inside `new`") must use the `false` form or walk the chain.
+- Walker: blocks push frames through `enterBlock`/`exitBlock`
+  (`m_blockFrames`), with `end_line` set at enter -- not
+  `backpatchEndLine`.
 
 **What scoped imports (schema v14, §6.32) need other work to know:**
 - `imports.scope` / `ImportRecord::scope` / `ImportRow::scope`: the scope
@@ -269,10 +292,10 @@ What §6.29 changed that other work must know about:
 ## Other open work (priority roughly top-down)
 
 0. **§6.30 disclosed limits** (large, none blocking; the small
-   follow-ups are all closed): `begin`/`end` and generate blocks aren't
-   scopes, scope containment is line-granular, struct / interface /
-   hierarchical receivers use the name-only fallback. The first two
-   would change the walker and need a `--build-db` rebuild.
+   follow-ups and block scopes are closed): scope containment is
+   line-granular (would change the walker and need a `--build-db`
+   rebuild), struct / interface / hierarchical receivers (including
+   `blk.x` into a named block) use the name-only fallback.
 1. **§6.21** semantic reference-resolution diagnostics (unresolved type/import)
    — not started; its prerequisite (per-source diagnostics, v12) is done --
    use `source = 'reference'` with `replaceDiagnostics(..., source)`.

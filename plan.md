@@ -4521,7 +4521,8 @@ a name-only lookup would pick and an exact file/line/column assertion:
 - `begin … end` blocks and generate blocks are **not** scopes (a variable in
   `initial begin int blk; end` is scoped to the module). Two same-named
   variables in sibling blocks of one module stay indistinguishable. This is a
-  disclosed limit here, not fixed.
+  disclosed limit here, not fixed. (Fixed 2026-10-08: "Follow-up: block
+  scopes".)
 - Scope containment is **line-granular** (`scopeAtPosition(path, line)`).
   Two scopes opening on one physical line can't be told apart. The fixtures
   put each scope on its own line. Also disclosed, not fixed.
@@ -5450,8 +5451,9 @@ library-scale behavior and profiling.
   (name, kind) dedup drops the duplicates where the class is in the
   cursor's file.
 - *Still open (disclosed limits, kept):* `begin`/`end` and generate
-  blocks aren't scopes, scope containment is line-granular, and struct/
-  interface/hierarchical receivers use the name-only fallback.
+  blocks aren't scopes (closed since, "Follow-up: block scopes" below),
+  scope containment is line-granular, and struct/interface/hierarchical
+  receivers use the name-only fallback.
 - *Tests.* Unit (+4 cases): `return new` (in-class, out-of-class body,
   void) and argument `new` (positional, named, a constructor's argument,
   an unknown callee) in `test_symbol_resolution.cpp`; `super.` in a
@@ -5466,6 +5468,66 @@ library-scale behavior and profiling.
   `make test-integration-uvm` 13/13 (release, item counts unchanged).
   UVM corpus (2026-10-06): 1145 assertions / 30 cases, all passing
   (unchanged).
+
+**Follow-up: block scopes (2026-10-08).** Done. Closes the first §6.30
+disclosed limit: `begin`/`end` and generate blocks weren't scopes, and
+for/foreach loop variables weren't recorded at all.
+- *What is a scope.* A `begin`/`end` or `fork`/`join` block that is named
+  or declares something (LRM 9.3.5; a leading `x = 1;` the grammar reads
+  as a declaration doesn't count, `isMisparsedAssignment`); a generate
+  block's `begin`/`end` form, always (27.5); a `for` loop that declares
+  its variables and a `foreach` loop with index variables (12.7.1,
+  12.7.3), whose scope holds the variables and the body.
+- *How it is recorded.* New kind `Block` (`ParseRecordKind::Block`; no
+  schema change, `kind` is text). Its name is the label, else
+  `@<line>.<col>` of its first token (`begin`, `fork`, `for`,
+  `foreach`), and its row spans the block (`end_line` from the context's
+  stop token, no backpatch). Declarations inside are scoped under it:
+  `m::f::@12.4`, `m::t::blk`, `m::g_on`. `for (int i = 0, j = 1; ...)`
+  records `i` and `j` (Signal, detail the declared type); `foreach
+  (a[i, j])` records `i` and `j` (Signal, no detail). An inline
+  `for (genvar k = ...)` stays in the enclosing unit, as before.
+- *How it is read.* `scopeAtPosition` includes Block rows, so the scope
+  chain (`findSymbolsVisibleAt`, `Resolver::lookupBare`) has the block
+  frames and a block's locals are visible only inside it -- no resolver
+  change was needed. `scopeAtPosition(path, line, false)` skips them
+  (`super.` completion's "inside a constructor" check), and
+  `scopeKindAtPosition` never reports Block, so keyword legality inside a
+  block follows the enclosing unit. Completion never offers a Block row;
+  document and workspace symbols don't list them; hover and a workspace
+  symbol's container read the scope through `displayScope`, which drops
+  `@` segments (`in *m::f*`, a named block's label kept).
+- *Found on the way.* The old "nearest preceding declaration" tie-break
+  already told sibling blocks' locals apart when each use followed its
+  own declaration; it failed for an outer local used after an inner
+  block that shadows it (it picked the inner one), and loop variables
+  had no declaration to land on. test_44's first case pins the shadowing
+  shape.
+- *Disclosed, not changed:* an unnamed block's name is positional, not
+  the LRM's `genblk<n>`; hierarchical names into a block (`blk.x`,
+  `g_on.s`, `gen[0].w`) still use the name-only fallback; containment is
+  still line-granular, so a one-line `for (int i...) x += i;` scopes its
+  whole line; an inline genvar isn't scoped to its loop generate.
+- *Tests.* Unit (+20 cases): walker records in `test_sv_listener.cpp`
+  (9: sibling, empty, named, nested, for, assigning for, foreach,
+  generate, leading assignment), resolution in
+  `test_symbol_resolution.cpp` (5: sibling, shadowing, for/foreach, not
+  visible after the block, `return new` inside a block), completion in
+  `test_completion_visibility.cpp` (2) and `test_completion.cpp`
+  (`super.` in a block in a constructor), hover, document symbols and
+  workspace symbols (1 each). Emacs (+5): test_44
+  (`fixtures/block_scopes.sv`): definition after a shadowing inner block,
+  references of a block local and of a loop variable, rename of a loop
+  variable, completion in a loop body. Against the pre-change binary 4
+  of the 5 fail.
+- *Verification.* Unit: 986 cases, all passing. Emacs: 285/285. UVM
+  corpus: 1147 assertions / 30 cases, all passing; only the pinned symbol
+  count moved, 15731 -> 18239. `--build-db`: +2508 rows -- 1872 Block (6
+  named) and 636 loop variables; 1485 existing locals moved into a block's
+  scope; no row lost; diagnostics, macros, files and docs unchanged (1 /
+  553 / 163 / 960 + 30); 5.27 MB (was 4.51). The corpus `uvm.db` is rebuilt
+  with it (`uvm.db.v14.bak` is the one before); `make test-integration-uvm`
+  13/13, item counts unchanged.
 
 **Ordering:** wildcard-import same-file fix (with its own test, done) → A → B
 (hover/definition first, then references + rename) → C → D. After each
