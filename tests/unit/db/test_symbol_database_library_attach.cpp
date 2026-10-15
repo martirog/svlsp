@@ -110,7 +110,7 @@ TEST_CASE("attachLibraryDbs: findSymbolsVisibleAt sees an attached-DB top-level 
     f.sdb.replaceSymbols(f.sdb.upsertFile("/proj/top.sv", "h"),
         {{ParseRecordKind::Module, "top", 1, 7, "", "", 10, ""}});
 
-    auto rows = f.sdb.findSymbolsVisibleAt("/proj/top.sv", 5);
+    auto rows = f.sdb.findSymbolsVisibleAt("/proj/top.sv", {5, 0});
     CHECK(hasSymbol(rows, "top"));
     CHECK(hasSymbol(rows, "uvm_object"));
 }
@@ -132,7 +132,7 @@ TEST_CASE("attachLibraryDbs: findSymbolsVisibleAt sees an attached-DB package's 
         {{ParseRecordKind::Module, "top", 5, 7, "", "", 10, ""}});
     f.sdb.replaceImports(fid, {{"uvm_pkg", "*", 1}});
 
-    auto rows = f.sdb.findSymbolsVisibleAt("/proj/top.sv", 7);
+    auto rows = f.sdb.findSymbolsVisibleAt("/proj/top.sv", {7, 0});
     CHECK(hasSymbol(rows, "uvm_object"));
     // uvm_pkg itself (scope "") is also visible as a top-level symbol,
     // independent of the import -- not what this test is about, but

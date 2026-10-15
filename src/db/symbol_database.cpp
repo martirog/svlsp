@@ -2,6 +2,7 @@
 #include "compiler/parse_record.h"
 #include <algorithm>
 #include <optional>
+#include <set>
 #include <ctime>
 
 // Stringify ParseRecordKind for storage.
@@ -174,6 +175,127 @@ std::string SymbolDatabase::getFileHash(const std::string& path) const
     return {};
 }
 
+std::vector<std::string> SymbolDatabase::replaceIncludeSites(
+    int64_t primaryFileId, const std::string& primaryPath,
+    const std::vector<IncludeSiteRecord>& sites)
+{
+    std::vector<std::string> previous;
+    {
+        auto old = m_db.prepare("SELECT f.path FROM include_sites s "
+                                "JOIN files f ON f.id = s.included_file_id "
+                                "WHERE s.primary_file_id = ?");
+        old.bind(1, primaryFileId);
+        while (old.step()) previous.push_back(old.columnText(0));
+    }
+    // A known file keeps its content hash (upsertFile would reset it).
+    auto idOf = [&](const std::string& p) {
+        if (p.empty() || p == primaryPath) return primaryFileId;
+        const int64_t id = fileIdFor(p);
+        return id >= 0 ? id : upsertFile(p, "");
+    };
+    m_db.execute("BEGIN");
+    auto del = m_db.prepare("DELETE FROM include_sites WHERE primary_file_id = ?");
+    del.bind(1, primaryFileId);
+    del.step();
+
+    auto ins = m_db.prepare("INSERT INTO include_sites "
+                            "(primary_file_id, included_file_id, includer_file_id, line, scope) "
+                            "VALUES (?,?,?,?,?)");
+    for (const auto& s : sites) {
+        ins.reset();
+        ins.bind(1, primaryFileId)
+           .bind(2, idOf(s.file))
+           .bind(3, idOf(s.includer))
+           .bind(4, s.line)
+           .bind(5, s.scope);
+        ins.step();
+    }
+    m_db.execute("COMMIT");
+    return previous;
+}
+
+std::vector<IncludeSiteRow> SymbolDatabase::includeSitesOf(const std::string& path) const
+{
+    std::vector<IncludeSiteRow> rows;
+    for (size_t i = 0; i <= m_attachedLibraryPaths.size(); ++i) {
+        const std::string schema = i == 0 ? "" : "lib" + std::to_string(i - 1) + ".";
+        auto chk = m_db.prepare("SELECT 1 FROM " + schema +
+                                "sqlite_master WHERE type='table' AND name='include_sites'");
+        if (!chk.step()) continue; // a library DB built before v16
+        auto stmt = m_db.prepare(
+            "SELECT p.path, i.path, s.line, s.scope FROM " + schema + "include_sites s "
+            "JOIN " + schema + "files f ON f.id = s.included_file_id "
+            "JOIN " + schema + "files p ON p.id = s.primary_file_id "
+            "JOIN " + schema + "files i ON i.id = s.includer_file_id "
+            "WHERE f.path = ? ORDER BY p.path, i.path, s.line");
+        stmt.bind(1, path);
+        while (stmt.step())
+            rows.push_back({stmt.columnText(0), stmt.columnText(1),
+                            static_cast<int>(stmt.columnInt(2)), stmt.columnText(3), schema});
+    }
+    return rows;
+}
+
+std::optional<IncludeSiteRow> SymbolDatabase::includeContextOf(const std::string& path) const
+{
+    auto sites = includeSitesOf(path);
+    if (sites.empty()) return std::nullopt;
+    return std::move(sites.front());
+}
+
+std::vector<MacroRow> SymbolDatabase::macrosOfUnit(const IncludeSiteRow& site,
+                                                   const std::string& excludePath) const
+{
+    const std::string& sch = site.schema;
+    auto stmt = m_db.prepare(
+        "SELECT m.name, m.line, m.col, m.is_function_like, m.params, f.path, m.body, m.doc "
+        "FROM " + sch + "macros m JOIN " + sch + "files f ON f.id = m.file_id "
+        "WHERE f.path != ? AND (f.path = ? OR f.id IN ("
+        "  SELECT fi.included_file_id FROM " + sch + "file_includes fi "
+        "  JOIN " + sch + "files p ON p.id = fi.includer_file_id WHERE p.path = ?)) "
+        "ORDER BY f.path, m.line");
+    stmt.bind(1, excludePath).bind(2, site.primaryPath).bind(3, site.primaryPath);
+    std::vector<MacroRow> rows;
+    while (stmt.step()) rows.push_back(macroRowFromStmt(stmt));
+    return rows;
+}
+
+std::vector<ImportRow> SymbolDatabase::importsVisibleFrom(const std::string& path) const
+{
+    std::vector<ImportRow> rows = importsForFile(path);
+    auto site = includeContextOf(path);
+    std::vector<std::string> visited = {path};
+    while (site && std::find(visited.begin(), visited.end(), site->includerPath) == visited.end()) {
+        const std::string& includer = site->includerPath;
+        visited.push_back(includer);
+        auto stmt = m_db.prepare(
+            "SELECT im.pkg_name, im.item, im.is_export, im.scope FROM " + site->schema +
+            "imports im JOIN " + site->schema + "files f ON f.id = im.file_id WHERE f.path = ?");
+        stmt.bind(1, includer);
+        while (stmt.step())
+            rows.push_back({stmt.columnText(0), stmt.columnText(1), stmt.columnInt(2) != 0,
+                            stmt.columnText(3)});
+        if (includer == site->primaryPath) break;
+        // The includer's own `include, in the same compile.
+        std::optional<IncludeSiteRow> next;
+        for (auto& s : includeSitesOf(includer))
+            if (s.primaryPath == site->primaryPath && s.schema == site->schema) {
+                next = std::move(s);
+                break;
+            }
+        site = std::move(next);
+    }
+    return rows;
+}
+
+bool SymbolDatabase::isPackage(const std::string& scope) const
+{
+    if (scope.empty() || scope.find("::") != std::string::npos) return false;
+    for (const auto& r : findSymbolsByName(scope))
+        if (r.kind == "Package" && r.scope.empty()) return true;
+    return false;
+}
+
 std::vector<std::string> SymbolDatabase::allFilePaths() const
 {
     auto stmt = m_db.prepare("SELECT path FROM files");
@@ -192,8 +314,9 @@ void SymbolDatabase::replaceSymbols(int64_t fileId,
     del.step();
 
     auto ins = m_db.prepare(
-        "INSERT INTO symbols (file_id,kind,name,line,col,parent,detail,end_line,scope,access) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?)");
+        "INSERT INTO symbols "
+        "(file_id,kind,name,line,col,parent,detail,end_line,scope,access,end_col) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?)");
     for (const auto& r : records) {
         ins.reset();
         ins.bind(1, fileId)
@@ -205,7 +328,8 @@ void SymbolDatabase::replaceSymbols(int64_t fileId,
            .bind(7, r.detail)
            .bind(8, r.endLine)
            .bind(9, r.scope)
-           .bind(10, r.access);
+           .bind(10, r.access)
+           .bind(11, r.endCol);
         ins.step();
     }
 
@@ -270,14 +394,16 @@ void SymbolDatabase::replaceDiagnostics(int64_t fileId,
     del.step();
 
     auto ins = m_db.prepare(
-        "INSERT INTO diagnostics (file_id,line,col,message,source) VALUES (?,?,?,?,?)");
+        "INSERT INTO diagnostics (file_id,line,col,message,source,severity) "
+        "VALUES (?,?,?,?,?,?)");
     for (const auto& e : errors) {
         ins.reset();
         ins.bind(1, fileId)
            .bind(2, e.line)
            .bind(3, e.column)
            .bind(4, e.message)
-           .bind(5, source);
+           .bind(5, source)
+           .bind(6, e.severity);
         ins.step();
     }
     m_db.execute("COMMIT");
@@ -398,28 +524,32 @@ std::vector<MacroRow> SymbolDatabase::queryMacros(const std::string& cond,
     for (int i = 1; i <= binds; ++i) stmt.bind(i, bindValue);
 
     std::vector<MacroRow> rows;
-    while (stmt.step()) {
-        MacroRow row{stmt.columnText(0), static_cast<int>(stmt.columnInt(1)),
-                     static_cast<int>(stmt.columnInt(2)), stmt.columnInt(3) != 0,
-                     {}, {}, stmt.columnText(5), stmt.columnText(6), stmt.columnText(7)};
-        const std::string params = stmt.columnText(4);
-        if (row.isFunctionLike && !params.empty()) {
-            for (size_t start = 0;;) {
-                size_t sep = params.find(kMacroParamSep, start);
-                std::string p = params.substr(start, sep == std::string::npos ? std::string::npos
-                                                                              : sep - start);
-                size_t eq = p.find('=');
-                row.params.push_back(p.substr(0, eq));
-                row.defaults.push_back(eq == std::string::npos
-                                           ? std::nullopt
-                                           : std::optional<std::string>(p.substr(eq + 1)));
-                if (sep == std::string::npos) break;
-                start = sep + 1;
-            }
-        }
-        rows.push_back(std::move(row));
-    }
+    while (stmt.step()) rows.push_back(macroRowFromStmt(stmt));
     return rows;
+}
+
+// Columns: name, line, col, is_function_like, params, path, body, doc.
+MacroRow SymbolDatabase::macroRowFromStmt(Database::Statement& stmt)
+{
+    MacroRow row{stmt.columnText(0), static_cast<int>(stmt.columnInt(1)),
+                 static_cast<int>(stmt.columnInt(2)), stmt.columnInt(3) != 0,
+                 {}, {}, stmt.columnText(5), stmt.columnText(6), stmt.columnText(7)};
+    const std::string params = stmt.columnText(4);
+    if (row.isFunctionLike && !params.empty()) {
+        for (size_t start = 0;;) {
+            size_t sep = params.find(kMacroParamSep, start);
+            std::string p = params.substr(start, sep == std::string::npos ? std::string::npos
+                                                                          : sep - start);
+            size_t eq = p.find('=');
+            row.params.push_back(p.substr(0, eq));
+            row.defaults.push_back(eq == std::string::npos
+                                       ? std::nullopt
+                                       : std::optional<std::string>(p.substr(eq + 1)));
+            if (sep == std::string::npos) break;
+            start = sep + 1;
+        }
+    }
+    return row;
 }
 
 std::vector<SymbolRow> SymbolDatabase::portsOf(const std::string& scope) const
@@ -511,8 +641,9 @@ void SymbolDatabase::appendDiagnostics(int64_t fileId, const std::vector<ParseEr
                                        const std::string& source, const std::string& subject)
 {
     m_db.execute("BEGIN");
-    auto ins = m_db.prepare("INSERT INTO diagnostics (file_id,line,col,message,source,subject) "
-                            "VALUES (?,?,?,?,?,?)");
+    auto ins = m_db.prepare("INSERT INTO diagnostics "
+                            "(file_id,line,col,message,source,subject,severity) "
+                            "VALUES (?,?,?,?,?,?,?)");
     for (const auto& e : extra) {
         ins.reset();
         ins.bind(1, fileId)
@@ -520,7 +651,8 @@ void SymbolDatabase::appendDiagnostics(int64_t fileId, const std::vector<ParseEr
            .bind(3, e.column)
            .bind(4, e.message)
            .bind(5, source)
-           .bind(6, subject);
+           .bind(6, subject)
+           .bind(7, e.severity);
         ins.step();
     }
     m_db.execute("COMMIT");
@@ -693,7 +825,7 @@ std::vector<DiagnosticRow> SymbolDatabase::diagnosticsForFile(
     if (fid < 0) return {};
 
     auto stmt = m_db.prepare(
-        "SELECT line,col,message FROM diagnostics WHERE file_id = ? ORDER BY line");
+        "SELECT line,col,message,severity FROM diagnostics WHERE file_id = ? ORDER BY line");
     stmt.bind(1, fid);
 
     std::vector<DiagnosticRow> rows;
@@ -701,7 +833,8 @@ std::vector<DiagnosticRow> SymbolDatabase::diagnosticsForFile(
         rows.push_back({static_cast<int>(stmt.columnInt(0)),
                         static_cast<int>(stmt.columnInt(1)),
                         stmt.columnText(2),
-                        path});
+                        path,
+                        static_cast<int>(stmt.columnInt(3))});
     return rows;
 }
 
@@ -730,52 +863,83 @@ std::vector<SymbolRow> SymbolDatabase::findSymbolsByNamePrefix(
     return rows;
 }
 
+namespace {
+
+// WHERE fragment: scope row `s` contains the position bound by
+// bindContains -- from its (line, col) through (end_line, end_col), the
+// whole end line when end_col is 0 (unknown: a row written before v15).
+constexpr const char* kContains =
+    "  AND (s.line < ? OR (s.line = ? AND s.col <= ?)) "
+    "  AND (s.end_line > ? OR (s.end_line = ? AND (s.end_col = 0 OR s.end_col >= ?))) ";
+
+void bindContains(Database::Statement& stmt, int first, SrcPos pos)
+{
+    stmt.bind(first, pos.line).bind(first + 1, pos.line).bind(first + 2, pos.col)
+        .bind(first + 3, pos.line).bind(first + 4, pos.line).bind(first + 5, pos.col);
+}
+
+} // namespace
+
 std::string SymbolDatabase::scopeAtPosition(
-    const std::string& path, int line, bool withBlocks) const
+    const std::string& path, SrcPos pos, bool withBlocks) const
 {
     // Find the innermost scope-defining symbol (Module/Interface/Program/
-    // Package/Class/Function/Task, and Block unless !withBlocks) whose line
-    // range contains `line`.  Deepest nesting wins (longest scope chain).
+    // Package/Class/Function/Task, and Block unless !withBlocks) that
+    // contains `pos`.  Deepest nesting wins (longest scope chain).
     auto stmt = m_db.prepare(
         std::string("SELECT CASE WHEN s.scope = '' THEN s.name ELSE s.scope || '::' || s.name END "
         "FROM symbols s JOIN files f ON f.id = s.file_id "
         "WHERE f.path = ? "
         "  AND s.kind IN ('Module','Interface','Program','Package','Class','Function','Task'") +
-        (withBlocks ? ",'Block'" : "") + ") "
-        "  AND s.line <= ? AND s.end_line >= ? "
-        "ORDER BY length(s.scope) DESC, s.line DESC "
+        (withBlocks ? ",'Block'" : "") + ") " + kContains +
+        "ORDER BY length(s.scope) DESC, s.line DESC, s.col DESC "
         "LIMIT 1");
-    stmt.bind(1, path).bind(2, line).bind(3, line);
+    stmt.bind(1, path);
+    bindContains(stmt, 2, pos);
     if (stmt.step()) return stmt.columnText(0);
-    return {};
+    const auto site = includeContextOf(path);
+    return site ? site->scope : std::string{};
 }
 
 std::string SymbolDatabase::scopeKindAtPosition(
-    const std::string& path, int line) const
+    const std::string& path, SrcPos pos) const
 {
     // Same shape as scopeAtPosition (and the same kind list) but selects the
     // kind of the innermost scope-defining symbol instead of its full name
     // path.
     auto stmt = m_db.prepare(
-        "SELECT s.kind "
+        std::string("SELECT s.kind "
         "FROM symbols s JOIN files f ON f.id = s.file_id "
         "WHERE f.path = ? "
-        "  AND s.kind IN ('Module','Interface','Program','Package','Class','Function','Task') "
-        "  AND s.line <= ? AND s.end_line >= ? "
-        "ORDER BY length(s.scope) DESC, s.line DESC "
+        "  AND s.kind IN ('Module','Interface','Program','Package','Class','Function','Task') ") +
+        kContains +
+        "ORDER BY length(s.scope) DESC, s.line DESC, s.col DESC "
         "LIMIT 1");
-    stmt.bind(1, path).bind(2, line).bind(3, line);
+    stmt.bind(1, path);
+    bindContains(stmt, 2, pos);
     if (stmt.step()) return stmt.columnText(0);
+
+    // Outside the file's own scopes: the kind of its include scope's row.
+    const auto site = includeContextOf(path);
+    const std::string inc = site ? site->scope : std::string{};
+    if (inc.empty()) return {};
+    const auto sep = inc.rfind("::");
+    const std::string name  = sep == std::string::npos ? inc : inc.substr(sep + 2);
+    const std::string scope = sep == std::string::npos ? "" : inc.substr(0, sep);
+    static const std::set<std::string> kScopeKinds = {
+        "Module", "Interface", "Program", "Package", "Class", "Function", "Task"};
+    for (const auto& r : findSymbolsByName(name))
+        if (r.scope == scope && kScopeKinds.count(r.kind)) return r.kind;
     return {};
 }
 
 std::vector<std::string> SymbolDatabase::enclosingClassScopesAt(
-    const std::string& path, int line) const
+    const std::string& path, SrcPos pos) const
 {
     // scopeAtPosition already lands inside an out-of-class body's class
     // ("p::C::m"); keep each scope on its chain that is a Class row.
     std::vector<std::string> classes;
-    const std::string innermost = scopeAtPosition(path, line);
+    const std::string innermost = scopeAtPosition(path, pos);
     if (innermost.empty()) return classes;
     for (const auto& cur : scopeChain(innermost)) {
         if (cur.empty()) break;
@@ -792,27 +956,27 @@ std::vector<std::string> SymbolDatabase::enclosingClassScopesAt(
 }
 
 std::string SymbolDatabase::enclosingClassNameAt(
-    const std::string& path, int line) const
+    const std::string& path, SrcPos pos) const
 {
     // Same shape as scopeAtPosition/scopeKindAtPosition, but filtered to
     // Class specifically -- finds the nearest enclosing class even when the
     // innermost scope at `line` is one of its Function/Task members. Falls
     // back to the scope chain for an out-of-class method body (below).
     auto stmt = m_db.prepare(
-        "SELECT s.name "
+        std::string("SELECT s.name "
         "FROM symbols s JOIN files f ON f.id = s.file_id "
         "WHERE f.path = ? "
-        "  AND s.kind = 'Class' "
-        "  AND s.line <= ? AND s.end_line >= ? "
-        "ORDER BY length(s.scope) DESC, s.line DESC "
+        "  AND s.kind = 'Class' ") + kContains +
+        "ORDER BY length(s.scope) DESC, s.line DESC, s.col DESC "
         "LIMIT 1");
-    stmt.bind(1, path).bind(2, line).bind(3, line);
+    stmt.bind(1, path);
+    bindContains(stmt, 2, pos);
     if (stmt.step()) return stmt.columnText(0);
 
     // An out-of-class method body (plan.md §6.30 step D) lies outside its
     // class's line range but is scoped under it: the innermost scope is
     // "<class scope>::m", so find the nearest class on the scope chain.
-    std::string cur = scopeAtPosition(path, line);
+    std::string cur = scopeAtPosition(path, pos);
     for (auto sep = cur.rfind("::"); sep != std::string::npos; sep = cur.rfind("::")) {
         cur = cur.substr(0, sep);
         const auto nameSep = cur.rfind("::");
@@ -825,10 +989,10 @@ std::string SymbolDatabase::enclosingClassNameAt(
 }
 
 std::vector<SymbolRow> SymbolDatabase::findSymbolsVisibleAt(
-    const std::string& path, int line) const
+    const std::string& path, SrcPos pos) const
 {
     // The scope chain from innermost outward, ending with "".
-    const std::vector<std::string> scopes = scopeChain(scopeAtPosition(path, line));
+    const std::vector<std::string> scopes = scopeChain(scopeAtPosition(path, pos));
 
     // Load the imports that apply here: wildcard (`import pkg::*`) and
     // specific (`import pkg::Name`), each only if the scope it is written
@@ -840,7 +1004,7 @@ std::vector<SymbolRow> SymbolDatabase::findSymbolsVisibleAt(
     std::vector<std::string> wildcardPkgs;
     std::vector<std::pair<std::string, std::string>> specificImports; // {pkg, name}
     if (fid >= 0) {
-        for (auto& imp : importsForFileId(fid)) {
+        for (auto& imp : importsVisibleFrom(path)) {
             if (std::find(scopes.begin(), scopes.end(), imp.scope) == scopes.end()) continue;
             if (imp.item == "*")
                 wildcardPkgs.push_back(imp.pkgName);
@@ -863,9 +1027,18 @@ std::vector<SymbolRow> SymbolDatabase::findSymbolsVisibleAt(
             collectExportedImports(pkg, wildcardPkgs, specificImports, visited);
     }
 
+    // The packages on the chain: their members are visible from every file,
+    // not just this one -- a package is often spread over `include'd files
+    // (uvm_pkg over ~150), each of whose rows is attributed to its own file.
+    std::vector<std::string> chainPkgs;
+    for (const auto& sc : scopes)
+        if (isPackage(sc)) chainPkgs.push_back(sc);
+
     // Part 1 placeholders: one ? per local scope.
     std::string localPh;
     for (size_t i = 0; i < scopes.size(); ++i) { if (i) localPh += ','; localPh += '?'; }
+    std::string chainPkgPh;
+    for (size_t i = 0; i < chainPkgs.size(); ++i) { if (i) chainPkgPh += ','; chainPkgPh += '?'; }
 
     // Part 2 placeholders: one ? per wildcard-imported package.
     std::string wildPh;
@@ -886,6 +1059,12 @@ std::vector<SymbolRow> SymbolDatabase::findSymbolsVisibleAt(
         "SELECT s.id,s.kind,s.name,s.line,s.col,s.parent,s.detail,s.end_line,s.scope,f.path "
         "FROM symbols s JOIN files f ON f.id = s.file_id "
         "WHERE f.path = ? AND s.scope IN (" + localPh + ")";
+    // Part 1b: the chain's packages' members from every other file.
+    if (!chainPkgs.empty())
+        sql += " UNION ALL "
+               "SELECT s.id,s.kind,s.name,s.line,s.col,s.parent,s.detail,s.end_line,s.scope,f.path "
+               "FROM symbols s JOIN files f ON f.id = s.file_id "
+               "WHERE f.path != ? AND s.scope IN (" + chainPkgPh + ")";
 
     // Part 2: top-level symbols from every *other* file (this file's own are
     // already in Part 1's chain, which always ends with ""), plus every
@@ -894,15 +1073,21 @@ std::vector<SymbolRow> SymbolDatabase::findSymbolsVisibleAt(
     // (plan.md §6.30 step 1). The one exclusion keeps a wildcard package
     // that is also on the cursor's own scope chain (the cursor is inside the
     // imported package itself) from returning its rows twice.
+    // In the main schema, Part 1b already has a chain package's rows from
+    // the other files too.
     std::string part2Cond = "(f.path != ? AND s.scope = '')";
     if (!wildcardPkgs.empty())
         part2Cond += " OR (s.scope IN (" + wildPh + ") AND NOT (f.path = ? AND s.scope IN (" +
                      localPh + ")))";
-    for (const auto& schema : schemas)
+    for (const auto& schema : schemas) {
+        std::string cond = part2Cond;
+        if (schema.empty() && !wildcardPkgs.empty() && !chainPkgs.empty())
+            cond = "(" + cond + ") AND s.scope NOT IN (" + chainPkgPh + ")";
         sql += " UNION ALL "
                "SELECT s.id,s.kind,s.name,s.line,s.col,s.parent,s.detail,s.end_line,s.scope,f.path "
                "FROM " + schema + "symbols s JOIN " + schema + "files f ON f.id = s.file_id "
-               "WHERE " + part2Cond;
+               "WHERE " + cond;
+    }
 
     // Part 3: one UNION ALL per specific import, per schema, filtered by scope + name.
     for (const auto& schema : schemas)
@@ -916,12 +1101,18 @@ std::vector<SymbolRow> SymbolDatabase::findSymbolsVisibleAt(
     int idx = 1;
     stmt.bind(idx++, path);
     for (const auto& sc : scopes) stmt.bind(idx++, sc);
+    if (!chainPkgs.empty()) {
+        stmt.bind(idx++, path);
+        for (const auto& pkg : chainPkgs) stmt.bind(idx++, pkg);
+    }
     for (size_t i = 0; i < schemas.size(); ++i) {
         stmt.bind(idx++, path);
         if (wildcardPkgs.empty()) continue;
         for (const auto& pkg : wildcardPkgs) stmt.bind(idx++, pkg);
         stmt.bind(idx++, path);
         for (const auto& sc : scopes) stmt.bind(idx++, sc);
+        if (i == 0 && !chainPkgs.empty())
+            for (const auto& pkg : chainPkgs) stmt.bind(idx++, pkg);
     }
     for (size_t i = 0; i < schemas.size(); ++i) {
         for (auto& [pkg, name] : specificImports) {

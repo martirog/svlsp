@@ -59,6 +59,32 @@ std::vector<ParseError> checkMissingArguments(
     return diags;
 }
 
+// An Information diagnostic on line 1 of a file `include'd in more than
+// one scope (in one compile or several), naming the scope svlsp uses
+// (SymbolDatabase::includeContextOf, the first site) and the others. {} for
+// a file whose sites all agree.
+std::vector<ParseError> contextDiagnostics(const SymbolDatabase& sdb, const std::string& path)
+{
+    const auto sites = sdb.includeSitesOf(path);
+    std::vector<const IncludeSiteRow*> distinct;
+    for (const auto& s : sites)
+        if (std::none_of(distinct.begin(), distinct.end(),
+                         [&](const IncludeSiteRow* d) { return d->scope == s.scope; }))
+            distinct.push_back(&s);
+    if (distinct.size() < 2) return {};
+
+    auto name = [](const std::string& scope) {
+        return scope.empty() ? std::string{"the compilation unit"} : "'" + scope + "'";
+    };
+    std::string msg = "svlsp: `include'd in " + std::to_string(distinct.size()) +
+                      " different scopes:";
+    for (size_t i = 0; i < distinct.size(); ++i)
+        msg += (i ? ", " : " ") + name(distinct[i]->scope) + " (" + distinct[i]->includerPath +
+               ":" + std::to_string(distinct[i]->line) + ")";
+    msg += "; using " + name(distinct.front()->scope);
+    return {{1, 0, msg, {}, 3}};
+}
+
 } // namespace
 
 CompilationController::CompilationController(SymbolDatabase& sdb, std::ostream* logStream)
@@ -95,7 +121,7 @@ std::vector<ParseError> CompilationController::compile(const std::string& path,
         std::vector<ParseError> errs;
         errs.reserve(rows.size());
         for (const auto& r : rows)
-            errs.push_back({r.line, r.col, r.message});
+            errs.push_back({r.line, r.col, r.message, {}, r.severity});
         return errs;
     }
 
@@ -107,8 +133,26 @@ std::vector<ParseError> CompilationController::compile(const std::string& path,
     if (config) {
         for (const auto& [name, value] : config->defines) preprocessor.define(name, value);
     }
+
+    // An included file compiled on its own (opened or edited) starts where
+    // its includer left off: in the scope open at its `include, with the
+    // macros its includer's unit defines -- so its records are scoped as
+    // when the includer is compiled (`uvm_pkg::uvm_component`, not
+    // `uvm_component`).
+    const auto context = m_sdb.includeContextOf(path);
+    if (context) {
+        for (const auto& m : m_sdb.macrosOfUnit(*context, path))
+            preprocessor.define(MacroRecord{m.name, m.body, m.line, m.col, m.filePath,
+                                            m.isFunctionLike, m.params, m.defaults});
+        if (m_log) {
+            *m_log << "[context]  " << path << ": scope '" << context->scope << "' from "
+                   << context->includerPath << ":" << context->line << "\n";
+            m_log->flush();
+        }
+    }
     auto preprocessed = preprocessor.process(stripped.source, path, m_log);
-    auto walked = SvTreeWalker::walk(preprocessed.source, preprocessed.sourceMap, m_collectDocs);
+    auto walked = SvTreeWalker::walk(preprocessed.source, preprocessed.sourceMap, m_collectDocs,
+                                     context ? context->scope : std::string{});
     if (!m_collectDocs)
         for (auto& mac : preprocessed.macros) mac.doc.clear();
 
@@ -229,9 +273,36 @@ std::vector<ParseError> CompilationController::compile(const std::string& path,
     // for `includedFiles` -- this is what lets a *different* file's own
     // didSave later find "who includes me" via SymbolDatabase::includersOf.
     m_sdb.replaceFileIncludes(fid, allIncluded);
+
+    // Where this compile included each file (schema v16), the first
+    // `include of it. The walker gives a file with no tokens of its own
+    // (only `include's or `define's) the scopes open around its lines; only
+    // a file with no lines at all gets the compilation unit's.
+    std::vector<IncludeSiteRecord> sites;
+    for (const auto& s : preprocessed.includeSites) {
+        if (std::any_of(sites.begin(), sites.end(),
+                        [&](const IncludeSiteRecord& r) { return r.file == s.file; }))
+            continue;
+        const auto it = walked.includeScopes.find(s.file);
+        sites.push_back({s.file, s.includer.empty() ? path : s.includer, s.line,
+                         it == walked.includeScopes.end() ? "" : it->second});
+    }
+    std::vector<std::string> sitedFiles = m_sdb.replaceIncludeSites(fid, path, sites);
+    for (const auto& s : sites) sitedFiles.push_back(s.file);
+
+    // Tell a file `include'd in more than one scope which one svlsp uses
+    // (re-checked for each file this compile includes, or no longer does).
+    const auto primaryContextDiags = contextDiagnostics(m_sdb, path);
+    m_sdb.replaceDiagnostics(fid, primaryContextDiags, "context");
+    std::sort(sitedFiles.begin(), sitedFiles.end());
+    sitedFiles.erase(std::unique(sitedFiles.begin(), sitedFiles.end()), sitedFiles.end());
+    for (const auto& file : sitedFiles)
+        m_sdb.replaceDiagnostics(m_sdb.upsertFile(file, ""), contextDiagnostics(m_sdb, file),
+                                 "context");
     if (includedFiles) *includedFiles = std::move(allIncluded);
 
     auto result = errsByFile[""];
+    result.insert(result.end(), primaryContextDiags.begin(), primaryContextDiags.end());
     result.insert(result.end(), primaryCallDiags.begin(), primaryCallDiags.end());
     result.insert(result.end(), primaryUnresolvedDiags.begin(), primaryUnresolvedDiags.end());
     return result;

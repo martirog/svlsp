@@ -1,6 +1,7 @@
 #pragma once
 #include "compiler/parse_record.h"
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 struct WalkResult {
@@ -9,6 +10,10 @@ struct WalkResult {
     std::vector<ImportRecord> imports;
     std::vector<InstantiationRecord> instantiations;
     std::vector<CallRecord>   calls;
+    // Each included file's include scope: the scope chain open at its
+    // `include (e.g. "uvm_pkg"), keyed like ParseRecord::file. A file
+    // with no tokens of its own (only `define's) has no entry.
+    std::unordered_map<std::string, std::string> includeScopes;
 };
 
 // Runs the full ANTLR4 parse pipeline on already-preprocessed SV source and
@@ -25,9 +30,15 @@ struct WalkResult {
 //
 // `collectDocs` false skips doc-comment extraction (ParseRecord::doc stays
 // "", plan.md §6.31).
+//
+// `initialScope` is the scope chain the source sits in ("" = the
+// compilation unit): an included file compiled on its own starts in the
+// scope open at its `include (e.g. "uvm_pkg"), so its records are scoped
+// as when its includer is compiled.
 class SvTreeWalker {
 public:
     static WalkResult walk(const std::string& source,
                            const std::vector<SourceLine>& sourceMap = {},
-                           bool collectDocs = true);
+                           bool collectDocs = true,
+                           const std::string& initialScope = "");
 };

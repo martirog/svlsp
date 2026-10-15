@@ -89,6 +89,8 @@ struct ParseRecord {
     std::string     file{};        // original source file; empty = same as compiled file
     std::string     doc{};         // cleaned doc comment (plan.md §6.31); "" = none
     std::string     access{};      // class member's "local" / "protected"; "" = public
+    int             endCol{0};     // 0-based column just past a scope's last token
+                                    // (on endLine); 0 = unknown (whole end line)
 };
 
 struct ParseError {
@@ -96,6 +98,7 @@ struct ParseError {
     int         column;  // 0-based
     std::string message;
     std::string file{};  // original source file; empty = same as compiled file
+    int         severity{1}; // LSP DiagnosticSeverity: 1 error, 3 information
 };
 
 // One package import/export statement: `import pkgName::item`, `import pkgName::*`,

@@ -944,3 +944,40 @@ TEST_CASE("resolveSymbolAt: return new(...) in a block resolves the function's r
     f.add("/blkr.sv", text);
     requireResolves(f, "/blkr.sv", "@use", "new", "/blkr.sv", "@ctor");
 }
+
+// ---------------------------------------------------------------------------
+// Column-granular scopes (plan.md §6.30, "column-granular scopes")
+// ---------------------------------------------------------------------------
+
+TEST_CASE("resolveSymbolAt: an outer local used after a same-line inner block",
+          "[resolution][scope-col]")
+{
+    F f;
+    const std::string text =
+        "module col_m;\n"
+        "  initial begin int v; begin int v; v = 1; end v = 2; end // @line\n"
+        "endmodule\n";
+    f.add("/col.sv", text);
+    // `v = 1` is the inner block's, `v = 2` (after the inner `end`) the outer's.
+    requireResolvesTo(f, "/col.sv", "@line", "v = 1", "/col.sv", "@line", "v; v = 1");
+    requireResolvesTo(f, "/col.sv", "@line", "v = 2", "/col.sv", "@line", "v; begin");
+}
+
+TEST_CASE("resolveSymbolAt: an argument isn't visible after its function's endfunction "
+          "on the same line",
+          "[resolution][scope-col]")
+{
+    F f;
+    const std::string text =
+        "module col_a;\n"
+        "  function int f(int arg); return arg; endfunction int r = arg; // @line\n"
+        "endmodule\n";
+    f.add("/cola.sv", text);
+    requireResolvesTo(f, "/cola.sv", "@line", "arg;", "/cola.sv", "@line", "arg)");
+    // After `endfunction` only the name-only fallback finds it.
+    const std::string& t = f.files.at("/cola.sv");
+    const Pos line = posOf(t, "@line", "r = arg");
+    auto r = resolveAt(f, "/cola.sv", {line.line, line.col + 4});
+    REQUIRE(r.has_value());
+    CHECK_FALSE(r->exact);
+}

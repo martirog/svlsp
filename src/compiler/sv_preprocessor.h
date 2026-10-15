@@ -18,11 +18,20 @@ struct MacroRecord {
     std::string doc{};  // cleaned doc comment above/after the `define (plan.md §6.31)
 };
 
+// Where an `include pulled a file in: the directive's file (empty = the
+// compiled file) and 1-based line. One per `include resolved, in order.
+struct IncludeSite {
+    std::string file;      // the included file, as ParseRecord::file names it
+    std::string includer;  // the file holding the `include; empty = the compiled file
+    int         line{0};
+};
+
 struct PreprocessorResult {
     std::string source;
     std::vector<std::string> errors;
     std::vector<MacroRecord> macros;     // all `define macros encountered in active branches
     std::vector<SourceLine>  sourceMap;  // one entry per output line; index = line - 1
+    std::vector<IncludeSite> includeSites;
 };
 
 // Pass 2 of the two-pass SV preprocessing pipeline.
@@ -56,6 +65,11 @@ public:
     // Value may be empty for flag-style defines.
     void define(const std::string& name, const std::string& value = "");
 
+    // Add a predefined macro with its full definition (function-like ones
+    // too): the macros the file's includer had defined at its `include, for
+    // a file compiled on its own. Not reported in PreprocessorResult::macros.
+    void define(const MacroRecord& macro);
+
     // Preprocess `source` from the file at `filepath`.
     // Each call starts with a fresh macro table seeded from predefined macros.
     //
@@ -76,4 +90,5 @@ public:
 private:
     std::vector<std::string> m_includePaths;
     std::vector<std::pair<std::string, std::string>> m_predefined;
+    std::vector<MacroRecord> m_seeded;
 };

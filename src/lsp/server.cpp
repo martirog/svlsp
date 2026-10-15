@@ -67,7 +67,7 @@ LanguageServer::collectIncludedDiagnostics(const std::vector<std::string>& paths
         auto rows = m_symbolDb.diagnosticsForFile(incPath);
         std::vector<ParseError> errs;
         errs.reserve(rows.size());
-        for (const auto& r : rows) errs.push_back({r.line, r.col, r.message});
+        for (const auto& r : rows) errs.push_back({r.line, r.col, r.message, {}, r.severity});
         result.emplace_back(pathToUri(incPath), toDiagnostics(errs));
     }
     return result;

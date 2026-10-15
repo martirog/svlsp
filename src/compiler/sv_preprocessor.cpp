@@ -44,6 +44,7 @@ struct Ctx {
     std::string output{};
     std::vector<MacroRecord> macroRecords{};
     std::vector<SourceLine> sourceMap{};
+    std::vector<IncludeSite> includeSites{};
 
     bool isOutputting() const {
         for (const auto& e : condStack) if (!e.active) return false;
@@ -456,8 +457,9 @@ static bool hasUnterminatedInvocation(const std::string& line, const MacroMap& m
 static void processSource(const std::string& source, const std::string& filepath,
                            Ctx& ctx, int depth);
 
+// `includer`/`line`: where the directive is (IncludeSite).
 static void processInclude(const std::string& filename, const std::string& currentFile,
-                            Ctx& ctx, int depth) {
+                            const std::string& includer, int line, Ctx& ctx, int depth) {
     if (depth > 16) {
         ctx.errors.push_back("`include: depth limit exceeded (cycle?)");
         return;
@@ -522,6 +524,7 @@ static void processInclude(const std::string& filename, const std::string& curre
         ctx.progressLog->flush();
     }
 
+    ctx.includeSites.push_back({found, includer, line});
     ctx.includeStack.push_back(found);
     processSource(stripped.source, found, ctx, depth + 1);
     ctx.includeStack.pop_back();
@@ -721,7 +724,7 @@ static void processSource(const std::string& source, const std::string& filepath
                 ctx.errors.push_back("`include: missing or malformed filename");
                 emitBlank();
             } else {
-                processInclude(filename, filepath, ctx, depth);
+                processInclude(filename, filepath, mapFile, lineNo, ctx, depth);
                 // No blank line: included content replaces the `include line.
                 // The recursive processSource call pushed source map entries for it.
             }
@@ -748,6 +751,10 @@ void SvPreprocessor::define(const std::string& name, const std::string& value) {
     m_predefined.emplace_back(name, value);
 }
 
+void SvPreprocessor::define(const MacroRecord& macro) {
+    m_seeded.push_back(macro);
+}
+
 PreprocessorResult SvPreprocessor::process(const std::string& source,
                                             const std::string& filepath,
                                             std::ostream* progressLog) {
@@ -756,6 +763,9 @@ PreprocessorResult SvPreprocessor::process(const std::string& source,
     // Seed macro table from predefined macros
     for (const auto& [name, value] : m_predefined)
         ctx.macros[name] = MacroDef{.isFunctionLike = false, .body = value};
+    for (const auto& m : m_seeded)
+        ctx.macros[m.name] = MacroDef{.isFunctionLike = m.isFunctionLike, .params = m.params,
+                                      .defaults = m.defaults, .body = m.body};
 
     processSource(source, filepath, ctx, 0);
 
@@ -763,5 +773,5 @@ PreprocessorResult SvPreprocessor::process(const std::string& source,
         ctx.errors.push_back("unterminated `ifdef/`ifndef block");
 
     return {std::move(ctx.output), std::move(ctx.errors), std::move(ctx.macroRecords),
-            std::move(ctx.sourceMap)};
+            std::move(ctx.sourceMap), std::move(ctx.includeSites)};
 }

@@ -174,7 +174,7 @@ TEST_CASE("replaceImports stores wildcard import", "[db][symbol-db][import]") {
     f.sdb.replaceSymbols(fid, {
         {ParseRecordKind::Module, "top", 1, 0, "", "", 20, ""}
     });
-    auto visible = f.sdb.findSymbolsVisibleAt("/a.sv", 10);
+    auto visible = f.sdb.findSymbolsVisibleAt("/a.sv", {10, 0});
     auto it = std::find_if(visible.begin(), visible.end(),
                            [](const SymbolRow& r){ return r.name == "MyClass"; });
     CHECK(it != visible.end());
@@ -199,7 +199,7 @@ TEST_CASE("replaceImports: wildcard import excludes other package symbols",
         {ParseRecordKind::Module, "top", 1, 0, "", "", 20, ""}
     });
 
-    auto visible = f.sdb.findSymbolsVisibleAt("/a.sv", 10);
+    auto visible = f.sdb.findSymbolsVisibleAt("/a.sv", {10, 0});
     auto hasAlpha = std::any_of(visible.begin(), visible.end(),
                                 [](const SymbolRow& r){ return r.name == "Alpha"; });
     auto hasBeta  = std::any_of(visible.begin(), visible.end(),
@@ -224,7 +224,7 @@ TEST_CASE("replaceImports: specific import makes only that symbol visible",
         {ParseRecordKind::Module, "top", 1, 0, "", "", 20, ""}
     });
 
-    auto visible = f.sdb.findSymbolsVisibleAt("/a.sv", 10);
+    auto visible = f.sdb.findSymbolsVisibleAt("/a.sv", {10, 0});
     auto hasFoo = std::any_of(visible.begin(), visible.end(),
                               [](const SymbolRow& r){ return r.name == "Foo"; });
     auto hasBar = std::any_of(visible.begin(), visible.end(),
@@ -249,7 +249,7 @@ TEST_CASE("findSymbolsVisibleAt: wildcard import of a package declared in the sa
         {ParseRecordKind::Module,  "top",      5, 7, "", "", 9, ""},
     });
 
-    auto visible = f.sdb.findSymbolsVisibleAt("/a.sv", 7);
+    auto visible = f.sdb.findSymbolsVisibleAt("/a.sv", {7, 0});
     auto n = std::count_if(visible.begin(), visible.end(),
                            [](const SymbolRow& r){ return r.name == "SameCls"; });
     CHECK(n == 1);
@@ -268,7 +268,7 @@ TEST_CASE("findSymbolsVisibleAt: same-file wildcard import still excludes other 
         {ParseRecordKind::Module,  "top",   8, 7, "", "", 12, ""},
     });
 
-    auto visible = f.sdb.findSymbolsVisibleAt("/a.sv", 10);
+    auto visible = f.sdb.findSymbolsVisibleAt("/a.sv", {10, 0});
     auto has = [&](const char* name) {
         return std::any_of(visible.begin(), visible.end(),
                            [&](const SymbolRow& r){ return r.name == name; });
@@ -290,7 +290,7 @@ TEST_CASE("findSymbolsVisibleAt: a cursor inside a package that is also wildcard
 
     // Line 4 is inside self_pkg: SelfCls is reachable both through the
     // local scope chain (Part 1) and through the wildcard import.
-    auto visible = f.sdb.findSymbolsVisibleAt("/a.sv", 4);
+    auto visible = f.sdb.findSymbolsVisibleAt("/a.sv", {4, 0});
     auto n = std::count_if(visible.begin(), visible.end(),
                            [](const SymbolRow& r){ return r.name == "SelfCls"; });
     CHECK(n == 1);
@@ -311,7 +311,7 @@ TEST_CASE("replaceImports replaces previous imports", "[db][symbol-db][import]")
     f.sdb.replaceImports(fid, {{"pkg", "*"}});
     f.sdb.replaceImports(fid, {});
 
-    auto visible = f.sdb.findSymbolsVisibleAt("/a.sv", 10);
+    auto visible = f.sdb.findSymbolsVisibleAt("/a.sv", {10, 0});
     auto hasC = std::any_of(visible.begin(), visible.end(),
                             [](const SymbolRow& r){ return r.name == "C"; });
     CHECK_FALSE(hasC);
@@ -346,7 +346,7 @@ TEST_CASE("plain import is not transitive: second-level import stays hidden",
         {ParseRecordKind::Module, "top", 1, 0, "", "", 20, ""}
     });
 
-    auto visible = f.sdb.findSymbolsVisibleAt("/a.sv", 10);
+    auto visible = f.sdb.findSymbolsVisibleAt("/a.sv", {10, 0});
     auto hasAlpha = std::any_of(visible.begin(), visible.end(),
                                 [](const SymbolRow& r){ return r.name == "Alpha"; });
     auto hasBeta  = std::any_of(visible.begin(), visible.end(),
@@ -383,7 +383,7 @@ TEST_CASE("export re-exports a wildcard-imported package transitively",
         {ParseRecordKind::Module, "top", 1, 0, "", "", 20, ""}
     });
 
-    auto visible = f.sdb.findSymbolsVisibleAt("/a.sv", 10);
+    auto visible = f.sdb.findSymbolsVisibleAt("/a.sv", {10, 0});
     auto hasBeta  = std::any_of(visible.begin(), visible.end(),
                                 [](const SymbolRow& r){ return r.name == "Beta"; });
     auto hasAlpha = std::any_of(visible.begin(), visible.end(),
@@ -417,7 +417,7 @@ TEST_CASE("export of a specific symbol re-exports only that item",
         {ParseRecordKind::Module, "top", 1, 0, "", "", 20, ""}
     });
 
-    auto visible = f.sdb.findSymbolsVisibleAt("/a.sv", 10);
+    auto visible = f.sdb.findSymbolsVisibleAt("/a.sv", {10, 0});
     auto hasFoo = std::any_of(visible.begin(), visible.end(),
                               [](const SymbolRow& r){ return r.name == "Foo"; });
     auto hasBar = std::any_of(visible.begin(), visible.end(),
@@ -508,8 +508,8 @@ TEST_CASE("scopeKindAtPosition returns empty string outside any tracked scope",
     f.sdb.replaceSymbols(f.sdb.upsertFile("/a.sv", "h"), {
         {ParseRecordKind::Module, "top", 5, 0, "", "", 10, ""}
     });
-    CHECK(f.sdb.scopeKindAtPosition("/a.sv", 1) == "");   // before the module
-    CHECK(f.sdb.scopeKindAtPosition("/a.sv", 20) == "");  // after the module
+    CHECK(f.sdb.scopeKindAtPosition("/a.sv", {1, 0}) == "");   // before the module
+    CHECK(f.sdb.scopeKindAtPosition("/a.sv", {20, 0}) == "");  // after the module
 }
 
 TEST_CASE("scopeKindAtPosition returns the innermost enclosing kind",
@@ -520,9 +520,9 @@ TEST_CASE("scopeKindAtPosition returns the innermost enclosing kind",
         {ParseRecordKind::Class,    "Cls",  5, 0,     "top", "", 15, "top"},
         {ParseRecordKind::Function, "meth", 8, 0,     "Cls", "", 12, "top::Cls"},
     });
-    CHECK(f.sdb.scopeKindAtPosition("/a.sv", 3)  == "Module");
-    CHECK(f.sdb.scopeKindAtPosition("/a.sv", 6)  == "Class");
-    CHECK(f.sdb.scopeKindAtPosition("/a.sv", 10) == "Function");
+    CHECK(f.sdb.scopeKindAtPosition("/a.sv", {3, 0})  == "Module");
+    CHECK(f.sdb.scopeKindAtPosition("/a.sv", {6, 0})  == "Class");
+    CHECK(f.sdb.scopeKindAtPosition("/a.sv", {10, 0}) == "Function");
 }
 
 // ---------------------------------------------------------------------------
@@ -536,7 +536,7 @@ TEST_CASE("enclosingClassNameAt finds the class directly containing a position",
         {ParseRecordKind::Module, "top", 1, 0, "",    "", 20, ""},
         {ParseRecordKind::Class,  "Cls", 5, 0, "top", "", 15, "top"},
     });
-    CHECK(f.sdb.enclosingClassNameAt("/a.sv", 6) == "Cls");
+    CHECK(f.sdb.enclosingClassNameAt("/a.sv", {6, 0}) == "Cls");
 }
 
 TEST_CASE("enclosingClassNameAt finds the enclosing class even nested inside one of its methods",
@@ -549,7 +549,7 @@ TEST_CASE("enclosingClassNameAt finds the enclosing class even nested inside one
     });
     // Line 10 is inside meth's body -- scopeKindAtPosition would report
     // "Function" there, but enclosingClassNameAt must still find "Cls".
-    CHECK(f.sdb.enclosingClassNameAt("/a.sv", 10) == "Cls");
+    CHECK(f.sdb.enclosingClassNameAt("/a.sv", {10, 0}) == "Cls");
 }
 
 TEST_CASE("enclosingClassNameAt returns empty string outside any class",
@@ -558,7 +558,7 @@ TEST_CASE("enclosingClassNameAt returns empty string outside any class",
     f.sdb.replaceSymbols(f.sdb.upsertFile("/a.sv", "h"), {
         {ParseRecordKind::Module, "top", 1, 0, "", "", 20, ""},
     });
-    CHECK(f.sdb.enclosingClassNameAt("/a.sv", 2) == "");
+    CHECK(f.sdb.enclosingClassNameAt("/a.sv", {2, 0}) == "");
 }
 
 TEST_CASE("enclosingClassNameAt finds the class of an out-of-class method body",
@@ -573,8 +573,8 @@ TEST_CASE("enclosingClassNameAt finds the class of an out-of-class method body",
         {ParseRecordKind::Function, "m", 3, 25, "C", "void", 0, "p::C"},
         {ParseRecordKind::Function, "m", 6, 22, "C", "void", 9, "p::C"},
     });
-    CHECK(f.sdb.enclosingClassNameAt("/a.sv", 7) == "C");
-    CHECK(f.sdb.enclosingClassNameAt("/a.sv", 12) == "");
+    CHECK(f.sdb.enclosingClassNameAt("/a.sv", {7, 0}) == "C");
+    CHECK(f.sdb.enclosingClassNameAt("/a.sv", {12, 0}) == "");
 }
 
 TEST_CASE("enclosingClassScopesAt lists the qualified enclosing classes, innermost first",
@@ -591,12 +591,14 @@ TEST_CASE("enclosingClassScopesAt lists the qualified enclosing classes, innermo
         {ParseRecordKind::Function, "g",    20, 15, "p",     "void", 22, "p"},
     });
     using V = std::vector<std::string>;
-    CHECK(f.sdb.enclosingClassScopesAt("/a.sv", 6) == V{"p::Outer::Inner", "p::Outer"});
-    CHECK(f.sdb.enclosingClassScopesAt("/a.sv", 4) == V{"p::Outer::Inner", "p::Outer"});
-    CHECK(f.sdb.enclosingClassScopesAt("/a.sv", 11) == V{"p::Outer"});
-    CHECK(f.sdb.enclosingClassScopesAt("/a.sv", 15) == V{"p::Outer"}); // out-of-class body
-    CHECK(f.sdb.enclosingClassScopesAt("/a.sv", 21).empty());
-    CHECK(f.sdb.enclosingClassScopesAt("/a.sv", 40).empty());
+    CHECK(f.sdb.enclosingClassScopesAt("/a.sv", {6, 0}) == V{"p::Outer::Inner", "p::Outer"});
+    CHECK(f.sdb.enclosingClassScopesAt("/a.sv", {4, 10}) == V{"p::Outer::Inner", "p::Outer"});
+    // Before the class's name on its own line is still outside it.
+    CHECK(f.sdb.enclosingClassScopesAt("/a.sv", {4, 0}) == V{"p::Outer"});
+    CHECK(f.sdb.enclosingClassScopesAt("/a.sv", {11, 0}) == V{"p::Outer"});
+    CHECK(f.sdb.enclosingClassScopesAt("/a.sv", {15, 0}) == V{"p::Outer"}); // out-of-class body
+    CHECK(f.sdb.enclosingClassScopesAt("/a.sv", {21, 0}).empty());
+    CHECK(f.sdb.enclosingClassScopesAt("/a.sv", {40, 0}).empty());
 }
 
 TEST_CASE("portsOf lists one declaration's ports in order when a prototype and its body share "
@@ -1032,4 +1034,56 @@ TEST_CASE("memberAccess reads attached library DBs, with or without the column",
     f.sdb.attachLibraryDbs({oldPath, libPath});
     CHECK(f.sdb.memberAccess("q::C") ==
           std::unordered_map<std::string, std::string>{{"lm_lib", "local"}});
+}
+
+// ---------------------------------------------------------------------------
+// Column-granular scope containment (plan.md §6.30, "column-granular
+// scopes"): a scope spans from its row's (line, col) to (end_line,
+// end_col), end_col exclusive of the last token's end but containing a
+// cursor right after it. end_col 0 (a row without one) spans the whole
+// end line.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("scopeAtPosition tells two scopes on one line apart by column",
+          "[db][symbol-db][scope-col]") {
+    Fixture f;
+    ParseRecord m{ParseRecordKind::Module, "m", 1, 7, "", "", 6, ""};
+    m.endCol = 9;
+    ParseRecord fn{ParseRecordKind::Function, "f", 2, 16, "m", "", 2, "m"};
+    fn.endCol = 40;
+    ParseRecord gn{ParseRecordKind::Function, "g", 2, 57, "m", "", 2, "m"};
+    gn.endCol = 80;
+    ParseRecord legacy{ParseRecordKind::Function, "h", 4, 16, "m", "", 5, "m"}; // endCol 0
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/a.sv", "h"), {m, fn, gn, legacy});
+
+    CHECK(f.sdb.scopeAtPosition("/a.sv", {2, 10}) == "m");   // before f's name
+    CHECK(f.sdb.scopeAtPosition("/a.sv", {2, 16}) == "m::f"); // on f's name
+    CHECK(f.sdb.scopeAtPosition("/a.sv", {2, 30}) == "m::f");
+    CHECK(f.sdb.scopeAtPosition("/a.sv", {2, 40}) == "m::f"); // right after its endfunction
+    CHECK(f.sdb.scopeAtPosition("/a.sv", {2, 45}) == "m");   // between the two
+    CHECK(f.sdb.scopeAtPosition("/a.sv", {2, 60}) == "m::g");
+    CHECK(f.sdb.scopeAtPosition("/a.sv", {2, 85}) == "m");
+    CHECK(f.sdb.scopeAtPosition("/a.sv", {5, 999}) == "m::h"); // no end_col: whole end line
+    CHECK(f.sdb.scopeKindAtPosition("/a.sv", {2, 45}) == "Module");
+    CHECK(f.sdb.scopeKindAtPosition("/a.sv", {2, 60}) == "Function");
+}
+
+TEST_CASE("findSymbolsVisibleAt keeps a same-line sibling scope's locals out",
+          "[db][symbol-db][scope-col]") {
+    Fixture f;
+    ParseRecord m{ParseRecordKind::Module, "m", 1, 7, "", "", 3, ""};
+    m.endCol = 9;
+    ParseRecord fn{ParseRecordKind::Function, "f", 2, 16, "m", "", 2, "m"};
+    fn.endCol = 40;
+    ParseRecord a{ParseRecordKind::Port, "a", 2, 22, "f", "int", 0, "m::f"};
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/a.sv", "h"), {m, fn, a});
+    auto names = [&](SrcPos p) {
+        std::vector<std::string> out;
+        for (auto& r : f.sdb.findSymbolsVisibleAt("/a.sv", p)) out.push_back(r.name);
+        return out;
+    };
+    auto inF = names({2, 30});
+    CHECK(std::find(inF.begin(), inF.end(), "a") != inF.end());
+    auto after = names({2, 45});
+    CHECK(std::find(after.begin(), after.end(), "a") == after.end());
 }

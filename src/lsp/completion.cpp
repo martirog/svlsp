@@ -219,13 +219,13 @@ std::vector<Candidate> candidatesForResolvedType(SymbolDatabase& db, const std::
 }
 
 // `super.` inside a constructor body, where `super.new` is legal (LRM 8.15).
-bool isSuperInConstructor(SymbolDatabase& db, const std::string& path, int line1,
+bool isSuperInConstructor(SymbolDatabase& db, const std::string& path, SrcPos at,
                           const std::vector<ChainSegment>& segments)
 {
     if (segments.size() != 1 || segments[0].name != "super" || segments[0].isCall ||
         segments[0].indexDepth != 0)
         return false;
-    const std::string scope = db.scopeAtPosition(path, line1, /*withBlocks=*/false);
+    const std::string scope = db.scopeAtPosition(path, at, /*withBlocks=*/false);
     return scope == "new" || (scope.size() > 5 && scope.compare(scope.size() - 5, 5, "::new") == 0);
 }
 
@@ -253,8 +253,9 @@ lsp::TextDocument_CompletionResult CompletionProvider::getCompletion(
     bool fuzzyEnabled)
 {
     const std::string path{params.textDocument.uri.path()};
-    // LSP position is 0-based; scopeAtPosition uses 1-based lines.
-    const int line1 = static_cast<int>(params.position.line) + 1;
+    // LSP lines are 0-based; scope lookups use 1-based lines.
+    const SrcPos at{static_cast<int>(params.position.line) + 1,
+                    static_cast<int>(params.position.character)};
 
     // Typing inside a comment or a string literal is prose, not code.
     if (auto offset = offsetForPosition(docText, params.position.line, params.position.character);
@@ -262,11 +263,11 @@ lsp::TextDocument_CompletionResult CompletionProvider::getCompletion(
         return nullptr;
 
     if (auto dot = dotCompletionContext(docText, params.position.line, params.position.character)) {
-        auto resolved = resolveChain(db, path, line1, dot->segments);
+        auto resolved = resolveChain(db, path, at, dot->segments);
         if (!resolved) return nullptr;
         auto candidates =
-            candidatesForResolvedType(db, *resolved, path, db.enclosingClassScopesAt(path, line1));
-        if (isSuperInConstructor(db, path, line1, dot->segments))
+            candidatesForResolvedType(db, *resolved, path, db.enclosingClassScopesAt(path, at));
+        if (isSuperInConstructor(db, path, at, dot->segments))
             candidates.push_back(superNewCandidate(db, *resolved, path));
         return buildCompletionItems(candidates, dot->prefix, fuzzyEnabled);
     }
@@ -286,8 +287,8 @@ lsp::TextDocument_CompletionResult CompletionProvider::getCompletion(
     // The class's own members are appended too: the visible set's local
     // chain only covers the cursor's file, and an out-of-class body may live
     // in another one.
-    auto rows = db.findSymbolsVisibleAt(path, line1);
-    if (const auto classes = db.enclosingClassScopesAt(path, line1); !classes.empty()) {
+    auto rows = db.findSymbolsVisibleAt(path, at);
+    if (const auto classes = db.enclosingClassScopesAt(path, at); !classes.empty()) {
         const std::string& cls = classes.front();
         const auto chain = db.baseClassChain(
             cls.find("::") == std::string::npos ? "$unit::" + cls : cls, path);
@@ -301,7 +302,7 @@ lsp::TextDocument_CompletionResult CompletionProvider::getCompletion(
         }
     }
     auto candidates = candidatesFromRows(rows);
-    auto keywords    = candidatesFromKeywords(db.scopeKindAtPosition(path, line1));
+    auto keywords    = candidatesFromKeywords(db.scopeKindAtPosition(path, at));
     candidates.insert(candidates.end(),
                        std::make_move_iterator(keywords.begin()),
                        std::make_move_iterator(keywords.end()));

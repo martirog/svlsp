@@ -694,7 +694,7 @@ TEST_CASE("a wildcard import of a package declared in the same file makes its me
         "  SameFileCls obj;\n"               // line 7
         "endmodule\n");
 
-    auto visible = f.sdb.findSymbolsVisibleAt("/a.sv", 7);
+    auto visible = f.sdb.findSymbolsVisibleAt("/a.sv", {7, 0});
     auto n = std::count_if(visible.begin(), visible.end(),
                            [](const SymbolRow& r){ return r.name == "SameFileCls"; });
     CHECK(n == 1);
@@ -942,4 +942,235 @@ TEST_CASE("compile skips the missing-argument check with no callee resolver set"
         "  initial r = ci_k(1);\n"
         "endmodule\n");
     CHECK(errs.empty());
+}
+
+// ---------------------------------------------------------------------------
+// Include context (schema v16 include_sites): a package spread over
+// `include'd files, as uvm_pkg is. A position in an included file that none
+// of its own scope rows contains is in the scope open at its `include, the
+// package's members from the other included files are visible there, and
+// the file compiled on its own (opened or edited) is seeded from its
+// include site: that scope, its includer's macros and imports.
+// ---------------------------------------------------------------------------
+
+namespace {
+struct IncludedPackage : Fixture {
+    const std::string incA = "/tmp/svlsp_test_is_a.svh";
+    const std::string incB = "/tmp/svlsp_test_is_b.svh";
+    const std::string textA = "typedef int is_t;\nclass is_c;\nendclass\n";
+    const std::string textB =
+        "virtual class is_b extends is_c;\n" // line 1: the name is at column 14
+        "  is_t v;\n"
+        "  `IS_DECL(w)\n"                     // the includer's function-like macro
+        "  is_qt q;\n"                        // from the includer's `import is_q::*`
+        "endclass\n"
+        "\n";
+    IncludedPackage() {
+        { std::ofstream ofs(incA); ofs << textA; }
+        { std::ofstream ofs(incB); ofs << textB; }
+        ctrl.compile("/is_top.sv",
+                     "`define IS_DECL(n) int n;\n"
+                     "package is_q;\n"
+                     "  typedef int is_qt;\n"
+                     "endpackage\n"
+                     "package is_p;\n"
+                     "import is_q::*;\n"
+                     "`include \"" + incA + "\"\n" // line 7
+                     "`include \"" + incB + "\"\n" // line 8
+                     "endpackage\n");
+    }
+    std::optional<SymbolRow> row(const std::string& name) const {
+        auto rows = sdb.findSymbolsByName(name);
+        if (rows.empty()) return std::nullopt;
+        return rows.front();
+    }
+};
+} // namespace
+
+TEST_CASE("a compile records where it included each file",
+          "[db][ctrl][include-scope]") {
+    IncludedPackage f;
+    const auto a = f.sdb.includeSitesOf(f.incA);
+    REQUIRE(a.size() == 1);
+    CHECK(a[0].primaryPath == "/is_top.sv");
+    CHECK(a[0].includerPath == "/is_top.sv");
+    CHECK(a[0].line == 7);
+    CHECK(a[0].scope == "is_p");
+    const auto b = f.sdb.includeContextOf(f.incB);
+    REQUIRE(b);
+    CHECK(b->line == 8);
+    CHECK(b->scope == "is_p");
+    CHECK_FALSE(f.sdb.includeContextOf("/is_top.sv"));
+}
+
+TEST_CASE("outside its own scopes an included file's position is in its include scope",
+          "[db][ctrl][include-scope]") {
+    IncludedPackage f;
+    CHECK(f.sdb.scopeAtPosition(f.incB, {1, 0}) == "is_p");  // before the class name
+    CHECK(f.sdb.scopeAtPosition(f.incB, {6, 0}) == "is_p");  // after endclass
+    CHECK(f.sdb.scopeAtPosition(f.incB, {2, 2}) == "is_p::is_b");
+    CHECK(f.sdb.scopeKindAtPosition(f.incB, {1, 0}) == "Package");
+    CHECK(f.sdb.scopeKindAtPosition(f.incB, {2, 2}) == "Class");
+}
+
+TEST_CASE("a package's members declared in another included file are visible",
+          "[db][ctrl][include-scope]") {
+    IncludedPackage f;
+    for (SrcPos at : {SrcPos{1, 0}, SrcPos{2, 2}, SrcPos{6, 0}}) {
+        const auto rows = f.sdb.findSymbolsVisibleAt(f.incB, at);
+        auto has = [&](const std::string& name) {
+            return std::count_if(rows.begin(), rows.end(), [&](const SymbolRow& r) {
+                return r.name == name && r.filePath == f.incA;
+            });
+        };
+        CHECK(has("is_c") == 1);
+        CHECK(has("is_t") == 1);
+    }
+}
+
+TEST_CASE("a name declared in another included file of the package resolves exactly",
+          "[db][ctrl][include-scope]") {
+    IncludedPackage f;
+    auto cls = resolveSymbolAt(f.sdb, f.incB, f.textB, 0, 29); // `is_c` after extends
+    REQUIRE(cls);
+    CHECK(cls->exact);
+    CHECK(cls->row.kind == "Class");
+    CHECK(cls->row.filePath == f.incA);
+    auto type = resolveSymbolAt(f.sdb, f.incB, f.textB, 1, 3); // `is_t`
+    REQUIRE(type);
+    CHECK(type->exact);
+    CHECK(type->row.kind == "Typedef");
+    CHECK(type->row.filePath == f.incA);
+}
+
+TEST_CASE("an import written in the includer applies in the included file",
+          "[db][ctrl][include-scope]") {
+    IncludedPackage f;
+    const auto rows = f.sdb.findSymbolsVisibleAt(f.incB, {4, 2});
+    CHECK(std::count_if(rows.begin(), rows.end(), [](const SymbolRow& r) {
+        return r.name == "is_qt" && r.scope == "is_q";
+    }) == 1);
+    auto type = resolveSymbolAt(f.sdb, f.incB, f.textB, 3, 3); // `is_qt`
+    REQUIRE(type);
+    CHECK(type->exact);
+    CHECK(type->row.scope == "is_q");
+}
+
+TEST_CASE("an included file compiled on its own keeps its includer's scope and macros",
+          "[db][ctrl][include-scope]") {
+    IncludedPackage f;
+    auto errs = f.ctrl.compile(f.incB, f.textB + "// edited\n");
+    CHECK(errs.empty());
+    const auto b = f.row("is_b");
+    REQUIRE(b);
+    CHECK(b->scope == "is_p");
+    const auto w = f.row("w"); // declared by the includer's `IS_DECL
+    REQUIRE(w);
+    CHECK(w->scope == "is_p::is_b");
+    CHECK(f.sdb.scopeAtPosition(f.incB, {2, 2}) == "is_p::is_b");
+    // Its include site belongs to the includer's compile and survives.
+    REQUIRE(f.sdb.includeContextOf(f.incB));
+    CHECK(f.sdb.includeContextOf(f.incB)->scope == "is_p");
+    // ... and what is visible in it is unchanged.
+    auto cls = resolveSymbolAt(f.sdb, f.incB, f.textB, 0, 29);
+    REQUIRE(cls);
+    CHECK(cls->exact);
+    CHECK(cls->row.filePath == f.incA);
+}
+
+TEST_CASE("a file compiled on its own isn't seeded with its own include guard",
+          "[db][ctrl][include-scope]") {
+    Fixture f;
+    const std::string inc = "/tmp/svlsp_test_is_guard.svh";
+    const std::string text =
+        "`ifndef IS_GUARD_SVH\n"
+        "`define IS_GUARD_SVH\n"
+        "class is_g;\n"
+        "endclass\n"
+        "`endif\n";
+    { std::ofstream ofs(inc); ofs << text; }
+    f.ctrl.compile("/is_guard_top.sv",
+                   "package is_gp;\n`include \"" + inc + "\"\nendpackage\n");
+    f.ctrl.compile(inc, text + "\n");
+    const auto rows = f.sdb.findSymbolsByName("is_g");
+    REQUIRE(rows.size() == 1);
+    CHECK(rows[0].scope == "is_gp");
+}
+
+TEST_CASE("a file included in two different scopes says which one svlsp uses",
+          "[db][ctrl][include-scope]") {
+    IncludedPackage f;
+    f.ctrl.compile("/is_top2.sv", "package is_r;\n`include \"" + f.incA + "\"\nendpackage\n");
+    CHECK(f.sdb.includeSitesOf(f.incA).size() == 2);
+
+    const auto diags = f.sdb.diagnosticsForFile(f.incA);
+    REQUIRE(diags.size() == 1);
+    CHECK(diags[0].line == 1);
+    CHECK(diags[0].severity == 3);
+    CHECK(diags[0].message ==
+          "svlsp: `include'd in 2 different scopes: 'is_p' (/is_top.sv:7), "
+          "'is_r' (/is_top2.sv:2); using 'is_p'");
+
+    // Compiled on its own, it is seeded with the first and reports the same.
+    auto errs = f.ctrl.compile(f.incA, f.textA + "\n");
+    REQUIRE(errs.size() == 1);
+    CHECK(errs[0].severity == 3);
+    const auto c = f.row("is_c");
+    REQUIRE(c);
+    CHECK(c->scope == "is_p");
+
+    // Its sites agreeing again (is_top2 no longer includes it) clears it.
+    f.ctrl.compile("/is_top2.sv", "package is_r;\nendpackage\n");
+    CHECK(f.sdb.diagnosticsForFile(f.incA).empty());
+    CHECK(f.ctrl.compile(f.incA, f.textA + "\n\n").empty());
+}
+
+TEST_CASE("a file with no tokens of its own gets the scope it is included in",
+          "[db][ctrl][include-scope]") {
+    // UVM's tlm1/uvm_tlm.svh shape: a wrapper of `include lines only, itself
+    // included inside a package. Also a macro-only file at file level, and
+    // a wrapper right after a class's endclass and right before endpackage.
+    Fixture f;
+    const std::string inner = "/tmp/svlsp_test_is_inner.svh";
+    const std::string wrap  = "/tmp/svlsp_test_is_wrap.svh";
+    const std::string wrap2 = "/tmp/svlsp_test_is_wrap2.svh";
+    const std::string defs  = "/tmp/svlsp_test_is_defs.svh";
+    const std::string innerText = "class is_inner;\nendclass\n";
+    const std::string nested = "/tmp/svlsp_test_is_nested.svh";
+    const std::string wrapText  = "// a wrapper\n`include \"" + nested + "\"\n"
+                                  "`include \"" + inner + "\"\n";
+    { std::ofstream ofs(nested); ofs << "`define IS_NESTED 1\n"; }
+    { std::ofstream ofs(inner); ofs << innerText; }
+    { std::ofstream ofs(wrap);  ofs << wrapText; }
+    { std::ofstream ofs(wrap2); ofs << "`define IS_W2 1\n"; }
+    { std::ofstream ofs(defs);  ofs << "`define IS_DEFS 1\n"; }
+    f.ctrl.compile("/is_wrap_top.sv",
+                   "`include \"" + defs + "\"\n"
+                   "package is_wp;\n"
+                   "`include \"" + wrap + "\"\n"
+                   "class is_k;\n"
+                   "endclass\n"
+                   "`include \"" + wrap2 + "\"\n"
+                   "endpackage\n");
+    auto scopeOf = [&](const std::string& file) {
+        const auto site = f.sdb.includeContextOf(file);
+        return site ? site->scope : std::string("<none>");
+    };
+    CHECK(scopeOf(defs) == "");
+    CHECK(scopeOf(wrap) == "is_wp");
+    CHECK(scopeOf(inner) == "is_wp");
+    CHECK(scopeOf(wrap2) == "is_wp");
+    CHECK(scopeOf(nested) == "is_wp");
+
+    // Opening the wrapper compiles it on its own, seeded with that scope,
+    // so the file it includes keeps its rows scoped.
+    CHECK(f.ctrl.compile(wrap, wrapText + "\n").empty());
+    const auto rows = f.sdb.findSymbolsByName("is_inner");
+    REQUIRE(rows.size() == 1);
+    CHECK(rows[0].scope == "is_wp");
+    // Its own sites, before its first token and after its last, are in the
+    // seeded scope too.
+    for (const auto& file : {nested, inner})
+        for (const auto& site : f.sdb.includeSitesOf(file))
+            CHECK(site.scope == "is_wp");
 }

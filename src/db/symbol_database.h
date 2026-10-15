@@ -10,6 +10,14 @@
 #include <vector>
 
 // Typed rows returned by query methods.
+// A cursor position in a file: 1-based line, 0-based column. A scope row
+// contains it when it lies between the row's (line, col) and its (end_line,
+// end_col) -- plan.md §6.30, "column-granular scopes".
+struct SrcPos {
+    int line;
+    int col;
+};
+
 struct SymbolRow {
     int64_t     id;
     std::string kind;
@@ -28,6 +36,7 @@ struct DiagnosticRow {
     int         col;
     std::string message;
     std::string filePath;
+    int         severity{1}; // as ParseError::severity
 };
 
 struct ImportRow {
@@ -54,6 +63,23 @@ struct MacroRow {
     std::string filePath;
     std::string body; // empty from a library DB built before schema v10
     std::string doc;  // plan.md §6.31; empty from a library DB built before schema v11
+};
+
+// One `include of a file, as replaceIncludeSites stores it (paths, not ids).
+struct IncludeSiteRecord {
+    std::string file;      // the included file
+    std::string includer;  // the file holding the `include
+    int         line{0};   // its 1-based line in `includer`
+    std::string scope;     // the scope chain open there ("" = compilation unit)
+};
+
+// One recorded `include of a file (schema v16 include_sites), read back.
+struct IncludeSiteRow {
+    std::string primaryPath;  // the compiled file whose compile saw the `include
+    std::string includerPath; // the file holding the `include
+    int         line{0};      // its 1-based line in includerPath
+    std::string scope;        // the scope chain open there ("" = compilation unit)
+    std::string schema;       // "" = this DB, "lib0." ... = an attached library DB
 };
 
 // Typed access layer over the svlsp SQLite schema.
@@ -133,6 +159,42 @@ public:
 
     // Return the stored content hash for `path`, or "" if the file is unknown.
     std::string getFileHash(const std::string& path) const;
+
+    // Replaces the include sites recorded by `primaryFileId`'s compile
+    // (schema v16): one per included file, the first `include of it.
+    // Includer and included files missing from `files` are added (hash "").
+    // Returns the files the replaced sites included.
+    std::vector<std::string> replaceIncludeSites(int64_t primaryFileId, const std::string& primaryPath,
+                             const std::vector<IncludeSiteRecord>& sites);
+
+    // Every recorded `include of `path`, from this DB first, then each
+    // attached library DB (one built before v16 has none), each ordered by
+    // (primary path, includer path, line). {} for a file never included.
+    std::vector<IncludeSiteRow> includeSitesOf(const std::string& path) const;
+
+    // The include site svlsp takes `path`'s context from: the first of
+    // includeSitesOf. A file compiled on its own is seeded from it
+    // (CompilationController::compile), and a position none of the file's
+    // own scope rows contains is in its scope (scopeAtPosition).
+    std::optional<IncludeSiteRow> includeContextOf(const std::string& path) const;
+
+    // The macros the compile of `site.primaryPath` recorded (in site.schema),
+    // from the primary and every file it includes, except those defined in
+    // `excludePath` -- what an included file compiled on its own is seeded
+    // with. Not only those defined before the `include: a superset.
+    std::vector<MacroRow> macrosOfUnit(const IncludeSiteRow& site,
+                                       const std::string& excludePath) const;
+
+    // The imports that apply in `path`: its own, then those of each file
+    // that includes it in its include context, up to that compile's primary
+    // (an `import` in a package that `include's `path`). Each row's scope
+    // is where the import is written; callers keep those on the position's
+    // scope chain.
+    std::vector<ImportRow> importsVisibleFrom(const std::string& path) const;
+
+    // True if `scope` names a package (a top-level Package row, this DB or
+    // an attached one).
+    bool isPackage(const std::string& scope) const;
 
     // Every path in `files`, in no particular order. Used by
     // ReferencesProvider/RenameProvider (plan.md item 3) to scan every file
@@ -254,20 +316,21 @@ public:
     std::vector<SymbolRow> findSymbolsByNamePrefix(const std::string& prefix) const;
 
     // Returns the full scope path (e.g. "MyModule::MyClass::myFunc") of the
-    // innermost scope-defining symbol that contains `line` in `path`.
-    // Returns "" when the position is outside all named scopes. Block scopes
-    // (begin/end, fork/join, generate, for/foreach; plan.md §6.30) count
-    // unless `withBlocks` is false, which gives the innermost design unit,
-    // package, class or subroutine instead.
-    std::string scopeAtPosition(const std::string& path, int line, bool withBlocks = true) const;
+    // innermost scope-defining symbol that contains `pos` in `path`. Outside
+    // all of the file's own scope rows it is the file's include scope (""
+    // for a compiled file). Block scopes (begin/end, fork/join, generate,
+    // for/foreach; plan.md §6.30) count unless `withBlocks` is false, which
+    // gives the innermost design unit, package, class or subroutine instead.
+    std::string scopeAtPosition(const std::string& path, SrcPos pos, bool withBlocks = true) const;
 
     // Returns the ParseRecordKind string (e.g. "Module", "Class", "Function")
-    // of the innermost scope-defining symbol that contains `line` in `path`.
-    // Returns "" when the position is outside all named scopes (top level /
-    // compilation unit). Sibling of scopeAtPosition, same query shape, used
-    // by keyword completion's context-legality check (src/lsp/sv_keywords.h).
-    // Never "Block": inside a block it reports the enclosing unit's kind.
-    std::string scopeKindAtPosition(const std::string& path, int line) const;
+    // of the innermost scope-defining symbol that contains `pos` in `path`.
+    // Outside all of the file's own scope rows it is the kind of the file's
+    // include scope, "" at the top level (compilation unit). Sibling of
+    // scopeAtPosition, same query shape, used by keyword completion's
+    // context-legality check (src/lsp/sv_keywords.h). Never "Block": inside
+    // a block it reports the enclosing unit's kind.
+    std::string scopeKindAtPosition(const std::string& path, SrcPos pos) const;
 
     // Returns the bare name of the nearest enclosing `Class` scope that
     // contains `line` in `path` -- unlike scopeAtPosition/scopeKindAtPosition
@@ -278,13 +341,13 @@ public:
     // after `endclass`, plan.md §6.30 step D) it's the class named on the
     // body's scope chain. "" when no enclosing class exists. Powers
     // `this`/`super` resolution in chained dot-completion (plan.md §6.14).
-    std::string enclosingClassNameAt(const std::string& path, int line) const;
+    std::string enclosingClassNameAt(const std::string& path, SrcPos pos) const;
 
     // The qualified scopes of the classes enclosing `line` in `path`,
     // innermost first: the class itself, then any class it's nested in
     // ("p::Outer::Inner", "p::Outer"). Inside an out-of-class method body
     // that's the body's class. Empty outside any class.
-    std::vector<std::string> enclosingClassScopesAt(const std::string& path, int line) const;
+    std::vector<std::string> enclosingClassScopesAt(const std::string& path, SrcPos pos) const;
 
     // `innermost` followed by each enclosing scope, ending with "" (top
     // level): "p::C::m" -> {"p::C::m", "p::C", "p", ""}.
@@ -297,9 +360,11 @@ public:
                                                   const std::string& curPath);
 
     // All symbols visible from `(path, line)`: every symbol in the scope chain
-    // at that position (local → enclosing scopes) plus all top-level symbols
-    // from every file.  Ordered innermost-scope-first, then by name.
-    std::vector<SymbolRow> findSymbolsVisibleAt(const std::string& path, int line) const;
+    // at that position (local → enclosing scopes; a package's from every
+    // file, since a package is often spread over `include'd files) plus all
+    // top-level symbols from every file.  Ordered innermost-scope-first,
+    // then by name.
+    std::vector<SymbolRow> findSymbolsVisibleAt(const std::string& path, SrcPos pos) const;
 
     // `className`'s own `extends` ancestor chain (plan.md §6.26): starts
     // with `className`'s own fully-qualified scope name ("MyPkg::MyClass"
@@ -338,6 +403,7 @@ private:
     // one `?`. Unordered.
     std::vector<MacroRow> queryMacros(const std::string& cond,
                                       const std::string& bindValue) const;
+    static MacroRow macroRowFromStmt(Database::Statement& stmt);
 
     int64_t fileIdFor(const std::string& path) const;
     std::vector<ImportRow> importsForFileId(int64_t fileId) const;

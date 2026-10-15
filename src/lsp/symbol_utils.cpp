@@ -469,14 +469,14 @@ std::vector<SymbolRow> membersAcrossChain(SymbolDatabase& db, const std::string&
     return members;
 }
 
-std::string resolveFirstSegment(SymbolDatabase& db, const std::string& path, int line1,
+std::string resolveFirstSegment(SymbolDatabase& db, const std::string& path, SrcPos at,
                                  const ChainSegment& seg)
 {
     if (!seg.isCall && seg.name == "this")
-        return db.enclosingClassNameAt(path, line1);
+        return db.enclosingClassNameAt(path, at);
 
     if (!seg.isCall && seg.name == "super") {
-        std::string enclosing = db.enclosingClassNameAt(path, line1);
+        std::string enclosing = db.enclosingClassNameAt(path, at);
         if (enclosing.empty()) return "";
         auto rows = db.findSymbolsByName(enclosing);
         if (rows.empty()) return "";
@@ -485,7 +485,7 @@ std::string resolveFirstSegment(SymbolDatabase& db, const std::string& path, int
         return "";
     }
 
-    auto visible = db.findSymbolsVisibleAt(path, line1);
+    auto visible = db.findSymbolsVisibleAt(path, at);
     const char* wantKind = seg.isCall ? "Function" : nullptr;
     for (auto& row : visible) {
         bool kindMatches = wantKind ? row.kind == wantKind
@@ -513,10 +513,10 @@ std::string resolveMemberSegment(SymbolDatabase& db, const std::string& curPath,
     return "";
 }
 
-std::optional<std::string> resolveChain(SymbolDatabase& db, const std::string& path, int line1,
+std::optional<std::string> resolveChain(SymbolDatabase& db, const std::string& path, SrcPos at,
                                          const std::vector<ChainSegment>& segments)
 {
-    std::string current = resolveFirstSegment(db, path, line1, segments[0]);
+    std::string current = resolveFirstSegment(db, path, at, segments[0]);
     if (current.empty()) return std::nullopt;
     for (size_t i = 1; i < segments.size(); ++i) {
         current = resolveMemberSegment(db, path, current, segments[i]);

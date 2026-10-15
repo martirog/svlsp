@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include "lsp/completion.h"
+#include "lsp/fuzzy_match.h"
 #include "uvm_corpus_fixture.h"
 #include <algorithm>
 
@@ -64,15 +65,31 @@ TEST_CASE("completion: a real known file + a synthetic partial prefix filters to
     REQUIRE_FALSE(result.isNull());
     auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
     CHECK(hasItem(items, "uvm_component"));
-    // Every returned item must actually start with the typed prefix.
+    // Completion fuzzy-filters (a case-insensitive subsequence match), so
+    // besides the true prefix matches it offers e.g. uvm_port_component and
+    // UVM_TLM_COMPLETED -- members of uvm_pkg from other included files,
+    // visible here since the include context (plan.md §6.30, "Follow-up:
+    // include context"). Every item must match, and every prefix match must
+    // rank ahead of every other match.
+    CHECK(hasItem(items, "uvm_port_component"));
+    std::string lastPrefixSort, firstOtherSort;
     for (const auto& item : items) {
-        CHECK(std::string(item.label).rfind("uvm_comp", 0) == 0);
+        const std::string label(item.label);
+        CHECK(fuzzyScore(label, "uvm_comp").has_value());
+        const std::string sort = item.sortText.value_or("");
+        if (label.rfind("uvm_comp", 0) == 0)
+            lastPrefixSort = std::max(lastPrefixSort, sort);
+        else if (firstOtherSort.empty() || sort < firstOtherSort)
+            firstOtherSort = sort;
     }
+    REQUIRE_FALSE(lastPrefixSort.empty());
+    REQUIRE_FALSE(firstOtherSort.empty());
+    CHECK(lastPrefixSort < firstOtherSort);
 }
 
 TEST_CASE("completion: empty prefix at real scope returns the full unranked candidate list",
           "[uvm_corpus][completion]") {
-    // Same real anchor position as the scenarios above, but with no typed
+    // Line 60, the first line of uvm_component's body, with no typed
     // prefix -- exercises findSymbolsVisibleAt's real result set for this
     // one file at real corpus scale (base/uvm_component.svh alone declares
     // 100+ extern methods, each with an out-of-class `uvm_component::name`
@@ -80,12 +97,15 @@ TEST_CASE("completion: empty prefix at real scope returns the full unranked cand
     // cross-file visibility below) flowing through completely unfiltered,
     // unlike every other scenario in this file.
     //
-    // docText must be synthetic (not the real file text): every real token
-    // on line 59 is itself an identifier, so wordAtPosition's "walks left
-    // off an id char" behavior (see symbol_utils.h) would always find SOME
-    // word there, never a truly empty prefix.
-    const std::string docText = std::string(58, '\n') + " ";
-    auto result = CompletionProvider::getCompletion(makeParams("base/uvm_component.svh", 58, 0), uvmCorpusDb(), docText);
+    // Until column-granular scopes (plan.md §6.30) this case sat on line 59,
+    // the class header, at column 0: now that is before the class name, in
+    // package uvm_pkg -- the package-level case below pins that position.
+    //
+    // docText is synthetic so the prefix is truly empty whatever the real
+    // line holds (wordAtPosition walks left off an id char, see
+    // symbol_utils.h).
+    const std::string docText = std::string(59, '\n') + " ";
+    auto result = CompletionProvider::getCompletion(makeParams("base/uvm_component.svh", 59, 0), uvmCorpusDb(), docText);
     REQUIRE_FALSE(result.isNull());
     auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
 
@@ -94,8 +114,14 @@ TEST_CASE("completion: empty prefix at real scope returns the full unranked cand
     // uvm_object (m_pack, m_unpack_pre, m_unpack_post, m_leaf_name,
     // m_inst_id) are no longer offered in uvm_component. Then 324 -> 325
     // (plan.md §6.32): the `class` keyword, legal in a class body (nested
-    // classes).
-    CHECK(items.size() == 325);
+    // classes). Then 325 -> 1042 (plan.md §6.30, "Follow-up: include
+    // context"): every uvm_pkg member from every included file, not only
+    // this file's -- the package-level case below minus the 7 keywords
+    // not legal in a class body, plus the class's 254 own and inherited
+    // members.
+    CHECK(items.size() == 1042);
+    CHECK_FALSE(hasItem(items, "endpackage"));
+    CHECK(hasItem(items, "uvm_port_component")); // declared in another file
     CHECK(hasItem(items, "class"));
     CHECK_FALSE(hasItem(items, "m_inst_id"));
     CHECK(hasItem(items, "m_inst_count")); // static protected: still offered
@@ -104,13 +130,34 @@ TEST_CASE("completion: empty prefix at real scope returns the full unranked cand
     // `function void uvm_component::get_children(...)` at line 1847, after
     // `endclass`. Since plan.md §6.30 step D both rows are scoped
     // uvm_pkg::uvm_component (the body used to be recorded at uvm_pkg
-    // level), and this anchor line is the class header, inside the class's
-    // own range -- so this checks the class's members are visible here.
+    // level), and this anchor is in the class body -- so this checks the
+    // class's members are visible here.
     CHECK(hasItem(items, "get_children"));
     // No typed prefix -> no ranking, so sortText must be left unset.
     for (const auto& item : items) {
         CHECK(item.sortText.value_or("").empty());
     }
+}
+
+TEST_CASE("completion: empty prefix in the package, before a class name, offers uvm_pkg but "
+          "not the class's members",
+          "[uvm_corpus][completion]") {
+    // Line 59 at column 0: `virtual class uvm_component ...` -- the class
+    // scope starts at its name (column 14), so this position is in package
+    // uvm_pkg, the scope this file is `include'd in (plan.md §6.30,
+    // "Follow-up: include context"). Every uvm_pkg member from every
+    // included file is offered, none of uvm_component's.
+    const std::string docText = std::string(58, '\n') + " ";
+    auto result = CompletionProvider::getCompletion(makeParams("base/uvm_component.svh", 58, 0), uvmCorpusDb(), docText);
+    REQUIRE_FALSE(result.isNull());
+    auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
+    CHECK(items.size() == 795);
+    CHECK(hasItem(items, "endpackage"));
+    CHECK(hasItem(items, "uvm_component"));
+    CHECK(hasItem(items, "uvm_port_component")); // declared in another file
+    CHECK(hasItem(items, "uvm_sequencer"));      // likewise
+    CHECK_FALSE(hasItem(items, "get_children"));
+    CHECK_FALSE(hasItem(items, "m_inst_count"));
 }
 
 TEST_CASE("completion: true fuzzy (skip-tolerant, non-prefix) pattern matches a real class name",
@@ -121,16 +168,9 @@ TEST_CASE("completion: true fuzzy (skip-tolerant, non-prefix) pattern matches a 
     // exact/contiguous-prefix filtering, which is all the scenarios above
     // exercise) can find it.
     //
-    // Deliberately reuses the same-file anchor used by every scenario above
-    // rather than a genuinely cross-file target (e.g. "uvm_sequencer" from a
-    // different corpus file): findSymbolsVisibleAt's cross-file union only
-    // ever includes a symbol whose *own* scope is "" (truly top-level); real
-    // UVM classes all live inside `package uvm_pkg`, so their scope is
-    // "uvm_pkg", not "" -- invisible cross-file from a plain completion
-    // request unless the requesting file itself has an explicit
-    // `import uvm_pkg::*` (files inside the package, like this one, don't
-    // import themselves). A real cross-file scenario belongs in a fixture
-    // that actually has that import, not here.
+    // Reuses the same-file anchor as the scenarios above. uvm_pkg members
+    // declared in other files are visible here too (the include context,
+    // plan.md §6.30) -- the package-level empty-prefix case checks those.
     const std::string docText = std::string(58, '\n') + "  uvmcmpnt";
     auto result = CompletionProvider::getCompletion(makeParams("base/uvm_component.svh", 58, 10), uvmCorpusDb(), docText);
     REQUIRE_FALSE(result.isNull());

@@ -156,7 +156,7 @@ std::vector<SymbolRow> membersAcrossChain(SymbolDatabase& db, const std::string&
 // the cursor (not as a member of anything -- that's resolveMemberSegment
 // below). Returns "" on failure (fail closed). See completion.cpp's
 // original doc comment for the full `this`/`super` design.
-std::string resolveFirstSegment(SymbolDatabase& db, const std::string& path, int line1,
+std::string resolveFirstSegment(SymbolDatabase& db, const std::string& path, SrcPos at,
                                  const ChainSegment& seg);
 
 // Resolves a non-first chain segment as a member of `prevClass`'s own class
@@ -171,7 +171,7 @@ std::string resolveMemberSegment(SymbolDatabase& db, const std::string& curPath,
 // the latter passes `segments` *excluding* the final call name itself (the
 // receiver chain only), so the result is the receiver's own type, not
 // whatever the call itself might return.
-std::optional<std::string> resolveChain(SymbolDatabase& db, const std::string& path, int line1,
+std::optional<std::string> resolveChain(SymbolDatabase& db, const std::string& path, SrcPos at,
                                          const std::vector<ChainSegment>& segments);
 
 // A lexical hit for a whole-identifier text search (findIdentifierOccurrences

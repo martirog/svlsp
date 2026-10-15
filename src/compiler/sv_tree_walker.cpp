@@ -392,6 +392,56 @@ public:
     const std::vector<ImportRecord>& imports() const { return m_imports; }
     const std::vector<InstantiationRecord>& instantiations() const { return m_instantiations; }
     const std::vector<CallRecord>&   calls() const { return m_calls; }
+    const std::unordered_map<std::string, std::string>& includeScopes() const {
+        return m_includeScopes;
+    }
+
+    // The first rule entered that starts in an included file is that file's
+    // outermost construct, entered while the includer's scope is open (this
+    // runs before the rule's own enter pushes any scope of its own).
+    void enterEveryRule(antlr4::ParserRuleContext* ctx) override {
+        if (!ctx->start) return;
+        const int idx = static_cast<int>(ctx->start->getLine()) - 1;
+        if (idx < 0 || idx >= static_cast<int>(m_sourceMap.size())) return;
+        const std::string& file = m_sourceMap[idx].file;
+        if (file == m_lastRuleFile) return;
+        m_lastRuleFile = file;
+        if (!file.empty()) m_includeScopes.try_emplace(file, currentScopeChain());
+    }
+
+    // An included file with no tokens of its own (only `include's or
+    // `define's) still has lines, blank in the output. They lie between two
+    // tokens, and the scopes open across that gap are the ones open at both
+    // tokens: the common prefix of their scope stacks. Before the first
+    // token and after the last, that is the seeded scope (walk's
+    // initialScope), which `startTokens` / `finishTokens` stand in for.
+    void visitTerminal(antlr4::tree::TerminalNode* node) override {
+        const antlr4::Token* tok = node->getSymbol();
+        if (!tok || tok->getType() == antlr4::Token::EOF) return;
+        const int line = static_cast<int>(tok->getLine());
+        scopeGapBefore(line);
+        m_lastTokenLine   = std::max(m_lastTokenLine, line);
+        m_lastTokenScopes = m_scopeStack;
+    }
+    void startTokens()  { m_lastTokenScopes = m_scopeStack; }
+    void finishTokens() { scopeGapBefore(static_cast<int>(m_sourceMap.size()) + 1); }
+
+    // Gives each tokenless included file with lines between the last token
+    // and output line `line` (1-based) the scopes open across that gap.
+    void scopeGapBefore(int line) {
+        const int end = std::min(line - 1, static_cast<int>(m_sourceMap.size()));
+        for (int idx = m_lastTokenLine; idx < end; ++idx) {
+            const std::string& file = m_sourceMap[idx].file;
+            if (file.empty() || m_includeScopes.count(file)) continue;
+            size_t n = 0;
+            while (n < m_lastTokenScopes.size() && n < m_scopeStack.size() &&
+                   m_lastTokenScopes[n] == m_scopeStack[n])
+                ++n;
+            std::string chain;
+            for (size_t i = 0; i < n; ++i) chain += (i ? "::" : "") + m_scopeStack[i];
+            m_includeScopes.emplace(file, chain);
+        }
+    }
 
     // ---- Scope helpers ----
 
@@ -408,14 +458,17 @@ public:
         return result;
     }
 
+    struct EndPos { int line = 0; int col = 0; };
+
     void pushScope(const std::string& name) { m_scopeStack.push_back(name); }
     void popScope()                          { if (!m_scopeStack.empty()) m_scopeStack.pop_back(); }
 
-    // Set endLine on the most-recently-emitted record with the given name.
-    void backpatchEndLine(const std::string& name, int endLine) {
+    // Set endLine/endCol on the most-recently-emitted record with the given name.
+    void backpatchEnd(const std::string& name, EndPos end) {
         for (int i = static_cast<int>(m_records.size()) - 1; i >= 0; --i) {
             if (m_records[i].name == name) {
-                m_records[i].endLine = endLine;
+                m_records[i].endLine = end.line;
+                m_records[i].endCol  = end.col;
                 return;
             }
         }
@@ -434,7 +487,7 @@ public:
     }
 
     void exitModule_declaration(SvParser::Module_declarationContext* ctx) override {
-        backpatchEndLine(currentScope(), translatedEndLine(ctx->stop));
+        backpatchEnd(currentScope(), translatedEnd(ctx->stop));
         popScope();
     }
 
@@ -451,7 +504,7 @@ public:
     }
 
     void exitInterface_declaration(SvParser::Interface_declarationContext* ctx) override {
-        backpatchEndLine(currentScope(), translatedEndLine(ctx->stop));
+        backpatchEnd(currentScope(), translatedEnd(ctx->stop));
         popScope();
     }
 
@@ -468,7 +521,7 @@ public:
     }
 
     void exitProgram_declaration(SvParser::Program_declarationContext* ctx) override {
-        backpatchEndLine(currentScope(), translatedEndLine(ctx->stop));
+        backpatchEnd(currentScope(), translatedEnd(ctx->stop));
         popScope();
     }
 
@@ -481,7 +534,7 @@ public:
     }
 
     void exitPackage_declaration(SvParser::Package_declarationContext* ctx) override {
-        backpatchEndLine(currentScope(), translatedEndLine(ctx->stop));
+        backpatchEnd(currentScope(), translatedEnd(ctx->stop));
         popScope();
     }
 
@@ -495,7 +548,7 @@ public:
     }
 
     void exitClass_declaration(SvParser::Class_declarationContext* ctx) override {
-        backpatchEndLine(currentScope(), translatedEndLine(ctx->stop));
+        backpatchEnd(currentScope(), translatedEnd(ctx->stop));
         popScope();
     }
 
@@ -537,7 +590,7 @@ public:
 
     void exitInterface_class_declaration(
         SvParser::Interface_class_declarationContext* ctx) override {
-        backpatchEndLine(currentScope(), translatedEndLine(ctx->stop));
+        backpatchEnd(currentScope(), translatedEnd(ctx->stop));
         popScope();
     }
 
@@ -557,7 +610,7 @@ public:
     }
 
     void exitFunction_body_declaration(SvParser::Function_body_declarationContext* ctx) override {
-        backpatchEndLine(lastScopeSegment(currentScope()), translatedEndLine(ctx->stop));
+        backpatchEnd(lastScopeSegment(currentScope()), translatedEnd(ctx->stop));
         popScope();
     }
 
@@ -587,7 +640,7 @@ public:
     void exitClass_constructor_declaration(
         SvParser::Class_constructor_declarationContext* ctx) override {
         if (!newKeyword(ctx)) return;
-        backpatchEndLine(lastScopeSegment(currentScope()), translatedEndLine(ctx->stop));
+        backpatchEnd(lastScopeSegment(currentScope()), translatedEnd(ctx->stop));
         popScope();
     }
 
@@ -611,7 +664,7 @@ public:
     // (exitFunction_body_declaration/exitTask_body_declaration); a
     // prototype has no body, so its own exit listener must pop that frame
     // immediately here instead, or every symbol declared afterward in the
-    // file would be wrongly nested under it. No backpatchEndLine call is
+    // file would be wrongly nested under it. No backpatchEnd call is
     // needed (unlike the body-form exits): a leaf/no-body record correctly
     // keeps endLine == 0, already ParseRecord::endLine's convention for
     // Port/Signal/Parameter/Macro.
@@ -642,7 +695,7 @@ public:
     }
 
     void exitTask_body_declaration(SvParser::Task_body_declarationContext* ctx) override {
-        backpatchEndLine(lastScopeSegment(currentScope()), translatedEndLine(ctx->stop));
+        backpatchEnd(lastScopeSegment(currentScope()), translatedEnd(ctx->stop));
         popScope();
     }
 
@@ -1028,6 +1081,10 @@ private:
     std::vector<ImportRecord> m_imports;
     std::vector<InstantiationRecord> m_instantiations;
     std::vector<CallRecord>   m_calls;
+    std::unordered_map<std::string, std::string> m_includeScopes;
+    std::string               m_lastRuleFile; // file of the last rule entered
+    int                       m_lastTokenLine{0};  // output line of the last token visited
+    std::vector<std::string>  m_lastTokenScopes;   // the scope stack at it
     std::vector<std::string>  m_scopeStack;
     std::vector<bool>         m_blockFrames; // per open block/loop: pushed a scope?
     bool                      m_inExport{false};
@@ -1076,11 +1133,16 @@ private:
         return p;
     }
 
-    // Translate a stop token's line through the source map; returns 0 if token is null.
-    int translatedEndLine(antlr4::Token* stop) const {
-        if (!stop) return 0;
-        auto [f, line] = translateLine(static_cast<int>(stop->getLine()), m_sourceMap);
-        return line;
+    // A scope's end: its stop token's line and the column just past it,
+    // translated through the source map; {0, 0} if the token is null.
+    EndPos translatedEnd(antlr4::Token* stop) const {
+        if (!stop) return {};
+        const int compiledLine = static_cast<int>(stop->getLine());
+        auto [f, line] = translateLine(compiledLine, m_sourceMap);
+        const int col = translateColumn(compiledLine,
+                                        static_cast<int>(stop->getCharPositionInLine()),
+                                        m_sourceMap);
+        return {line, col + static_cast<int>(stop->getText().size())};
     }
 
     // Push using the identifier token's position (more precise than the rule start).
@@ -1175,8 +1237,11 @@ private:
         int col = translateColumn(compiledLine, compiledCol, m_sourceMap);
         const std::string name =
             label ? label->getText() : "@" + std::to_string(line) + "." + std::to_string(col);
-        m_records.push_back({ParseRecordKind::Block, name, line, col, currentScope(), "",
-                             translatedEndLine(ctx->stop), currentScopeChain(), file});
+        const EndPos end = translatedEnd(ctx->stop);
+        ParseRecord rec{ParseRecordKind::Block, name, line, col, currentScope(), "",
+                        end.line, currentScopeChain(), file};
+        rec.endCol = end.col;
+        m_records.push_back(std::move(rec));
         pushScope(name);
         m_blockFrames.push_back(true);
     }
@@ -1380,7 +1445,8 @@ private:
 
 WalkResult SvTreeWalker::walk(const std::string& source,
                                const std::vector<SourceLine>& sourceMap,
-                               bool collectDocs) {
+                               bool collectDocs,
+                               const std::string& initialScope) {
     antlr4::ANTLRInputStream input(source);
     SvLexer lexer(&input);
     antlr4::CommonTokenStream tokens(&lexer);
@@ -1395,8 +1461,16 @@ WalkResult SvTreeWalker::walk(const std::string& source,
     antlr4::tree::ParseTree* tree = parser.source_text();
 
     SvRecordListener listener(sourceMap, &tokens, collectDocs);
+    for (size_t start = 0; !initialScope.empty();) {
+        const size_t sep = initialScope.find("::", start);
+        listener.pushScope(initialScope.substr(start, sep - start));
+        if (sep == std::string::npos) break;
+        start = sep + 2;
+    }
+    listener.startTokens();
     antlr4::tree::ParseTreeWalker::DEFAULT.walk(&listener, tree);
+    listener.finishTokens();
 
     return {listener.records(), errListener.errors(), listener.imports(), listener.instantiations(),
-            listener.calls()};
+            listener.calls(), listener.includeScopes()};
 }

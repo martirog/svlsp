@@ -94,6 +94,23 @@ void Database::initSchema()
         execute(col.step() ? "UPDATE schema_version SET version = 14;"
                            : db::MIGRATION_V13_TO_V14);
     }
+    if (v < 15) {
+        // Same guard as v12.
+        auto col = prepare("SELECT 1 FROM pragma_table_info('symbols') WHERE name = 'end_col'");
+        execute(col.step() ? "UPDATE schema_version SET version = 15;"
+                           : db::MIGRATION_V14_TO_V15);
+    }
+    // Also when include_sites is missing: a development build's v16 had a
+    // files.include_scope column instead.
+    auto sites = prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                         "AND name = 'include_sites'");
+    if (v < 16 || !sites.step()) {
+        // Same guard as v12.
+        auto col = prepare("SELECT 1 FROM pragma_table_info('diagnostics') "
+                           "WHERE name = 'severity'");
+        if (!col.step()) execute(db::MIGRATION_V16_SEVERITY);
+        execute(db::MIGRATION_V15_TO_V16);
+    }
 }
 
 void Database::execute(const std::string& sql)

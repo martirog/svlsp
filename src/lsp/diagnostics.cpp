@@ -36,6 +36,7 @@ lsp::Diagnostic DiagnosticsPublisher::buildDiagnostic(const ParseError& err)
         .end   = {.line = lspLine, .character = lspCol + 1},
     };
     diag.message  = err.message;
-    diag.severity = lsp::DiagnosticSeverityEnum{lsp::DiagnosticSeverity::Error};
+    diag.severity = lsp::DiagnosticSeverityEnum{
+        err.severity == 3 ? lsp::DiagnosticSeverity::Information : lsp::DiagnosticSeverity::Error};
     return diag;
 }

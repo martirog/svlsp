@@ -42,10 +42,14 @@ std::optional<size_t> offsetOf(const std::string& text, unsigned line, unsigned 
     return offset + character;
 }
 
-int line1At(const std::string& text, size_t offset)
+SrcPos posAt(const std::string& text, size_t offset)
 {
-    return static_cast<int>(std::count(text.begin(), text.begin() + offset, '\n')) + 1;
+    const size_t lineStart = offset == 0 ? 0 : text.rfind('\n', offset - 1) + 1; // npos + 1 == 0
+    return {static_cast<int>(std::count(text.begin(), text.begin() + offset, '\n')) + 1,
+            static_cast<int>(offset - lineStart)};
 }
+
+SrcPos posOf(const SymbolRow& r) { return {r.line, r.col}; }
 
 // Moves `i` left past whitespace (newlines included).
 void skipWsBack(const std::string& text, size_t& i)
@@ -109,16 +113,16 @@ const SymbolRow* earliest(const std::vector<const SymbolRow*>& rows)
     return best;
 }
 
-// The last of `rows` declared at or before `line1`, else the earliest: the
+// The last of `rows` declared at or before `at`, else the earliest: the
 // nearest preceding declaration in a non-class scope -- an out-of-class
 // body's own argument rather than the extern prototype's same-named one,
 // both in scope `C::m` (plan.md §6.30 step D).
-const SymbolRow* closestBefore(const std::vector<const SymbolRow*>& rows, int line1)
+const SymbolRow* closestBefore(const std::vector<const SymbolRow*>& rows, SrcPos at)
 {
     const SymbolRow* best = nullptr;
     for (auto* r : rows)
-        if (r->line <= line1 && (!best || r->line > best->line ||
-                                 (r->line == best->line && r->col > best->col)))
+        if ((r->line < at.line || (r->line == at.line && r->col <= at.col)) &&
+            (!best || r->line > best->line || (r->line == best->line && r->col > best->col)))
             best = r;
     return best ? best : earliest(rows);
 }
@@ -139,27 +143,27 @@ private:
 
     std::optional<ResolvedSymbol> fallback(const std::string& name) const;
 
-    std::vector<std::string> scopeChain(const std::string& path, int line1) const;
+    std::vector<std::string> scopeChain(const std::string& path, SrcPos at) const;
     std::optional<SymbolRow> classRowForScope(const std::string& scope) const;
     std::vector<SymbolRow> classChainRows(const SymbolRow& cls) const;
-    std::optional<SymbolRow> lookupBare(const std::string& path, int line1,
+    std::optional<SymbolRow> lookupBare(const std::string& path, SrcPos at,
                                         const std::string& name, KindFilter filter,
                                         bool withInherited = true) const;
     std::optional<SymbolRow> resolveTypeName(const std::string& type, const std::string& ctxPath,
-                                             int ctxLine1) const;
+                                             SrcPos ctxAt) const;
     std::optional<SymbolRow> classInScope(const std::string& scope, const std::string& name) const;
     std::optional<std::string> resolveQualifierScope(const std::vector<std::string>& segs,
                                                      const std::string& ctxPath,
-                                                     int ctxLine1) const;
+                                                     SrcPos ctxAt) const;
     std::optional<SymbolRow> memberInScope(const std::string& scope, const std::string& name,
                                            KindFilter prefer) const;
     std::optional<SymbolRow> typeOfRow(const SymbolRow& row, int indexDepth) const;
-    std::optional<SymbolRow> enclosingClassRow(int line1) const;
+    std::optional<SymbolRow> enclosingClassRow(SrcPos at) const;
     std::optional<SymbolRow> resolveReceiver(const std::vector<ChainSegment>& segs,
-                                             int line1) const;
+                                             SrcPos at) const;
     std::optional<SymbolRow> constructorIn(const std::string& classScope) const;
-    std::optional<ResolvedSymbol> resolveNew(size_t start, size_t before, int line1, int depth);
-    std::optional<SymbolRow> enclosingFunctionRow(int line1) const;
+    std::optional<ResolvedSymbol> resolveNew(size_t start, size_t before, SrcPos at, int depth);
+    std::optional<SymbolRow> enclosingFunctionRow(SrcPos at) const;
     std::optional<SymbolRow> argumentType(size_t before, size_t start, int depth);
     struct Owner { SymbolRow row; bool paramList; };
     std::optional<Owner> connectionOwner(size_t paren, int depth);
@@ -173,9 +177,9 @@ std::optional<ResolvedSymbol> Resolver::fallback(const std::string& name) const
 }
 
 // Same chain findSymbolsVisibleAt builds: innermost scope first, ending "".
-std::vector<std::string> Resolver::scopeChain(const std::string& path, int line1) const
+std::vector<std::string> Resolver::scopeChain(const std::string& path, SrcPos at) const
 {
-    return SymbolDatabase::scopeChain(m_db.scopeAtPosition(path, line1));
+    return SymbolDatabase::scopeChain(m_db.scopeAtPosition(path, at));
 }
 
 std::optional<SymbolRow> Resolver::classRowForScope(const std::string& scope) const
@@ -196,7 +200,7 @@ std::vector<SymbolRow> Resolver::classChainRows(const SymbolRow& cls) const
     std::vector<SymbolRow> chain{cls};
     std::set<std::string> seen{qualifiedScopeOf(cls)};
     while (!chain.back().detail.empty()) {
-        auto parent = resolveTypeName(chain.back().detail, chain.back().filePath, chain.back().line);
+        auto parent = resolveTypeName(chain.back().detail, chain.back().filePath, posOf(chain.back()));
         if (!parent || !seen.insert(qualifiedScopeOf(*parent)).second) break;
         chain.push_back(*parent);
     }
@@ -227,12 +231,12 @@ int64_t Resolver::overrideFamilyId(const SymbolRow& row) const
     return root;
 }
 
-std::optional<SymbolRow> Resolver::lookupBare(const std::string& path, int line1,
+std::optional<SymbolRow> Resolver::lookupBare(const std::string& path, SrcPos at,
                                               const std::string& name, KindFilter filter,
                                               bool withInherited) const
 {
-    const auto visible = m_db.findSymbolsVisibleAt(path, line1);
-    const auto chain   = scopeChain(path, line1);
+    const auto visible = m_db.findSymbolsVisibleAt(path, at);
+    const auto chain   = scopeChain(path, at);
 
     // 1. The lexical scope chain, innermost first. At a class's own level,
     //    its inherited members come before anything outside the class.
@@ -246,8 +250,17 @@ std::optional<SymbolRow> Resolver::lookupBare(const std::string& path, int line1
         // prototype (earliest) must win over its out-of-class body so every
         // call resolves to the same row; elsewhere the nearest preceding
         // declaration wins.
-        if (!hits.empty()) return cls ? *earliest(hits) : *closestBefore(hits, line1);
-        if (!cls) continue;
+        if (!hits.empty()) return cls ? *earliest(hits) : *closestBefore(hits, at);
+        if (!cls) {
+            // A package's members from any file: a package is often spread
+            // over `include'd files (the visible set has them all).
+            if (scope.empty() || !m_db.isPackage(scope)) continue;
+            std::vector<SymbolRow> own;
+            for (const auto& r : visible)
+                if (r.scope == scope && r.name == name && kindMatches(r, filter)) own.push_back(r);
+            if (!own.empty()) return *pickBestSymbol(own, path);
+            continue;
+        }
         // The class's own members from any file: an out-of-class body
         // (plan.md §6.30 step D) may live in a different file than its class,
         // and the visible set's local chain only covers the cursor's file.
@@ -271,8 +284,9 @@ std::optional<SymbolRow> Resolver::lookupBare(const std::string& path, int line1
     };
 
     // 2. A specific import (`import pkg::name;`) written in a scope on the
-    //    chain (an import in another module of the file doesn't apply).
-    const auto imports = m_db.importsForFile(path);
+    //    chain (an import in another module of the file doesn't apply), in
+    //    the file or in an includer of it.
+    const auto imports = m_db.importsVisibleFrom(path);
     for (const auto& r : visible) {
         if (isLocal(r) || r.name != name || !kindMatches(r, filter)) continue;
         for (const auto& imp : imports)
@@ -296,12 +310,12 @@ std::optional<SymbolRow> Resolver::lookupBare(const std::string& path, int line1
 
 // Resolves a declared type name (a `detail` value, possibly
 // `pkg::`/`Outer::`/`$unit::`-qualified) to its Class row, as seen from
-// (ctxPath, ctxLine1) -- the declaration that wrote it. A Typedef is
+// (ctxPath, ctxAt) -- the declaration that wrote it. A Typedef is
 // followed to the type it aliases, resolved where the typedef is declared.
 // A bare name nothing visible declares still resolves if exactly one class
 // (or else exactly one typedef) has that name.
 std::optional<SymbolRow> Resolver::resolveTypeName(const std::string& type,
-                                                   const std::string& ctxPath, int ctxLine1) const
+                                                   const std::string& ctxPath, SrcPos ctxAt) const
 {
     if (type.empty() || m_typeDepth > 16) return std::nullopt;
     struct DepthGuard {
@@ -322,7 +336,7 @@ std::optional<SymbolRow> Resolver::resolveTypeName(const std::string& type,
     if (segs.size() > 1) {
         const std::string name = segs.back();
         segs.pop_back();
-        auto scope = resolveQualifierScope(segs, ctxPath, ctxLine1);
+        auto scope = resolveQualifierScope(segs, ctxPath, ctxAt);
         if (!scope) return std::nullopt;
         return classInScope(*scope, name);
     }
@@ -331,11 +345,11 @@ std::optional<SymbolRow> Resolver::resolveTypeName(const std::string& type,
     // `extends` name, looked up from the class's declaration line) resolves
     // in the lexical scopes around it, and consulting the class's own
     // ancestors here would recurse back into resolving that same name.
-    if (auto r = lookupBare(ctxPath, ctxLine1, type, KindFilter::ScopeLike, /*withInherited=*/false);
+    if (auto r = lookupBare(ctxPath, ctxAt, type, KindFilter::ScopeLike, /*withInherited=*/false);
         r && r->kind == "Class")
         return r;
-    if (auto td = lookupBare(ctxPath, ctxLine1, type, KindFilter::Typedef, /*withInherited=*/false))
-        return resolveTypeName(td->detail, td->filePath, td->line);
+    if (auto td = lookupBare(ctxPath, ctxAt, type, KindFilter::Typedef, /*withInherited=*/false))
+        return resolveTypeName(td->detail, td->filePath, posOf(*td));
     std::vector<SymbolRow> classes, typedefs;
     for (auto& r : m_db.findSymbolsByName(type)) {
         if (r.kind == "Class") classes.push_back(r);
@@ -344,7 +358,7 @@ std::optional<SymbolRow> Resolver::resolveTypeName(const std::string& type,
     if (classes.size() == 1) return classes.front();
     if (classes.empty() && typedefs.size() == 1)
         return resolveTypeName(typedefs.front().detail, typedefs.front().filePath,
-                               typedefs.front().line);
+                               posOf(typedefs.front()));
     return std::nullopt;
 }
 
@@ -356,7 +370,7 @@ std::optional<SymbolRow> Resolver::classInScope(const std::string& scope,
     auto m = memberInScope(scope, name, KindFilter::ScopeLike);
     if (m && m->kind == "Class") return m;
     if (auto td = memberInScope(scope, name, KindFilter::Typedef))
-        return resolveTypeName(td->detail, td->filePath, td->line);
+        return resolveTypeName(td->detail, td->filePath, posOf(*td));
     return std::nullopt;
 }
 
@@ -365,7 +379,7 @@ std::optional<SymbolRow> Resolver::classInScope(const std::string& scope,
 // nested typedef (UVM's `C::type_id::`) followed to the class it aliases.
 std::optional<std::string> Resolver::resolveQualifierScope(const std::vector<std::string>& segs,
                                                            const std::string& ctxPath,
-                                                           int ctxLine1) const
+                                                           SrcPos ctxAt) const
 {
     if (segs.empty()) return std::nullopt;
     std::string scope;
@@ -377,7 +391,7 @@ std::optional<std::string> Resolver::resolveQualifierScope(const std::vector<std
             if (r.kind == "Package") { isPackage = true; break; }
         if (isPackage) {
             scope = segs[0];
-        } else if (auto cls = resolveTypeName(segs[0], ctxPath, ctxLine1)) {
+        } else if (auto cls = resolveTypeName(segs[0], ctxPath, ctxAt)) {
             scope = qualifiedScopeOf(*cls);
         } else {
             return std::nullopt;
@@ -432,42 +446,42 @@ std::optional<SymbolRow> Resolver::typeOfRow(const SymbolRow& row, int indexDept
         return std::nullopt;
     if (type.empty()) return std::nullopt;
     if (firstTypeLayer(type) != type) return std::nullopt; // still a container, not a class
-    return resolveTypeName(type, row.filePath, row.line);
+    return resolveTypeName(type, row.filePath, posOf(row));
 }
 
-std::optional<SymbolRow> Resolver::enclosingClassRow(int line1) const
+std::optional<SymbolRow> Resolver::enclosingClassRow(SrcPos at) const
 {
-    const std::string name = m_db.enclosingClassNameAt(m_path, line1);
+    const std::string name = m_db.enclosingClassNameAt(m_path, at);
     if (name.empty()) return std::nullopt;
     std::optional<SymbolRow> best;
     for (auto& r : m_db.findSymbolsByName(name))
-        if (r.kind == "Class" && r.filePath == m_path && r.line <= line1 && line1 <= r.endLine &&
+        if (r.kind == "Class" && r.filePath == m_path && r.line <= at.line && at.line <= r.endLine &&
             (!best || r.line > best->line))
             best = r;
     if (best) return best;
     // An out-of-class method body (plan.md §6.30 step D): outside the
     // class's lines, but the class is on the body's scope chain.
-    for (const auto& scope : scopeChain(m_path, line1))
+    for (const auto& scope : scopeChain(m_path, at))
         if (auto cls = classRowForScope(scope)) return cls;
     return std::nullopt;
 }
 
 std::optional<SymbolRow> Resolver::resolveReceiver(const std::vector<ChainSegment>& segs,
-                                                   int line1) const
+                                                   SrcPos at) const
 {
     if (segs.empty()) return std::nullopt;
     const auto& first = segs[0];
     std::optional<SymbolRow> cls;
     if (!first.isCall && first.indexDepth == 0 && first.name == "this") {
-        cls = enclosingClassRow(line1);
+        cls = enclosingClassRow(at);
     } else if (!first.isCall && first.indexDepth == 0 && first.name == "super") {
-        auto self = enclosingClassRow(line1);
+        auto self = enclosingClassRow(at);
         if (!self) return std::nullopt;
         auto chain = classChainRows(*self);
         if (chain.size() < 2) return std::nullopt;
         cls = chain[1];
     } else {
-        auto row = lookupBare(m_path, line1, first.name,
+        auto row = lookupBare(m_path, at, first.name,
                               first.isCall ? KindFilter::Callable : KindFilter::Value);
         if (!row) return std::nullopt;
         cls = typeOfRow(*row, first.indexDepth);
@@ -506,12 +520,12 @@ std::optional<SymbolRow> Resolver::constructorIn(const std::string& classScope) 
 //   - `return new` (the enclosing function's return type);
 //   - an argument, `f(x, new)` / `f(.p(new))` (the callee's parameter type).
 // Anything else (`new[n]`, a copy `new obj`) is nullopt.
-std::optional<ResolvedSymbol> Resolver::resolveNew(size_t start, size_t before, int line1,
+std::optional<ResolvedSymbol> Resolver::resolveNew(size_t start, size_t before, SrcPos at,
                                                    int depth)
 {
     const auto pos = positionForOffset(m_text, start);
     for (auto& r : m_db.findSymbolsByName("new"))
-        if (isCallable(r) && r.filePath == m_path && r.line == line1 &&
+        if (isCallable(r) && r.filePath == m_path && r.line == at.line &&
             r.col == static_cast<int>(pos.character))
             if (auto own = constructorIn(r.scope)) return ResolvedSymbol{*own, true};
 
@@ -536,7 +550,7 @@ std::optional<ResolvedSymbol> Resolver::resolveNew(size_t start, size_t before, 
             i = k - 2;
         }
         std::reverse(segs.begin(), segs.end());
-        auto scope = resolveQualifierScope(segs, m_path, line1);
+        auto scope = resolveQualifierScope(segs, m_path, at);
         return scope ? ctorOf(classRowForScope(*scope)) : std::nullopt;
     }
 
@@ -545,12 +559,12 @@ std::optional<ResolvedSymbol> Resolver::resolveNew(size_t start, size_t before, 
         auto dotCtx = dotCompletionContext(m_text, endPos.line, endPos.character);
         if (!dotCtx || dotCtx->segments.size() != 1 || dotCtx->segments[0].name != "super")
             return std::nullopt;
-        return ctorOf(resolveReceiver(dotCtx->segments, line1));
+        return ctorOf(resolveReceiver(dotCtx->segments, at));
     }
 
     if (const size_t kw = identStartBefore(m_text, before);
         m_text.compare(kw, before - kw, "return") == 0) {
-        auto fn = enclosingFunctionRow(line1);
+        auto fn = enclosingFunctionRow(at);
         return fn ? ctorOf(typeOfRow(*fn, 0)) : std::nullopt;
     }
 
@@ -567,15 +581,15 @@ std::optional<ResolvedSymbol> Resolver::resolveNew(size_t start, size_t before, 
     const lsp::Position probePos = positionForOffset(probe, probe.size());
     auto lhs = dotCompletionContext(probe, probePos.line, probePos.character);
     if (!lhs || lhs->segments.empty()) return std::nullopt;
-    return ctorOf(resolveReceiver(lhs->segments, line1));
+    return ctorOf(resolveReceiver(lhs->segments, at));
 }
 
-// The Function whose body holds `line1`: the innermost function frame on
+// The Function whose body holds `at`: the innermost function frame on
 // the scope chain, its first declaration (an extern prototype before its
 // out-of-class body). nullopt inside a task, or outside any function.
-std::optional<SymbolRow> Resolver::enclosingFunctionRow(int line1) const
+std::optional<SymbolRow> Resolver::enclosingFunctionRow(SrcPos at) const
 {
-    for (const auto& scope : scopeChain(m_path, line1)) {
+    for (const auto& scope : scopeChain(m_path, at)) {
         const auto sep = scope.rfind("::");
         if (sep == std::string::npos) continue; // a top-level unit, not a body
         const std::string parent = scope.substr(0, sep), name = scope.substr(sep + 2);
@@ -698,7 +712,7 @@ std::optional<ResolvedSymbol> Resolver::resolveAt(size_t offset, int depth)
     if (start == end) return std::nullopt;
     const std::string word = m_text.substr(start, end - start);
     if (std::isdigit(static_cast<unsigned char>(word[0]))) return std::nullopt;
-    const int line1 = line1At(m_text, start);
+    const SrcPos at = posAt(m_text, start);
 
     const size_t after = skipWsFwd(m_text, end);
     const bool followedByScope = after + 1 < m_text.size() && m_text[after] == ':' &&
@@ -708,7 +722,7 @@ std::optional<ResolvedSymbol> Resolver::resolveAt(size_t offset, int depth)
     size_t before = start;
     skipWsBack(m_text, before);
 
-    if (word == "new") return resolveNew(start, before, line1, depth);
+    if (word == "new") return resolveNew(start, before, at, depth);
 
     // 1. `A::B::word`
     if (scopeOpBefore(m_text, before)) {
@@ -735,7 +749,7 @@ std::optional<ResolvedSymbol> Resolver::resolveAt(size_t offset, int depth)
             i = k - 2;
         }
         std::reverse(segs.begin(), segs.end());
-        auto scope = resolveQualifierScope(segs, m_path, line1);
+        auto scope = resolveQualifierScope(segs, m_path, at);
         if (!scope) return fallback(word);
         const KindFilter prefer = followedByScope ? KindFilter::ScopeLike
                                 : followedByParen ? KindFilter::Callable
@@ -766,7 +780,7 @@ std::optional<ResolvedSymbol> Resolver::resolveAt(size_t offset, int depth)
         const lsp::Position endPos = positionForOffset(m_text, end);
         auto dotCtx = dotCompletionContext(m_text, endPos.line, endPos.character);
         if (!dotCtx || dotCtx->prefix != word) return fallback(word);
-        auto cls = resolveReceiver(dotCtx->segments, line1);
+        auto cls = resolveReceiver(dotCtx->segments, at);
         if (!cls) return fallback(word);
         const KindFilter prefer = followedByParen ? KindFilter::Callable : KindFilter::Value;
         if (auto m = memberInScope(qualifiedScopeOf(*cls), word, prefer))
@@ -776,7 +790,7 @@ std::optional<ResolvedSymbol> Resolver::resolveAt(size_t offset, int depth)
 
     // 4. bare `word`
     const KindFilter filter = followedByScope ? KindFilter::ScopeLike : KindFilter::Any;
-    if (auto r = lookupBare(m_path, line1, word, filter)) return ResolvedSymbol{*r, true};
+    if (auto r = lookupBare(m_path, at, word, filter)) return ResolvedSymbol{*r, true};
     return fallback(word);
 }
 

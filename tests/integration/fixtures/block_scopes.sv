@@ -24,3 +24,8 @@ module bsc_m;
     end
   endfunction
 endmodule
+module bsc_line;
+  initial begin int bsc_v; begin int bsc_v; bsc_v = 1; end bsc_v = 2; end
+  function int bsc_g(int bsc_arg); return bsc_arg; endfunction int bsc_w = bsc_arg;
+  initial begin int bsc_in; end 
+endmodule

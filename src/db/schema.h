@@ -4,7 +4,7 @@ namespace db {
 
 // Current schema version.  Increment and add a migration in Database::initSchema
 // whenever the schema changes.
-inline constexpr int SCHEMA_VERSION = 14;
+inline constexpr int SCHEMA_VERSION = 16;
 
 // DDL executed on a fresh (version-0) database — always reflects the latest schema.
 inline constexpr const char* SCHEMA_DDL = R"sql(
@@ -20,7 +20,9 @@ CREATE TABLE files (
 );
 
 -- `access` is a class member's access qualifier: 'local', 'protected' or ''
--- (schema v13).
+-- (schema v13). `end_col` is a scope row's end column (0-based, just past
+-- its last token; schema v15): it spans (line, col) to (end_line, end_col).
+-- 0 means unknown, and the scope then spans its whole end line.
 CREATE TABLE symbols (
     id       INTEGER PRIMARY KEY AUTOINCREMENT,
     file_id  INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
@@ -32,7 +34,8 @@ CREATE TABLE symbols (
     detail   TEXT    NOT NULL DEFAULT '',
     end_line INTEGER NOT NULL DEFAULT 0,
     scope    TEXT    NOT NULL DEFAULT '',
-    access   TEXT    NOT NULL DEFAULT ''
+    access   TEXT    NOT NULL DEFAULT '',
+    end_col  INTEGER NOT NULL DEFAULT 0
 );
 
 -- Exact-name lookup (workspace/definition queries).
@@ -58,7 +61,9 @@ CREATE TABLE diagnostics (
     source  TEXT    NOT NULL DEFAULT 'compile',
     -- What the row is about, where its producer needs it: the module name
     -- of a 'library' row, so a recompile can re-anchor it.
-    subject TEXT    NOT NULL DEFAULT ''
+    subject TEXT    NOT NULL DEFAULT '',
+    -- LSP DiagnosticSeverity (schema v16): 1 = error and 3 = information
+    severity INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE INDEX idx_diagnostics_file_id ON diagnostics(file_id);
@@ -140,6 +145,24 @@ CREATE TABLE file_includes (
 CREATE INDEX idx_file_includes_includer ON file_includes(includer_file_id);
 CREATE INDEX idx_file_includes_included ON file_includes(included_file_id);
 
+-- Where each compile of `primary_file_id` included a file (schema v16):
+-- the file holding the `include (the primary itself or another included
+-- file), its line, and the scope chain open there ('' = the compilation
+-- unit). Replaced per primary on every real recompile, like file_includes.
+-- An included file compiled on its own is seeded from one of its sites
+-- (SymbolDatabase::includeContextOf), and a position in it that none of its
+-- own scope rows contains is in that site's scope.
+CREATE TABLE include_sites (
+    primary_file_id  INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    included_file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    includer_file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    line             INTEGER NOT NULL,
+    scope            TEXT    NOT NULL DEFAULT ''
+);
+
+CREATE INDEX idx_include_sites_primary  ON include_sites(primary_file_id);
+CREATE INDEX idx_include_sites_included ON include_sites(included_file_id);
+
 -- `define macros (plan.md §6.29 part A). A table of their own, not symbols
 -- rows: SV macro names are a separate namespace (`` `define WIDTH `` and
 -- `localparam WIDTH` routinely coexist), so keeping them out of symbols
@@ -174,6 +197,31 @@ CREATE TABLE symbol_docs (
     doc     TEXT    NOT NULL,
     PRIMARY KEY (file_id, line, col)
 ) WITHOUT ROWID;
+)sql";
+
+// SQL applied when migrating an existing v15 database to v16 (with
+// MIGRATION_V16_SEVERITY when diagnostics.severity is missing).
+inline constexpr const char* MIGRATION_V15_TO_V16 = R"sql(
+CREATE TABLE IF NOT EXISTS include_sites (
+    primary_file_id  INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    included_file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    includer_file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    line             INTEGER NOT NULL,
+    scope            TEXT    NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_include_sites_primary  ON include_sites(primary_file_id);
+CREATE INDEX IF NOT EXISTS idx_include_sites_included ON include_sites(included_file_id);
+UPDATE schema_version SET version = 16;
+)sql";
+
+inline constexpr const char* MIGRATION_V16_SEVERITY = R"sql(
+ALTER TABLE diagnostics ADD COLUMN severity INTEGER NOT NULL DEFAULT 1;
+)sql";
+
+// SQL applied when migrating an existing v14 database to v15.
+inline constexpr const char* MIGRATION_V14_TO_V15 = R"sql(
+ALTER TABLE symbols ADD COLUMN end_col INTEGER NOT NULL DEFAULT 0;
+UPDATE schema_version SET version = 15;
 )sql";
 
 // SQL applied when migrating an existing v13 database to v14.

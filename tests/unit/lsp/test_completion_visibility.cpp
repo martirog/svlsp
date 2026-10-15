@@ -593,3 +593,29 @@ TEST_CASE("Completion visibility: keywords inside a block follow the enclosing u
     CHECK_FALSE(has(l, "class"));
     CHECK_FALSE(has(l, "endclass"));
 }
+
+TEST_CASE("Completion visibility: a same-line block's locals stay out after its end",
+          "[completion][visibility][scope-col]")
+{
+    Fixture f;
+    const std::string text =
+        "module visc_m;\n"
+        "  int visc_mod;\n"
+        "  initial begin int visc_in; end \n"
+        "endmodule\n";
+    f.ctrl.compile("/visc.sv", text);
+    auto at = [&](unsigned col) {
+        auto result = CompletionProvider::getCompletion(makeParams("/visc.sv", 2, col), f.sdb, text);
+        std::vector<std::string> labels;
+        if (!result.isNull())
+            for (auto& item : result.get<lsp::Array<lsp::CompletionItem>>())
+                labels.emplace_back(item.label);
+        return labels;
+    };
+    // Inside the block (just after `int visc_in;`) vs after its `end`.
+    const auto inside = at(28);
+    CHECK(has(inside, "visc_in"));
+    const auto after = at(33);
+    CHECK(has(after, "visc_mod"));
+    CHECK_FALSE(has(after, "visc_in"));
+}
