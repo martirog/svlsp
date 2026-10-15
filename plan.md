@@ -425,7 +425,12 @@ any gaps discovered.
 - One Emacs functional test per LSP feature in Phase 3, using example files from Phase 4.
 - Tests run headless via `make test-integration`.
 
-### 6.2 Multi-File Project Support — IN PROGRESS (Stage 1/6 complete, commit `fe0f817`)
+### 6.2 Multi-File Project Support — Implemented (all 6 stages, 2026-07-15)
+
+**Status:** all six stages implemented (Stage 1 `fe0f817`; completion
+recorded 2026-07-15, `ea50184`): filelist parser, `.svlsp.json` manifest
+parser, config threading + library resolver, server wiring/discovery and
+the end-to-end integration test.
 
 **Resolved (was Appendix C, open question 5):** support *both* a custom, extensible
 `.svlsp.json` manifest *and* a VCS/Questa/Xcelium-style `.f` filelist (for interop with
@@ -434,13 +439,10 @@ filelist parser implements full `-y`/`-v`/`+libext+` library resolution (not a s
 and errors hard on any unsupported filelist switch. Unresolved instantiations emit a
 diagnostic via the existing `ParseError` pipeline.
 
-**Full staged implementation plan (exact signatures, schema SQL, the library-resolution
-fixpoint algorithm, file/test names, PR sequencing) lives at
-`/home/martin/.claude/plans/fluffy-hatching-popcorn.md` — read that file to resume.**
-Stage status is tracked in `handoff.md`'s "Phase 6.2" section; Stage 1 (Program
-declaration tracking + `InstantiationRecord` + schema v5) is complete. Stages 2-6
-(filelist parser, JSON manifest parser, config-threading + library resolver, server
-wiring/discovery, end-to-end integration test) are not started.
+The full staged implementation plan (exact signatures, schema SQL, the
+library-resolution fixpoint algorithm, file/test names, PR sequencing) was kept
+outside the repo and no longer exists; the stage-by-stage record is in the git
+history (`53fa434`, `83e86f7`, `d27b6df`, `d201656`, `ea50184`).
 
 - Compile switches supported per-project and per-file:
   - `-D NAME[=VALUE]` / `+define+NAME[=VALUE]` — preprocessor defines (passed to the SV preprocessor from §4.2a)
@@ -454,6 +456,11 @@ wiring/discovery, end-to-end integration test) are not started.
   file and threads them through the preprocess → parse → extract pipeline.
 
 ### 6.3 Package Import Resolution
+
+**Status:** implemented 2026-07-08 (`1184632`). Later changes: a wildcard
+import of a package declared in the same file (§6.30 step 1, 2026-09-24),
+and imports scoped to the unit they are written in (schema v14, §6.32,
+2026-10-08).
 
 **Why this is needed:** After `import pkg::MyClass` or `import pkg::*`, the identifier
 `MyClass` must resolve to `pkg::MyClass` without the `pkg::` prefix. The current
@@ -4473,8 +4480,12 @@ the rest include guards and flags), 163 files.
 step A (shared resolver), step B (hover, definition, references,
 rename wired to it), step C (typedef / enum literal / struct member /
 genvar recorded) and step D (out-of-class method bodies) implemented
-2026-09-25. Step D's UVM-corpus check is still pending (see handoff.md);
-§6.30 is complete once that passes.
+2026-09-25; step D's UVM-corpus check passed 2026-09-26 (`ec4b557`). The
+follow-ups below (constructors, typedef aliases, block scopes,
+column-granular scopes, include context, ...) are done through
+2026-10-15. Still open: `typedef class` rows (with declare-before-use),
+and struct / interface / hierarchical receivers, which still use the
+name-only fallback.
 Planned 2026-09-24. The failing cases are already
 committed as `[!shouldfail]` tests (`ad85a28`).
 
