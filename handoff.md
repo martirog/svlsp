@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-10-08 (§6.30 follow-up: block scopes -- begin/end, fork/join, generate, for/foreach).
+**Last updated:** 2026-10-15 (§6.30: column-granular scopes + include context done and verified; next `typedef class` rows -- see PICK UP HERE).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -11,26 +11,50 @@ write-up) — read the relevant section there rather than looking for it here.
 
 ## Current state
 
-Not yet committed (2026-10-08): block scopes (plan.md §6.30, "Follow-up:
-block scopes"). `begin`/`end`, `fork`/`join` and generate blocks and
-for/foreach loops are scopes now (new kind `Block`, no schema change), and
-loop variables are recorded. Verified: unit 986/986, Emacs 285/285 (new
-test_44), UVM corpus 1147 / 30 cases (the pinned symbol count 15731 -> 18239), `--build-db` +2508 rows (1872 Block,
-636 loop variables; corpus `uvm.db` rebuilt, the v14 one before blocks is
-`uvm.db.v14.bak`), `make test-integration-uvm` 13/13 (release, item counts unchanged).
+**PICK UP HERE NEXT TIME.** Column-granular scopes + include context are
+done, verified and committed 2026-10-15 (c49e90c + docs; plan.md
+§6.30, "Follow-up: column-granular scopes" and "Follow-up: include
+context" -- the full write-up, schema v15/v16, disclosed limits).
+Next, in order: `typedef class` rows (+ declare-before-use, agreed to go
+together), then struct / interface / hierarchical receivers; completion
+response size (below) is still open too.
 
-Committed 2026-10-08: §6.32 negative completion visibility (63b75df +
-ea7e711; plan.md §6.32). New suite `test_completion_visibility.cpp` + Emacs
-test_43. It found that imports and exports applied file-wide; schema
-**v14** adds `imports.scope`, so an import applies only where its unit is
-on the cursor's scope chain. Also: `class` is offered in a class body
-(nested classes), and Program is a scope in `scopeAtPosition`/
-`scopeKindAtPosition`. Verified: unit 966/966, Emacs 280/280, UVM corpus
-1147 / 30 cases, `--build-db` unchanged apart from schema (v14 corpus
-`uvm.db` rebuilt, v13 kept as `uvm.db.v13.bak`), `make
-test-integration-uvm` 13/13 (release).
+What the 2026-10-15 session did on top of the 2026-10-13 tree:
+- The 2 failing UVM corpus cases were not bugs. The `uvm_comp` prefix
+  case's 21 "non-prefix" items are legitimate fuzzy (subsequence) matches
+  from the rest of `uvm_pkg` (`uvm_port_component`, `UVM_TLM_COMPLETED`,
+  ...), now visible through "Part 1b"; the case now checks that every
+  item fuzzy-matches and prefix matches rank first. The empty-prefix
+  case's anchor (line 59, column 0) is now before the class name, in the
+  package: it moved into the class body (line 60, pinned 1042), and a new
+  package-level case pins line 59 column 0 (795). Both lists diffed.
+- Found by the `--build-db` check and fixed: an included file with no
+  tokens of its own (UVM's wrapper files `tlm1/uvm_tlm.svh`,
+  `comps/uvm_comps.svh`, ...) got include scope `''` even inside
+  `package uvm_pkg`, so opening one would have compiled its includees
+  unscoped. The walker now gives such a file the common prefix of the
+  scope stacks at the tokens around its lines (`visitTerminal` /
+  `scopeGapBefore`, seed scope at the ends); unit case "a file with no
+  tokens of its own gets the scope it is included in".
 
-**PICK UP HERE NEXT TIME — completion response size.** Server-side
+Verified 2026-10-15: unit **1004/1004** (debug); Emacs **292/292**; UVM
+corpus **1903 assertions / 31 cases**, all passing (log
+`build/release/corpus_2026-10-15b.log`); `--build-db` symbols identical
+(18239), v16, 165 include_sites rows (146 `uvm_pkg`, 19 file-level macro
+files + `uvm_pkg.sv`); corpus `uvm.db` swapped in (the previous one is
+`uvm.db.blocks.bak`); `SVLSP_BIN=$PWD/build/release/svlsp make
+test-integration-uvm` **13/13** (probe-empty now 1067 items).
+
+Committed 2026-10-08: block scopes (5bea2b8 + c14574c; plan.md §6.30,
+"Follow-up: block scopes"). `begin`/`end`, `fork`/`join` and generate
+blocks and for/foreach loops are scopes (kind `Block`, no schema change),
+and loop variables are recorded. Verified: unit 986/986, Emacs 285/285
+(test_44), UVM corpus 1147 / 30 cases (pinned symbol count 15731 ->
+18239), `--build-db` +2508 rows (1872 Block, 636 loop variables; corpus
+`uvm.db` rebuilt, the v14 one before blocks is `uvm.db.v14.bak`), `make
+test-integration-uvm` 13/13.
+
+**Open: completion response size.** Server-side
 timing (plan.md §6.30, "Server-side request timing: `--log-requests`")
 showed the server spends 2-7 ms per completion on the UVM library, while
 Emacs sees 50-364 ms, growing with the item count. Measure the
@@ -58,9 +82,10 @@ and release), UVM corpus 1145 / 30 cases, `--build-db` changed only
 in 190 Port details (dims added).
 - Run the UVM Emacs test with `make test-integration-uvm`; profile with
   `SVLSP_BIN=$PWD/build/release/svlsp make test-integration-uvm`. Its
-  default library DB is `<corpus>/uvm.db`, rebuilt 2026-10-08 with block
-  scopes (v14; before blocks `uvm.db.v14.bak`, v13 `uvm.db.v13.bak`, v11
-  `uvm.db.v11.bak`); rebuild it after any
+  default library DB is `<corpus>/uvm.db`, rebuilt 2026-10-15 with the
+  include context (v16; v14 with block scopes `uvm.db.blocks.bak`, before
+  blocks `uvm.db.v14.bak`, v13 `uvm.db.v13.bak`, v11 `uvm.db.v11.bak`);
+  rebuild it after any
   change to what the walker records.
 - Port details now carry unpacked dims after `PARAM_DEFAULT_VALUE_SEP`:
   test for a default with `portHasDefault`, read the type with
@@ -125,10 +150,13 @@ by name instead of from the typedef's scope, and merged duplicated helpers
   in workspace symbols, no completion inside comments/strings, and doc
   comments (§6.31) in hover, signature help and completion resolve.
 - Test baselines:
-  - unit: **986 cases**, all passing (no `[!shouldfail]` known gaps left
+  - unit: **1004 cases**, all passing (no `[!shouldfail]` known gaps left
     -- the `` `define `` references case passes since the macro follow-up)
-  - Emacs functional: **285/285**
-  - UVM corpus (opt-in): **1147 assertions / 30 cases**, all passing.
+  - Emacs functional: **292/292**
+  - UVM corpus (opt-in): **1903 assertions / 31 cases**, all passing.
+    (1147 -> 1903 with column-granular scopes + include context: the
+    in-class empty-prefix list 325 -> 1042 (all of `uvm_pkg` visible),
+    checked item by item, and a new package-level case at 795; diffed.)
     (+2: the `class` keyword in the empty-prefix list, 324 -> 325.)
     (+18: the dot-access case, 11, and the argument-receiver case, 7.)
     (1132 → 1127: the empty-prefix completion list lost the 7 ancestor
@@ -148,8 +176,9 @@ by name instead of from the typedef's scope, and merged duplicated helpers
     duplicates; +10 for §6.29 part A; +633 for the macro follow-up, whose
     references case checks each of its 313 locations.)
   - UVM corpus `--build-db`: **1 diagnostic, 18239 symbol rows (1872
-    Block), 553 macro rows, 163 files, 960 symbol docs + 30 macro docs;
-    5.27 MB (v14, 5271552 bytes)** (before block scopes: 15731 rows,
+    Block), 553 macro rows, 166 files, 165 include_sites rows, 960 symbol
+    docs + 30 macro docs; 5.31 MB (v16, 5308416 bytes)** (v14 before the
+    include context: 163 files, 5.27 MB; before block scopes: 15731 rows,
     4.51 MB; 4.30 MB with `--no-doc-comments`) (~17 min, ~7 GB RSS; don't run it at the same
     time as the corpus tests, and a laptop suspend pauses either; when
     waiting on one from a script, don't `pgrep -f` its command line --
@@ -309,6 +338,20 @@ What §6.29 changed that other work must know about:
 7. **§6.5** performance — open; see "Known gaps" for the concrete costs.
 8. Minor: comment at `pathToUri()` explaining that `fromPath()` always
     absolutizes.
+9. **Open question (raised 2026-10-08): should the missing-argument
+   diagnostic stay strictly in scope?** Today `resolveCallees`
+   (`src/lsp/symbol_resolution.cpp`, the `byName` /
+   `pickSameFilePreferred` block) checks an *unqualified* call that
+   scoped resolution can't resolve exactly against any same-named callable
+   (same file first), so `f(x)` with no `f` in scope can be checked
+   against another file's `f`. A `::`-qualified call already fails closed,
+   and completion never matches by name. Dropping the fallback makes the
+   diagnostic scope-bound like completion, at the cost of no
+   missing-argument check at all on calls the resolver can't see (e.g. a
+   callee in a library DB or a file not compiled yet). Decide with the
+   user before changing; if changed, check the UVM corpus `--build-db`
+   diagnostic count (1 today), test_39 and the missing-argument cases in
+   `tests/unit/db/test_compilation_controller.cpp`.
 
 ---
 
@@ -398,7 +441,7 @@ Compiler **g++-13** (pinned in `CMakePresets.json`). Debug has ASan+UBSan
 | LSP framework | lsp-framework v1.3.1 (submodule) |
 | Unit tests | Catch2 v3.8.1 (FetchContent) |
 | Parser | ANTLR4 v4.13.2 (FetchContent) |
-| Database | SQLite3 amalgamation, schema v14 |
+| Database | SQLite3 amalgamation, schema v16 |
 | Preprocessor | in-house C++ (not slang) |
 | Transport | stdio |
 

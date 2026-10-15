@@ -4525,7 +4525,8 @@ a name-only lookup would pick and an exact file/line/column assertion:
   scopes".)
 - Scope containment is **line-granular** (`scopeAtPosition(path, line)`).
   Two scopes opening on one physical line can't be told apart. The fixtures
-  put each scope on its own line. Also disclosed, not fixed.
+  put each scope on its own line. Also disclosed, not fixed. (Fixed
+  2026-10-08..13: "Follow-up: column-granular scopes".)
 - **A second, independent gap:** `findSymbolsVisibleAt` never sees a
   wildcard-imported package declared *in the same file*. Part 1 (local
   scope chain) only covers the cursor's own chain; Part 2 (cross-file
@@ -5452,7 +5453,8 @@ library-scale behavior and profiling.
   cursor's file.
 - *Still open (disclosed limits, kept):* `begin`/`end` and generate
   blocks aren't scopes (closed since, "Follow-up: block scopes" below),
-  scope containment is line-granular, and struct/interface/hierarchical
+  scope containment is line-granular (closed since, "Follow-up:
+  column-granular scopes" below), and struct/interface/hierarchical
   receivers use the name-only fallback.
 - *Tests.* Unit (+4 cases): `return new` (in-class, out-of-class body,
   void) and argument `new` (positional, named, a constructor's argument,
@@ -5507,7 +5509,8 @@ for/foreach loop variables weren't recorded at all.
   the LRM's `genblk<n>`; hierarchical names into a block (`blk.x`,
   `g_on.s`, `gen[0].w`) still use the name-only fallback; containment is
   still line-granular, so a one-line `for (int i...) x += i;` scopes its
-  whole line; an inline genvar isn't scoped to its loop generate.
+  whole line (closed since, "Follow-up: column-granular scopes" below);
+  an inline genvar isn't scoped to its loop generate.
 - *Tests.* Unit (+20 cases): walker records in `test_sv_listener.cpp`
   (9: sibling, empty, named, nested, for, assigning for, foreach,
   generate, leading assignment), resolution in
@@ -5528,6 +5531,124 @@ for/foreach loop variables weren't recorded at all.
   553 / 163 / 960 + 30); 5.27 MB (was 4.51). The corpus `uvm.db` is rebuilt
   with it (`uvm.db.v14.bak` is the one before); `make test-integration-uvm`
   13/13, item counts unchanged.
+
+**Follow-up: column-granular scopes (2026-10-08).** Done. Closes the last
+§6.30 walker limit: scope containment was line-granular, so two scopes on
+one line, or a use after a scope's end on its last line, couldn't be told
+apart.
+- *Schema v15.* `symbols.end_col` (0-based, just past the scope's last
+  token; `ParseRecord::endCol`). 0 = unknown (a pre-v15 row), and such a
+  scope spans its whole end line. Migration + test.
+- *Walker.* `translatedEnd(stop)` gives the end line and column;
+  `backpatchEndLine` became `backpatchEnd`; blocks set both at enter.
+- *Reading.* `SrcPos {line, col}` (symbol_database.h) replaces the `int
+  line` parameter of `scopeAtPosition`, `scopeKindAtPosition`,
+  `findSymbolsVisibleAt`, `enclosingClassScopesAt` and
+  `enclosingClassNameAt`. A scope contains a position from its row's
+  (line, col) -- the name, label or keyword -- to (end_line, end_col)
+  (`kContains` / `bindContains`). The resolver threads `SrcPos at`
+  (`posAt(text, offset)`; `posOf(row)` for a declaration's own context)
+  instead of `line1`; `closestBefore` compares columns too; completion's
+  `resolveChain`, `resolveFirstSegment` and `isSuperInConstructor` take it.
+  A consequence: on a class header, the text before the class name (`virtual
+  class `) is in the enclosing scope, not the class.
+- *Disclosed, not changed:* references keep a use that only the name-only
+  fallback resolves (by design), so an argument named after `endfunction`
+  on the same line is still listed by references. The features that fall
+  back to a by-name match when scoped resolution fails are hover,
+  definition and references (`Resolver::fallback`, `exact = false`) and
+  the missing-argument diagnostic for an unqualified call
+  (`resolveCallees`, `pickSameFilePreferred`); completion never does.
+- *Tests.* Old calls converted to `{N, 0}`; one `enclosingClassScopesAt`
+  case moved onto the class name (column 0 is now outside). test_44
+  checks the one-line scope end through completion.
+
+**Follow-up: include context (2026-10-12/13).** Done. Found by the first
+corpus run on column-granular scopes: in an included file (UVM's
+`base/uvm_component.svh`), a position that no scope row of its own
+contains got scope `""` -- nothing recorded where the file was included --
+and `findSymbolsVisibleAt` took only the cursor's own file, so the rest of
+`uvm_pkg` was never offered. Also found, pre-existing: opening or editing
+an included file compiled it standalone with an empty scope stack,
+rewriting its rows unscoped (`my_driver`, not `my_pkg::my_driver`) while it
+was open. A first cut stored one `files.include_scope` per file; the
+include-site model with a seeded standalone compile replaced it.
+- *Schema v16.* Table `include_sites(primary_file_id, included_file_id,
+  includer_file_id, line, scope)`, replaced per primary on every real
+  recompile (like `file_includes`), and `diagnostics.severity` (1 error, 3
+  information). The migration runs when `v < 16` or `include_sites` is
+  missing.
+- *Preprocessor.* `PreprocessorResult::includeSites` (`IncludeSite {file,
+  includer, line}`, one per resolved `` `include ``);
+  `define(const MacroRecord&)` seeds a full macro, function-like too,
+  without reporting it.
+- *Walker.* `SvTreeWalker::walk(..., initialScope)` pushes a seed scope's
+  segments; `WalkResult::includeScopes` records each included file's scope:
+  the scopes open when its first rule is entered, or, for a file with no
+  tokens of its own (only `` `include ``s or `` `define ``s), the scopes
+  open across its blank output lines -- the common prefix of the scope
+  stacks at the tokens before and after them (`visitTerminal`,
+  `scopeGapBefore`; the seed before the first token and after the last).
+  Found by the `--build-db` check: UVM's wrapper files
+  (`tlm1/uvm_tlm.svh`, `comps/uvm_comps.svh`, `dap/uvm_dap.svh`,
+  `tlm2/uvm_tlm2.svh`, `dpi/uvm_dpi.svh`), included inside `package
+  uvm_pkg`, got scope `''`, so opening one would have compiled the files
+  it includes unscoped.
+- *DB.* `replaceIncludeSites`; `includeSitesOf(path)` (main schema, then
+  attached library DBs that have the table); `includeContextOf(path)`, the
+  first site; `macrosOfUnit(site, excludePath)` (the primary and its
+  `file_includes`, minus the file's own, so its include guard isn't
+  pre-defined); `importsVisibleFrom(path)` (own imports plus each
+  includer's, up to the primary). `scopeAtPosition` and
+  `scopeKindAtPosition` fall back to the context's scope;
+  `findSymbolsVisibleAt` and `Resolver::lookupBare` use
+  `importsVisibleFrom`; `findSymbolsVisibleAt`'s new "Part 1b" adds a
+  chain package's members from every other file.
+- *Controller.* With an include context, `compile` seeds the preprocessor
+  with `macrosOfUnit` and the walker with the site's scope (logged
+  `[context]`), records this compile's sites, and writes a
+  `context`-source Information diagnostic on line 1 when a file's sites
+  disagree: "svlsp: `include'd in N different scopes: 'a' (x.sv:7), 'b'
+  (y.sv:2); using 'a'". `buildDiagnostic` maps severity 3 to Information.
+- *Disclosed, not changed:* rows are per file, so a file has one context
+  (the first site by primary path -- arbitrary but deterministic; the
+  diagnostic names it); seeded macros are the whole unit's, not only those
+  defined before the `` `include ``; declare-before-use is ignored (to do
+  with `typedef class` rows); a file included mid-module-body still
+  doesn't parse on its own; a file dropped by its includer keeps a stale
+  published diagnostic in the client until it is compiled again (the DB
+  row is cleared).
+- *Tests.* Unit: 9 `[include-scope]` cases in
+  `test_compilation_controller.cpp` (sites recorded; scope and kind
+  outside own rows; another included file visible and resolving; the
+  includer's import applies; a standalone compile keeps the scope and the
+  includer's function-like macro; own include guard not seeded; the
+  two-scope diagnostic, cleared when the sites agree again; a tokenless
+  wrapper or macro file gets the scope around it, standalone too), plus
+  migration and table cases in `test_database.cpp`. Emacs: test_45
+  (`fixtures/incctx_*.sv[h]`): completion in an opened included file,
+  definition of a macro-declared member, the two-scope diagnostic. UVM
+  corpus: the empty-prefix case moved from the class header (line 59,
+  column 0, now in the package) into the class body (line 60); a new
+  package-level case pins that position; the `uvm_comp` prefix case now
+  checks that every item fuzzy-matches and prefix matches rank first --
+  21 non-prefix fuzzy matches from the rest of `uvm_pkg`
+  (`uvm_port_component`, `UVM_TLM_COMPLETED`, ...) are now legitimately
+  offered.
+- *Verification (both follow-ups, 2026-10-15).* Unit: 1004 cases, all
+  passing. Emacs: 292/292. UVM corpus: 1903 assertions / 31 cases, all
+  passing (the in-class empty-prefix list 325 -> 1042: all of `uvm_pkg`
+  is now visible, diffed against the new package-level case's 795 -- the
+  same minus 7 keywords not legal in a class body, plus the class's 254
+  own and inherited members). `--build-db`: schema v16; the 18239 symbol
+  rows are identical apart from `end_col` (set on 5764 scopes); macros,
+  docs, diagnostics and `file_includes` unchanged (553 / 960 + 30 / 1 /
+  162); 166 files (+3: the tokenless wrappers `tlm1/uvm_tlm.svh`,
+  `comps/uvm_comps.svh`, `tlm2/uvm_tlm2.svh` now have a site row); 165
+  `include_sites` rows, 146 in `uvm_pkg` and 19 at file level (the
+  macro files and `uvm_pkg.sv`); 5.31 MB. The corpus `uvm.db` is rebuilt
+  with it (`uvm.db.blocks.bak` is the one before); `make
+  test-integration-uvm` 13/13 (release).
 
 **Ordering:** wildcard-import same-file fix (with its own test, done) → A → B
 (hover/definition first, then references + rename) → C → D. After each
