@@ -279,7 +279,7 @@ TEST_CASE("CompletionProvider: dot-completion narrows to the object's class memb
     Fixture f;
     f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
         {ParseRecordKind::Module,   "top",     1, 7,  "",        "",        10, ""},
-        {ParseRecordKind::Signal,   "foo",     2, 10, "top",     "MyClass", 0,  "top"},
+        {ParseRecordKind::Signal,   "foo",     2, 2, "top",     "MyClass", 0,  "top"},
         {ParseRecordKind::Class,    "MyClass", 5, 7,  "",        "",        8,  ""},
         {ParseRecordKind::Function, "bar",     6, 10, "MyClass", "void",    6,  "MyClass"},
         {ParseRecordKind::Signal,   "baz",     7, 10, "MyClass", "",        0,  "MyClass"},
@@ -310,7 +310,7 @@ TEST_CASE("CompletionProvider: dot-completion offers a prototype-only (endLine==
     Fixture f;
     f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
         {ParseRecordKind::Module,   "top",       1, 7,  "",        "",        10, ""},
-        {ParseRecordKind::Signal,   "foo",       2, 10, "top",     "MyClass", 0,  "top"},
+        {ParseRecordKind::Signal,   "foo",       2, 2, "top",     "MyClass", 0,  "top"},
         {ParseRecordKind::Class,    "MyClass",   5, 7,  "",        "",        8,  ""},
         {ParseRecordKind::Function, "get_val",   6, 10, "MyClass", "int",     0,  "MyClass"},
     });
@@ -328,7 +328,7 @@ TEST_CASE("CompletionProvider: dot-completion filters class members by typed pre
     Fixture f;
     f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
         {ParseRecordKind::Module,   "top",     1, 7,  "",        "",        10, ""},
-        {ParseRecordKind::Signal,   "foo",     2, 10, "top",     "MyClass", 0,  "top"},
+        {ParseRecordKind::Signal,   "foo",     2, 2, "top",     "MyClass", 0,  "top"},
         {ParseRecordKind::Class,    "MyClass", 5, 7,  "",        "",        8,  ""},
         {ParseRecordKind::Function, "alpha",   6, 10, "MyClass", "void",    6,  "MyClass"},
         {ParseRecordKind::Function, "beta",    7, 10, "MyClass", "void",    6,  "MyClass"},
@@ -381,7 +381,7 @@ TEST_CASE("CompletionProvider: dot-completion on a queue offers queue methods on
     Fixture f;
     f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
         {ParseRecordKind::Module, "top", 1, 7,  "",    "",              10, ""},
-        {ParseRecordKind::Signal, "q",   2, 10, "top", CONTAINER_QUEUE, 0,  "top"},
+        {ParseRecordKind::Signal, "q",   2, 2, "top", CONTAINER_QUEUE, 0,  "top"},
     });
 
     const std::string text = "module top;\n  q.";
@@ -400,7 +400,7 @@ TEST_CASE("CompletionProvider: dot-completion on an associative array offers its
     Fixture f;
     f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
         {ParseRecordKind::Module, "top", 1, 7,  "",    "",              10, ""},
-        {ParseRecordKind::Signal, "aa",  2, 10, "top", CONTAINER_ASSOC, 0,  "top"},
+        {ParseRecordKind::Signal, "aa",  2, 2, "top", CONTAINER_ASSOC, 0,  "top"},
     });
 
     const std::string text = "module top;\n  aa.";
@@ -419,7 +419,7 @@ TEST_CASE("CompletionProvider: dot-completion on a dynamic array offers delete b
     Fixture f;
     f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
         {ParseRecordKind::Module, "top", 1, 7,  "",    "",                      10, ""},
-        {ParseRecordKind::Signal, "arr", 2, 10, "top", CONTAINER_DYNAMIC_ARRAY, 0,  "top"},
+        {ParseRecordKind::Signal, "arr", 2, 2, "top", CONTAINER_DYNAMIC_ARRAY, 0,  "top"},
     });
 
     const std::string text = "module top;\n  arr.";
@@ -438,7 +438,7 @@ TEST_CASE("CompletionProvider: dot-completion on a fixed-size array excludes del
     Fixture f;
     f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
         {ParseRecordKind::Module, "top", 1, 7,  "",    "",                    10, ""},
-        {ParseRecordKind::Signal, "arr", 2, 10, "top", CONTAINER_FIXED_ARRAY, 0,  "top"},
+        {ParseRecordKind::Signal, "arr", 2, 2, "top", CONTAINER_FIXED_ARRAY, 0,  "top"},
     });
 
     const std::string text = "module top;\n  arr.";
@@ -457,7 +457,7 @@ TEST_CASE("CompletionProvider: dot-completion on a string offers string methods"
     Fixture f;
     f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
         {ParseRecordKind::Module, "top", 1, 7,  "",    "",               10, ""},
-        {ParseRecordKind::Signal, "s",   2, 10, "top", CONTAINER_STRING, 0,  "top"},
+        {ParseRecordKind::Signal, "s",   2, 2, "top", CONTAINER_STRING, 0,  "top"},
     });
 
     const std::string text = "module top;\n  s.";
@@ -475,7 +475,7 @@ TEST_CASE("CompletionProvider: dot-completion on an event offers only 'triggered
     Fixture f;
     f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
         {ParseRecordKind::Module, "top", 1, 7,  "",    "",              10, ""},
-        {ParseRecordKind::Signal, "e",   2, 10, "top", CONTAINER_EVENT, 0,  "top"},
+        {ParseRecordKind::Signal, "e",   2, 2, "top", CONTAINER_EVENT, 0,  "top"},
     });
 
     const std::string text = "module top;\n  e.";
@@ -494,9 +494,9 @@ TEST_CASE("CompletionProvider: dot-completion on a mailbox/semaphore/process off
     Fixture f;
     f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
         {ParseRecordKind::Module, "top", 1, 7,  "",    "",          10, ""},
-        {ParseRecordKind::Signal, "mbx", 2, 10, "top", "mailbox",   0,  "top"},
-        {ParseRecordKind::Signal, "sem", 3, 10, "top", "semaphore", 0,  "top"},
-        {ParseRecordKind::Signal, "p",   4, 10, "top", "process",   0,  "top"},
+        {ParseRecordKind::Signal, "mbx", 2, 2, "top", "mailbox",   0,  "top"},
+        {ParseRecordKind::Signal, "sem", 3, 2, "top", "semaphore", 0,  "top"},
+        {ParseRecordKind::Signal, "p",   4, 2, "top", "process",   0,  "top"},
     });
 
     auto mbxResult = CompletionProvider::getCompletion(
@@ -528,7 +528,7 @@ TEST_CASE("CompletionProvider: dot-completion on a class instance unions implici
     Fixture f;
     f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
         {ParseRecordKind::Module,   "top",     1, 7,  "",        "",        10, ""},
-        {ParseRecordKind::Signal,   "obj",     2, 10, "top",     "MyClass", 0,  "top"},
+        {ParseRecordKind::Signal,   "obj",     2, 2, "top",     "MyClass", 0,  "top"},
         {ParseRecordKind::Class,    "MyClass", 5, 7,  "",        "",        8,  ""},
         {ParseRecordKind::Function, "bar",     6, 10, "MyClass", "void",    6,  "MyClass"},
     });
@@ -549,7 +549,7 @@ TEST_CASE("CompletionProvider: a class's own declared randomize wins over the sy
     Fixture f;
     f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
         {ParseRecordKind::Module,   "top",     1, 7,  "",        "",           10, ""},
-        {ParseRecordKind::Signal,   "obj",     2, 10, "top",     "MyClass",    0,  "top"},
+        {ParseRecordKind::Signal,   "obj",     2, 2, "top",     "MyClass",    0,  "top"},
         {ParseRecordKind::Class,    "MyClass", 5, 7,  "",        "",           8,  ""},
         {ParseRecordKind::Function, "randomize", 6, 10, "MyClass", "int",      6,  "MyClass"},
     });
@@ -711,7 +711,7 @@ TEST_CASE("CompletionProvider: an ordinary object handle offers a method inherit
         // precaution the super. test above takes) so it never ambiguously
         // overlaps `top`'s own span at the cursor's actual line.
         {ParseRecordKind::Module, "top",         1, 7,  "",     "",             5,  ""},
-        {ParseRecordKind::Signal, "obj",         2, 10, "top",  "Child",        0,  "top"},
+        {ParseRecordKind::Signal, "obj",         2, 2, "top",  "Child",        0,  "top"},
         {ParseRecordKind::Class,  "Grandparent", 30, 7,  "",     "",             32, ""},
         {ParseRecordKind::Function, "greet",     31, 10, "Grandparent", "void", 31, "Grandparent"},
         {ParseRecordKind::Class,  "Parent",      20, 7,  "",     "Grandparent", 22, ""},
@@ -761,7 +761,7 @@ TEST_CASE("CompletionProvider: indexing a queue of a class resolves to the class
     f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
         {ParseRecordKind::Module,   "top",     1, 7,  "",        "",
             10, ""},
-        {ParseRecordKind::Signal,   "q",       2, 10, "top",     std::string(CONTAINER_QUEUE) + ":MyClass",
+        {ParseRecordKind::Signal,   "q",       2, 2, "top",     std::string(CONTAINER_QUEUE) + ":MyClass",
             0,  "top"},
         {ParseRecordKind::Class,    "MyClass", 5, 7,  "",        "",
             8,  ""},
@@ -808,7 +808,7 @@ TEST_CASE("CompletionProvider: partially indexing a fixed-array-of-queues lands 
     f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
         {ParseRecordKind::Module, "top", 1, 7,  "",    "",
             10, ""},
-        {ParseRecordKind::Signal, "arr", 2, 10, "top", std::string(CONTAINER_FIXED_ARRAY) + ":" + CONTAINER_QUEUE + ":MyClass",
+        {ParseRecordKind::Signal, "arr", 2, 2, "top", std::string(CONTAINER_FIXED_ARRAY) + ":" + CONTAINER_QUEUE + ":MyClass",
             0,  "top"},
         {ParseRecordKind::Class,  "MyClass", 5, 7, "", "", 8, ""},
         {ParseRecordKind::Function, "bar", 6, 10, "MyClass", "void", 6, "MyClass"},
@@ -889,7 +889,7 @@ TEST_CASE("CompletionProvider: a plain (non-indexed) container access is unaffec
     f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
         {ParseRecordKind::Module, "top", 1, 7,  "",    "",
             10, ""},
-        {ParseRecordKind::Signal, "q",   2, 10, "top", std::string(CONTAINER_QUEUE) + ":MyClass",
+        {ParseRecordKind::Signal, "q",   2, 2, "top", std::string(CONTAINER_QUEUE) + ":MyClass",
             0,  "top"},
         {ParseRecordKind::Class,  "MyClass", 5, 7, "", "", 8, ""},
         {ParseRecordKind::Function, "bar", 6, 10, "MyClass", "void", 6, "MyClass"},
@@ -943,7 +943,7 @@ TEST_CASE("CompletionProvider: dot-completion resolves into a class declared ins
     f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
         {ParseRecordKind::Module,   "top",    1, 7,  "",       "",
             20, ""},
-        {ParseRecordKind::Signal,   "obj",    2, 10, "top",    "Widget",
+        {ParseRecordKind::Signal,   "obj",    2, 2, "top",    "Widget",
             0,  "top"},
         {ParseRecordKind::Class,    "Widget", 5, 7,  "",       "",
             8,  "pkg"},
@@ -1019,7 +1019,7 @@ TEST_CASE("CompletionProvider: a top-level (non-package) class still resolves un
     f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
         {ParseRecordKind::Module,   "top",    1, 7,  "",       "",
             20, ""},
-        {ParseRecordKind::Signal,   "obj",    2, 10, "top",    "Widget",
+        {ParseRecordKind::Signal,   "obj",    2, 2, "top",    "Widget",
             0,  "top"},
         {ParseRecordKind::Class,    "Widget", 5, 7,  "",       "",
             8,  ""},

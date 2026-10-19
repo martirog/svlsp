@@ -879,9 +879,20 @@ public:
             if (ids.size() >= 2)
                 pushId(ParseRecordKind::Typedef, ids[1]->IDENTIFIER(), ctx, currentScope(),
                        ids[0]->getText());
+        } else if (!ids.empty()) { // forward: typedef [class|enum|...] name;
+            // detail: the forward keyword(s), `type` when none is written
+            // (isForwardTypedefDetail).
+            std::string keyword;
+            for (auto* child : ctx->children) {
+                auto* term = dynamic_cast<antlr4::tree::TerminalNode*>(child);
+                if (!term) continue;
+                const std::string text = term->getText();
+                if (text == "typedef" || text == ";") continue;
+                keyword += keyword.empty() ? text : " " + text;
+            }
+            pushId(ParseRecordKind::Typedef, ids[0]->IDENTIFIER(), ctx, currentScope(),
+                   keyword.empty() ? "type" : keyword);
         }
-        // A forward `typedef [class|enum|...] name;` is deliberately not
-        // recorded: it would compete with the real declaration.
     }
 
     void enterEnum_name_declaration(SvParser::Enum_name_declarationContext* ctx) override {

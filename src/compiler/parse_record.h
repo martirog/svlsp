@@ -75,6 +75,18 @@ inline bool portHasDefault(const std::string& detail)
     return sep != std::string::npos && detail.find(" = ", sep) != std::string::npos;
 }
 
+// A forward `typedef [class|interface class|enum|struct|union] T;` is
+// recorded as a Typedef whose detail is that keyword (`type` for a bare
+// `typedef T;`). A real typedef's detail is a type name or "", never a
+// keyword, so the detail alone tells the two apart. The forward row is a
+// fallback: the real declaration wins wherever it is visible (plan.md
+// §6.30, "Follow-up: forward typedefs and declare-before-use").
+inline bool isForwardTypedefDetail(const std::string& detail)
+{
+    return detail == "class" || detail == "interface class" || detail == "enum" ||
+           detail == "struct" || detail == "union" || detail == "type";
+}
+
 struct ParseRecord {
     ParseRecordKind kind;
     std::string     name;
@@ -83,7 +95,8 @@ struct ParseRecord {
     std::string     parent;        // immediate enclosing scope name (e.g. "MyClass")
     std::string     detail;        // kind-specific: port direction, class parent, return type,
                                     // macro body, declared user type (Signal/Parameter/Member),
-                                    // aliased type (Typedef), enum typedef name (EnumLiteral)
+                                    // aliased type (Typedef; the keyword
+                                    // of a forward typedef), enum typedef name (EnumLiteral)
     int             endLine{0};    // 1-based; last line of scope body; 0 for leaf symbols
     std::string     scope{};       // full enclosing scope chain, e.g. "MyModule::MyClass"
     std::string     file{};        // original source file; empty = same as compiled file

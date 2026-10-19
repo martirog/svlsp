@@ -619,3 +619,40 @@ TEST_CASE("Completion visibility: a same-line block's locals stay out after its 
     CHECK(has(after, "visc_mod"));
     CHECK_FALSE(has(after, "visc_in"));
 }
+
+// ---------------------------------------------------------------------------
+// Declare-before-use (plan.md §6.30, "Follow-up: forward typedefs and
+// declare-before-use")
+// ---------------------------------------------------------------------------
+
+TEST_CASE("Completion visibility: a name declared later isn't offered, unless a forward "
+          "typedef declares it first", "[completion][visibility][decl-before-use]")
+{
+    Fixture f;
+    const std::string text =
+        "package dv_p;\n"
+        "  typedef class dv_late;\n"
+        "  typedef class dv_ghost;\n"
+        "  int dv_early;\n"
+        "    \n" // @here
+        "  int dv_after;\n"
+        "  class dv_late; endclass\n"
+        "  class dv_none; endclass\n"
+        "endpackage\n";
+    f.ctrl.compile("/dv.sv", text);
+    auto result = CompletionProvider::getCompletion(makeParams("/dv.sv", 4, 4), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+    std::vector<std::string> labels;
+    for (auto& item : result.get<lsp::Array<lsp::CompletionItem>>()) {
+        labels.emplace_back(item.label);
+        if (item.label == "dv_late" || item.label == "dv_ghost") {
+            REQUIRE(item.kind.has_value());
+            CHECK(*item.kind == lsp::CompletionItemKind::Class);
+        }
+    }
+    CHECK(has(labels, "dv_early"));
+    CHECK_FALSE(has(labels, "dv_after"));
+    CHECK_FALSE(has(labels, "dv_none"));
+    CHECK(std::count(labels.begin(), labels.end(), "dv_late") == 1);
+    CHECK(std::count(labels.begin(), labels.end(), "dv_ghost") == 1);
+}

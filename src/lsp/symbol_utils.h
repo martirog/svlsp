@@ -12,6 +12,9 @@ lsp::SymbolKind        symbolKindFor(const std::string& kind);
 
 // Map a ParseRecordKind string to lsp::CompletionItemKind.
 lsp::CompletionItemKind completionKindFor(const std::string& kind);
+// As above, but a forward typedef (`typedef class C;`) is the kind it
+// declares: Class, Interface, Enum or Struct.
+lsp::CompletionItemKind completionKindFor(const SymbolRow& row);
 
 // Extract the identifier token at (line, character) in text.
 // line and character are 0-based (LSP convention).

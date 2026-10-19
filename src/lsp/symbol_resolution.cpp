@@ -348,12 +348,16 @@ std::optional<SymbolRow> Resolver::resolveTypeName(const std::string& type,
     if (auto r = lookupBare(ctxPath, ctxAt, type, KindFilter::ScopeLike, /*withInherited=*/false);
         r && r->kind == "Class")
         return r;
-    if (auto td = lookupBare(ctxPath, ctxAt, type, KindFilter::Typedef, /*withInherited=*/false))
+    // A forward typedef visible here means the class itself isn't (the
+    // visible set drops the forward row wherever it is): its detail is a
+    // keyword, never followed -- go on to the name-only search.
+    if (auto td = lookupBare(ctxPath, ctxAt, type, KindFilter::Typedef, /*withInherited=*/false);
+        td && !isForwardTypedef(*td))
         return resolveTypeName(td->detail, td->filePath, posOf(*td));
     std::vector<SymbolRow> classes, typedefs;
     for (auto& r : m_db.findSymbolsByName(type)) {
         if (r.kind == "Class") classes.push_back(r);
-        if (r.kind == "Typedef") typedefs.push_back(r);
+        if (r.kind == "Typedef" && !isForwardTypedef(r)) typedefs.push_back(r);
     }
     if (classes.size() == 1) return classes.front();
     if (classes.empty() && typedefs.size() == 1)
@@ -369,7 +373,7 @@ std::optional<SymbolRow> Resolver::classInScope(const std::string& scope,
 {
     auto m = memberInScope(scope, name, KindFilter::ScopeLike);
     if (m && m->kind == "Class") return m;
-    if (auto td = memberInScope(scope, name, KindFilter::Typedef))
+    if (auto td = memberInScope(scope, name, KindFilter::Typedef); td && !isForwardTypedef(*td))
         return resolveTypeName(td->detail, td->filePath, posOf(*td));
     return std::nullopt;
 }

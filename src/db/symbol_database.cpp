@@ -1,6 +1,11 @@
 #include "db/symbol_database.h"
 #include "compiler/parse_record.h"
 #include <algorithm>
+#include <limits>
+#include <map>
+#include <unordered_map>
+#include <unordered_set>
+#include <string_view>
 #include <optional>
 #include <set>
 #include <ctime>
@@ -58,6 +63,7 @@ void SymbolDatabase::attachLibraryDbs(const std::vector<std::string>& paths)
         std::string alias = "lib" + std::to_string(m_attachedLibraryPaths.size());
         m_db.prepare("ATTACH DATABASE ? AS " + alias).bind(1, path).step();
         m_attachedLibraryPaths.push_back(path);
+        clearIncludeCaches();
     }
 }
 
@@ -109,6 +115,7 @@ std::string SymbolDatabase::builtByVersion() const
 void SymbolDatabase::resetAllFiles()
 {
     m_db.execute("DELETE FROM files");
+    clearIncludeCaches();
 }
 
 std::vector<SymbolRow> SymbolDatabase::queryAcrossAttachedDbs(
@@ -179,6 +186,7 @@ std::vector<std::string> SymbolDatabase::replaceIncludeSites(
     int64_t primaryFileId, const std::string& primaryPath,
     const std::vector<IncludeSiteRecord>& sites)
 {
+    clearIncludeCaches();
     std::vector<std::string> previous;
     {
         auto old = m_db.prepare("SELECT f.path FROM include_sites s "
@@ -216,6 +224,8 @@ std::vector<std::string> SymbolDatabase::replaceIncludeSites(
 
 std::vector<IncludeSiteRow> SymbolDatabase::includeSitesOf(const std::string& path) const
 {
+    if (auto it = m_includeSitesCache.find(path); it != m_includeSitesCache.end())
+        return it->second;
     std::vector<IncludeSiteRow> rows;
     for (size_t i = 0; i <= m_attachedLibraryPaths.size(); ++i) {
         const std::string schema = i == 0 ? "" : "lib" + std::to_string(i - 1) + ".";
@@ -233,6 +243,36 @@ std::vector<IncludeSiteRow> SymbolDatabase::includeSitesOf(const std::string& pa
             rows.push_back({stmt.columnText(0), stmt.columnText(1),
                             static_cast<int>(stmt.columnInt(2)), stmt.columnText(3), schema});
     }
+    m_includeSitesCache.emplace(path, rows);
+    return rows;
+}
+
+std::vector<IncludeSiteRecord> SymbolDatabase::includeSitesOfUnit(const std::string& primaryPath) const
+{
+    if (auto it = m_unitSitesCache.find(primaryPath); it != m_unitSitesCache.end())
+        return it->second;
+    std::vector<IncludeSiteRecord> rows;
+    std::set<std::string> seen;
+    for (size_t i = 0; i <= m_attachedLibraryPaths.size(); ++i) {
+        const std::string schema = i == 0 ? "" : "lib" + std::to_string(i - 1) + ".";
+        auto chk = m_db.prepare("SELECT 1 FROM " + schema +
+                                "sqlite_master WHERE type='table' AND name='include_sites'");
+        if (!chk.step()) continue; // a library DB built before v16
+        auto stmt = m_db.prepare(
+            "SELECT f.path, i.path, s.line FROM " + schema + "include_sites s "
+            "JOIN " + schema + "files f ON f.id = s.included_file_id "
+            "JOIN " + schema + "files p ON p.id = s.primary_file_id "
+            "JOIN " + schema + "files i ON i.id = s.includer_file_id "
+            "WHERE p.path = ? ORDER BY s.rowid");
+        stmt.bind(1, primaryPath);
+        while (stmt.step()) {
+            std::string file = stmt.columnText(0);
+            if (!seen.insert(file).second) continue;
+            rows.push_back({std::move(file), stmt.columnText(1),
+                            static_cast<int>(stmt.columnInt(2)), ""});
+        }
+    }
+    m_unitSitesCache.emplace(primaryPath, rows);
     return rows;
 }
 
@@ -988,6 +1028,169 @@ std::string SymbolDatabase::enclosingClassNameAt(
     return {};
 }
 
+// A position's place in its compilation unit's text order: the `include
+// line of each file from the primary down, then (line, col) in the file
+// itself. An `include line sorts after everything else written on that
+// line of its includer, so the included text comes after the include line
+// and before the next one. Compared lexicographically.
+using UnitKey = std::vector<std::pair<int, int>>;
+
+struct UnitOrder {
+    // Each file of the unit's key prefix (the primary's is empty).
+    std::unordered_map<std::string, UnitKey> prefixes;
+
+    UnitOrder(const std::string& primary, const std::vector<IncludeSiteRecord>& sites)
+    {
+        std::unordered_map<std::string, std::pair<std::string, int>> site; // file -> (includer, line)
+        for (const auto& s : sites) site.emplace(s.file, std::make_pair(s.includer, s.line));
+        prefixes.emplace(primary, UnitKey{});
+        for (const auto& s : sites) {
+            UnitKey prefix;
+            std::string cur = s.file;
+            bool ok = true;
+            for (int depth = 0; cur != primary; ++depth) {
+                auto it = site.find(cur);
+                if (it == site.end() || depth > 64) { ok = false; break; }
+                prefix.emplace_back(it->second.second, std::numeric_limits<int>::max());
+                cur = it->second.first;
+            }
+            if (!ok) continue;
+            std::reverse(prefix.begin(), prefix.end());
+            prefixes.emplace(s.file, std::move(prefix));
+        }
+    }
+
+    // `file`'s key prefix, null for a file outside the unit.
+    const UnitKey* prefixOf(const std::string& file) const
+    {
+        auto it = prefixes.find(file);
+        return it == prefixes.end() ? nullptr : &it->second;
+    }
+};
+
+namespace {
+
+// (a, at) <= (b, bt) as unit keys: prefix + the position itself.
+bool keyLessEq(const UnitKey& a, std::pair<int, int> at, const UnitKey& b, std::pair<int, int> bt)
+{
+    const size_t n = std::min(a.size(), b.size());
+    for (size_t i = 0; i < n; ++i)
+        if (a[i] != b[i]) return a[i] < b[i];
+    const auto& x = a.size() > n ? a[n] : at;
+    const auto& y = b.size() > n ? b[n] : bt;
+    if (a.size() == b.size()) return at <= bt;
+    return x < y || (x == y && a.size() < b.size());
+}
+
+} // namespace
+
+const UnitOrder& SymbolDatabase::unitOrderFor(const std::string& path) const
+{
+    // The unit's primary file: follow include contexts up from `path` (an
+    // included file compiled on its own records its own includes under
+    // itself, so its includees' first context may be it).
+    auto pit = m_unitPrimaryCache.find(path);
+    if (pit == m_unitPrimaryCache.end()) {
+        std::string primary = path;
+        std::set<std::string> visited{path};
+        while (auto site = includeContextOf(primary)) {
+            if (!visited.insert(site->primaryPath).second) break;
+            primary = site->primaryPath;
+        }
+        pit = m_unitPrimaryCache.emplace(path, std::move(primary)).first;
+    }
+    const std::string& primary = pit->second;
+    auto oit = m_unitOrderCache.find(primary);
+    if (oit == m_unitOrderCache.end())
+        oit = m_unitOrderCache
+                  .emplace(primary, std::make_shared<const UnitOrder>(primary,
+                                                                      includeSitesOfUnit(primary)))
+                  .first;
+    return *oit->second;
+}
+
+void SymbolDatabase::keepDeclaredBefore(std::vector<SymbolRow>& rows, const std::string& path,
+                                        SrcPos pos, const std::vector<std::string>& scopes) const
+{
+    const UnitOrder& order = unitOrderFor(path);
+
+    // Rows are only marked here and compacted once at the end, so views
+    // into them stay valid throughout. Forward rows are few: key sets hold
+    // only their (scope, name)s, and a row's name is checked against
+    // `forwardNames` before any pair lookup.
+    using Key = std::pair<std::string_view, std::string_view>; // (scope, name)
+    std::unordered_set<std::string_view> forwardNames;
+    for (const auto& r : rows)
+        if (isForwardTypedef(r)) forwardNames.insert(r.name);
+    const bool anyForward = !forwardNames.empty();
+    auto keyIn = [&](const std::set<Key>& set, const SymbolRow& r) {
+        return forwardNames.count(r.name) && set.count({r.scope, r.name});
+    };
+    std::vector<char> drop(rows.size(), 0);
+
+    if (const UnitKey* cursor = order.prefixOf(path)) {
+        const std::pair<int, int> cursorAt{pos.line, pos.col};
+        // The classes on the chain: each one's own row is among `rows` (a
+        // chain scope's parent is on the chain too, and the class is in the
+        // cursor's file, its package or the top level).
+        std::vector<std::string> classes;
+        for (const auto& r : rows)
+            if (r.kind == "Class") {
+                const std::string q = r.scope.empty() ? r.name : r.scope + "::" + r.name;
+                if (std::find(scopes.begin(), scopes.end(), q) != scopes.end()) classes.push_back(q);
+            }
+        auto in = [](const std::vector<std::string>& v, const std::string& s) {
+            return std::find(v.begin(), v.end(), s) != v.end();
+        };
+        auto subject = [&](const SymbolRow& r) {
+            const std::string& k = r.kind;
+            return (k == "Signal" || k == "Parameter" || k == "Typedef" || k == "Class" ||
+                    k == "EnumLiteral" || k == "Genvar") &&
+                   in(scopes, r.scope) && !in(classes, r.scope);
+        };
+        // Rows come grouped by file: remember the last file's prefix.
+        std::string_view lastFile;
+        const UnitKey* lastPrefix = nullptr;
+        bool haveLast = false;
+        auto before = [&](const SymbolRow& r) {
+            if (!haveLast || lastFile != r.filePath) {
+                lastFile = r.filePath;
+                lastPrefix = order.prefixOf(r.filePath);
+                haveLast = true;
+            }
+            const UnitKey* prefix = lastPrefix;
+            return !prefix || // outside the unit: exempt
+                   keyLessEq(*prefix, {r.line, r.col}, *cursor, cursorAt);
+        };
+        std::set<Key> forwardDeclared;
+        if (anyForward)
+            for (const auto& r : rows)
+                if (isForwardTypedef(r) && (!subject(r) || before(r)))
+                    forwardDeclared.insert({r.scope, r.name});
+        for (size_t i = 0; i < rows.size(); ++i)
+            if (subject(rows[i]) && !before(rows[i]) && !keyIn(forwardDeclared, rows[i]))
+                drop[i] = 1;
+    }
+
+    if (anyForward) {
+        std::set<Key> real;
+        for (size_t i = 0; i < rows.size(); ++i)
+            if (!drop[i] && !isForwardTypedef(rows[i]) && forwardNames.count(rows[i].name))
+                real.insert({rows[i].scope, rows[i].name});
+        for (size_t i = 0; i < rows.size(); ++i)
+            if (!drop[i] && isForwardTypedef(rows[i]) && real.count({rows[i].scope, rows[i].name}))
+                drop[i] = 1;
+    }
+
+    size_t kept = 0;
+    for (size_t i = 0; i < rows.size(); ++i)
+        if (!drop[i]) {
+            if (kept != i) rows[kept] = std::move(rows[i]);
+            ++kept;
+        }
+    rows.resize(kept);
+}
+
 std::vector<SymbolRow> SymbolDatabase::findSymbolsVisibleAt(
     const std::string& path, SrcPos pos) const
 {
@@ -1123,6 +1326,7 @@ std::vector<SymbolRow> SymbolDatabase::findSymbolsVisibleAt(
 
     std::vector<SymbolRow> rows;
     while (stmt.step()) rows.push_back(rowFromStmt(stmt));
+    keepDeclaredBefore(rows, path, pos, scopes);
 
     std::sort(rows.begin(), rows.end(), [](const SymbolRow& a, const SymbolRow& b) {
         if (a.scope.size() != b.scope.size())
@@ -1190,7 +1394,8 @@ std::vector<std::string> SymbolDatabase::baseClassChain(
         std::vector<SymbolRow> classRows, typedefRows;
         for (auto& row : findSymbolsByName(bare)) {
             if (row.kind == "Class" && inQualifier(row)) classRows.push_back(row);
-            if (row.kind == "Typedef" && inQualifier(row)) typedefRows.push_back(row);
+            if (row.kind == "Typedef" && !isForwardTypedef(row) && inQualifier(row))
+                typedefRows.push_back(row);
         }
         if (classRows.empty() && !typedefRows.empty()) {
             // A class typedef (`typedef C alias_t;`, `typedef C#(int) c_t;`):

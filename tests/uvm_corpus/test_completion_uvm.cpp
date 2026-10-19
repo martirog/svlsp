@@ -66,12 +66,15 @@ TEST_CASE("completion: a real known file + a synthetic partial prefix filters to
     auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
     CHECK(hasItem(items, "uvm_component"));
     // Completion fuzzy-filters (a case-insensitive subsequence match), so
-    // besides the true prefix matches it offers e.g. uvm_port_component and
-    // UVM_TLM_COMPLETED -- members of uvm_pkg from other included files,
-    // visible here since the include context (plan.md §6.30, "Follow-up:
-    // include context"). Every item must match, and every prefix match must
-    // rank ahead of every other match.
-    CHECK(hasItem(items, "uvm_port_component"));
+    // besides the true prefix matches it offers non-prefix matches from the
+    // rest of uvm_pkg, visible here since the include context (plan.md
+    // §6.30, "Follow-up: include context") -- only those declared before
+    // this line in the package's include order, though: not
+    // uvm_port_component (base/uvm_port_base.svh, included later, with no
+    // forward typedef before this file; plan.md §6.30, "Follow-up: forward
+    // typedefs and declare-before-use"). Every item must match, and every
+    // prefix match must rank ahead of every other match.
+    CHECK_FALSE(hasItem(items, "uvm_port_component"));
     std::string lastPrefixSort, firstOtherSort;
     for (const auto& item : items) {
         const std::string label(item.label);
@@ -118,10 +121,15 @@ TEST_CASE("completion: empty prefix at real scope returns the full unranked cand
     // context"): every uvm_pkg member from every included file, not only
     // this file's -- the package-level case below minus the 7 keywords
     // not legal in a class body, plus the class's 254 own and inherited
-    // members.
-    CHECK(items.size() == 1042);
+    // members. Then 1042 -> 714 (plan.md §6.30, "Follow-up: forward
+    // typedefs and declare-before-use"): the 328 uvm_pkg names declared
+    // after this line in the package's include order, with no forward
+    // typedef before it, are no longer offered -- each checked against the
+    // corpus include_sites to come later.
+    CHECK(items.size() == 714);
     CHECK_FALSE(hasItem(items, "endpackage"));
-    CHECK(hasItem(items, "uvm_port_component")); // declared in another file
+    CHECK(hasItem(items, "uvm_report_object"));       // an earlier included file
+    CHECK_FALSE(hasItem(items, "uvm_port_component")); // a later one
     CHECK(hasItem(items, "class"));
     CHECK_FALSE(hasItem(items, "m_inst_id"));
     CHECK(hasItem(items, "m_inst_count")); // static protected: still offered
@@ -151,11 +159,14 @@ TEST_CASE("completion: empty prefix in the package, before a class name, offers 
     auto result = CompletionProvider::getCompletion(makeParams("base/uvm_component.svh", 58, 0), uvmCorpusDb(), docText);
     REQUIRE_FALSE(result.isNull());
     auto& items = result.get<lsp::Array<lsp::CompletionItem>>();
-    CHECK(items.size() == 795);
+    // 795 -> 467 (plan.md §6.30, "Follow-up: forward typedefs and
+    // declare-before-use"): the same 328 later names as in the class body.
+    CHECK(items.size() == 467);
     CHECK(hasItem(items, "endpackage"));
     CHECK(hasItem(items, "uvm_component"));
-    CHECK(hasItem(items, "uvm_port_component")); // declared in another file
-    CHECK(hasItem(items, "uvm_sequencer"));      // likewise
+    CHECK(hasItem(items, "uvm_report_object"));        // an earlier included file
+    CHECK_FALSE(hasItem(items, "uvm_port_component")); // a later one
+    CHECK_FALSE(hasItem(items, "uvm_sequencer"));      // likewise
     CHECK_FALSE(hasItem(items, "get_children"));
     CHECK_FALSE(hasItem(items, "m_inst_count"));
 }

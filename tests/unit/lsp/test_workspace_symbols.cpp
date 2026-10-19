@@ -152,3 +152,17 @@ TEST_CASE("WorkspaceSymbolsProvider: blocks are not listed; a block local's cont
     CHECK(container.at("wsb_x") == "wsb_m");
     CHECK(container.at("wsb_y") == "wsb_blk");
 }
+
+TEST_CASE("WorkspaceSymbolsProvider: a forward typedef isn't listed", "[workspace_symbols]")
+{
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/fwd.sv", "h"), {
+        {ParseRecordKind::Typedef, "fwd_c", 1, 14, "", "class", 0, ""},
+        {ParseRecordKind::Class,   "fwd_c", 2, 6,  "", "",      2, ""},
+    });
+    auto result = WorkspaceSymbolsProvider::getWorkspaceSymbols(makeParams("fwd"), f.sdb);
+    REQUIRE_FALSE(result.isNull());
+    auto& syms = result.get<lsp::Array<lsp::WorkspaceSymbol>>();
+    REQUIRE(syms.size() == 1);
+    CHECK(static_cast<lsp::SymbolKind>(syms[0].kind) == lsp::SymbolKind::Class);
+}

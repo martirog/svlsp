@@ -981,3 +981,55 @@ TEST_CASE("resolveSymbolAt: an argument isn't visible after its function's endfu
     REQUIRE(r.has_value());
     CHECK_FALSE(r->exact);
 }
+
+// ---------------------------------------------------------------------------
+// Forward typedefs and declare-before-use (plan.md §6.30, "Follow-up:
+// forward typedefs and declare-before-use")
+// ---------------------------------------------------------------------------
+
+TEST_CASE("resolveSymbolAt: a use after a forward typedef resolves to the later class",
+          "[resolution][decl-before-use]")
+{
+    F f;
+    f.add("/fwd.sv",
+          "package fwd_p;\n"
+          "  typedef class Late; // @fwd\n"
+          "  Late h; // @use\n"
+          "  class Late; endclass // @cls\n"
+          "endpackage\n");
+    requireResolves(f, "/fwd.sv", "@use", "Late", "/fwd.sv", "@cls");
+    requireResolves(f, "/fwd.sv", "@fwd", "Late", "/fwd.sv", "@cls");
+}
+
+TEST_CASE("resolveSymbolAt: a forward typedef with no class is the declaration",
+          "[resolution][decl-before-use]")
+{
+    F f;
+    f.add("/ghost.sv",
+          "package ghost_p;\n"
+          "  typedef class Ghost; // @fwd\n"
+          "  Ghost h; // @use\n"
+          "endpackage\n");
+    requireResolves(f, "/ghost.sv", "@use", "Ghost", "/ghost.sv", "@fwd");
+    auto r = resolveAt(f, "/ghost.sv", posOf(f.files.at("/ghost.sv"), "@use", "Ghost"));
+    REQUIRE(r);
+    CHECK(r->row.kind == "Typedef");
+    CHECK(r->row.detail == "class");
+}
+
+TEST_CASE("resolveSymbolAt: a name declared after the use only resolves by fallback",
+          "[resolution][decl-before-use]")
+{
+    F f;
+    f.add("/later.sv",
+          "module later_m;\n"
+          "  initial begin\n"
+          "    later_v = 1; // @use\n"
+          "  end\n"
+          "  int later_v; // @decl\n"
+          "  Lc h; // @cuse\n"
+          "  class Lc; endclass // @cls\n"
+          "endmodule\n");
+    requireResolves(f, "/later.sv", "@use", "later_v", "/later.sv", "@decl", /*exact=*/false);
+    requireResolves(f, "/later.sv", "@cuse", "Lc", "/later.sv", "@cls", /*exact=*/false);
+}

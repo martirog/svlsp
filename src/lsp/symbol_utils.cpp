@@ -75,6 +75,18 @@ lsp::CompletionItemKind completionKindFor(const std::string& kind)
     return lsp::CompletionItemKind::Variable;
 }
 
+lsp::CompletionItemKind completionKindFor(const SymbolRow& row)
+{
+    if (isForwardTypedef(row)) {
+        if (row.detail == "class")           return lsp::CompletionItemKind::Class;
+        if (row.detail == "interface class") return lsp::CompletionItemKind::Interface;
+        if (row.detail == "enum")            return lsp::CompletionItemKind::Enum;
+        if (row.detail == "struct" || row.detail == "union")
+            return lsp::CompletionItemKind::Struct;
+    }
+    return completionKindFor(row.kind);
+}
+
 std::string wordAtPosition(const std::string& text, unsigned line, unsigned character)
 {
     size_t lineStart, lineEnd;
@@ -104,11 +116,15 @@ lsp::DocumentUri pathToUri(const std::string& path)
 
 const SymbolRow* pickBestSymbol(const std::vector<SymbolRow>& rows, const std::string& curPath)
 {
+    // A forward typedef only when nothing else has the name.
     for (const auto& r : rows)
-        if (r.filePath == curPath) return &r;
+        if (r.filePath == curPath && !isForwardTypedef(r)) return &r;
 
     for (const auto& r : rows)
-        if (isDeclarationLikeKind(r.kind)) return &r;
+        if (isDeclarationLikeKind(r.kind) && !isForwardTypedef(r)) return &r;
+
+    for (const auto& r : rows)
+        if (!isForwardTypedef(r)) return &r;
 
     return &rows.front();
 }

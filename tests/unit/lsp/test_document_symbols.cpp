@@ -130,3 +130,20 @@ TEST_CASE("DocumentSymbolsProvider: blocks are not listed, their locals are",
     CHECK(syms[0].name == "m");
     CHECK(syms[1].name == "x");
 }
+
+TEST_CASE("DocumentSymbolsProvider: a forward typedef isn't listed", "[document_symbols]")
+{
+    Fixture f;
+    const std::string path = "/tmp/fwd_ds.sv";
+    f.addSymbols(f.addFile(path), {
+        {ParseRecordKind::Typedef, "C", 1, 14, "", "class", 0, ""},
+        {ParseRecordKind::Class,   "C", 2, 6,  "", "",      2, ""},
+        {ParseRecordKind::Typedef, "byte_t", 3, 20, "", "", 0, ""},
+    });
+    auto result = DocumentSymbolsProvider::getDocumentSymbols(makeParams(path), f.sdb);
+    REQUIRE_FALSE(result.isNull());
+    auto& syms = result.get<lsp::Array<lsp::DocumentSymbol>>();
+    REQUIRE(syms.size() == 2);
+    CHECK(static_cast<lsp::SymbolKind>(syms[0].kind) == lsp::SymbolKind::Class);
+    CHECK(syms[1].name == "byte_t");
+}

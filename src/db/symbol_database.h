@@ -3,6 +3,7 @@
 #include "compiler/parse_record.h"
 #include "compiler/sv_preprocessor.h"
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -30,6 +31,13 @@ struct SymbolRow {
     int         endLine; // last line of scope body; 0 for leaf symbols
     std::string scope;   // full enclosing scope chain, e.g. "MyModule::MyClass"
 };
+
+// A forward `typedef class C;` row (isForwardTypedefDetail): a fallback
+// for when C's real declaration isn't visible.
+inline bool isForwardTypedef(const SymbolRow& r)
+{
+    return r.kind == "Typedef" && isForwardTypedefDetail(r.detail);
+}
 
 struct DiagnosticRow {
     int         line;
@@ -81,6 +89,8 @@ struct IncludeSiteRow {
     std::string scope;        // the scope chain open there ("" = compilation unit)
     std::string schema;       // "" = this DB, "lib0." ... = an attached library DB
 };
+
+struct UnitOrder; // symbol_database.cpp
 
 // Typed access layer over the svlsp SQLite schema.
 // All methods operate on the database reference supplied at construction.
@@ -171,6 +181,12 @@ public:
     // attached library DB (one built before v16 has none), each ordered by
     // (primary path, includer path, line). {} for a file never included.
     std::vector<IncludeSiteRow> includeSitesOf(const std::string& path) const;
+
+    // Every file `primaryPath`'s compile included, each with its first
+    // `include site (scope left ""), in the order the compile recorded them:
+    // this DB's first, then each attached library DB's for files not seen
+    // yet. {} for a file whose compile included nothing.
+    std::vector<IncludeSiteRecord> includeSitesOfUnit(const std::string& primaryPath) const;
 
     // The include site svlsp takes `path`'s context from: the first of
     // includeSitesOf. A file compiled on its own is seeded from it
@@ -362,8 +378,9 @@ public:
     // All symbols visible from `(path, line)`: every symbol in the scope chain
     // at that position (local → enclosing scopes; a package's from every
     // file, since a package is often spread over `include'd files) plus all
-    // top-level symbols from every file.  Ordered innermost-scope-first,
-    // then by name.
+    // top-level symbols from every file.  Outside a class, a name declared
+    // later in the compilation unit is left out (keepDeclaredBefore).
+    // Ordered innermost-scope-first, then by name.
     std::vector<SymbolRow> findSymbolsVisibleAt(const std::string& path, SrcPos pos) const;
 
     // `className`'s own `extends` ancestor chain (plan.md §6.26): starts
@@ -388,6 +405,25 @@ public:
 private:
     Database& m_db;
     std::vector<std::string> m_attachedLibraryPaths; // dedup guard for attachLibraryDbs
+
+    // includeSitesOf / includeSitesOfUnit results, by path. Every visible-
+    // set query reads them (scopeAtPosition, keepDeclaredBefore), and
+    // include_sites only changes through replaceIncludeSites, resetAllFiles
+    // and attachLibraryDbs, which clear them.
+    mutable std::unordered_map<std::string, std::vector<IncludeSiteRow>>    m_includeSitesCache;
+    mutable std::unordered_map<std::string, std::vector<IncludeSiteRecord>> m_unitSitesCache;
+    // keepDeclaredBefore's unit order: each file's key prefix, by the
+    // unit's primary path; and each file's primary.
+    mutable std::unordered_map<std::string, std::shared_ptr<const UnitOrder>> m_unitOrderCache;
+    mutable std::unordered_map<std::string, std::string> m_unitPrimaryCache;
+    const UnitOrder& unitOrderFor(const std::string& path) const;
+    void clearIncludeCaches() const
+    {
+        m_includeSitesCache.clear();
+        m_unitSitesCache.clear();
+        m_unitOrderCache.clear();
+        m_unitPrimaryCache.clear();
+    }
 
     // Runs "SELECT <symbol cols> FROM symbols s JOIN files f ON f.id=s.file_id
     // WHERE <cond>" (cond must reference only s/f and exactly one `?`)
@@ -420,4 +456,14 @@ private:
         std::vector<std::string>& outWildcardPkgs,
         std::vector<std::pair<std::string, std::string>>& outSpecific,
         std::vector<std::string>& visited) const;
+
+    // Declare-before-use (plan.md §6.30, "Follow-up: forward typedefs and
+    // declare-before-use"), applied to findSymbolsVisibleAt's rows: drops a
+    // Signal/Parameter/Typedef/Class/EnumLiteral/Genvar row of a non-class
+    // scope on `scopes` declared after `pos` in the compilation unit's
+    // include order, unless a forward typedef of it (same scope and name)
+    // comes at or before `pos`; then drops each forward typedef row whose
+    // real declaration remains.
+    void keepDeclaredBefore(std::vector<SymbolRow>& rows, const std::string& path, SrcPos pos,
+                            const std::vector<std::string>& scopes) const;
 };

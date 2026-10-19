@@ -26,16 +26,21 @@ struct Candidate {
 // out-of-class body are both visible inside the class (plan.md §6.30 step
 // D), and a shadowed name would otherwise be offered once per scope.
 // Constructor rows are skipped: `obj.new` isn't legal, and the `new`
-// keyword is already offered where it is.
+// keyword is already offered where it is. A forward typedef is offered
+// only when no other row has its name.
 std::vector<Candidate> candidatesFromRows(const std::vector<SymbolRow>& rows)
 {
     std::vector<Candidate> out;
     out.reserve(rows.size());
+    std::set<std::string> declared;
+    for (auto& row : rows)
+        if (!isForwardTypedef(row)) declared.insert(row.name);
     std::set<std::pair<std::string, std::string>> seen;
     for (auto& row : rows)
         if (!(row.kind == "Function" && row.name == "new") && row.kind != "Block" &&
+            !(isForwardTypedef(row) && declared.count(row.name)) &&
             seen.emplace(row.name, row.kind).second)
-            out.push_back({row.name, completionKindFor(row.kind), displayDetail(row), row});
+            out.push_back({row.name, completionKindFor(row), displayDetail(row), row});
     return out;
 }
 

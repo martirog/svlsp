@@ -12,6 +12,7 @@ lsp::TextDocument_DocumentSymbolResult DocumentSymbolsProvider::getDocumentSymbo
     result.reserve(rows.size());
     for (const auto& row : rows) {
         if (row.kind == "Block") continue; // a scope, not a declaration
+        if (isForwardTypedef(row)) continue; // the real declaration is listed
         lsp::Range selRange = makeRange(row.line, row.col,
                                         static_cast<int>(row.name.size()));
         // Scope-defining symbols span from their start line to their end line.

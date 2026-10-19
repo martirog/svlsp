@@ -1725,13 +1725,36 @@ TEST_CASE("a typedef is recorded as a Typedef, with its aliased type in detail",
     CHECK(a->detail == "Item");
 }
 
-TEST_CASE("a forward typedef is not recorded (it must never outrank the real class)",
+TEST_CASE("a forward typedef is recorded as a Typedef whose detail is its keyword",
           "[compiler][listener][phase6.30][typedef]") {
     auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
-        "typedef class Fwd;\n"
-        "class Fwd; endclass\n");
+        "package p;\n"
+        "  typedef class Fwd;\n"
+        "  typedef interface class IFwd;\n"
+        "  typedef enum E;\n"
+        "  typedef struct S;\n"
+        "  typedef union U;\n"
+        "  typedef T;\n"
+        "  class Fwd; endclass\n"
+        "endpackage\n");
     REQUIRE(errs.empty());
-    CHECK(countKind(recs, ParseRecordKind::Typedef) == 0);
+    CHECK(countKind(recs, ParseRecordKind::Typedef) == 6);
+    auto* f = findRecord(recs, ParseRecordKind::Typedef, "Fwd");
+    REQUIRE(f != nullptr);
+    CHECK(f->detail == "class");
+    CHECK(f->scope == "p");
+    CHECK(f->line == 2);
+    CHECK(f->column == 16);
+    CHECK(findRecord(recs, ParseRecordKind::Typedef, "IFwd")->detail == "interface class");
+    CHECK(findRecord(recs, ParseRecordKind::Typedef, "E")->detail == "enum");
+    CHECK(findRecord(recs, ParseRecordKind::Typedef, "S")->detail == "struct");
+    CHECK(findRecord(recs, ParseRecordKind::Typedef, "U")->detail == "union");
+    // A bare `typedef T;` names no kind: its detail is the keyword `type`.
+    CHECK(findRecord(recs, ParseRecordKind::Typedef, "T")->detail == "type");
+    CHECK(isForwardTypedefDetail(f->detail));
+    CHECK(!isForwardTypedefDetail("Item"));
+    CHECK(!isForwardTypedefDetail(""));
+    // The real class is still recorded next to it.
     CHECK(findRecord(recs, ParseRecordKind::Class, "Fwd") != nullptr);
 }
 

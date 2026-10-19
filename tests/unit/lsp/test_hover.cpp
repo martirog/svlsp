@@ -306,3 +306,20 @@ TEST_CASE("HoverProvider: a block local's scope hides unnamed blocks, keeps name
     CHECK(u.find('@') == std::string::npos);
     CHECK(hoverText(5, 9).find("in *hvb::hvb_blk*") != std::string::npos);
 }
+
+TEST_CASE("HoverProvider: a forward typedef with no class shows the forward declaration",
+          "[hover][decl-before-use]")
+{
+    Fixture f;
+    CompilationController ctrl{f.sdb};
+    const std::string text =
+        "package hg_p;\n"
+        "  typedef class hg_ghost;\n"
+        "  hg_ghost h;\n"
+        "endpackage\n";
+    ctrl.compile("/hg.sv", text);
+    auto result = HoverProvider::getHover(makeParams("/hg.sv", 2, 4), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+    const std::string val{std::get<lsp::MarkupContent>(result->contents).value};
+    CHECK(val.rfind("**Typedef** `typedef class hg_ghost`", 0) == 0);
+}

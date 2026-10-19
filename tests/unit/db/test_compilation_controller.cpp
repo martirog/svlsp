@@ -1174,3 +1174,150 @@ TEST_CASE("a file with no tokens of its own gets the scope it is included in",
         for (const auto& site : f.sdb.includeSitesOf(file))
             CHECK(site.scope == "is_wp");
 }
+
+// ---------------------------------------------------------------------------
+// Declare-before-use (plan.md §6.30, "Follow-up: forward typedefs and
+// declare-before-use"): outside a class, a name is visible only after its
+// declaration in the compilation unit's include order, unless an earlier
+// forward typedef declares it. A forward typedef row is a fallback: it is
+// dropped wherever the real declaration is visible.
+// ---------------------------------------------------------------------------
+
+namespace {
+struct DeclBeforeUse : Fixture {
+    const std::string incA = "/tmp/svlsp_test_dbu_a.svh";
+    const std::string incB = "/tmp/svlsp_test_dbu_b.svh";
+    const std::string textA =
+        "class dbu_a;\n"                  // 1
+        "  function void f();\n"          // 2
+        "    int before_l;\n"             // 3
+        "\n"                              // 4: the cursor
+        "    int after_l;\n"              // 5: the name is at column 8
+        "  endfunction\n"                 // 6
+        "  function void g(); endfunction\n"
+        "  int member_late;\n"            // 8
+        "endclass\n";
+    const std::string textB =
+        "class dbu_late; endclass\n"
+        "class dbu_b; endclass\n";
+    const std::string top = "/dbu_top.sv";
+    DeclBeforeUse() {
+        { std::ofstream ofs(incA); ofs << textA; }
+        { std::ofstream ofs(incB); ofs << textB; }
+        ctrl.compile("/dbu_other.sv",
+                     "package dbu_q;\n"
+                     "  int q_item;\n"
+                     "endpackage\n"
+                     "typedef int dbu_other_t;\n");
+        ctrl.compile(top,
+                     "package dbu_p;\n"                  // 1
+                     "  typedef class dbu_late;\n"       // 2: forward
+                     "`include \"" + incA + "\"\n"       // 3
+                     "  int pkg_mid;\n"                  // 4
+                     "`include \"" + incB + "\"\n"       // 5
+                     "  class dbu_after; endclass\n"     // 6
+                     "  typedef class dbu_ghost;\n"      // 7: forward, no class
+                     "endpackage\n"                      // 8
+                     "module dbu_m;\n"                   // 9
+                     "  import dbu_q::*;\n"              // 10
+                     "  int early;\n"                    // 11
+                     "  initial begin\n"                 // 12
+                     "    early = later;\n"              // 13
+                     "  end\n"                           // 14
+                     "  int later;\n"                    // 15
+                     "endmodule\n");                     // 16
+    }
+    static bool has(const std::vector<SymbolRow>& rows, const std::string& name,
+                    const std::string& kind = "") {
+        return std::any_of(rows.begin(), rows.end(), [&](const SymbolRow& r) {
+            return r.name == name && (kind.empty() || r.kind == kind);
+        });
+    }
+};
+} // namespace
+
+TEST_CASE("includeSitesOfUnit lists every file a compile included, with its site",
+          "[db][ctrl][decl-before-use]") {
+    DeclBeforeUse f;
+    const auto sites = f.sdb.includeSitesOfUnit(f.top);
+    REQUIRE(sites.size() == 2);
+    CHECK(sites[0].file == f.incA);
+    CHECK(sites[0].includer == f.top);
+    CHECK(sites[0].line == 3);
+    CHECK(sites[1].file == f.incB);
+    CHECK(sites[1].line == 5);
+    CHECK(f.sdb.includeSitesOfUnit("/dbu_other.sv").empty());
+}
+
+TEST_CASE("a local declared after the cursor isn't visible; one before it is",
+          "[db][ctrl][decl-before-use]") {
+    DeclBeforeUse f;
+    const auto rows = f.sdb.findSymbolsVisibleAt(f.incA, {4, 4});
+    CHECK(f.has(rows, "before_l"));
+    CHECK_FALSE(f.has(rows, "after_l"));
+    // Class members are order-independent.
+    CHECK(f.has(rows, "member_late"));
+    CHECK(f.has(rows, "g"));
+    // On its own declaration a name is visible.
+    CHECK(f.has(f.sdb.findSymbolsVisibleAt(f.incA, {5, 8}), "after_l"));
+    CHECK_FALSE(f.has(f.sdb.findSymbolsVisibleAt(f.incA, {5, 7}), "after_l"));
+}
+
+TEST_CASE("module data declared after the cursor isn't visible",
+          "[db][ctrl][decl-before-use]") {
+    DeclBeforeUse f;
+    const auto rows = f.sdb.findSymbolsVisibleAt(f.top, {13, 12});
+    CHECK(f.has(rows, "early"));
+    CHECK_FALSE(f.has(rows, "later"));
+    CHECK(f.has(f.sdb.findSymbolsVisibleAt(f.top, {16, 0}), "later"));
+    // Imported package members and another unit's top level are exempt.
+    CHECK(f.has(rows, "q_item"));
+    CHECK(f.has(rows, "dbu_other_t"));
+}
+
+TEST_CASE("a package class in a later included file is visible only after it or a forward typedef",
+          "[db][ctrl][decl-before-use]") {
+    DeclBeforeUse f;
+    // In incA (included before incB): dbu_b and dbu_after aren't declared
+    // yet; dbu_late is, by the forward typedef before the `include -- and
+    // the real class replaces the forward row.
+    const auto inA = f.sdb.findSymbolsVisibleAt(f.incA, {4, 4});
+    CHECK_FALSE(f.has(inA, "dbu_b"));
+    CHECK_FALSE(f.has(inA, "dbu_after"));
+    CHECK_FALSE(f.has(inA, "pkg_mid"));
+    CHECK(f.has(inA, "dbu_late", "Class"));
+    CHECK_FALSE(f.has(inA, "dbu_late", "Typedef"));
+    CHECK_FALSE(f.has(inA, "dbu_ghost"));
+
+    // Before the forward typedef, nothing.
+    const auto atTop = f.sdb.findSymbolsVisibleAt(f.top, {2, 0});
+    CHECK_FALSE(f.has(atTop, "dbu_late"));
+    CHECK_FALSE(f.has(atTop, "dbu_a"));
+
+    // After everything: the classes, and the forward row alone where no
+    // class exists.
+    const auto atEnd = f.sdb.findSymbolsVisibleAt(f.top, {8, 0});
+    CHECK(f.has(atEnd, "dbu_a"));
+    CHECK(f.has(atEnd, "dbu_b"));
+    CHECK(f.has(atEnd, "dbu_after"));
+    CHECK(f.has(atEnd, "pkg_mid"));
+    CHECK(f.has(atEnd, "dbu_late", "Class"));
+    CHECK_FALSE(f.has(atEnd, "dbu_late", "Typedef"));
+    CHECK(f.has(atEnd, "dbu_ghost", "Typedef"));
+
+    // Between the two `includes: incA's class, not incB's.
+    const auto mid = f.sdb.findSymbolsVisibleAt(f.top, {4, 2});
+    CHECK(f.has(mid, "dbu_a"));
+    CHECK_FALSE(f.has(mid, "dbu_b"));
+}
+
+TEST_CASE("an included file compiled on its own keeps its unit's declaration order",
+          "[db][ctrl][decl-before-use]") {
+    DeclBeforeUse f;
+    REQUIRE(f.ctrl.compile(f.incA, f.textA + "\n").empty());
+    const auto inA = f.sdb.findSymbolsVisibleAt(f.incA, {4, 4});
+    CHECK(f.has(inA, "before_l"));
+    CHECK_FALSE(f.has(inA, "after_l"));
+    CHECK_FALSE(f.has(inA, "dbu_b"));
+    CHECK(f.has(inA, "dbu_late", "Class"));
+}

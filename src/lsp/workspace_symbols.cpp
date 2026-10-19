@@ -16,6 +16,7 @@ lsp::Workspace_SymbolResult WorkspaceSymbolsProvider::getWorkspaceSymbols(
     result.reserve(rows.size() + macros.size());
     for (const auto& row : rows) {
         if (row.kind == "Block") continue; // a scope, not a declaration to jump to
+        if (isForwardTypedef(row)) continue; // the real declaration is listed
         lsp::WorkspaceSymbol sym;
         sym.name     = row.name;
         sym.kind     = symbolKindFor(row.kind);
