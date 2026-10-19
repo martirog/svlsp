@@ -55,7 +55,7 @@ build: configure
 # Tests
 # ---------------------------------------------------------------------------
 
-.PHONY: test test-unit test-integration test-integration-uvm
+.PHONY: test test-unit test-integration test-integration-uvm perf-lsp perf-emacs
 
 test: test-unit test-integration
 
@@ -70,6 +70,18 @@ test-integration:
 # Profile with SVLSP_BIN=build/release/svlsp.
 test-integration-uvm:
 	bash tools/emacs-test-daemon.sh tests/integration/uvm_corpus/uvm_completion.sh
+
+# Opt-in latency benchmarks (tests/perf/README.md), against the release
+# build by default. SCENARIO=uvm (needs the UVM library DB) or small.
+SCENARIO ?= uvm
+PERF_SVLSP ?= $(CURDIR)/build/release/svlsp
+
+perf-lsp:
+	python3 tools/lsp_perf.py tests/perf/$(SCENARIO).json --server $(PERF_SVLSP) $(PERF_ARGS)
+
+perf-emacs:
+	SVLSP_BIN=$(PERF_SVLSP) SVLSP_PERF_SCENARIO=$(SCENARIO) \
+		bash tools/emacs-test-daemon.sh tests/perf/emacs_perf.sh
 
 # ---------------------------------------------------------------------------
 # Housekeeping

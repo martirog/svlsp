@@ -1,0 +1,11 @@
+{
+  "comment": "Latency budgets per tier, in ms; see tests/perf/README.md for the sources. A result is judged on its p90.",
+  "instant_ms": 100,
+  "flow_ms": 1000,
+  "tiers": {
+    "keystroke":   { "budget_ms": 200,  "what": "completion, signature help, resolve: shown while typing" },
+    "point":       { "budget_ms": 400,  "what": "hover, definition, document symbols: one deliberate action" },
+    "navigation":  { "budget_ms": 1000, "what": "references, rename, workspace symbols: a search the user waits for" },
+    "diagnostics": { "budget_ms": 1000, "what": "keystroke to updated diagnostics, debounces included" }
+  }
+}

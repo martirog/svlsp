@@ -1,0 +1,27 @@
+{
+  "name": "small",
+  "description": "The 6-file full_project integration fixture: protocol and per-request floor, no corpus needed.",
+  "copyDir": "tests/integration/fixtures/full_project",
+  "open": "fp_top.sv",
+  "requests": [
+    { "name": "completion: prefix (fp_)", "method": "textDocument/completion",
+      "tier": "keystroke", "at": { "find": "fp_extra_mod u_extra", "offset": 3 } },
+    { "name": "hover: exported class", "method": "textDocument/hover",
+      "tier": "point", "at": { "find": "FpWidget fp_w", "sub": "FpWidget" } },
+    { "name": "definition: exported class", "method": "textDocument/definition",
+      "tier": "point", "at": { "find": "FpWidget fp_w", "sub": "FpWidget" } },
+    { "name": "definition: -y library module", "method": "textDocument/definition",
+      "tier": "point", "at": { "find": "fp_leaf_mod u_leaf", "sub": "fp_leaf_mod" } },
+    { "name": "documentSymbol", "method": "textDocument/documentSymbol", "tier": "point" },
+    { "name": "references: local wire", "method": "textDocument/references",
+      "tier": "navigation", "at": { "find": "fp_top_bus;", "sub": "fp_top_bus" },
+      "params": { "context": { "includeDeclaration": true } } },
+    { "name": "rename: local wire", "method": "textDocument/rename",
+      "tier": "navigation", "at": { "find": "fp_top_bus;", "sub": "fp_top_bus" },
+      "params": { "newName": "fp_bus" } },
+    { "name": "workspace/symbol: Fp", "method": "workspace/symbol",
+      "tier": "navigation", "params": { "query": "Fp" } }
+  ],
+  "edit": { "at": { "find": "fp_extra_mod u_extra ();", "offset": "end" }, "text": " " },
+  "typing": { "at": { "find": "FpWidget fp_w;", "offset": "end" }, "text": "\n    fp_w.val" }
+}
