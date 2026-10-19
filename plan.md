@@ -4482,10 +4482,10 @@ rename wired to it), step C (typedef / enum literal / struct member /
 genvar recorded) and step D (out-of-class method bodies) implemented
 2026-09-25; step D's UVM-corpus check passed 2026-09-26 (`ec4b557`). The
 follow-ups below (constructors, typedef aliases, block scopes,
-column-granular scopes, include context, ...) are done through
-2026-10-15. Still open: `typedef class` rows (with declare-before-use),
-and struct / interface / hierarchical receivers, which still use the
-name-only fallback.
+column-granular scopes, include context, forward typedefs and
+declare-before-use, ...) are done through 2026-10-19. Still open: struct /
+interface / hierarchical receivers, which still use the name-only
+fallback.
 Planned 2026-09-24. The failing cases are already
 committed as `[!shouldfail]` tests (`ad85a28`).
 
@@ -5624,8 +5624,8 @@ include-site model with a seeded standalone compile replaced it.
 - *Disclosed, not changed:* rows are per file, so a file has one context
   (the first site by primary path -- arbitrary but deterministic; the
   diagnostic names it); seeded macros are the whole unit's, not only those
-  defined before the `` `include ``; declare-before-use is ignored (to do
-  with `typedef class` rows); a file included mid-module-body still
+  defined before the `` `include ``; declare-before-use is ignored (done
+  since: "Follow-up: forward typedefs and declare-before-use"); a file included mid-module-body still
   doesn't parse on its own; a file dropped by its includer keeps a stale
   published diagnostic in the client until it is compiled again (the DB
   row is cleared).
@@ -5660,6 +5660,103 @@ include-site model with a seeded standalone compile replaced it.
   macro files and `uvm_pkg.sv`); 5.31 MB. The corpus `uvm.db` is rebuilt
   with it (`uvm.db.blocks.bak` is the one before); `make
   test-integration-uvm` 13/13 (release).
+
+**Follow-up: forward typedefs and declare-before-use (2026-10-15/16).**
+Done. A forward `typedef class C;` was not recorded, so with no class C
+compiled the name resolved to nothing; and every name in a scope was
+visible on every line of it, so a local declared on line 9 was offered on
+line 8, and all of `uvm_pkg` was offered at the top of the first included
+file. Decisions (user, 2026-10-15): the forward typedef is a *fallback*
+row; declare-before-use applies across the compilation unit's include
+order, types included; it applies to completion and resolution, while
+hover / definition / references still find a not-yet-declared name
+through the name-only fallback (`exact = false`).
+- *Walker.* `enterType_declaration`'s third alternative records a Typedef
+  whose `detail` is the forward keyword(s): `class`, `interface class`,
+  `enum`, `struct`, `union`, or `type` for a bare `typedef T;`. A real
+  typedef's detail is a type name or `""`, never a keyword, so
+  `isForwardTypedefDetail(detail)` (`parse_record.h`) /
+  `isForwardTypedef(row)` (`symbol_database.h`) tell them apart. No schema
+  change.
+- *DB.* `includeSitesOfUnit(primary)`: every file a compile included with
+  its first site, in recorded order (main schema, then attached library
+  DBs for files not seen yet). `findSymbolsVisibleAt` ends with
+  `keepDeclaredBefore`: the unit's primary is found by following include
+  contexts up from the cursor's file; a position's key is the `` `include
+  `` line of each file from the primary down, then (line, col), compared
+  lexicographically (an include line sorts after everything else on that
+  line of its includer). A Signal / Parameter / Typedef / Class /
+  EnumLiteral / Genvar row whose scope is on the cursor's chain and is not
+  a class on it (class members are order-independent; a method's locals
+  are not exempt) is dropped when its name comes after the cursor --
+  unless a forward typedef with the same (scope, name) is at or before the
+  cursor. Exempt: functions and tasks, ports, modules / interfaces /
+  programs / packages, blocks, members, imported rows (their scope is not
+  on the chain) and rows in files outside the unit. Then a forward row is
+  dropped wherever a non-forward row with its (scope, name) remains. The
+  chain's classes are read from the rows already fetched. Caches
+  (cleared by `clearIncludeCaches` in `replaceIncludeSites`,
+  `resetAllFiles`, `attachLibraryDbs`): `includeSitesOf` /
+  `includeSitesOfUnit` results per path, each file's unit primary, and a
+  `UnitOrder` per primary (each file's key prefix, compared by
+  `keyLessEq` without allocating). The filter marks rows and compacts
+  once at the end, so its forward-row key sets hold `string_view`s into
+  `rows`, and only names that some forward row has are looked up in
+  them.
+- *Consumers.* `resolveTypeName`, `classInScope` and `baseClassChain` never
+  follow a forward row's detail (a visible forward row means its class
+  isn't; resolution goes on to the name-only search). `pickBestSymbol`
+  takes a forward row only when nothing else has the name. Hover shows
+  `typedef class C`. Completion offers a forward row only when no other
+  row has its name (`candidatesFromRows`), with the kind it declares
+  (`completionKindFor(row)`: Class, Interface, Enum, Struct). Document and
+  workspace symbols skip forward rows.
+- *Disclosed.* A file with several include sites uses its first; a
+  class whose out-of-class body lives in a file outside
+  its package's unit is not recognised as a class on the chain (none in
+  UVM).
+- *Tests.* Unit: the walker case (all six forward forms, detail and
+  position); 5 `[decl-before-use]` cases in
+  `test_compilation_controller.cpp` (`includeSitesOfUnit`; a local after
+  the cursor, class members and functions exempt, the declaration itself
+  visible; module data, an imported package and another unit's top level
+  exempt; a package class in a later included file hidden, visible after
+  a forward typedef which then disappears, the forward row alone kept
+  with no class; an included file compiled on its own keeps the unit's
+  order); 3 resolver cases (a use after a forward typedef resolves to the
+  later class; a forward typedef with no class is the declaration; a
+  name declared after the use resolves by fallback); completion (later
+  names not offered, the forward-declared class offered once as a
+  Class); hover; document and workspace symbols. 18 dot-completion cases
+  in `test_completion.cpp` recorded their receiver variable after the
+  cursor on the same line (column 10, cursor at 4-8): it is now at
+  column 2, where the fixture text writes it. Emacs: test_46
+  (`fixtures/fwdtd_*`): completion in an included file (earlier local,
+  forward-declared class once, not a later local or a later included
+  file's class), definition across included files, document symbols.
+- *Performance.* In-process A/B of references(`get_name`) on the UVM
+  corpus (318 locations either way, filter off/on alternated 3x): the
+  first cut 5.5 s -> 7.9 s (+45%); with the unit-order cache 3.73 ->
+  4.37 s (+17%). Instrumenting the filter (2026-10-19) showed its own time
+  (~893 ms in 1187 calls) exceeded the whole gap -- the dropped rows make
+  the rest cheaper -- and most of it was a `std::set` of copied (scope,
+  name) pairs for every non-forward row whenever a forward row was
+  visible (always in `uvm_pkg`). With the marking rewrite above: 3.66 s
+  -> 3.85 s (**+5%**), filter ~640 ms in 1187 calls
+  (`build/release/tmpab_2026-10-19b.log`).
+- *Verification (2026-10-16/19).* Unit **1016/1016** (debug); Emacs
+  **295/295** (test_46 new); UVM corpus **1563 assertions / 31 cases**
+  (`build/release/corpus_2026-10-19.log`; pins: symbols 18239 -> 18440,
+  docs 960 -> 965, in-class empty prefix 1042 -> 714, package-level
+  795 -> 467 -- the 328 dropped names were each checked to come after
+  `base/uvm_component.svh:59` in include order, and all 201 forward rows
+  have a real class in UVM). `--build-db`: **+201 Typedef rows, 18440
+  symbols, 965 symbol docs**, every other table unchanged (1 diagnostic,
+  166 files, 165 include_sites, 553 macros), 5.32 MB, 14 min / 6.9 GB
+  RSS; corpus `uvm.db` swapped in (previous one `uvm.db.v16.bak`).
+  `SVLSP_BIN=$PWD/build/release/svlsp make test-integration-uvm` **13/13**
+  (probe-empty stays 1067: the probe file is outside the UVM unit, so
+  library rows are exempt).
 
 **Ordering:** wildcard-import same-file fix (with its own test, done) → A → B
 (hover/definition first, then references + rename) → C → D. After each

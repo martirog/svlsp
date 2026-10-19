@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-10-15 (§6.30: column-granular scopes + include context done and verified; next `typedef class` rows -- see PICK UP HERE).
+**Last updated:** 2026-10-19 (§6.30: forward typedefs + declare-before-use finished and verified; filter overhead cut to +5%; latency benchmarks added; all committed).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -11,13 +11,26 @@ write-up) — read the relevant section there rather than looking for it here.
 
 ## Current state
 
-**PICK UP HERE NEXT TIME.** Column-granular scopes + include context are
-done, verified and committed 2026-10-15 (c49e90c + docs; plan.md
-§6.30, "Follow-up: column-granular scopes" and "Follow-up: include
-context" -- the full write-up, schema v15/v16, disclosed limits).
-Next, in order: `typedef class` rows (+ declare-before-use, agreed to go
-together), then struct / interface / hierarchical receivers; completion
-response size (below) is still open too.
+**PICK UP HERE NEXT TIME -- struct / interface / hierarchical
+receivers** (still on the name-only fallback), or the completion response
+size (below). Also open, found by the latency benchmarks (below): library
+locations resolved against the server's cwd, and didChange blocking the
+message loop during a compile.
+
+Finished and committed 2026-10-19 (4e8a10d): `typedef class` rows +
+declare-before-use (plan.md
+§6.30, "Follow-up: forward typedefs and declare-before-use", with its
+*Performance* and *Verification* bullets). Forward typedefs are fallback
+Typedef rows (detail = the keyword); `findSymbolsVisibleAt` ends with
+`keepDeclaredBefore`, which drops names declared after the cursor in the
+compilation unit's include order. Performance: an instrumented A/B showed
+the filter's own time was the whole overhead (a `std::set` of copied
+pairs for every row); after rewriting it to mark-then-compact with
+forward-row-only key sets, references(`get_name`) on the corpus is
+3.66 s -> 3.85 s (+5%, was +17%). Verified: unit 1016/1016, Emacs
+295/295 (test_46), UVM corpus 1563 / 31 cases, `--build-db` +201 Typedef
+rows (18440 symbols; corpus `uvm.db` swapped in, the previous one is
+`uvm.db.v16.bak`), `make test-integration-uvm` 13/13.
 
 What the 2026-10-15 session did on top of the 2026-10-13 tree:
 - The 2 failing UVM corpus cases were not bugs. The `uvm_comp` prefix
@@ -54,6 +67,30 @@ and loop variables are recorded. Verified: unit 986/986, Emacs 285/285
 `uvm.db` rebuilt, the v14 one before blocks is `uvm.db.v14.bak`), `make
 test-integration-uvm` 13/13.
 
+**Latency benchmarks (2026-10-19, fc48120):** `tools/lsp_perf.py`
+(svlsp alone) and `tests/perf/emacs_perf.sh` (through lsp-mode) time the
+same scenarios (`tests/perf/{uvm,small}.json`) against budgets from the
+response-time literature (`tests/perf/README.md`). UVM testbench on the
+library DB: every request's p90 is under 100 ms in both; the slowest is the
+1067-item empty-prefix completion (server 9 ms, 155 KB; Emacs 47 ms raw,
+85-90 ms through capf). Edit -> diagnostics is 370 ms standalone, 860 ms in
+Emacs (lsp-mode's breadcrumb flushes the delayed didChange at 0.5 s idle)
+and **1.35 s with the breadcrumb off** (lsp-mode's 1.0 s full-sync delay)
+-- over the 1 s flow budget; incremental sync would avoid that delay.
+Found while writing them, both open:
+- **Library locations point at the wrong file.** A library DB stores
+  included files relative to their include dir (`base/uvm_component.svh`,
+  every DB since v11), and providers absolutize them against the server's
+  cwd: definition of `get_full_name` from a testbench returned
+  `file:///home/martin/src/svlsp/base/uvm_component.svh`. The corpus tests
+  hide it (`expectedUriPath` does the same transform). Likely also why
+  references from a testbench find no library occurrences.
+- **didChange blocks the message loop during a compile**: its handler
+  takes the data mutex with an untimed `lock_guard`, so a request sent
+  after it queues for the rest of the compile (typing at 300 ms/char:
+  completion round trip 60-73 ms, server run 5 ms, `wait` 0). One compile
+  at most (~55-70 ms here), but it grows with the file.
+
 **Open: completion response size.** Server-side
 timing (plan.md §6.30, "Server-side request timing: `--log-requests`")
 showed the server spends 2-7 ms per completion on the UVM library, while
@@ -82,8 +119,8 @@ and release), UVM corpus 1145 / 30 cases, `--build-db` changed only
 in 190 Port details (dims added).
 - Run the UVM Emacs test with `make test-integration-uvm`; profile with
   `SVLSP_BIN=$PWD/build/release/svlsp make test-integration-uvm`. Its
-  default library DB is `<corpus>/uvm.db`, rebuilt 2026-10-15 with the
-  include context (v16; v14 with block scopes `uvm.db.blocks.bak`, before
+  default library DB is `<corpus>/uvm.db`, rebuilt 2026-10-19 with forward
+  typedefs (v16 before them `uvm.db.v16.bak`; v14 with block scopes `uvm.db.blocks.bak`, before
   blocks `uvm.db.v14.bak`, v13 `uvm.db.v13.bak`, v11 `uvm.db.v11.bak`);
   rebuild it after any
   change to what the walker records.
@@ -150,10 +187,13 @@ by name instead of from the typedef's scope, and merged duplicated helpers
   in workspace symbols, no completion inside comments/strings, and doc
   comments (§6.31) in hover, signature help and completion resolve.
 - Test baselines:
-  - unit: **1004 cases**, all passing (no `[!shouldfail]` known gaps left
+  - unit: **1016 cases**, all passing (no `[!shouldfail]` known gaps left
     -- the `` `define `` references case passes since the macro follow-up)
-  - Emacs functional: **292/292**
-  - UVM corpus (opt-in): **1903 assertions / 31 cases**, all passing.
+  - Emacs functional: **295/295**
+  - UVM corpus (opt-in): **1563 assertions / 31 cases**, all passing.
+    (1903 -> 1563 with declare-before-use: in-class empty prefix
+    1042 -> 714, package-level 795 -> 467, each dropped name checked to
+    come later in include order; symbols pin 18239 -> 18440, docs 965.)
     (1147 -> 1903 with column-granular scopes + include context: the
     in-class empty-prefix list 325 -> 1042 (all of `uvm_pkg` visible),
     checked item by item, and a new package-level case at 795; diffed.)
@@ -175,9 +215,11 @@ by name instead of from the typedef's scope, and merged duplicated helpers
     case checks each item and step D's (name, kind) dedup removed 124
     duplicates; +10 for §6.29 part A; +633 for the macro follow-up, whose
     references case checks each of its 313 locations.)
-  - UVM corpus `--build-db`: **1 diagnostic, 18239 symbol rows (1872
-    Block), 553 macro rows, 166 files, 165 include_sites rows, 960 symbol
-    docs + 30 macro docs; 5.31 MB (v16, 5308416 bytes)** (v14 before the
+  - UVM corpus `--build-db`: **1 diagnostic, 18440 symbol rows (1872
+    Block, 511 Typedef incl. 201 forward), 553 macro rows, 166 files, 165
+    include_sites rows, 965 symbol docs + 30 macro docs; 5.32 MB (5320704
+    bytes), 14 min / 6.9 GB RSS** (v16 before forward typedefs: 18239
+    rows, 5.31 MB, `uvm.db.v16.bak`) (v14 before the
     include context: 163 files, 5.27 MB; before block scopes: 15731 rows,
     4.51 MB; 4.30 MB with `--no-doc-comments`) (~17 min, ~7 GB RSS; don't run it at the same
     time as the corpus tests, and a laptop suspend pauses either; when
@@ -397,6 +439,8 @@ build/debug/unit_tests "[compiler][parser]"   # subset by tag
 DISPLAY=:99 make test-integration             # Emacs functional suite (needs Xvfb :99)
 bash tools/emacs-test-daemon.sh tests/integration/test_12_signature_help.sh
 make test-integration-uvm                     # opt-in Emacs UVM completion + timings (SVLSP_BIN to profile release)
+make perf-lsp [SCENARIO=uvm|small]           # latency benchmark, svlsp alone (tests/perf/README.md)
+DISPLAY=:99 make perf-emacs [SCENARIO=...]   # the same scenario through Emacs + lsp-mode
 
 cmake --build --preset release --target uvm_corpus_tests && ./build/release/uvm_corpus_tests
                                               # corpus root: SVLSP_UVM_CORPUS_DIR
