@@ -73,6 +73,7 @@ TEST_CASE("symbolKindFor: maps all known kinds", "[symbol_utils]")
     CHECK(symbolKindFor("EnumLiteral") == lsp::SymbolKind::EnumMember);
     CHECK(symbolKindFor("Member")      == lsp::SymbolKind::Field);
     CHECK(symbolKindFor("Genvar")      == lsp::SymbolKind::Variable);
+    CHECK(symbolKindFor("Instance")    == lsp::SymbolKind::Object);
 }
 
 TEST_CASE("completionKindFor: maps the kinds recorded since plan.md §6.30 step C",
@@ -82,6 +83,7 @@ TEST_CASE("completionKindFor: maps the kinds recorded since plan.md §6.30 step 
     CHECK(completionKindFor("EnumLiteral") == lsp::CompletionItemKind::EnumMember);
     CHECK(completionKindFor("Member")      == lsp::CompletionItemKind::Field);
     CHECK(completionKindFor("Genvar")      == lsp::CompletionItemKind::Variable);
+    CHECK(completionKindFor("Instance")    == lsp::CompletionItemKind::Module);
 }
 
 TEST_CASE("symbolKindFor: unknown kind falls back to Variable", "[symbol_utils]")

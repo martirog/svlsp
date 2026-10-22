@@ -36,6 +36,8 @@ enum class ParseRecordKind {
     Block,       // a begin/end, fork/join or generate block that is a scope, or a
                  // for/foreach loop's own variables' scope: named by its label,
                  // else "@<line>.<col>" of its begin/fork/for/foreach keyword
+    Instance,    // a module/interface/program instance; detail is its type, after
+                 // any container tags of an instance array ("$fixed_array:sub")
 };
 
 // Reserved ParseRecord::detail values for built-in container/data types with

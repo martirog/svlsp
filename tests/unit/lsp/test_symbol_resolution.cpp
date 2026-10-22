@@ -388,20 +388,142 @@ TEST_CASE("resolveSymbolAt: an understood receiver with no such member resolves 
     CHECK_FALSE(r.has_value());
 }
 
-TEST_CASE("resolveSymbolAt: a receiver that isn't a class (struct, hierarchical instance) "
-          "falls back to the name-only lookup", "[resolution][dot][fallback]")
+// ---------------------------------------------------------------------------
+// struct / interface / hierarchical receivers (plan.md §6.30, "Follow-up:
+// struct, interface and hierarchical receivers"). Every member name has a
+// same-named decoy elsewhere -- `hi`/`valid`/`sig` in an unrelated module
+// first in the file -- so a name-only pick is wrong.
+// ---------------------------------------------------------------------------
+
+const std::string kRecv =
+    "module rcv_decoy; logic hi, lo, x, inner, valid, data, sig, bx, gs, w; endmodule\n"
+    "package rcv_p;\n"
+    "  typedef struct packed { logic [7:0] hi; logic [7:0] lo; } pair_t; // @pair\n"
+    "  typedef struct { pair_t inner; int n; } outer_t; // @outer\n"
+    "  typedef pair_t pair_alias_t;\n"
+    "endpackage\n"
+    "interface rcv_if(input logic clk); // @if\n"
+    "  logic valid; // @valid\n"
+    "  logic [7:0] data; // @data\n"
+    "  modport mp(input valid);\n"
+    "  task automatic drive(); endtask // @drive\n"
+    "endinterface\n"
+    "module rcv_sub(input logic a); // @sub\n"
+    "  logic sig; // @sig\n"
+    "endmodule\n"
+    "module rcv_top(rcv_if.mp pb); // @top\n"
+    "  import rcv_p::*;\n"
+    "  logic clk;\n"
+    "  pair_t s;\n"
+    "  outer_t o;\n"
+    "  pair_alias_t al;\n"
+    "  struct { int x; int y; } anon; // @anon\n"
+    "  pair_t arr[4];\n"
+    "  rcv_if u_if(clk); // @u_if\n"
+    "  virtual rcv_if vif;\n"
+    "  virtual rcv_if vifs[2];\n"
+    "  rcv_sub u_sub(.a(clk)); // @u_sub\n"
+    "  initial begin : blk\n"
+    "    int bx; // @bx\n"
+    "    s.hi = 1; // @s_hi\n"
+    "    o.inner.lo = 2; // @o_inner\n"
+    "    al.lo = 3; // @al\n"
+    "    anon.x = 3; // @anon_x\n"
+    "    arr[0].hi = 4; // @arr\n"
+    "    u_if.valid = 1; // @u_if_valid\n"
+    "    vif.data = 2; // @vif_data\n"
+    "    vif.drive(); // @vif_drive\n"
+    "    vifs[1].valid = 0; // @vifs\n"
+    "    pb.valid = 0; // @pb\n"
+    "    u_sub.sig = 0; // @u_sub_sig\n"
+    "    blk.bx = 1; // @blk\n"
+    "    rcv_top.u_sub.sig = 1; // @top_path\n"
+    "    s.nope = 0; // @missing\n"
+    "  end\n"
+    "  if (1) begin : g_on\n"
+    "    logic gs; // @gs\n"
+    "  end\n"
+    "  for (genvar i = 0; i < 2; i++) begin : gen\n"
+    "    logic w; // @w\n"
+    "  end\n"
+    "  assign g_on.gs = gen[0].w; // @gen\n"
+    "endmodule\n"
+    "class rcv_C;\n"
+    "  virtual rcv_if cvif;\n"
+    "  rcv_p::pair_t pp;\n"
+    "  function void f(); cvif.valid = 1; pp.lo = 0; endfunction // @cls\n"
+    "endclass\n";
+
+TEST_CASE("resolveSymbolAt: struct receivers resolve to the struct's own member",
+          "[resolution][dot][receivers]")
+{
+    F f;
+    f.add("/rcv.sv", kRecv);
+    requireResolves(f, "/rcv.sv", "@s_hi", "hi", "/rcv.sv", "@pair");
+    requireResolvesTo(f, "/rcv.sv", "@o_inner", "inner", "/rcv.sv", "@outer", "inner");
+    requireResolvesTo(f, "/rcv.sv", "@o_inner", "lo =", "/rcv.sv", "@pair", "lo;");
+    requireResolvesTo(f, "/rcv.sv", "@al", "lo", "/rcv.sv", "@pair", "lo;");
+    requireResolvesTo(f, "/rcv.sv", "@anon_x", "x =", "/rcv.sv", "@anon", "x;");
+    requireResolvesTo(f, "/rcv.sv", "@arr", "hi", "/rcv.sv", "@pair", "hi");
+    requireResolvesTo(f, "/rcv.sv", "@cls", "lo =", "/rcv.sv", "@pair", "lo;");
+}
+
+TEST_CASE("resolveSymbolAt: interface receivers -- instance, virtual interface, interface port",
+          "[resolution][dot][receivers]")
+{
+    F f;
+    f.add("/rcv.sv", kRecv);
+    requireResolvesTo(f, "/rcv.sv", "@u_if_valid", "valid", "/rcv.sv", "@valid", "valid");
+    requireResolvesTo(f, "/rcv.sv", "@vif_data", "data", "/rcv.sv", "@data", "data");
+    requireResolvesTo(f, "/rcv.sv", "@vif_drive", "drive", "/rcv.sv", "@drive", "drive");
+    requireResolvesTo(f, "/rcv.sv", "@vifs", "valid", "/rcv.sv", "@valid", "valid");
+    requireResolvesTo(f, "/rcv.sv", "@pb", "valid", "/rcv.sv", "@valid", "valid");
+    requireResolvesTo(f, "/rcv.sv", "@cls", "valid", "/rcv.sv", "@valid", "valid");
+}
+
+TEST_CASE("resolveSymbolAt: hierarchical receivers -- instances, named blocks, a module name",
+          "[resolution][dot][receivers]")
+{
+    F f;
+    f.add("/rcv.sv", kRecv);
+    requireResolvesTo(f, "/rcv.sv", "@u_sub_sig", "sig", "/rcv.sv", "@sig", "sig");
+    requireResolvesTo(f, "/rcv.sv", "@blk", "bx =", "/rcv.sv", "@bx", "bx");
+    requireResolvesTo(f, "/rcv.sv", "@top_path", "sig", "/rcv.sv", "@sig", "sig");
+    requireResolvesTo(f, "/rcv.sv", "@top_path", "u_sub", "/rcv.sv", "@u_sub", "u_sub");
+    requireResolvesTo(f, "/rcv.sv", "@gen", "gs", "/rcv.sv", "@gs", "gs");
+    requireResolvesTo(f, "/rcv.sv", "@gen", "w;", "/rcv.sv", "@w", "w");
+}
+
+TEST_CASE("resolveSymbolAt: an instance name resolves to its Instance row",
+          "[resolution][receivers]")
+{
+    F f;
+    f.add("/rcv.sv", kRecv);
+    requireResolvesTo(f, "/rcv.sv", "@u_sub_sig", "u_sub", "/rcv.sv", "@u_sub", "u_sub");
+    requireResolvesTo(f, "/rcv.sv", "@u_if_valid", "u_if", "/rcv.sv", "@u_if", "u_if");
+    auto r = resolveAt(f, "/rcv.sv", posOf(kRecv, "@u_sub_sig", "u_sub"));
+    REQUIRE(r);
+    CHECK(r->row.kind == "Instance");
+}
+
+TEST_CASE("resolveSymbolAt: an understood struct receiver without the member is nothing",
+          "[resolution][dot][receivers]")
+{
+    F f;
+    f.add("/rcv.sv", kRecv);
+    CHECK_FALSE(resolveAt(f, "/rcv.sv", posOf(kRecv, "@missing", "nope")).has_value());
+}
+
+TEST_CASE("resolveSymbolAt: a receiver whose type is unknown still falls back by name",
+          "[resolution][dot][fallback]")
 {
     F f;
     f.add("/t.sv",
           "module leaf; logic sig; endmodule // @decl\n"
           "module top;\n"
-          "  struct packed { logic a; logic sig; } s;\n"
-          "  leaf u_leaf();\n"
           "  logic r;\n"
-          "  assign r = s.sig; // @struct\n"
-          "  assign r = u_leaf.sig; // @hier\n"
+          "  assign r = no_such_inst.sig; // @hier\n"
           "endmodule\n");
-    requireResolvesTo(f, "/t.sv", "@struct", "sig;", "/t.sv", "@decl", "sig", /*exact=*/false);
     requireResolvesTo(f, "/t.sv", "@hier", "sig;", "/t.sv", "@decl", "sig", /*exact=*/false);
 }
 

@@ -121,7 +121,25 @@ static std::string dataTypeName(SvParser::Data_typeContext* dt)
     }
     if (auto* ct = dt->class_type())
         return classTypeName(ct);
+    // `virtual [interface] intf [#(...)] [.mp]`: the interface, then its
+    // modport ("intf.mp"); the parameter values are dropped.
+    if (auto* ii = dt->interface_identifier(); ii && ii->IDENTIFIER()) {
+        std::string name = ii->IDENTIFIER()->getText();
+        if (auto* mp = dt->modport_identifier(); mp && mp->IDENTIFIER())
+            name += "." + mp->IDENTIFIER()->getText();
+        return name;
+    }
     return "";
+}
+
+// A function's return type as recorded in its detail: the written text,
+// except a virtual interface's, which is dataTypeName's "intf[.mp]" (the
+// text would run `virtual` into the name).
+static std::string returnTypeText(SvParser::Data_type_or_voidContext* dtv)
+{
+    if (!dtv) return "";
+    if (auto* dt = dtv->data_type(); dt && dt->interface_identifier()) return dataTypeName(dt);
+    return dtv->getText();
 }
 
 // dataTypeName of a data_type_or_implicit ("" for an implicit type).
@@ -602,7 +620,8 @@ public:
         auto* id = ctx->function_identifier(0)->IDENTIFIER();
         std::string retType;
         if (auto* fdt = ctx->function_data_type_or_implicit())
-            retType = fdt->getText();
+            retType = fdt->data_type_or_void() ? returnTypeText(fdt->data_type_or_void())
+                                               : fdt->getText();
         if (auto* cs = ctx->class_scope())
             pushOutOfClassBody(ParseRecordKind::Function, id, ctx, cs, retType);
         else
@@ -674,7 +693,7 @@ public:
         if (!fid) return;
         std::string retType;
         if (auto* dtv = ctx->data_type_or_void())
-            retType = dtv->getText();
+            retType = returnTypeText(dtv);
         pushId(ParseRecordKind::Function, fid->IDENTIFIER(), ctx, currentScope(), retType);
     }
 
@@ -779,6 +798,8 @@ public:
         } else if (auto* vh = ctx->variable_port_header()) {
             if (auto* pd = vh->port_direction()) dir = pd->getText();
             if (auto* vpt = vh->variable_port_type()) type = m_tokens->getText(vpt);
+        } else if (auto* ih = ctx->interface_port_header()) {
+            type = m_tokens->getText(ih); // "intf", "intf.mp", "interface"
         }
         if (dir.empty())
             if (auto* pd = ctx->port_direction()) dir = pd->getText();
@@ -852,12 +873,18 @@ public:
             ? ctx->net_type_identifier()->IDENTIFIER()->getText()
             : userTypeName(ctx->data_type_or_implicit());
 
-        // Form 1: comma-separated assignment list
+        // Form 1: comma-separated assignment list. Each declarator's
+        // unpacked dimensions are fixed-size array layers, as in
+        // enterData_declaration (`MyClass objs[4]` lands here).
         if (auto* list = ctx->list_of_net_decl_assignments()) {
             for (auto* nda : list->net_decl_assignment()) {
                 auto* ni = nda->net_identifier();
                 if (!ni || !ni->IDENTIFIER()) continue;
-                pushId(ParseRecordKind::Signal, ni->IDENTIFIER(), nda, currentScope(), typeName);
+                std::string detail;
+                for (size_t i = 0; i < nda->unpacked_dimension().size(); ++i)
+                    detail += std::string(detail.empty() ? "" : ":") + CONTAINER_FIXED_ARRAY;
+                if (!typeName.empty()) detail += (detail.empty() ? "" : ":") + typeName;
+                pushId(ParseRecordKind::Signal, ni->IDENTIFIER(), nda, currentScope(), detail);
             }
         }
         // Form 2: bare net_identifier list (alternative grammar production)
@@ -1426,7 +1453,9 @@ private:
     }
 
     // Emits one InstantiationRecord per hierarchical_instance sharing `typeId`
-    // (covers comma-separated instances: `Foo u0(...), u1(...);`).
+    // (covers comma-separated instances: `Foo u0(...), u1(...);`), and an
+    // Instance symbol for each named one (plan.md §6.30, "Follow-up: struct,
+    // interface and hierarchical receivers").
     void recordInstantiations(
         antlr4::tree::TerminalNode* typeId,
         const std::vector<SvParser::Hierarchical_instanceContext*>& instances) {
@@ -1441,6 +1470,13 @@ private:
                     if (auto* id = ii->IDENTIFIER()) {
                         instName = id->getText();
                         line = static_cast<int>(id->getSymbol()->getLine());
+                        std::string detail;
+                        for (size_t i = 0; i < noi->unpacked_dimension().size(); ++i)
+                            detail += std::string(CONTAINER_FIXED_ARRAY) + ":";
+                        // The doc is the instantiation statement's (the type comes first).
+                        pushId(ParseRecordKind::Instance, id,
+                               dynamic_cast<antlr4::ParserRuleContext*>(hi->parent), currentScope(),
+                               detail + type);
                     }
                 }
             }

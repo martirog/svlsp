@@ -53,6 +53,7 @@ lsp::SymbolKind symbolKindFor(const std::string& kind)
     if (kind == "Member")      return lsp::SymbolKind::Field;
     if (kind == "Genvar")      return lsp::SymbolKind::Variable;
     if (kind == "Block")       return lsp::SymbolKind::Namespace;
+    if (kind == "Instance")    return lsp::SymbolKind::Object;
     return lsp::SymbolKind::Variable;
 }
 
@@ -72,6 +73,7 @@ lsp::CompletionItemKind completionKindFor(const std::string& kind)
     if (kind == "EnumLiteral") return lsp::CompletionItemKind::EnumMember;
     if (kind == "Member")      return lsp::CompletionItemKind::Field;
     if (kind == "Genvar")      return lsp::CompletionItemKind::Variable;
+    if (kind == "Instance")    return lsp::CompletionItemKind::Module;
     return lsp::CompletionItemKind::Variable;
 }
 
@@ -333,6 +335,8 @@ size_t nextLayerSeparator(const std::string& detail, size_t from)
     return std::string::npos;
 }
 
+} // namespace
+
 // A container/element detail string is a ':'-delimited list of layers,
 // outermost first (plan.md §6.15 -- see containerDimensionTags() in
 // src/compiler/sv_tree_walker.cpp for how it's built). Splits on single
@@ -358,7 +362,6 @@ bool isContainerDimensionTag(const std::string& layer)
     return layer == CONTAINER_QUEUE || layer == CONTAINER_ASSOC ||
            layer == CONTAINER_DYNAMIC_ARRAY || layer == CONTAINER_FIXED_ARRAY;
 }
-} // namespace
 
 std::string firstTypeLayer(const std::string& detail)
 {
@@ -472,73 +475,6 @@ std::string displayDetail(const SymbolRow& row)
     std::string d = row.detail;
     d.erase(std::remove(d.begin(), d.end(), PARAM_DEFAULT_VALUE_SEP), d.end());
     return d;
-}
-
-std::vector<SymbolRow> membersAcrossChain(SymbolDatabase& db, const std::string& className,
-                                           const std::string& curPath)
-{
-    std::vector<SymbolRow> members;
-    std::unordered_set<std::string> seen;
-    for (auto& scope : db.baseClassChain(className, curPath))
-        for (auto& row : db.findSymbolsInScope(scope))
-            if (seen.insert(row.name).second) members.push_back(row);
-    return members;
-}
-
-std::string resolveFirstSegment(SymbolDatabase& db, const std::string& path, SrcPos at,
-                                 const ChainSegment& seg)
-{
-    if (!seg.isCall && seg.name == "this")
-        return db.enclosingClassNameAt(path, at);
-
-    if (!seg.isCall && seg.name == "super") {
-        std::string enclosing = db.enclosingClassNameAt(path, at);
-        if (enclosing.empty()) return "";
-        auto rows = db.findSymbolsByName(enclosing);
-        if (rows.empty()) return "";
-        if (const SymbolRow* best = pickBestSymbol(rows, path); best->kind == "Class")
-            return best->detail; // parent class name, "" if none (no extends)
-        return "";
-    }
-
-    auto visible = db.findSymbolsVisibleAt(path, at);
-    const char* wantKind = seg.isCall ? "Function" : nullptr;
-    for (auto& row : visible) {
-        bool kindMatches = wantKind ? row.kind == wantKind
-                                     : (row.kind == "Signal" || row.kind == "Parameter" ||
-                                        row.kind == "Port");
-        if (kindMatches && row.name == seg.name)
-            return peelDimensionLayers(row.kind == "Port" ? portValueType(row.detail) : row.detail,
-                                       seg.indexDepth);
-    }
-    return "";
-}
-
-std::string resolveMemberSegment(SymbolDatabase& db, const std::string& curPath,
-                                  const std::string& prevClass, const ChainSegment& seg)
-{
-    if (prevClass.empty()) return "";
-    auto members = membersAcrossChain(db, prevClass, curPath);
-    const char* wantKind = seg.isCall ? "Function" : nullptr;
-    for (auto& row : members) {
-        bool kindMatches = wantKind ? row.kind == wantKind
-                                     : (row.kind == "Signal" || row.kind == "Parameter");
-        if (kindMatches && row.name == seg.name)
-            return peelDimensionLayers(row.detail, seg.indexDepth);
-    }
-    return "";
-}
-
-std::optional<std::string> resolveChain(SymbolDatabase& db, const std::string& path, SrcPos at,
-                                         const std::vector<ChainSegment>& segments)
-{
-    std::string current = resolveFirstSegment(db, path, at, segments[0]);
-    if (current.empty()) return std::nullopt;
-    for (size_t i = 1; i < segments.size(); ++i) {
-        current = resolveMemberSegment(db, path, current, segments[i]);
-        if (current.empty()) return std::nullopt;
-    }
-    return current;
 }
 
 // True if the '(' at `parenPos` opens a named port connection ("

@@ -1,4 +1,5 @@
 #include "lsp/completion.h"
+#include "lsp/symbol_resolution.h"
 #include "lsp/symbol_utils.h"
 #include "lsp/fuzzy_match.h"
 #include "lsp/sv_keywords.h"
@@ -268,12 +269,27 @@ lsp::TextDocument_CompletionResult CompletionProvider::getCompletion(
         return nullptr;
 
     if (auto dot = dotCompletionContext(docText, params.position.line, params.position.character)) {
-        auto resolved = resolveChain(db, path, at, dot->segments);
-        if (!resolved) return nullptr;
-        auto candidates =
-            candidatesForResolvedType(db, *resolved, path, db.enclosingClassScopesAt(path, at));
-        if (isSuperInConstructor(db, path, at, dot->segments))
-            candidates.push_back(superNewCandidate(db, *resolved, path));
+        auto recv = resolveReceiverType(db, path, docText, dot->segments, at);
+        if (!recv) return nullptr;
+        std::vector<Candidate> candidates;
+        if (recv->owner && recv->owner->kind != "Class") {
+            // A struct, interface, module or named block: its own rows.
+            const auto& o = *recv->owner;
+            candidates = candidatesFromRows(
+                db.findSymbolsInScope(o.scope.empty() ? o.name : o.scope + "::" + o.name));
+        } else {
+            // A class by its qualified name (`$unit::` for a top-level one,
+            // so baseClassChain never picks a same-named class elsewhere),
+            // else the built-in/container type text.
+            const std::string type = !recv->owner ? recv->builtin
+                                   : recv->owner->scope.empty()
+                                       ? "$unit::" + recv->owner->name
+                                       : recv->owner->scope + "::" + recv->owner->name;
+            candidates =
+                candidatesForResolvedType(db, type, path, db.enclosingClassScopesAt(path, at));
+            if (isSuperInConstructor(db, path, at, dot->segments))
+                candidates.push_back(superNewCandidate(db, type, path));
+        }
         return buildCompletionItems(candidates, dot->prefix, fuzzyEnabled);
     }
 

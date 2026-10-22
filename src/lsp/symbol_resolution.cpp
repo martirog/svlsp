@@ -89,6 +89,9 @@ bool scopeOpBefore(const std::string& text, size_t i)
     return i >= 2 && text[i - 1] == ':' && text[i - 2] == ':' && (i < 3 || text[i - 3] != ':');
 }
 
+// Value: anything a `.` can follow -- a variable, a struct member, an
+// instance, a named block or a design unit named from the top
+// (`top.u_sub.sig`).
 enum class KindFilter { Any, ScopeLike, Callable, Value, Typedef };
 
 bool kindMatches(const SymbolRow& r, KindFilter f)
@@ -97,7 +100,9 @@ bool kindMatches(const SymbolRow& r, KindFilter f)
     case KindFilter::Any:       return true;
     case KindFilter::ScopeLike: return r.kind == "Package" || r.kind == "Class";
     case KindFilter::Callable:  return isCallable(r);
-    case KindFilter::Value:     return r.kind == "Signal" || r.kind == "Parameter" || r.kind == "Port";
+    case KindFilter::Value:
+        return r.kind == "Signal" || r.kind == "Parameter" || r.kind == "Port" ||
+               r.kind == "Member" || r.kind == "Instance" || r.kind == "Block" || isDesignUnit(r);
     case KindFilter::Typedef:   return r.kind == "Typedef";
     }
     return true;
@@ -129,6 +134,12 @@ const SymbolRow* closestBefore(const std::vector<const SymbolRow*>& rows, SrcPos
 
 class Resolver {
 public:
+    // resolveReceiverType's entry point.
+    std::optional<ReceiverType> receiverTypeOf(const std::vector<ChainSegment>& segs, SrcPos at) const
+    {
+        return receiverType(segs, at);
+    }
+
     Resolver(SymbolDatabase& db, const std::string& path, const std::string& text)
         : m_db(db), m_path(path), m_text(blankCommentsAndStrings(text)) {}
 
@@ -150,15 +161,20 @@ private:
                                         const std::string& name, KindFilter filter,
                                         bool withInherited = true) const;
     std::optional<SymbolRow> resolveTypeName(const std::string& type, const std::string& ctxPath,
-                                             SrcPos ctxAt) const;
-    std::optional<SymbolRow> classInScope(const std::string& scope, const std::string& name) const;
+                                             SrcPos ctxAt, bool valueType = false) const;
+    std::optional<SymbolRow> followTypedef(const SymbolRow& td, bool valueType) const;
+    bool hasMembers(const SymbolRow& row) const;
+    std::optional<SymbolRow> classInScope(const std::string& scope, const std::string& name,
+                                          bool valueType = false) const;
     std::optional<std::string> resolveQualifierScope(const std::vector<std::string>& segs,
                                                      const std::string& ctxPath,
                                                      SrcPos ctxAt) const;
     std::optional<SymbolRow> memberInScope(const std::string& scope, const std::string& name,
                                            KindFilter prefer) const;
-    std::optional<SymbolRow> typeOfRow(const SymbolRow& row, int indexDepth) const;
+    ReceiverType typeOfRow(const SymbolRow& row, int indexDepth) const;
     std::optional<SymbolRow> enclosingClassRow(SrcPos at) const;
+    std::optional<ReceiverType> receiverType(const std::vector<ChainSegment>& segs,
+                                             SrcPos at) const;
     std::optional<SymbolRow> resolveReceiver(const std::vector<ChainSegment>& segs,
                                              SrcPos at) const;
     std::optional<SymbolRow> constructorIn(const std::string& classScope) const;
@@ -314,10 +330,19 @@ std::optional<SymbolRow> Resolver::lookupBare(const std::string& path, SrcPos at
 // followed to the type it aliases, resolved where the typedef is declared.
 // A bare name nothing visible declares still resolves if exactly one class
 // (or else exactly one typedef) has that name.
-std::optional<SymbolRow> Resolver::resolveTypeName(const std::string& type,
-                                                   const std::string& ctxPath, SrcPos ctxAt) const
+//
+// With `valueType` -- the type of a value a `.` can follow -- a struct/union
+// typedef (one with Member rows) is a result too, and a name no class or
+// typedef has resolves to the Interface/Module/Program of that name (a
+// virtual interface's `intf.mp` drops its modport).
+std::optional<SymbolRow> Resolver::resolveTypeName(const std::string& typeIn,
+                                                   const std::string& ctxPath, SrcPos ctxAt,
+                                                   bool valueType) const
 {
-    if (type.empty() || m_typeDepth > 16) return std::nullopt;
+    if (typeIn.empty() || m_typeDepth > 16) return std::nullopt;
+    const std::string type =
+        valueType && typeIn.find('.') != std::string::npos ? typeIn.substr(0, typeIn.find('.'))
+                                                           : typeIn;
     struct DepthGuard {
         int& d;
         explicit DepthGuard(int& depth) : d(depth) { ++d; }
@@ -338,7 +363,7 @@ std::optional<SymbolRow> Resolver::resolveTypeName(const std::string& type,
         segs.pop_back();
         auto scope = resolveQualifierScope(segs, ctxPath, ctxAt);
         if (!scope) return std::nullopt;
-        return classInScope(*scope, name);
+        return classInScope(*scope, name, valueType);
     }
 
     // Inherited members are skipped: a type name (notably a class's own
@@ -353,28 +378,52 @@ std::optional<SymbolRow> Resolver::resolveTypeName(const std::string& type,
     // keyword, never followed -- go on to the name-only search.
     if (auto td = lookupBare(ctxPath, ctxAt, type, KindFilter::Typedef, /*withInherited=*/false);
         td && !isForwardTypedef(*td))
-        return resolveTypeName(td->detail, td->filePath, posOf(*td));
-    std::vector<SymbolRow> classes, typedefs;
+        return followTypedef(*td, valueType);
+    std::vector<SymbolRow> classes, typedefs, units;
     for (auto& r : m_db.findSymbolsByName(type)) {
         if (r.kind == "Class") classes.push_back(r);
         if (r.kind == "Typedef" && !isForwardTypedef(r)) typedefs.push_back(r);
+        if (isDesignUnit(r) && r.scope.empty()) units.push_back(r);
     }
     if (classes.size() == 1) return classes.front();
-    if (classes.empty() && typedefs.size() == 1)
-        return resolveTypeName(typedefs.front().detail, typedefs.front().filePath,
-                               posOf(typedefs.front()));
+    if (classes.empty() && typedefs.size() == 1) return followTypedef(typedefs.front(), valueType);
+    if (valueType && classes.empty() && typedefs.empty() && !units.empty())
+        return *pickBestSymbol(units, ctxPath);
     return std::nullopt;
 }
 
+// The type a (non-forward) typedef aliases, resolved where it is declared;
+// with `valueType`, a struct/union typedef (no aliased name, Member rows of
+// its own) is that type itself.
+std::optional<SymbolRow> Resolver::followTypedef(const SymbolRow& td, bool valueType) const
+{
+    if (isForwardTypedef(td)) return std::nullopt;
+    if (td.detail.empty()) {
+        if (valueType && hasMembers(td)) return td;
+        return std::nullopt;
+    }
+    return resolveTypeName(td.detail, td.filePath, posOf(td), valueType);
+}
+
+// True if struct/union Member rows are scoped under `row` -- a struct
+// typedef, or a variable/member declared with an inline struct type.
+bool Resolver::hasMembers(const SymbolRow& row) const
+{
+    for (const auto& r : m_db.findSymbolsInScope(qualifiedScopeOf(row)))
+        if (r.kind == "Member") return true;
+    return false;
+}
+
 // The class `name` names as a member of `scope`: a class declared there, or
-// a typedef declared there followed to the class it aliases.
+// a typedef declared there followed to the class it aliases (or, with
+// `valueType`, to its struct; see resolveTypeName).
 std::optional<SymbolRow> Resolver::classInScope(const std::string& scope,
-                                                const std::string& name) const
+                                                const std::string& name, bool valueType) const
 {
     auto m = memberInScope(scope, name, KindFilter::ScopeLike);
     if (m && m->kind == "Class") return m;
-    if (auto td = memberInScope(scope, name, KindFilter::Typedef); td && !isForwardTypedef(*td))
-        return resolveTypeName(td->detail, td->filePath, posOf(*td));
+    if (auto td = memberInScope(scope, name, KindFilter::Typedef); td && td->kind == "Typedef")
+        return followTypedef(*td, valueType);
     return std::nullopt;
 }
 
@@ -435,22 +484,40 @@ std::optional<SymbolRow> Resolver::memberInScope(const std::string& scope, const
     return pick(m_db.findSymbolsInScope(scope));
 }
 
-// The class a value/function row's declared type names, resolved where the
-// row itself was declared.
-std::optional<SymbolRow> Resolver::typeOfRow(const SymbolRow& row, int indexDepth) const
+// The type of `row`'s value after `indexDepth` index groups, resolved where
+// the row itself was declared: the row owning its members (see
+// ReceiverType), else the remaining type text for a container or a type
+// that doesn't resolve. A named block is its own owner (indexed for a
+// generate loop's `gen[0]`), and so is a design unit named from the top, a
+// struct-typed variable declared with an inline struct.
+ReceiverType Resolver::typeOfRow(const SymbolRow& row, int indexDepth) const
 {
-    std::string type;
-    if (row.kind == "Signal" || row.kind == "Parameter")
-        type = peelDimensionLayers(row.detail, indexDepth);
+    if (row.kind == "Block" || (isDesignUnit(row) && indexDepth == 0)) return {row, ""};
+    std::string detail;
+    if (row.kind == "Signal" || row.kind == "Parameter" || row.kind == "Member" ||
+        row.kind == "Instance")
+        detail = row.detail;
     else if (row.kind == "Port")
-        type = peelDimensionLayers(portValueType(row.detail), indexDepth);
+        detail = portValueType(row.detail);
     else if (isCallable(row) && indexDepth == 0)
-        type = row.detail; // return type
+        detail = row.detail; // return type
     else
-        return std::nullopt;
-    if (type.empty()) return std::nullopt;
-    if (firstTypeLayer(type) != type) return std::nullopt; // still a container, not a class
-    return resolveTypeName(type, row.filePath, posOf(row));
+        return {};
+    const std::string type = peelDimensionLayers(detail, indexDepth);
+    if (type.empty()) {
+        // `struct {...} s[4]` has detail "$fixed_array" and members under `s`.
+        const auto layers = splitLayers(detail);
+        const bool allPeeled = static_cast<int>(layers.size()) == indexDepth &&
+                               std::all_of(layers.begin(), layers.end(), isContainerDimensionTag);
+        if ((detail.empty() || allPeeled) && row.kind != "Instance" && hasMembers(row))
+            return {row, ""};
+        return {};
+    }
+    if (firstTypeLayer(type) != type || (type[0] == '$' && type.rfind("$unit::", 0) != 0))
+        return {std::nullopt, type}; // a container or a built-in type
+    if (auto owner = resolveTypeName(type, row.filePath, posOf(row), /*valueType=*/true))
+        return {owner, ""};
+    return {std::nullopt, type};
 }
 
 std::optional<SymbolRow> Resolver::enclosingClassRow(SrcPos at) const
@@ -470,34 +537,46 @@ std::optional<SymbolRow> Resolver::enclosingClassRow(SrcPos at) const
     return std::nullopt;
 }
 
-std::optional<SymbolRow> Resolver::resolveReceiver(const std::vector<ChainSegment>& segs,
+// The type a receiver chain's value has; nullopt when a segment resolves
+// to nothing, or a segment before the last has no member-owning type.
+std::optional<ReceiverType> Resolver::receiverType(const std::vector<ChainSegment>& segs,
                                                    SrcPos at) const
 {
     if (segs.empty()) return std::nullopt;
     const auto& first = segs[0];
-    std::optional<SymbolRow> cls;
+    ReceiverType type;
     if (!first.isCall && first.indexDepth == 0 && first.name == "this") {
-        cls = enclosingClassRow(at);
+        type.owner = enclosingClassRow(at);
     } else if (!first.isCall && first.indexDepth == 0 && first.name == "super") {
         auto self = enclosingClassRow(at);
         if (!self) return std::nullopt;
         auto chain = classChainRows(*self);
         if (chain.size() < 2) return std::nullopt;
-        cls = chain[1];
+        type.owner = chain[1];
     } else {
         auto row = lookupBare(m_path, at, first.name,
                               first.isCall ? KindFilter::Callable : KindFilter::Value);
         if (!row) return std::nullopt;
-        cls = typeOfRow(*row, first.indexDepth);
+        type = typeOfRow(*row, first.indexDepth);
     }
 
-    for (size_t i = 1; cls && i < segs.size(); ++i) {
-        auto m = memberInScope(qualifiedScopeOf(*cls), segs[i].name,
+    for (size_t i = 1; i < segs.size(); ++i) {
+        if (!type.owner) return std::nullopt;
+        auto m = memberInScope(qualifiedScopeOf(*type.owner), segs[i].name,
                                segs[i].isCall ? KindFilter::Callable : KindFilter::Value);
         if (!m) return std::nullopt;
-        cls = typeOfRow(*m, segs[i].indexDepth);
+        type = typeOfRow(*m, segs[i].indexDepth);
     }
-    return cls;
+    if (!type.owner && type.builtin.empty()) return std::nullopt;
+    return type;
+}
+
+// The row owning the receiver chain's members (see ReceiverType).
+std::optional<SymbolRow> Resolver::resolveReceiver(const std::vector<ChainSegment>& segs,
+                                                   SrcPos at) const
+{
+    auto type = receiverType(segs, at);
+    return type ? type->owner : std::nullopt;
 }
 
 // The constructor `classScope` itself declares -- the earliest `new` row, so
@@ -569,7 +648,7 @@ std::optional<ResolvedSymbol> Resolver::resolveNew(size_t start, size_t before, 
     if (const size_t kw = identStartBefore(m_text, before);
         m_text.compare(kw, before - kw, "return") == 0) {
         auto fn = enclosingFunctionRow(at);
-        return fn ? ctorOf(typeOfRow(*fn, 0)) : std::nullopt;
+        return fn ? ctorOf(typeOfRow(*fn, 0).owner) : std::nullopt;
     }
 
     if (before > 0 && (m_text[before - 1] == '(' || m_text[before - 1] == ','))
@@ -646,7 +725,7 @@ std::optional<SymbolRow> Resolver::argumentType(size_t before, size_t start, int
         }
         if (index < ports.size()) port = &ports[index];
     }
-    return port ? typeOfRow(*port, 0) : std::nullopt;
+    return port ? typeOfRow(*port, 0).owner : std::nullopt;
 }
 
 // For a named connection inside the parens at `paren`: the module/interface/
@@ -784,10 +863,10 @@ std::optional<ResolvedSymbol> Resolver::resolveAt(size_t offset, int depth)
         const lsp::Position endPos = positionForOffset(m_text, end);
         auto dotCtx = dotCompletionContext(m_text, endPos.line, endPos.character);
         if (!dotCtx || dotCtx->prefix != word) return fallback(word);
-        auto cls = resolveReceiver(dotCtx->segments, at);
-        if (!cls) return fallback(word);
+        auto owner = resolveReceiver(dotCtx->segments, at);
+        if (!owner) return fallback(word);
         const KindFilter prefer = followedByParen ? KindFilter::Callable : KindFilter::Value;
-        if (auto m = memberInScope(qualifiedScopeOf(*cls), word, prefer))
+        if (auto m = memberInScope(qualifiedScopeOf(*owner), word, prefer))
             return ResolvedSymbol{*m, true};
         return std::nullopt;
     }
@@ -795,6 +874,11 @@ std::optional<ResolvedSymbol> Resolver::resolveAt(size_t offset, int depth)
     // 4. bare `word`
     const KindFilter filter = followedByScope ? KindFilter::ScopeLike : KindFilter::Any;
     if (auto r = lookupBare(m_path, at, word, filter)) return ResolvedSymbol{*r, true};
+    // A declaration no lexical chain reaches (a struct member) is still
+    // itself when the cursor is on its name.
+    for (auto& r : m_db.findSymbolsByName(word))
+        if (r.filePath == m_path && r.line == at.line && r.col == at.col)
+            return ResolvedSymbol{r, true};
     return fallback(word);
 }
 
@@ -861,6 +945,14 @@ std::vector<std::optional<SymbolRow>> resolveCallees(SymbolDatabase& db, const s
         if (!byName.empty()) callees[callOf[i]] = SymbolDatabase::pickSameFilePreferred(byName, path);
     }
     return callees;
+}
+
+std::optional<ReceiverType> resolveReceiverType(SymbolDatabase& db, const std::string& path,
+                                                const std::string& text,
+                                                const std::vector<ChainSegment>& segments,
+                                                SrcPos at)
+{
+    return Resolver(db, path, text).receiverTypeOf(segments, at);
 }
 
 int64_t overrideFamilyId(SymbolDatabase& db, const SymbolRow& row)

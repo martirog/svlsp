@@ -1,6 +1,7 @@
 #pragma once
 #include "compiler/parse_record.h"
 #include "db/symbol_database.h"
+#include "lsp/symbol_utils.h"
 #include <optional>
 #include <string>
 #include <vector>
@@ -18,25 +19,22 @@
 //   2. `.name` preceded by '(' or ',' -- a named port / parameter / argument
 //      connection: `name` is a Port or Parameter of the instantiated module
 //      (or of the called function/task), not a member of anything.
-//   3. `recv.name` -- resolve the receiver chain to its declared class
-//      (types are resolved in the context of *their own* declaration, so an
-//      imported or `pkg::`-qualified type means what it meant there), then
-//      find `name` among that class's and its ancestors' members.
+//   3. `recv.name` -- resolve the receiver chain to the row owning its
+//      members (see ReceiverType; types are resolved in the context of
+//      *their own* declaration, so an imported or `pkg::`-qualified type
+//      means what it meant there), then find `name` among them -- for a
+//      class, among its and its ancestors' members.
 //   4. a bare `name` -- innermost lexical scope first; inside a class, the
 //      class's inherited members at the class's own level; then a specific
 //      import, then wildcard-imported packages, then other files' top level.
 //      A name followed by `::` only matches a Package or Class.
 //
 // `exact` is false when the qualifier/receiver/name couldn't be understood
-// at all (an unknown package, a struct or hierarchical-instance receiver, a
+// at all (an unknown package, a receiver of unknown type or a container, a
 // name nothing visible declares) and the result is the old name-only
 // fallback -- kept so those shapes don't regress. When the qualifier or
 // receiver *is* understood but has no such member, the result is nullopt
 // rather than a guess (plan.md §6.26's own rule).
-//
-// Disclosed limits (plan.md §6.30): begin/end and generate blocks are not
-// scopes; scope containment is line-granular; out-of-class method bodies
-// are not yet nested under their class (step D).
 struct ResolvedSymbol {
     SymbolRow row;
     bool      exact;
@@ -66,6 +64,28 @@ std::vector<std::optional<ResolvedSymbol>> resolveSymbolsAt(
 std::vector<std::optional<SymbolRow>> resolveCallees(SymbolDatabase& db, const std::string& path,
                                                      const std::string& text,
                                                      const std::vector<CallRecord>& calls);
+
+// What a dot receiver's value is. `owner` is the row whose qualified scope
+// holds its members: a Class (members include its ancestors'), a struct/
+// union Typedef or a variable/member declared with an inline struct, an
+// Interface/Module/Program (an instance, a virtual interface, an interface
+// port, or a design unit named from the top), or a named Block. Otherwise
+// `builtin` is the remaining type text: a container (`$queue:C`), a
+// built-in (`$string`, `mailbox`) or a type name that resolves to nothing.
+struct ReceiverType {
+    std::optional<SymbolRow> owner;
+    std::string              builtin;
+};
+
+// The type of the receiver chain `segments` (dotCompletionContext's) at
+// `at` (1-based line) in `path`, whose source is `text` -- what dot
+// completion offers members of (plan.md §6.30, "Follow-up: struct,
+// interface and hierarchical receivers"). nullopt when a segment resolves
+// to nothing.
+std::optional<ReceiverType> resolveReceiverType(SymbolDatabase& db, const std::string& path,
+                                                const std::string& text,
+                                                const std::vector<ChainSegment>& segments,
+                                                SrcPos at);
 
 // Identifies `row`'s override family: for a class method (Function/Task
 // scoped to a class), the id of the same-named Function/Task declared by

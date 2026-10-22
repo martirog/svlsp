@@ -140,42 +140,19 @@ std::string displayDetail(const SymbolRow& row);
 // "m::f"; a named block's label stays.
 std::string displayScope(const std::string& scope);
 
+// A layered detail split into its layers, outermost first, on single ':'
+// only ("$queue:p::C" -> {"$queue", "p::C"}); "" gives {""}.
+std::vector<std::string> splitLayers(const std::string& detail);
+
+// True for a container-dimension layer tag ($queue, $assoc_array,
+// $dynamic_array, $fixed_array).
+bool isContainerDimensionTag(const std::string& layer);
+
 // The outermost layer of a (possibly layered) detail string -- what
 // container/element-tag dispatch (builtinMethodsFor) keys off. Splits on a
 // single ':' only, so a `pkg::`-qualified type name (plan.md §6.30 step A)
 // is one layer. A single-layer detail is returned unchanged.
 std::string firstTypeLayer(const std::string& detail);
-
-// Unions member rows across `className`'s own scope and every ancestor
-// reachable via `extends` (plan.md §6.26 -- SymbolDatabase::baseClassChain),
-// deduped by name so a derived class's own override always wins over an
-// ancestor's same-named member. {} if `className` isn't a known class at
-// all. Shared by completion.cpp's chain resolution and (plan.md §6.27)
-// signature_help.cpp's dotted-call resolution.
-std::vector<SymbolRow> membersAcrossChain(SymbolDatabase& db, const std::string& className,
-                                           const std::string& curPath);
-
-// Resolves a dot-completion chain's first segment against what's visible at
-// the cursor (not as a member of anything -- that's resolveMemberSegment
-// below). Returns "" on failure (fail closed). See completion.cpp's
-// original doc comment for the full `this`/`super` design.
-std::string resolveFirstSegment(SymbolDatabase& db, const std::string& path, SrcPos at,
-                                 const ChainSegment& seg);
-
-// Resolves a non-first chain segment as a member of `prevClass`'s own class
-// or one of its ancestors via `extends`. Returns "" on failure (fail closed).
-std::string resolveMemberSegment(SymbolDatabase& db, const std::string& curPath,
-                                  const std::string& prevClass, const ChainSegment& seg);
-
-// Resolves an entire dot-completion chain left to right to the type/scope
-// name backing its final segment's own members. Returns nullopt if any hop
-// fails to resolve (fail closed). Shared by completion.cpp (plan.md §6.14)
-// and, since plan.md §6.27, signature_help.cpp's dotted-call resolution --
-// the latter passes `segments` *excluding* the final call name itself (the
-// receiver chain only), so the result is the receiver's own type, not
-// whatever the call itself might return.
-std::optional<std::string> resolveChain(SymbolDatabase& db, const std::string& path, SrcPos at,
-                                         const std::vector<ChainSegment>& segments);
 
 // A lexical hit for a whole-identifier text search (findIdentifierOccurrences
 // below) -- 0-based LSP line/character of the occurrence's first character.

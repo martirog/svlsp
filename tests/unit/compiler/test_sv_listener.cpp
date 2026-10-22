@@ -979,7 +979,7 @@ TEST_CASE("a module port's default value is appended after the separator",
     CHECK(r->detail == std::string("input int") + PARAM_DEFAULT_VALUE_SEP + " = 8");
 }
 
-TEST_CASE("an interface port's detail carries no separate type",
+TEST_CASE("an interface port's detail is its interface header",
           "[compiler][listener][phase6.28]") {
     auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
         "module m (my_if.mp h);\n"
@@ -987,7 +987,7 @@ TEST_CASE("an interface port's detail carries no separate type",
     REQUIRE(errs.empty());
     auto* r = findRecord(recs, ParseRecordKind::Port, "h");
     REQUIRE(r != nullptr);
-    CHECK(r->detail == "");
+    CHECK(r->detail == "my_if.mp");
 }
 
 TEST_CASE("a variable-port-header (var) module port records its type",
@@ -2295,4 +2295,106 @@ TEST_CASE("a scope records the column just past its last token",
     CHECK(b->column == 49);
     CHECK(b->endCol == 65);
     CHECK(m->endCol == 75);
+}
+
+// ---------------------------------------------------------------------------
+// plan.md §6.30, "Follow-up: struct, interface and hierarchical receivers":
+// instances are recorded, and a virtual interface's / interface port's /
+// net-declared array's type survives into detail.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a module/interface instance is recorded as an Instance of its type",
+          "[compiler][listener][receivers]") {
+    auto result = walkSource(
+        "interface rcv_if(input logic clk); endinterface\n"
+        "module rcv_sub(input logic a); endmodule\n"
+        "module rcv_top;\n"
+        "  logic clk;\n"
+        "  rcv_sub u_sub(.a(clk)), u_sub2(.a(clk));\n"
+        "  rcv_if u_if(clk);\n"
+        "  rcv_sub #(.W(2)) u_arr[2] (.a(clk));\n"
+        "endmodule\n");
+    REQUIRE(result.parseErrors.empty());
+    const auto* s = findRecord(result.records, ParseRecordKind::Instance, "u_sub");
+    REQUIRE(s);
+    CHECK(s->scope == "rcv_top");
+    CHECK(s->detail == "rcv_sub");
+    CHECK(s->line == 5);
+    CHECK(s->column == 10);
+    const auto* s2 = findRecord(result.records, ParseRecordKind::Instance, "u_sub2");
+    REQUIRE(s2);
+    CHECK(s2->detail == "rcv_sub");
+    const auto* i = findRecord(result.records, ParseRecordKind::Instance, "u_if");
+    REQUIRE(i);
+    CHECK(i->detail == "rcv_if");
+    const auto* a = findRecord(result.records, ParseRecordKind::Instance, "u_arr");
+    REQUIRE(a);
+    CHECK(a->detail == "$fixed_array:rcv_sub");
+}
+
+TEST_CASE("a virtual interface keeps its interface type, modport included",
+          "[compiler][listener][receivers]") {
+    auto result = walkSource(
+        "interface rcv_if; logic v; modport mp(input v); endinterface\n"
+        "module rcv_m;\n"
+        "  virtual rcv_if vif;\n"
+        "  virtual interface rcv_if.mp vmp;\n"
+        "  virtual rcv_if vifs[2];\n"
+        "endmodule\n"
+        "class rcv_C;\n"
+        "  virtual rcv_if cvif;\n"
+        "  typedef virtual rcv_if.mp vif_t;\n"
+        "  function virtual rcv_if get_vif(); return cvif; endfunction\n"
+        "endclass\n");
+    REQUIRE(result.parseErrors.empty());
+    auto detailOf = [&](ParseRecordKind k, const char* name) {
+        const auto* r = findRecord(result.records, k, name);
+        REQUIRE(r);
+        return r->detail;
+    };
+    CHECK(detailOf(ParseRecordKind::Signal, "vif") == "rcv_if");
+    CHECK(detailOf(ParseRecordKind::Signal, "vmp") == "rcv_if.mp");
+    CHECK(detailOf(ParseRecordKind::Signal, "vifs") == "$fixed_array:rcv_if");
+    CHECK(detailOf(ParseRecordKind::Signal, "cvif") == "rcv_if");
+    CHECK(detailOf(ParseRecordKind::Typedef, "vif_t") == "rcv_if.mp");
+    CHECK(detailOf(ParseRecordKind::Function, "get_vif") == "rcv_if");
+}
+
+TEST_CASE("an interface port's detail is its interface and modport",
+          "[compiler][listener][receivers]") {
+    auto result = walkSource(
+        "interface rcv_if; logic v; modport mp(input v); endinterface\n"
+        "module rcv_m(rcv_if.mp b, rcv_if c, interface d);\n"
+        "endmodule\n");
+    REQUIRE(result.parseErrors.empty());
+    const auto* b = findRecord(result.records, ParseRecordKind::Port, "b");
+    const auto* c = findRecord(result.records, ParseRecordKind::Port, "c");
+    const auto* d = findRecord(result.records, ParseRecordKind::Port, "d");
+    REQUIRE(b);
+    REQUIRE(c);
+    REQUIRE(d);
+    CHECK(b->detail == "rcv_if.mp");
+    CHECK(c->detail == "rcv_if");
+    CHECK(d->detail == "interface");
+}
+
+TEST_CASE("an unpacked array of a user type parsed as a net declaration keeps its dimensions",
+          "[compiler][listener][receivers]") {
+    auto result = walkSource(
+        "typedef struct { int a; } rcv_st;\n"
+        "class rcv_K; endclass\n"
+        "module rcv_m;\n"
+        "  rcv_st arr[4];\n"
+        "  rcv_K objs[2][3], one;\n"
+        "endmodule\n");
+    REQUIRE(result.parseErrors.empty());
+    const auto* arr = findRecord(result.records, ParseRecordKind::Signal, "arr");
+    const auto* objs = findRecord(result.records, ParseRecordKind::Signal, "objs");
+    const auto* one = findRecord(result.records, ParseRecordKind::Signal, "one");
+    REQUIRE(arr);
+    REQUIRE(objs);
+    REQUIRE(one);
+    CHECK(arr->detail == "$fixed_array:rcv_st");
+    CHECK(objs->detail == "$fixed_array:$fixed_array:rcv_K");
+    CHECK(one->detail == "rcv_K");
 }

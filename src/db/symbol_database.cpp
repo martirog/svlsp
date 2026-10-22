@@ -30,6 +30,7 @@ static std::string kindStr(ParseRecordKind k)
     case ParseRecordKind::Member:      return "Member";
     case ParseRecordKind::Genvar:      return "Genvar";
     case ParseRecordKind::Block:       return "Block";
+    case ParseRecordKind::Instance:    return "Instance";
     }
     return "Unknown";
 }

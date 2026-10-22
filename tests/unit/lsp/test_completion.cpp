@@ -5,6 +5,7 @@
 #include "compiler/parse_record.h"
 #include "db/compilation_controller.h"
 #include <algorithm>
+#include <map>
 #include <filesystem>
 #include <fstream>
 
@@ -962,9 +963,10 @@ TEST_CASE("CompletionProvider: dot-completion resolves into a class declared ins
 TEST_CASE("CompletionProvider: an intermediate chain segment resolves into a package-nested class",
           "[completion][dot][package][chain]")
 {
-    // Not just the terminal-hop fix (previous test): resolveMemberSegment
-    // hits the exact same bug independently when a package-nested class is
-    // reached as a *non-final* segment of a longer chain.
+    // Not just the terminal-hop fix (previous test): a member hop (once
+    // resolveMemberSegment, now the shared resolver) hit the same bug
+    // independently when a package-nested class is reached as a
+    // *non-final* segment of a longer chain.
     Fixture f;
     f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
         {ParseRecordKind::Module,   "top",   1, 7,  "",      "",
@@ -1749,4 +1751,92 @@ TEST_CASE("CompletionProvider: an out-of-class body in another file offers the c
     CHECK(hasItem(items, "xf_fld"));
     CHECK(hasItem(items, "xf_inh"));
     CHECK(hasItem(items, "xf_run"));
+}
+
+// plan.md §6.30, "Follow-up: struct, interface and hierarchical receivers":
+// dot completion goes through the shared resolver, so a struct, an
+// interface (instance, virtual interface, interface port), a module
+// instance and a named block offer their own members.
+TEST_CASE("CompletionProvider: struct, interface and hierarchical receivers offer their members",
+          "[completion][dot][receivers]")
+{
+    Fixture f;
+    CompilationController ctrl{f.sdb};
+    const std::string text =
+        "package rcvc_p;\n"
+        "  typedef struct { int hi; int lo; } pair_t;\n"
+        "  typedef struct { pair_t inner; int n; } outer_t;\n"
+        "endpackage\n"
+        "interface rcvc_if(input logic clk);\n"
+        "  logic valid;\n"
+        "  task automatic drive(); endtask\n"
+        "endinterface\n"
+        "module rcvc_sub(input logic a);\n"
+        "  logic sig;\n"
+        "endmodule\n"
+        "module rcvc_top(rcvc_if pb);\n"
+        "  import rcvc_p::*;\n"
+        "  logic clk;\n"
+        "  pair_t s;\n"
+        "  outer_t o;\n"
+        "  pair_t arr[4];\n"
+        "  rcvc_if u_if(clk);\n"
+        "  virtual rcvc_if vif;\n"
+        "  rcvc_sub u_sub(.a(clk));\n"
+        "  initial begin : blk\n"
+        "    int bx;\n"
+        "  end\n"
+        "  initial begin\n"
+        "  end\n"         // line 24: each probe is inserted before it
+        "endmodule\n";
+    ctrl.compile("/rcvc.sv", text);
+
+    // The DB comes from the clean text; completion runs on a copy with one
+    // probe line (24) typed into the initial block, as while editing.
+    const std::map<unsigned, std::string> probes = {
+        {24u, "s."}, {25u, "o.inner."}, {26u, "arr[0]."}, {27u, "u_if."}, {28u, "vif."},
+        {29u, "pb."}, {30u, "u_sub."}, {31u, "blk."}, {32u, "arr."}};
+    auto itemsAt = [&](unsigned probe) {
+        size_t lineStart = 0;
+        for (unsigned l = 0; l < 24; ++l) lineStart = text.find('\n', lineStart) + 1;
+        const std::string typed = "    " + probes.at(probe);
+        const std::string doc = text.substr(0, lineStart) + typed + "\n" + text.substr(lineStart);
+        auto result = CompletionProvider::getCompletion(
+            makeParams("/rcvc.sv", 24, static_cast<unsigned>(typed.size())), f.sdb, doc);
+        INFO("probe " << probes.at(probe));
+        REQUIRE_FALSE(result.isNull());
+        return result.get<lsp::Array<lsp::CompletionItem>>();
+    };
+
+    for (unsigned probe : {24u, 25u, 26u}) {
+        const auto items = itemsAt(probe);
+        CHECK(hasItem(items, "hi"));
+        CHECK(hasItem(items, "lo"));
+        CHECK_FALSE(hasItem(items, "n"));
+        CHECK_FALSE(hasItem(items, "sig"));
+    }
+    for (unsigned probe : {27u, 28u, 29u}) {
+        const auto items = itemsAt(probe);
+        CHECK(hasItem(items, "valid"));
+        CHECK(hasItem(items, "drive"));
+        CHECK(hasItem(items, "clk"));
+        CHECK_FALSE(hasItem(items, "hi"));
+    }
+    {
+        const auto items = itemsAt(30);
+        CHECK(hasItem(items, "sig"));
+        CHECK(hasItem(items, "a"));
+        CHECK_FALSE(hasItem(items, "valid"));
+    }
+    {
+        const auto items = itemsAt(31);
+        CHECK(hasItem(items, "bx"));
+        CHECK_FALSE(hasItem(items, "sig"));
+    }
+    {
+        // An array of structs offers the array's own methods, not the fields.
+        const auto items = itemsAt(32);
+        CHECK(hasItem(items, "size"));
+        CHECK_FALSE(hasItem(items, "hi"));
+    }
 }

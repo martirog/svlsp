@@ -637,6 +637,78 @@ TEST_CASE("References: struct member", "[references][scoped][unrecorded]")
     requireExactRefs(f, "/m.sv", "refs_hi");
 }
 
+// plan.md §6.30, "Follow-up: struct, interface and hierarchical receivers":
+// each `.` use resolves exactly, so a same-named field of another struct,
+// signal of another interface or module, or variable is left out.
+TEST_CASE("References: struct members of two same-shaped structs stay apart",
+          "[references][scoped][receivers]")
+{
+    RealCompileFixture f;
+    f.add("/m.sv",
+          "package refs_sp;\n"
+          "  typedef struct { int refs_f; } a_t; // @ref @cursor\n"
+          "  typedef struct { int refs_f; } b_t;\n"
+          "endpackage\n"
+          "module refs_sm;\n"
+          "  import refs_sp::*;\n"
+          "  a_t a, aa[2];\n"
+          "  b_t b;\n"
+          "  int refs_f;\n"
+          "  initial begin\n"
+          "    a.refs_f = 1; // @ref\n"
+          "    aa[1].refs_f = 2; // @ref\n"
+          "    b.refs_f = refs_f;\n"
+          "  end\n"
+          "endmodule\n");
+
+    requireExactRefs(f, "/m.sv", "refs_f");
+}
+
+TEST_CASE("References: an interface signal used through instance, virtual interface and port",
+          "[references][scoped][receivers]")
+{
+    RealCompileFixture f;
+    f.add("/m.sv",
+          "interface refs_if;\n"
+          "  logic refs_v; // @ref @cursor\n"
+          "endinterface\n"
+          "interface refs_other_if;\n"
+          "  logic refs_v;\n"
+          "endinterface\n"
+          "module refs_im(refs_if p, refs_other_if q);\n"
+          "  refs_if u_if();\n"
+          "  refs_other_if u_other();\n"
+          "  virtual refs_if vif;\n"
+          "  initial begin\n"
+          "    u_if.refs_v = 1; // @ref\n"
+          "    vif.refs_v = 1; // @ref\n"
+          "    p.refs_v = 1; // @ref\n"
+          "    q.refs_v = 1;\n"
+          "    u_other.refs_v = 1;\n"
+          "  end\n"
+          "endmodule\n");
+
+    requireExactRefs(f, "/m.sv", "refs_v");
+}
+
+TEST_CASE("References: a module instance's references", "[references][scoped][receivers]")
+{
+    RealCompileFixture f;
+    f.add("/m.sv",
+          "module refs_leaf; logic s; endmodule\n"
+          "module refs_top;\n"
+          "  refs_leaf refs_u(); // @ref @cursor\n"
+          "  initial refs_u.s = 1; // @ref\n"
+          "  initial refs_top.refs_u.s = 0; // @ref\n"
+          "endmodule\n"
+          "module refs_top2;\n"
+          "  refs_leaf refs_u();\n"
+          "  initial refs_u.s = 1;\n"
+          "endmodule\n");
+
+    requireExactRefs(f, "/m.sv", "refs_u");
+}
+
 TEST_CASE("References: genvar", "[references][scoped][unrecorded]")
 {
     RealCompileFixture f;
