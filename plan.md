@@ -4483,9 +4483,10 @@ genvar recorded) and step D (out-of-class method bodies) implemented
 2026-09-25; step D's UVM-corpus check passed 2026-09-26 (`ec4b557`). The
 follow-ups below (constructors, typedef aliases, block scopes,
 column-granular scopes, include context, forward typedefs and
-declare-before-use, ...) are done through 2026-10-19. Still open: struct /
-interface / hierarchical receivers, which still use the name-only
-fallback.
+declare-before-use, struct / interface / hierarchical receivers, ...) are
+done through 2026-10-21. No disclosed limit is left open; the receiver
+follow-up lists what it doesn't cover (modports, clocking blocks, upward
+names).
 Planned 2026-09-24. The failing cases are already
 committed as `[!shouldfail]` tests (`ad85a28`).
 
@@ -5758,6 +5759,92 @@ through the name-only fallback (`exact = false`).
   (probe-empty stays 1067: the probe file is outside the UVM unit, so
   library rows are exempt).
 
+**Follow-up: struct, interface and hierarchical receivers (2026-10-21).**
+Done. Closes the last §6.30 disclosed limit: `s.f` (struct), `vif.sig`
+(virtual interface), `p.sig` (interface port), `u_sub.sig` (instance),
+`blk.x` / `gen[0].w` (named block) and `top.u_sub.sig` (a design unit
+named from the top) used the name-only fallback for hover / definition /
+references / rename, and dot completion offered nothing after them.
+Decisions (user, 2026-10-21): instances become symbol rows (new kind
+`Instance`), and dot completion moves onto the same resolver in this
+change.
+- *Walker.* `recordInstantiations` also records an `Instance` per named
+  instance: scope = the enclosing unit, detail = the instantiated type
+  after a `$fixed_array:` per unpacked dimension (`sub u[2]()` ->
+  `$fixed_array:sub`); its doc is the instantiation statement's.
+  `dataTypeName` handles `virtual [interface] intf [#(...)] [.mp]` ->
+  `intf` / `intf.mp` (so a virtual interface variable, typedef and member
+  all record it; a function's return type goes through `returnTypeText`
+  for the same reason). An ANSI `interface_port_header` port records its
+  header text (`intf.mp`, `intf`, `interface`) -- before, only a modport-
+  less `intf p` got a type, through `net_port_header`. A user-typed array
+  that parses as a net declaration (`MyType arr[4];`, the bare
+  `MyClass foo;` ambiguity) records its unpacked dimensions like
+  `enterData_declaration` does (`$fixed_array:MyType`; it recorded
+  `MyType`). No schema change.
+- *Resolver.* `typeOfRow` returns a `ReceiverType` (header): `owner` is
+  the row whose qualified scope holds the members -- a Class, a struct/
+  union Typedef (detail `""` and Member rows of its own, `hasMembers`), a
+  variable or member declared with an inline struct (its members are
+  scoped under it; `struct {...} s[4]` after its dimensions are indexed
+  away), an Interface/Module/Program, or a Block (its own owner, indexed
+  or not for a generate loop); otherwise `builtin` is the remaining type
+  text (a container, `$string`, `mailbox`, or a type that resolves to
+  nothing). `resolveTypeName(..., valueType=true)` drops a `.modport`,
+  returns a struct typedef (`followTypedef`), and resolves a name no
+  class or typedef has to the top-level design unit of that name.
+  `KindFilter::Value` (what a `.` can follow) adds Member, Instance,
+  Block and the design units. `resolveReceiver` returns the owner; the
+  member lookup is unchanged (`memberInScope`: a class's chain, else the
+  owner's scope). A name exactly at a recorded declaration's position
+  resolves to that row when no lexical chain reaches it (a struct
+  member's own declaration resolved by fallback, so references on it kept
+  every same-named hit).
+- *Completion.* `getCompletion` calls `resolveReceiverType` (the
+  resolver's chain walk, exported) instead of `resolveChain`: a non-class
+  owner offers its scope's rows (`candidatesFromRows`), a class owner goes
+  through `candidatesForResolvedType` by its qualified name (`$unit::C`
+  for a top-level class, so `baseClassChain` can't pick a same-named
+  class elsewhere), and `builtin` goes through it as before (container
+  methods, `mailbox`, or a by-name class lookup). `resolveChain`,
+  `resolveFirstSegment`, `resolveMemberSegment` and `membersAcrossChain`
+  are gone; `splitLayers` / `isContainerDimensionTag` are exported.
+- *Disclosed.* Modports and clocking blocks aren't recorded, so `vif.cb`
+  resolves to nothing (an understood receiver without the member) and
+  `vif.cb.sig` falls back by name; the same for an unnamed generate
+  block's `genblk<n>`. Completion after a module receiver doesn't offer
+  its named blocks (`candidatesFromRows` skips every Block). Upward
+  hierarchical names (`$root`, a parent instance) aren't resolved. A
+  typedef's unpacked dimensions (`typedef T arr_t[4];`) still aren't
+  recorded.
+- *Tests.* Unit: 4 walker cases (`[receivers]`: instances incl. arrays and
+  comma lists, virtual interface detail incl. typedef / return type /
+  array, interface port headers, net-declared user-type arrays; the
+  §6.28 case that pinned an interface port's `""` detail now expects
+  `my_if.mp`); 6 resolver cases replacing the "struct / instance
+  receivers fall back" case (struct incl. nested, alias, inline, array,
+  class member; interface via instance, virtual interface, array, port,
+  class member; instances, named and generate blocks, a module path; an
+  instance name; an understood struct without the member is nothing; an
+  unknown receiver still falls back); 3 references cases (two
+  same-shaped structs, an interface signal through instance / virtual
+  interface / port with another interface's decoys, an instance's
+  references incl. `top.inst`); completion (struct, nested, array
+  element, instance, virtual interface, interface port, module instance,
+  named block, and an array's own methods); `symbolKindFor` /
+  `completionKindFor("Instance")`. Emacs: test_47 (`fixtures/
+  rcvr_top.sv`): definition through each receiver shape and on an
+  instance name, references on a struct member, completion after a
+  virtual interface, a struct and a module instance.
+- *Verification (2026-10-21/22).* Unit **1029/1029** (debug and release);
+  Emacs **305/305** (test_47 new); UVM corpus **1563 / 31 cases**, no pin
+  moved (references(`get_name`) 3.82 s, was 3.85 s); `--build-db`
+  identical in every table (18440 symbols, 553 macros, 965 docs, 165
+  include_sites, 1 diagnostic; 14 min / 6.96 GB) -- UVM has no
+  modules, interfaces, programs or virtual interfaces, so no `Instance`
+  rows and no changed details; the corpus `uvm.db` was kept as is;
+  `make test-integration-uvm` 13/13.
+
 **Ordering:** wildcard-import same-file fix (with its own test, done) → A → B
 (hover/definition first, then references + rename) → C → D. After each
 step, remove the `[!shouldfail]` tag from every test that now passes:
@@ -5798,7 +5885,8 @@ file contains a declaration or import that could reach `target`.
 - block-level (`begin`/`end`, generate block) scopes;
 - column-granular scope containment;
 - hierarchical references (`top.u0.sig`) and interface/virtual-interface
-  member resolution — these use the fallback;
+  member resolution — these use the fallback (done since, "Follow-up:
+  struct, interface and hierarchical receivers");
 - `bind`;
 - references into attached library DBs beyond what `allFilePaths()`
   already covers;

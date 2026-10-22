@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-10-19 (§6.30: forward typedefs + declare-before-use finished and verified; filter overhead cut to +5%; latency benchmarks added; all committed).
+**Last updated:** 2026-10-22 (§6.30: struct / interface / hierarchical receivers implemented and fully verified, **not committed** -- awaiting the user's go-ahead).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -11,11 +11,44 @@ write-up) — read the relevant section there rather than looking for it here.
 
 ## Current state
 
-**PICK UP HERE NEXT TIME -- struct / interface / hierarchical
-receivers** (still on the name-only fallback), or the completion response
-size (below). Also open, found by the latency benchmarks (below): library
-locations resolved against the server's cwd, and didChange blocking the
-message loop during a compile.
+**PICK UP HERE NEXT TIME -- commit the receivers change when the user
+says so.** Code, tests and verification are done (plan.md §6.30,
+"Follow-up: struct, interface and hierarchical receivers"; uncommitted on
+`main`). Verified 2026-10-22: UVM corpus 1563 / 31 cases, no pin moved
+(log `build/release/corpus_2026-10-22.log`); `--build-db` identical to
+the corpus `uvm.db` in every table (UVM has no instances or virtual
+interfaces), so `uvm.db` was not swapped; `make test-integration-uvm`
+13/13. The usual two commits: `feat(walker,resolution,completion): ...`
+(code + tests incl. `tests/integration/test_47_receivers.sh`,
+`fixtures/rcvr_top.sv`) and `docs(plan,handoff): ...`.
+
+After that, the next candidates: the completion response size (below),
+then the two bugs the latency benchmarks found (below): library locations
+resolved against the server's cwd, and didChange blocking the message
+loop during a compile.
+
+What the receivers change (2026-10-21) needs other work to know:
+- New kind **`Instance`** (module/interface/program instance; scope = the
+  enclosing unit, detail = type, `$fixed_array:` per unpacked dim). It
+  maps to SymbolKind Object / CompletionItemKind Module, shows in
+  document symbols and completion. Not a declare-before-use subject.
+- Signal/Port/Typedef/Function details now carry interface types:
+  `intf` or `intf.mp` for `virtual [interface] intf[.mp]` and ANSI
+  interface ports (`interface` for a generic one). Strip `.mp` before
+  resolving (`resolveTypeName(..., valueType=true)` does).
+- `Resolver::typeOfRow` returns `ReceiverType{owner, builtin}` (public in
+  `symbol_resolution.h`; `resolveReceiverType` exports the chain walk).
+  The owner can be a Class, a struct Typedef, an inline-struct
+  variable/member, a design unit or a Block -- not only a Class.
+- Dot completion uses `resolveReceiverType`; `resolveChain`,
+  `resolveFirstSegment`, `resolveMemberSegment`, `membersAcrossChain` are
+  deleted. `splitLayers` / `isContainerDimensionTag` are public in
+  `symbol_utils.h`.
+- A bare name exactly at a recorded declaration's position resolves to it
+  (exact) even when no lexical chain reaches it (struct members).
+- Disclosed: modports / clocking blocks not recorded (`vif.cb` -> nothing,
+  `vif.cb.sig` -> fallback); no upward names (`$root`); completion after a
+  module receiver skips its named blocks.
 
 Finished and committed 2026-10-19 (4e8a10d): `typedef class` rows +
 declare-before-use (plan.md
@@ -187,10 +220,12 @@ by name instead of from the typedef's scope, and merged duplicated helpers
   in workspace symbols, no completion inside comments/strings, and doc
   comments (§6.31) in hover, signature help and completion resolve.
 - Test baselines:
-  - unit: **1016 cases**, all passing (no `[!shouldfail]` known gaps left
+  - unit: **1029 cases**, all passing (2026-10-21, receivers tree;
+    1016 at 4e8a10d) (no `[!shouldfail]` known gaps left
     -- the `` `define `` references case passes since the macro follow-up)
-  - Emacs functional: **295/295**
-  - UVM corpus (opt-in): **1563 assertions / 31 cases**, all passing.
+  - Emacs functional: **305/305** (test_47 new, uncommitted; 295 at 4e8a10d)
+  - UVM corpus (opt-in): **1563 assertions / 31 cases**, all passing
+    (unchanged by the receivers change, 2026-10-22).
     (1903 -> 1563 with declare-before-use: in-class empty prefix
     1042 -> 714, package-level 795 -> 467, each dropped name checked to
     come later in include order; symbols pin 18239 -> 18440, docs 965.)
@@ -218,7 +253,8 @@ by name instead of from the typedef's scope, and merged duplicated helpers
   - UVM corpus `--build-db`: **1 diagnostic, 18440 symbol rows (1872
     Block, 511 Typedef incl. 201 forward), 553 macro rows, 166 files, 165
     include_sites rows, 965 symbol docs + 30 macro docs; 5.32 MB (5320704
-    bytes), 14 min / 6.9 GB RSS** (v16 before forward typedefs: 18239
+    bytes), 14 min / 6.9 GB RSS**; identical after the receivers change
+    (2026-10-22) (v16 before forward typedefs: 18239
     rows, 5.31 MB, `uvm.db.v16.bak`) (v14 before the
     include context: 163 files, 5.27 MB; before block scopes: 15731 rows,
     4.51 MB; 4.30 MB with `--no-doc-comments`) (~17 min, ~7 GB RSS; don't run it at the same
@@ -362,11 +398,10 @@ What §6.29 changed that other work must know about:
 
 ## Other open work (priority roughly top-down)
 
-0. **§6.30 disclosed limits** (large, none blocking; the small
-   follow-ups and block scopes are closed): scope containment is
-   line-granular (would change the walker and need a `--build-db`
-   rebuild), struct / interface / hierarchical receivers (including
-   `blk.x` into a named block) use the name-only fallback.
+0. **§6.30 leftovers** (all disclosed limits are closed once the
+   receivers change is committed): modports and clocking blocks as
+   symbols (`vif.cb.sig`), upward hierarchical names, named blocks in
+   completion after a module receiver.
 1. **§6.21** semantic reference-resolution diagnostics (unresolved type/import)
    — not started; its prerequisite (per-source diagnostics, v12) is done --
    use `source = 'reference'` with `replaceDiagnostics(..., source)`.
@@ -512,14 +547,15 @@ Compiler **g++-13** (pinned in `CMakePresets.json`). Debug has ASan+UBSan
 
 | Provider | Resolution |
 |---|---|
-| Hover / Definition | `resolveSymbolAt` (`src/lsp/symbol_resolution.h`, plan.md §6.30): `::` qualifiers, named connections, `.` receiver chains, bare names innermost-scope-first; `exact=false` name-only fallback (`findSymbolsByName` + `pickBestSymbol`) when the qualifier/receiver isn't understood |
-| Completion | `findSymbolsVisibleAt` + keywords (`sv_keywords.h`, scope-kind legality) → fuzzy scoring (toggle: `initializationOptions.svlsp.fuzzyCompletion`). Dot-completion: `dotCompletionContext` → `resolveChain` → `membersAcrossChain` (full `extends` walk), builtin container methods via `sv_builtin_methods.h` |
+| Hover / Definition | `resolveSymbolAt` (`src/lsp/symbol_resolution.h`, plan.md §6.30): `::` qualifiers, named connections, `.` receiver chains (class, struct, interface, instance, block), bare names innermost-scope-first; `exact=false` name-only fallback (`findSymbolsByName` + `pickBestSymbol`) when the qualifier/receiver isn't understood |
+| Completion | `findSymbolsVisibleAt` + keywords (`sv_keywords.h`, scope-kind legality) → fuzzy scoring (toggle: `initializationOptions.svlsp.fuzzyCompletion`). Dot-completion: `dotCompletionContext` → `resolveReceiverType` (the resolver's chain walk) → a class's members across `extends`, a struct/interface/module/block owner's own rows, or builtin container methods via `sv_builtin_methods.h` |
 | References / Rename | `ReferencesProvider::findOccurrences`: lexical cross-file `findIdentifierOccurrences`, each hit resolved with `resolveSymbolsAt` and kept if it lands on the target row / same method override family (`overrideFamilyId`), or only resolves by fallback. Rename edits exactly that set |
 | Signature help | instantiation ports; bare / `Class::` / `pkg::` / dotted calls resolved with `resolveSymbolAt` (exact Function/Task only; a qualified or dotted call fails closed, an unqualified one nothing visible declares falls back to a name-only search). Labels from `Port.detail` (`"<dir> <type>"`, optional `\x1F<default>` suffix) |
 
-Chain-resolution helpers (`resolveChain`, `membersAcrossChain`,
-`peelDimensionLayers`, `dotCompletionContext`, `positionForOffset`) live in
-`src/lsp/symbol_utils.h/.cpp`, shared by completion and signature help.
+Chain helpers (`peelDimensionLayers`, `splitLayers`,
+`dotCompletionContext`, `positionForOffset`) live in
+`src/lsp/symbol_utils.h/.cpp`; receiver chains are resolved only by
+`Resolver` (`symbol_resolution.cpp`).
 `svlsp_db` must not depend on `svlsp_lib`, which is why `svlsp_db` code
 uses `SymbolDatabase::pickSameFilePreferred` (the simpler half of
 `pickBestSymbol`). Scope chains (innermost first, ending `""`) come from
@@ -533,7 +569,11 @@ uses `SymbolDatabase::pickSameFilePreferred` (the simpler half of
   container tags (`$queue`, `$assoc_array`, `$dynamic_array`, `$fixed_array`,
   `$string`, `$event`) — e.g. `"$fixed_array:$queue:MyClass"`.
 - Port: `"<direction> <type>"`, optionally `"\x1F<default>"`
-  (`PARAM_DEFAULT_VALUE_SEP`); interface ports store only their header text.
+  (`PARAM_DEFAULT_VALUE_SEP`); interface ports store only their header text
+  (`intf.mp`, `intf`, `interface`).
+- Instance: the instantiated type, after `$fixed_array:` per unpacked dim.
+- A virtual interface's type is `intf` or `intf.mp` (Signal, Typedef,
+  Function return type).
 - `""` as a *scope* means top level — `findSymbolsInScope("")` returns every
   top-level symbol, so guard against an empty resolved type.
 
