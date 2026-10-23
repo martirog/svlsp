@@ -4,6 +4,7 @@
 #include "lsp/project_manifest_parser.h"
 #include "compiler/filelist_parser.h"
 #include "compiler/project_config.h"
+#include "svlsp_git_version.h"
 #include <algorithm>
 #include <cstring>
 #include <filesystem>

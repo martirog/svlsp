@@ -7,27 +7,26 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # ---------------------------------------------------------------------------
-# Version info for `svlsp --version` -- resolved once at configure time (every
-# tools/build.sh invocation reconfigures from scratch, so this is never
-# stale). "unknown" outside a git checkout (e.g. a source tarball); no
+# Version info for `svlsp --version` -- resolved at build time: target
+# svlsp_git_version runs cmake/GitVersion.cmake on every build and rewrites
+# svlsp_git_version.h only when `git describe` changed (a commit, or the
+# tree turning clean/dirty), so the version never lags the sources it was
+# built from. "unknown" outside a git checkout (e.g. a source tarball); no
 # repo tags exist, so this is always just the abbreviated commit hash,
 # with a "-dirty" suffix if tracked files have uncommitted changes.
 # ---------------------------------------------------------------------------
 find_package(Git QUIET)
-set(SVLSP_GIT_VERSION "unknown")
-if(GIT_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
-    execute_process(
-        COMMAND ${GIT_EXECUTABLE} describe --always --dirty --abbrev=7
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        OUTPUT_VARIABLE SVLSP_GIT_VERSION
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-        ERROR_QUIET
-        RESULT_VARIABLE _svlsp_git_describe_result
-    )
-    if(NOT _svlsp_git_describe_result EQUAL 0)
-        set(SVLSP_GIT_VERSION "unknown")
-    endif()
-endif()
+set(SVLSP_GIT_VERSION_DIR "${CMAKE_BINARY_DIR}/version")
+add_custom_target(svlsp_git_version
+    COMMAND ${CMAKE_COMMAND}
+        -DGIT_EXECUTABLE=${GIT_EXECUTABLE}
+        -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
+        -DOUTPUT=${SVLSP_GIT_VERSION_DIR}/svlsp_git_version.h
+        -P ${CMAKE_SOURCE_DIR}/cmake/GitVersion.cmake
+    BYPRODUCTS ${SVLSP_GIT_VERSION_DIR}/svlsp_git_version.h
+    COMMENT "Checking git version"
+    VERBATIM
+)
 
 # ---------------------------------------------------------------------------
 # Dependencies
@@ -208,9 +207,10 @@ target_link_libraries(svlsp_lib PUBLIC lsp svlsp_compiler svlsp_db svlsp_options
 # ---------------------------------------------------------------------------
 add_executable(svlsp src/main.cpp)
 target_link_libraries(svlsp PRIVATE svlsp_lib)
+add_dependencies(svlsp svlsp_git_version)
+target_include_directories(svlsp PRIVATE ${SVLSP_GIT_VERSION_DIR})
 target_compile_definitions(svlsp PRIVATE
     SVLSP_VERSION="${PROJECT_VERSION}"
-    SVLSP_GIT_VERSION="${SVLSP_GIT_VERSION}"
     SVLSP_BUILD_TYPE="$<CONFIG>"
 )
 

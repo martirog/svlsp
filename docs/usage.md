@@ -126,7 +126,8 @@ Prints the project version, the abbreviated commit `tools/build.sh` (or any
 `cmake --build`) actually built from, and the build type, then exits
 immediately — takes priority over every other flag if combined with any.
 `-dirty` is appended to the commit if the source tree had uncommitted changes
-to tracked files at configure time. Answers "is this `--output-dir` copy
+to tracked files when it was built (the version is re-read from git on every
+build, not only when CMake configures). Answers "is this `--output-dir` copy
 actually the binary I think it is" in one command, instead of having to
 rebuild from scratch and compare timestamps to rule out a stale copy.
 
