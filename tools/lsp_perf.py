@@ -426,7 +426,8 @@ def run(args):
     uri = path.as_uri()
     text = path.read_text()
     client = Client([args.server, "--log-requests", str(reqlog_path)] + args.server_arg,
-                    work / "stderr.log", args.compile_timeout)
+                    work / "stderr.log",
+                    args.compile_timeout or scenario.get("compileTimeout", 900))
     memory = Memory(client.proc.pid)
     rows = []
     phases = {}
@@ -714,8 +715,9 @@ def main():
                     help="ms between typed characters (150 ~ 80 wpm)")
     ap.add_argument("--only", help="regex: run only matching requests (skips edit/typing)")
     ap.add_argument("--timeout", type=int, default=300, help="seconds to wait for the library")
-    ap.add_argument("--compile-timeout", type=int, default=900,
-                    help="seconds to wait for a response or a compile's diagnostics")
+    ap.add_argument("--compile-timeout", type=int,
+                    help="seconds to wait for a response or a compile's diagnostics "
+                         "(default: the scenario's compileTimeout, else 900)")
     ap.add_argument("--server-arg", action="append", default=[], metavar="ARG",
                     help="pass ARG to the server (repeatable), e.g. --in-process-parse")
     ap.add_argument("--json", help="also write the results here")

@@ -86,7 +86,11 @@ default is already 64 KB). Time other settings with `SVLSP_PERF_SETUP`.
 temp dir, `write` for generated manifests with `${VAR}`s from `vars`), the
 file to `open`, an optional `ready` probe (completion polled until a label
 appears: the library DB loads on the first request), the `requests`, an
-`edit` and a `typing` session.
+`edit` and a `typing` session. `compileTimeout` (seconds, default 900) is
+how long a response or a compile's diagnostics may take
+(`--compile-timeout` overrides it); `--server-arg ARG` passes ARG to the
+server, e.g. `--server-arg=--in-process-parse` to compare with the parse
+in-process.
 
 A position is `{"find": text, "sub": text-inside-it, "offset": n | "end"}`:
 the first occurrence of `find`, then of `sub` in it, plus `offset`
