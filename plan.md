@@ -6127,8 +6127,8 @@ column is empty). The corpus `uvm.db` is rebuilt at v14 (the v13 one is
 ### 6.33 Performance and Memory: Benchmarks, Regression Checks, Findings
 
 **Status:** measurement tooling done 2026-10-22; findings recorded below;
-tooling committed 2026-10-23 (ac3c5c3); C7 done (a5fb6e1) and C5 done (24413e8)
-2026-10-23; C1 next (user's order: C7, C5, then C1); C2-C4 open. Requested so
+tooling committed 2026-10-23 (ac3c5c3); C7 done (a5fb6e1), C5 done (24413e8)
+and C1 done (0bf7257) 2026-10-23, its recycle policy open (see C1); C2-C4 open. Requested so
 that (a) a shared server with a memory cap per user can be sized, and (b)
 code reviews can show that a rewrite does not regress latency or memory.
 
@@ -6245,6 +6245,29 @@ code reviews can show that a rewrite does not regress latency or memory.
   small files: to measure). Measure with `make perf-check` and
   `PERF_SCENARIOS=uvm_src`. Optionally keep the worker alive across
   edits and recycle it above an RSS threshold (warm DFA, bounded memory).
+  **Done 2026-10-23 (0bf7257, e2167dc, 79e1a2b).** Only the walk moved:
+  `compiler/parse_worker.{h,cpp}` runs `SvTreeWalker::walk` in
+  `svlsp --internal-parse-worker` (posix_spawn of /proc/self/exe, a
+  socketpair on the child's stdin, its stdout /dev/null, PDEATHSIG; framed
+  flat binary of WalkRequest / WalkResult). `CompilationController::
+  setWalker` is the seam (also LibraryResolver's -v pre-parse and a live
+  `libraryDbSources` build through `LibraryDbBuilder::build(..., walker)`).
+  Recycled after a job over `--parse-worker-max-rss` (1024 MB; 0 = never);
+  a dead worker is restarted and the job retried once, then one error
+  diagnostic. `--in-process-parse`; `--build-db` is in-process. The perf
+  harnesses count child processes (total, server, workers).
+  Measured (`uvm_src`, release): RSS after the run **6659 -> 298 MB**
+  (server 46, worker 253), peak 6.8 GB unchanged, first open ->
+  diagnostics 896 -> 922 s, **edit -> diagnostics 10.3 -> 19.4 s** (the
+  worker is replaced after the project compile; the fresh one, warmed only
+  by the open file's context compiles, stays at 19 s), other requests
+  unchanged or faster. `small` / `uvm`: no regression; the server alone is
+  ~12 MB, the worker ~50 MB (uvm total 63.7 vs 55.2 MB).
+  *Open:* the recycle policy -- right after a job (now) or only after the
+  worker has been idle N s (keeps the 10 s warm edits while someone is
+  editing, frees the memory when they stop; the peak a per-user cap must
+  cover is the same). `uvm_src` baseline not refreshed until that is
+  decided.
 - *C2 -- make the hot decisions cheap in the grammar*, driven by the
   per-decision profile (`setProfile`; the scratch harness from T2:
   generate from a copy of `Sv.g4`, parse a slice, compare). Order:
