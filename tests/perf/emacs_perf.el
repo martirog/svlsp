@@ -143,25 +143,39 @@ METHOD names the server log line to pair with each run."
   (setq svlsp-perf/diag-time (float-time)))
 
 ;;; Memory --------------------------------------------------------------
-;; The same per-phase readings as tools/lsp_perf.py's `Memory': the RSS
-;; at a phase's end, its anonymous part and the peak during it (VmHWM,
+;; The same per-phase readings as tools/lsp_perf.py's `Memory', for the
+;; server plus its parse workers (its child processes, plan.md 6.33 C1):
+;; the total RSS at a phase's end, the server's own and its anonymous part,
+;; the workers', and the peak during it (server + live workers' VmHWM,
 ;; reset through clear_refs at each phase start; without that reset, the
-;; peak since the server started -- no sampler here, a timer would
-;; perturb the timings).
+;; peak since each started -- no sampler here, a timer would perturb the
+;; timings, so a worker recycled during a phase is missed).
 
-(defun svlsp-perf/mem-status ()
-  "Alist (FIELD . kB) of the server's Vm*/Rss* status lines, or nil."
+(defun svlsp-perf/mem-status (&optional pid)
+  "Alist (FIELD . kB) of PID's (default the server's) Vm*/Rss* lines, or nil."
   (ignore-errors
     (with-temp-buffer
-      (insert-file-contents (format "/proc/%d/status" svlsp-perf/pid))
+      (insert-file-contents (format "/proc/%d/status" (or pid svlsp-perf/pid)))
       (let (out)
         (while (re-search-forward "^\\(\\(?:Vm\\|Rss\\)[A-Za-z]+\\):\\s-+\\([0-9]+\\)" nil t)
           (push (cons (match-string 1) (string-to-number (match-string 2))) out))
         out))))
 
-(defun svlsp-perf/reset-peak ()
+(defun svlsp-perf/children ()
+  "The server's child processes' pids."
+  (ignore-errors
+    (apply #'append
+           (mapcar (lambda (task)
+                     (with-temp-buffer
+                       (insert-file-contents
+                        (format "/proc/%d/task/%s/children" svlsp-perf/pid task))
+                       (mapcar #'string-to-number (split-string (buffer-string)))))
+                   (directory-files (format "/proc/%d/task" svlsp-perf/pid) nil "^[0-9]")))))
+
+(defun svlsp-perf/reset-peak (&optional pid)
   (condition-case nil
-      (progn (write-region "5" nil (format "/proc/%d/clear_refs" svlsp-perf/pid) nil 'silent)
+      (progn (write-region "5" nil (format "/proc/%d/clear_refs" (or pid svlsp-perf/pid))
+                           nil 'silent)
              t)
     (error nil)))
 
@@ -173,11 +187,21 @@ METHOD names the server log line to pair with each run."
 (defun svlsp-perf/mem-phase (name)
   "Close the memory phase that started at the previous call as NAME."
   (when-let ((s (and svlsp-perf/pid (svlsp-perf/mem-status))))
-    (push (list :name name :rss_kb (cdr (assoc "VmRSS" s))
-                :anon_kb (or (cdr (assoc "RssAnon" s)) :null)
-                :peak_kb (cdr (assoc "VmHWM" s)))
-          svlsp-perf/memory)
-    (when svlsp-perf/exact-peak (svlsp-perf/reset-peak))))
+    (let* ((kids (delq nil (mapcar #'svlsp-perf/mem-status (svlsp-perf/children))))
+           (sum (lambda (field alists)
+                  (apply #'+ 0 (mapcar (lambda (a) (or (cdr (assoc field a)) 0)) alists))))
+           (worker-rss (funcall sum "VmRSS" kids)))
+      (push (list :name name
+                  :rss_kb (+ (cdr (assoc "VmRSS" s)) worker-rss)
+                  :server_rss_kb (cdr (assoc "VmRSS" s))
+                  :anon_kb (or (cdr (assoc "RssAnon" s)) :null)
+                  :worker_rss_kb worker-rss
+                  :workers (length kids)
+                  :peak_kb (+ (cdr (assoc "VmHWM" s)) (funcall sum "VmHWM" kids)))
+            svlsp-perf/memory))
+    (when svlsp-perf/exact-peak
+      (svlsp-perf/reset-peak)
+      (mapc #'svlsp-perf/reset-peak (svlsp-perf/children)))))
 
 (defun svlsp-perf/mem-summary ()
   (let ((rows (reverse svlsp-perf/memory)))

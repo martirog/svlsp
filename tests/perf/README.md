@@ -46,15 +46,20 @@ moves it on purpose, saying why.
 
 ## Memory
 
-Both harnesses read the server's `/proc/<pid>/status` at the end of each
-phase -- initialize/open (the first compile), library load, the requests,
-the edits (recompiles), typing, and 2 s idle after -- and print the RSS at
-the phase's end, its anonymous part (the server's own heap; the rest is
-mapped files, mostly SQLite pages of the project and library DBs) and the
-peak during the phase. The peak is the kernel's high-water mark (VmHWM),
-reset at each phase start through `/proc/<pid>/clear_refs`; where the
-reset is refused, `lsp_perf.py` samples every 10 ms (and may miss a short
-spike) and the Emacs harness reports the peak since the start.
+Both harnesses read `/proc/<pid>/status` of the server and of its child
+processes (the parse worker, docs/usage.md) at the end of each phase --
+initialize/open (the first compile), library load, the requests, the edits
+(recompiles), typing, and 2 s idle after -- and print the total RSS at the
+phase's end, split into the server's own (with its anonymous part, the
+server's heap; the rest is mapped files, mostly SQLite pages of the
+project and library DBs) and the workers', and the peak of the total
+during the phase. The peak is the server's plus each live worker's
+high-water mark (VmHWM), reset at each phase start through
+`/proc/<pid>/clear_refs`; `lsp_perf.py` also samples the total every
+10 ms, which is what sees a worker replaced during the phase (the Emacs
+harness has no sampler, so it misses that one, and where the reset is
+refused it reports the peak since each process started). Baselines from
+before the worker have the server alone, which was the total then.
 
 `--max-rss MB` fails a run whose peak goes over a per-user limit, e.g.
 for a shared server with a memory cap per user:

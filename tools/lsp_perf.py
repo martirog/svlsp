@@ -115,7 +115,8 @@ def offset_of(text, at):
 # ---------------------------------------------------------------- client
 
 class Client:
-    def __init__(self, cmd, stderr_path):
+    def __init__(self, cmd, stderr_path, timeout=900):
+        self.timeout = timeout  # seconds for a response or a compile's diagnostics
         self.stderr = open(stderr_path, "wb")
         self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      stderr=self.stderr)
@@ -165,13 +166,14 @@ class Client:
     def notify(self, method, params):
         self._send({"jsonrpc": "2.0", "method": method, "params": params})
 
-    def request(self, method, params, timeout=900):
+    def request(self, method, params, timeout=None):
         """(round-trip ms, response message, response bytes)."""
         rid = self.next_id
         self.next_id += 1
         t0 = time.perf_counter()
         self._send({"jsonrpc": "2.0", "id": rid, "method": method, "params": params})
         with self.cv:
+            timeout = timeout or self.timeout
             if not self.cv.wait_for(lambda: rid in self.responses or self.eof, timeout):
                 sys.exit(f"lsp_perf: {method} timed out after {timeout} s")
             if self.eof and rid not in self.responses:
@@ -181,7 +183,7 @@ class Client:
             sys.exit(f"lsp_perf: {method} failed: {msg['error']}")
         return (t1 - t0) * 1000, msg, size
 
-    def wait_diagnostics(self, uri, version, since, timeout=900):
+    def wait_diagnostics(self, uri, version, since, timeout=None):
         """Time of the first diagnostics for (uri, version) after `since`."""
         def found():
             for t, p in self.diagnostics:
@@ -189,35 +191,43 @@ class Client:
                     return t
             return None
         with self.cv:
+            timeout = timeout or self.timeout
             if not self.cv.wait_for(lambda: found() is not None or self.eof, timeout):
                 sys.exit(f"lsp_perf: no diagnostics for version {version} within {timeout} s")
             return found()
 
 
 class Memory:
-    """The server's memory per phase, from /proc/<pid>/status (Linux).
+    """The server's memory per phase, with its parse workers (Linux /proc).
 
-    `phase(name)` closes the phase that started at the previous call: the
-    RSS at its end (and its anonymous part, the server's own heap; the
-    rest is mapped files such as an attached library DB) and the peak RSS
-    during it. The peak is the kernel's high-water mark (VmHWM), reset at
-    each phase start through /proc/<pid>/clear_refs; where that reset is
-    not allowed, a 10 ms sampler stands in (and can miss a short spike)."""
+    `phase(name)` closes the phase that started at the previous call. Each
+    row has the RSS at its end of the server plus its child processes (the
+    parse workers, plan.md 6.33 C1) -- `rss_kb` -- split into the server's
+    own (`server_rss_kb`, its anonymous part `anon_kb`: the rest is mapped
+    files such as an attached library DB) and the workers' (`worker_rss_kb`),
+    and the peak of that total during the phase (`peak_kb`). The peak is the
+    larger of a 10 ms sample of the total and the kernel's high-water marks
+    (VmHWM, reset at each phase start through /proc/<pid>/clear_refs) of
+    the server plus each worker alive at the end; the sample is what sees a
+    worker that was recycled during the phase. Where the reset is not
+    allowed, the sample alone (it can miss a short spike)."""
 
     def __init__(self, pid):
         self.pid = pid
         self.rows = []
         self.sampled = 0
-        self.exact = self._reset_peak()
         self.lock = threading.Lock()
-        if not self.exact:
-            threading.Thread(target=self._sample, daemon=True).start()
+        self.exact = self._reset_peak(pid)
+        for c in self.children():
+            self._reset_peak(c)
+        threading.Thread(target=self._sample, daemon=True).start()
 
-    def status(self):
+    @staticmethod
+    def status(pid):
         """{field: kB} for the Vm*/Rss* lines, or {} once the process is gone."""
         out = {}
         try:
-            with open(f"/proc/{self.pid}/status") as f:
+            with open(f"/proc/{pid}/status") as f:
                 for line in f:
                     key, _, rest = line.partition(":")
                     if key.startswith(("Vm", "Rss")):
@@ -226,34 +236,59 @@ class Memory:
             pass
         return out
 
-    def _reset_peak(self):
+    def children(self):
+        """The server's child processes' pids."""
+        pids = []
         try:
-            with open(f"/proc/{self.pid}/clear_refs", "w") as f:
+            for task in os.listdir(f"/proc/{self.pid}/task"):
+                with open(f"/proc/{self.pid}/task/{task}/children") as f:
+                    pids += [int(p) for p in f.read().split()]
+        except (OSError, ValueError):
+            pass
+        return pids
+
+    @staticmethod
+    def _reset_peak(pid):
+        try:
+            with open(f"/proc/{pid}/clear_refs", "w") as f:
                 f.write("5")
             return True
         except OSError:
             return False
 
+    def _total(self):
+        """(server status, {child pid: status}); server status {} once gone."""
+        return self.status(self.pid), {c: self.status(c) for c in self.children()}
+
     def _sample(self):
         while True:
-            rss = self.status().get("VmRSS")
-            if rss is None:
+            server, kids = self._total()
+            if not server:
                 return
+            total = server["VmRSS"] + sum(k.get("VmRSS", 0) for k in kids.values())
             with self.lock:
-                self.sampled = max(self.sampled, rss)
+                self.sampled = max(self.sampled, total)
             time.sleep(0.01)
 
     def phase(self, name):
-        s = self.status()
-        if not s:
+        server, kids = self._total()
+        if not server:
             return
+        worker_rss = sum(k.get("VmRSS", 0) for k in kids.values())
         with self.lock:
-            peak = s.get("VmHWM", 0) if self.exact else max(self.sampled, s["VmRSS"])
+            peak = max(self.sampled, server["VmRSS"] + worker_rss)
+            if self.exact:
+                peak = max(peak, server.get("VmHWM", 0) +
+                           sum(k.get("VmHWM", 0) for k in kids.values()))
             self.sampled = 0
-        self.rows.append({"name": name, "rss_kb": s["VmRSS"], "anon_kb": s.get("RssAnon"),
+        self.rows.append({"name": name, "rss_kb": server["VmRSS"] + worker_rss,
+                          "server_rss_kb": server["VmRSS"], "anon_kb": server.get("RssAnon"),
+                          "worker_rss_kb": worker_rss, "workers": len(kids),
                           "peak_kb": peak})
         if self.exact:
-            self._reset_peak()
+            self._reset_peak(self.pid)
+            for c in kids:
+                self._reset_peak(c)
 
     def summary(self):
         return {"exact_peak": self.exact, "phases": self.rows,
@@ -360,17 +395,20 @@ def print_memory(memory, max_rss_mb=None):
     """The per-phase memory table; True if the peak is over `max_rss_mb`."""
     if not memory or not memory.get("phases"):
         return False
-    how = "VmHWM" if memory.get("exact_peak") else "sampled every 10 ms"
-    print(f"\n{'server memory (MB)':40} {'rss at end':>10} {'of it anon':>10}"
-          f" {'peak during':>11}   (peak: {how})")
+    how = "VmHWM + 10 ms samples" if memory.get("exact_peak") else "sampled every 10 ms"
+    print(f"\n{'memory (MB): server + parse workers':40} {'rss at end':>10} {'server':>8}"
+          f" {'of it anon':>10} {'workers':>8} {'peak during':>11}   (peak: {how})")
     for p in memory["phases"]:
-        print(f"{p['name'][:40]:40} {fmt_mb(p['rss_kb']):>10} {fmt_mb(p.get('anon_kb')):>10}"
+        # Rows from before the parse worker have the server alone.
+        server = p.get("server_rss_kb", p["rss_kb"])
+        print(f"{p['name'][:40]:40} {fmt_mb(p['rss_kb']):>10} {fmt_mb(server):>8}"
+              f" {fmt_mb(p.get('anon_kb')):>10} {fmt_mb(p.get('worker_rss_kb', 0)):>8}"
               f" {fmt_mb(p['peak_kb']):>11}")
     peak_mb = memory["peak_kb"] / 1024
     over = max_rss_mb is not None and peak_mb > max_rss_mb
     limit = "" if max_rss_mb is None else \
         f" -- limit {max_rss_mb} MB: {'OVER' if over else 'ok'}"
-    print(f"peak RSS {peak_mb:.1f} MB{limit}")
+    print(f"peak RSS {peak_mb:.1f} MB (server + workers){limit}")
     return over
 
 
@@ -387,7 +425,8 @@ def run(args):
     path = work / scenario["open"]
     uri = path.as_uri()
     text = path.read_text()
-    client = Client([args.server, "--log-requests", str(reqlog_path)], work / "stderr.log")
+    client = Client([args.server, "--log-requests", str(reqlog_path)] + args.server_arg,
+                    work / "stderr.log", args.compile_timeout)
     memory = Memory(client.proc.pid)
     rows = []
     phases = {}
@@ -675,6 +714,10 @@ def main():
                     help="ms between typed characters (150 ~ 80 wpm)")
     ap.add_argument("--only", help="regex: run only matching requests (skips edit/typing)")
     ap.add_argument("--timeout", type=int, default=300, help="seconds to wait for the library")
+    ap.add_argument("--compile-timeout", type=int, default=900,
+                    help="seconds to wait for a response or a compile's diagnostics")
+    ap.add_argument("--server-arg", action="append", default=[], metavar="ARG",
+                    help="pass ARG to the server (repeatable), e.g. --in-process-parse")
     ap.add_argument("--json", help="also write the results here")
     ap.add_argument("--check", action="store_true", help="exit 1 if any p90 is over budget")
     ap.add_argument("--max-rss", type=float, metavar="MB",
