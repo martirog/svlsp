@@ -21,6 +21,11 @@ lsp::CompletionItemKind completionKindFor(const SymbolRow& row);
 // Returns "" when the position is out of range or not on an identifier character.
 std::string wordAtPosition(const std::string& text, unsigned line, unsigned character);
 
+// The identifier characters immediately before (line, character) -- the
+// part of the word under the cursor that has been typed, which is what
+// completion filters by (an LSP client replaces only that part).
+std::string wordBeforePosition(const std::string& text, unsigned line, unsigned character);
+
 // Build an LSP Range spanning one identifier.
 // line1 is 1-based (ParseRecord convention); col0 is 0-based.
 lsp::Range makeRange(int line1, int col0, int nameLen);

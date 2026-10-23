@@ -268,6 +268,11 @@ lsp::TextDocument_CompletionResult CompletionProvider::getCompletion(
         offset && insideCommentOrString(docText, *offset))
         return nullptr;
 
+    // Only what is typed before the cursor filters: in `m_|children` or
+    // `obj.|get_name` the rest of the word is not part of the prefix.
+    const std::string prefix =
+        wordBeforePosition(docText, params.position.line, params.position.character);
+
     if (auto dot = dotCompletionContext(docText, params.position.line, params.position.character)) {
         auto recv = resolveReceiverType(db, path, docText, dot->segments, at);
         if (!recv) return nullptr;
@@ -290,12 +295,8 @@ lsp::TextDocument_CompletionResult CompletionProvider::getCompletion(
             if (isSuperInConstructor(db, path, at, dot->segments))
                 candidates.push_back(superNewCandidate(db, type, path));
         }
-        return buildCompletionItems(candidates, dot->prefix, fuzzyEnabled);
+        return buildCompletionItems(candidates, prefix, fuzzyEnabled);
     }
-
-    const std::string prefix = wordAtPosition(docText,
-                                              params.position.line,
-                                              params.position.character);
 
     // Merge DB symbol rows with whatever SV keywords are legal at this
     // scope (plan.md §6.9) before scoring/emptiness-checking, so a file

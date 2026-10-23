@@ -104,6 +104,18 @@ std::string wordAtPosition(const std::string& text, unsigned line, unsigned char
     return (start < end) ? text.substr(start, end - start) : "";
 }
 
+std::string wordBeforePosition(const std::string& text, unsigned line, unsigned character)
+{
+    size_t lineStart, lineEnd;
+    if (!findLineBounds(text, line, lineStart, lineEnd)) return "";
+    if (lineStart + character > lineEnd) return "";
+    const size_t pos = lineStart + character;
+
+    size_t start = pos;
+    while (start > lineStart && isIdChar(text[start - 1])) --start;
+    return text.substr(start, pos - start);
+}
+
 lsp::Range makeRange(int line1, int col0, int nameLen)
 {
     const auto l = static_cast<unsigned>(line1 - 1);

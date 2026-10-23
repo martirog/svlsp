@@ -53,6 +53,18 @@ TEST_CASE("wordAtPosition: cursor on whitespace finds word to the left", "[symbo
     CHECK(wordAtPosition(" b", 0, 0) == "");
 }
 
+TEST_CASE("wordBeforePosition: only the part of the word left of the cursor", "[symbol_utils]")
+{
+    CHECK(wordBeforePosition("m_children", 0, 0)  == "");
+    CHECK(wordBeforePosition("m_children", 0, 3)  == "m_c");
+    CHECK(wordBeforePosition("m_children", 0, 10) == "m_children");
+    CHECK(wordBeforePosition("a.get_name", 0, 2)  == "");
+    CHECK(wordBeforePosition("a.get_name", 0, 5)  == "get");
+    CHECK(wordBeforePosition("x\n  $dis", 1, 6)   == "$dis");
+    CHECK(wordBeforePosition("module", 1, 0)      == "");
+    CHECK(wordBeforePosition("module", 0, 99)     == "");
+}
+
 // ---------------------------------------------------------------------------
 // symbolKindFor
 // ---------------------------------------------------------------------------

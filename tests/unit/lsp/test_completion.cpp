@@ -345,6 +345,53 @@ TEST_CASE("CompletionProvider: dot-completion filters class members by typed pre
     CHECK_FALSE(hasItem(items, "beta"));
 }
 
+TEST_CASE("CompletionProvider: the prefix is only the text before the cursor",
+          "[completion][prefix]")
+{
+    // plan.md §6.33 F6/C7: the rest of the word after the cursor must not
+    // filter -- completing at the start of `alpha` offers `beta` too.
+    Fixture f;
+    f.sdb.replaceSymbols(f.sdb.upsertFile("/t.sv", "h"), {
+        {ParseRecordKind::Module,   "top",     1, 7,  "",        "",        7,  ""},
+        {ParseRecordKind::Signal,   "alpha",   2, 6, "top",     "int",     0,  "top"},
+        {ParseRecordKind::Signal,   "beta",    3, 6, "top",     "int",     0,  "top"},
+        {ParseRecordKind::Signal,   "foo",     4, 10, "top",    "MyClass", 0,  "top"},
+        {ParseRecordKind::Class,    "MyClass", 8, 6,  "",        "",        11, ""},
+        {ParseRecordKind::Function, "alpha_m", 9, 16, "MyClass", "void",    9,  "MyClass"},
+        {ParseRecordKind::Function, "beta_m",  10, 16, "MyClass", "void",   10, "MyClass"},
+    });
+    const std::string text =
+        "module top;\n  int alpha;\n  int beta;\n  MyClass foo;\n  foo.alpha_m;\n  alpha = 1;\n"
+        "endmodule\nclass MyClass;\n  function void alpha_m(); endfunction\n"
+        "  function void beta_m(); endfunction\nendclass\n";
+    auto items = [&](unsigned line, unsigned col) {
+        auto r = CompletionProvider::getCompletion(makeParams("/t.sv", line, col), f.sdb, text);
+        REQUIRE_FALSE(r.isNull());
+        return r.get<lsp::Array<lsp::CompletionItem>>();
+    };
+
+    SECTION("bare name, cursor at the start of a word") {
+        auto it = items(5, 2);
+        CHECK(hasItem(it, "alpha"));
+        CHECK(hasItem(it, "beta"));
+    }
+    SECTION("bare name, cursor in the middle of a word") {
+        auto it = items(5, 4); // al|pha
+        CHECK(hasItem(it, "alpha"));
+        CHECK_FALSE(hasItem(it, "beta"));
+    }
+    SECTION("dot, cursor right after the dot") {
+        auto it = items(4, 6); // foo.|alpha_m
+        CHECK(hasItem(it, "alpha_m"));
+        CHECK(hasItem(it, "beta_m"));
+    }
+    SECTION("dot, cursor in the middle of the member") {
+        auto it = items(4, 8); // foo.al|pha_m
+        CHECK(hasItem(it, "alpha_m"));
+        CHECK_FALSE(hasItem(it, "beta_m"));
+    }
+}
+
 TEST_CASE("CompletionProvider: dot-completion on a built-in-typed variable returns no completions", "[completion][dot]")
 {
     Fixture f;
