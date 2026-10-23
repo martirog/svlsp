@@ -1,5 +1,6 @@
 #include "compiler/parse_worker.h"
 #include <cerrno>
+#include <condition_variable>
 #include <csignal>
 #include <cstdint>
 #include <cstring>
@@ -10,6 +11,7 @@
 #include <sys/prctl.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
+#include <thread>
 #include <unistd.h>
 
 extern char** environ;
@@ -342,12 +344,44 @@ bool decodeWalkResult(const std::string& buf, WalkResult& out)
 
 // ---- ParseWorker ----
 
-ParseWorker::ParseWorker(Options options) : m_options{std::move(options)} {}
+ParseWorker::ParseWorker(Options options) : m_options{std::move(options)}
+{
+    if (m_options.maxRssMb > 0 && m_options.idleSeconds > 0)
+        m_reaper = std::thread{&ParseWorker::reap, this};
+}
 
 ParseWorker::~ParseWorker()
 {
+    {
+        std::lock_guard lock{m_mutex};
+        m_stopping = true;
+    }
+    m_cv.notify_all();
+    if (m_reaper.joinable()) m_reaper.join();
     std::lock_guard lock{m_mutex};
     stop();
+}
+
+void ParseWorker::reap()
+{
+    std::unique_lock lock{m_mutex};
+    while (!m_stopping) {
+        if (!m_overLimit) {
+            m_cv.wait(lock, [&] { return m_stopping || m_overLimit; });
+            continue;
+        }
+        // Re-read on every wake-up: a walk in between clears m_overLimit and
+        // re-marks it with a new m_idleSince when it ends.
+        const auto deadline = m_idleSince + std::chrono::seconds{m_options.idleSeconds};
+        if (std::chrono::steady_clock::now() < deadline) {
+            m_cv.wait_until(lock, deadline);
+            continue;
+        }
+        log("pid " + std::to_string(m_pid) + " idle " + std::to_string(m_options.idleSeconds) +
+            " s, recycled");
+        m_overLimit = false;
+        stop();
+    }
 }
 
 pid_t ParseWorker::pid() const
@@ -418,13 +452,22 @@ bool ParseWorker::roundTrip(const std::string& request, std::string& response)
 WalkResult ParseWorker::walk(const std::string& source, const std::vector<SourceLine>& sourceMap,
                              bool collectDocs, const std::string& initialScope)
 {
-    std::lock_guard lock{m_mutex};
+    std::unique_lock lock{m_mutex};
+    m_overLimit = false;
     const std::string request =
         encodeWalkRequest(WalkRequest{source, sourceMap, collectDocs, initialScope});
 
     std::string response;
     WalkResult  result;
+    const auto t0 = std::chrono::steady_clock::now();
     bool ok = roundTrip(request, response) || roundTrip(request, response);
+    if (ok && m_options.log) {
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - t0).count();
+        log("pid " + std::to_string(m_pid) + " walk " + std::to_string(ms) + " ms (" +
+            std::to_string(request.size() / 1024) + " KB in, " +
+            std::to_string(response.size() / 1024) + " KB out)");
+    }
     if (ok && !decodeWalkResult(response, result)) {
         log("pid " + std::to_string(m_pid) + " sent a malformed result");
         stop();
@@ -439,9 +482,19 @@ WalkResult ParseWorker::walk(const std::string& source, const std::vector<Source
 
     if (m_options.maxRssMb > 0) {
         if (const std::size_t mb = rssMb(m_pid); mb > m_options.maxRssMb) {
-            log("pid " + std::to_string(m_pid) + " at " + std::to_string(mb) +
-                " MB > " + std::to_string(m_options.maxRssMb) + " MB, recycled");
-            stop();
+            if (m_options.idleSeconds == 0) {
+                log("pid " + std::to_string(m_pid) + " at " + std::to_string(mb) +
+                    " MB > " + std::to_string(m_options.maxRssMb) + " MB, recycled");
+                stop();
+            } else {
+                log("pid " + std::to_string(m_pid) + " at " + std::to_string(mb) + " MB > " +
+                    std::to_string(m_options.maxRssMb) + " MB, recycled once idle " +
+                    std::to_string(m_options.idleSeconds) + " s");
+                m_overLimit = true;
+                m_idleSince = std::chrono::steady_clock::now();
+                lock.unlock();
+                m_cv.notify_all();
+            }
         }
     }
     return result;
@@ -449,18 +502,74 @@ WalkResult ParseWorker::walk(const std::string& source, const std::vector<Source
 
 // ---- The worker ----
 
+namespace {
+
+// A walk that grows the worker by this much has filled its thread's malloc
+// arena with long-lived ANTLR state (DFA states, prediction contexts)
+// interleaved with the holes its temporaries left; later walks on that
+// arena run ~2x slower (live UVM: an edit's walk 27 s vs 12 s, plan.md
+// §6.33 C1). Those go to a fresh thread, whose own arena stays compact.
+constexpr std::size_t kRetireArenaGrowthMb = 256;
+
+// Runs walks on its own thread, so their allocations come from that
+// thread's arena. Detached and never destroyed: a retired one stays parked
+// for the worker's life, which keeps glibc from handing its arena to the
+// next thread.
+class WalkThread {
+public:
+    WalkThread() { std::thread{&WalkThread::run, this}.detach(); }
+
+    WalkResult walk(const WalkRequest& req)
+    {
+        std::unique_lock lock{m_mutex};
+        m_request = &req;
+        m_cv.notify_all();
+        m_cv.wait(lock, [&] { return m_request == nullptr && m_done; });
+        m_done = false;
+        return std::move(m_result);
+    }
+
+private:
+    std::mutex              m_mutex;
+    std::condition_variable m_cv;
+    const WalkRequest*      m_request{nullptr};
+    bool                    m_done{false};
+    WalkResult              m_result;
+
+    void run()
+    {
+        std::unique_lock lock{m_mutex};
+        for (;;) {
+            m_cv.wait(lock, [&] { return m_request != nullptr; });
+            const WalkRequest& req = *m_request;
+            lock.unlock();
+            auto result =
+                SvTreeWalker::walk(req.source, req.sourceMap, req.collectDocs, req.initialScope);
+            lock.lock();
+            m_result  = std::move(result);
+            m_request = nullptr;
+            m_done    = true;
+            m_cv.notify_all();
+        }
+    }
+};
+
+} // namespace
+
 int runParseWorker(int fd)
 {
     // Don't outlive the server (its end closing is the normal way out).
     ::prctl(PR_SET_PDEATHSIG, SIGKILL);
 
+    auto* walker = new WalkThread; // see WalkThread
     std::string request;
     while (readFrame(fd, request)) {
         WalkRequest req;
         if (!decodeWalkRequest(request, req)) return 2;
-        const auto result =
-            SvTreeWalker::walk(req.source, req.sourceMap, req.collectDocs, req.initialScope);
+        const std::size_t before = rssMb(::getpid());
+        const auto result = walker->walk(req);
         if (!writeFrame(fd, encodeWalkResult(result))) return 1;
+        if (rssMb(::getpid()) >= before + kRetireArenaGrowthMb) walker = new WalkThread;
     }
     return 0;
 }

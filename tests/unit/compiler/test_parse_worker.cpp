@@ -3,6 +3,7 @@
 #include "compiler/sv_tree_walker.h"
 #include <csignal>
 #include <sstream>
+#include <thread>
 
 // plan.md §6.33 C1. The worker is the real svlsp binary (SVLSP_EXE, built
 // before unit_tests) in its `--internal-parse-worker` mode.
@@ -46,11 +47,12 @@ std::string withoutScopes(WalkResult r)
     return encodeWalkResult(r);
 }
 
-ParseWorker::Options options(std::size_t maxRssMb = 1024)
+ParseWorker::Options options(std::size_t maxRssMb = 1024, unsigned idleSeconds = 60)
 {
     ParseWorker::Options o;
-    o.exe      = SVLSP_EXE;
-    o.maxRssMb = maxRssMb;
+    o.exe         = SVLSP_EXE;
+    o.maxRssMb    = maxRssMb;
+    o.idleSeconds = idleSeconds;
     return o;
 }
 
@@ -121,10 +123,11 @@ TEST_CASE("parse worker: one worker serves many walks", "[parse_worker]")
     CHECK(r.records[0].name == "b");
 }
 
-TEST_CASE("parse worker: a worker over the memory limit is recycled", "[parse_worker]")
+TEST_CASE("parse worker: idle 0 recycles a worker over the limit right after the job",
+          "[parse_worker]")
 {
     std::ostringstream log;
-    auto o = options(1); // any real process is over 1 MB
+    auto o = options(1, 0); // any real process is over 1 MB
     o.log  = &log;
     ParseWorker worker{o};
     const auto r = worker.walk("module a; endmodule\n", {}, true, "");
@@ -133,6 +136,30 @@ TEST_CASE("parse worker: a worker over the memory limit is recycled", "[parse_wo
     CHECK(log.str().find("recycled") != std::string::npos);
     // The next walk starts a fresh one.
     CHECK(worker.walk("module b; endmodule\n", {}, true, "").records.size() == 1);
+}
+
+TEST_CASE("parse worker: a worker over the limit is recycled once idle", "[parse_worker]")
+{
+    using namespace std::chrono_literals;
+    std::ostringstream log;
+    auto o = options(1, 1);
+    o.log  = &log;
+    ParseWorker worker{o};
+
+    // Walks less than the idle time apart keep the same (warm) worker.
+    worker.walk("module a; endmodule\n", {}, true, "");
+    const pid_t first = worker.pid();
+    REQUIRE(first > 0);
+    std::this_thread::sleep_for(600ms);
+    worker.walk("module b; endmodule\n", {}, true, "");
+    std::this_thread::sleep_for(600ms);
+    CHECK(worker.pid() == first);
+
+    // Then idle: replaced.
+    std::this_thread::sleep_for(1000ms);
+    CHECK(worker.pid() == -1);
+    CHECK(log.str().find("idle 1 s, recycled") != std::string::npos);
+    CHECK(worker.walk("module c; endmodule\n", {}, true, "").records.size() == 1);
 }
 
 TEST_CASE("parse worker: a worker that died is restarted", "[parse_worker]")

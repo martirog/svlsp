@@ -208,6 +208,7 @@ int main(int argc, char** argv)
     bool collectDocs = true;
     bool inProcessParse = false;
     std::size_t parseWorkerMaxRssMb = ParseWorker::Options{}.maxRssMb;
+    unsigned parseWorkerIdleSeconds = ParseWorker::Options{}.idleSeconds;
     for (int i = 1; i < argc; ++i) {
         // A flag's value is required to be the very next argv entry; if
         // that's missing, or looks like another flag (starts with "--"),
@@ -265,6 +266,17 @@ int main(int argc, char** argv)
             collectDocs = false;
         } else if (std::strcmp(argv[i], "--in-process-parse") == 0) {
             inProcessParse = true;
+        } else if (std::strcmp(argv[i], "--parse-worker-idle") == 0) {
+            char* end = nullptr;
+            const char* value = nextIsMissingOrFlag ? "" : argv[i + 1];
+            const unsigned long seconds = std::strtoul(value, &end, 10);
+            if (nextIsMissingOrFlag || *value == '\0' || *end != '\0') {
+                std::cerr << "svlsp: --parse-worker-idle requires a <seconds> number "
+                             "immediately after it (0 = recycle right after the compile)\n";
+                return 1;
+            }
+            parseWorkerIdleSeconds = static_cast<unsigned>(seconds);
+            ++i;
         } else if (std::strcmp(argv[i], "--parse-worker-max-rss") == 0) {
             char* end = nullptr;
             const char* value = nextIsMissingOrFlag ? "" : argv[i + 1];
@@ -293,7 +305,9 @@ int main(int argc, char** argv)
     std::unique_ptr<ParseWorker> parseWorker;
     if (!inProcessParse)
         parseWorker = std::make_unique<ParseWorker>(
-            ParseWorker::Options{.maxRssMb = parseWorkerMaxRssMb, .log = logStream});
+            ParseWorker::Options{.maxRssMb    = parseWorkerMaxRssMb,
+                                 .idleSeconds = parseWorkerIdleSeconds,
+                                 .log         = logStream});
 
     auto& io = lsp::io::standardIO();
     LanguageServer server(io, logStream, requestLog);

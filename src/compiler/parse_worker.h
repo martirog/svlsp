@@ -1,10 +1,13 @@
 #pragma once
 #include "compiler/sv_tree_walker.h"
+#include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <iosfwd>
 #include <mutex>
 #include <string>
 #include <sys/types.h>
+#include <thread>
 #include <vector>
 
 // The parse in a worker process (plan.md §6.33 C1).
@@ -14,10 +17,18 @@
 // server that compiled UVM live keeps ~6.6 GB for life. A ParseWorker runs
 // SvTreeWalker::walk in a child process instead (the svlsp binary itself,
 // `svlsp --internal-parse-worker`), so the server never parses. The child
-// stays alive across compiles, keeping its DFA warm for the small edits
-// that follow, and is killed once its resident memory is over
-// `maxRssMb` after a job, which gives the memory back; the next walk
-// starts a fresh one.
+// stays alive across compiles, keeping its DFA warm for the edits that
+// follow. A job that leaves it over `maxRssMb` resident marks it for
+// replacement once it has been idle `idleSeconds` (0 = right away): the
+// warm worker serves someone who is editing, and the memory goes back
+// when they stop. The peak is the same either way. The next walk starts a
+// fresh worker.
+//
+// In the worker the walks run on a walk thread, and a walk that grew the
+// process by a lot (a large unit) retires that thread for a fresh one:
+// its malloc arena, full of long-lived ANTLR state between its
+// temporaries' holes, made every later walk on it ~2x slower
+// (runParseWorker).
 //
 // The input is what the walk takes (preprocessed source, its SourceLine
 // map, collectDocs, the initial scope) and the output a WalkResult, framed
@@ -45,6 +56,7 @@ public:
                                              // for `--internal-parse-worker`
         std::size_t   maxRssMb{1024};        // recycle above this after a job;
                                              // 0 = never
+        unsigned      idleSeconds{60};       // ... once idle this long
         std::ostream* log{nullptr};          // "[worker] ..." lines (--log-files)
     };
 
@@ -67,6 +79,14 @@ private:
     mutable std::mutex m_mutex;
     pid_t              m_pid{-1};
     int                m_fd{-1};
+
+    // Replacement of an over-limit worker after idleSeconds (m_reaper).
+    std::condition_variable               m_cv;
+    bool                                  m_overLimit{false};
+    std::chrono::steady_clock::time_point m_idleSince;
+    bool                                  m_stopping{false};
+    std::thread                           m_reaper;
+    void reap();
 
     bool start();
     void stop();
