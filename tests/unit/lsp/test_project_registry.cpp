@@ -3,6 +3,7 @@
 #include "db/database.h"
 #include "db/symbol_database.h"
 #include "db/compilation_controller.h"
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 
@@ -151,4 +152,35 @@ TEST_CASE("configFor lazily builds a libraryDbSources cache and its symbols beco
     CHECK(config->libraryDbs[0] == cachePath);
     CHECK(f.sdb.findSymbolsByName("uvm_object").size() == 1); // visible via attach
     CHECK(f.sdb.findSymbolsByName("top").size() == 1);        // the project's own file too
+}
+
+TEST_CASE("a project's lazily built library DB parses through the controller's walker",
+          "[lsp][project-registry][parse_worker]") {
+    // plan.md §6.33 C1: the server's parse worker must also take the parse
+    // of a libraryDbSources build, or its memory stays in the server.
+    std::string root = kRoot + "/lazy_lib_walker";
+    writeFile(root + "/lib/lib.sv", "module lib_mod; endmodule\n");
+    writeFile(root + "/lib/lib.f", "lib.sv\n");
+    writeFile(root + "/proj/top.sv", "module top_mod; endmodule\n");
+    writeFile(root + "/proj/.svlsp.json",
+              R"({"files": ["top.sv"], "libraryDbSources": [{"config": ")" + root +
+                  R"(/lib/lib.f", "cache": ")" + root + R"(/lib/lib.db"}]})");
+    fs::remove(root + "/lib/lib.db");
+
+    Fixture f;
+    std::vector<std::string> walked;
+    f.ctrl.setWalker([&](const std::string& source, const std::vector<SourceLine>& map,
+                         bool docs, const std::string& scope) {
+        walked.push_back(source);
+        return SvTreeWalker::walk(source, map, docs, scope);
+    });
+    REQUIRE(f.registry.configFor(root + "/proj/top.sv") != nullptr);
+
+    auto has = [&](const std::string& text) {
+        return std::any_of(walked.begin(), walked.end(),
+                           [&](const std::string& s) { return s.find(text) != std::string::npos; });
+    };
+    CHECK(has("lib_mod"));
+    CHECK(has("top_mod"));
+    CHECK(fs::exists(root + "/lib/lib.db"));
 }

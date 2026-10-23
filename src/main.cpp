@@ -4,12 +4,14 @@
 #include "lsp/project_manifest_parser.h"
 #include "compiler/filelist_parser.h"
 #include "compiler/project_config.h"
+#include "compiler/parse_worker.h"
 #include "svlsp_git_version.h"
 #include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <sstream>
 #include <streambuf>
 #include <unordered_set>
@@ -192,6 +194,11 @@ int main(int argc, char** argv)
         }
     }
 
+    // The parse worker the server starts (plan.md §6.33 C1): the socket to
+    // the server is on stdin. Not a user-facing flag.
+    if (argc == 2 && std::strcmp(argv[1], "--internal-parse-worker") == 0)
+        return runParseWorker(0);
+
     std::ofstream logFile;
     std::ostream* logStream = nullptr;
     std::ofstream requestLogFile;
@@ -199,6 +206,8 @@ int main(int argc, char** argv)
     std::string buildDbConfigPath;
     std::string buildDbOutputPath;
     bool collectDocs = true;
+    bool inProcessParse = false;
+    std::size_t parseWorkerMaxRssMb = ParseWorker::Options{}.maxRssMb;
     for (int i = 1; i < argc; ++i) {
         // A flag's value is required to be the very next argv entry; if
         // that's missing, or looks like another flag (starts with "--"),
@@ -254,6 +263,19 @@ int main(int argc, char** argv)
             buildDbOutputPath = argv[++i];
         } else if (std::strcmp(argv[i], "--no-doc-comments") == 0) {
             collectDocs = false;
+        } else if (std::strcmp(argv[i], "--in-process-parse") == 0) {
+            inProcessParse = true;
+        } else if (std::strcmp(argv[i], "--parse-worker-max-rss") == 0) {
+            char* end = nullptr;
+            const char* value = nextIsMissingOrFlag ? "" : argv[i + 1];
+            const unsigned long mb = std::strtoul(value, &end, 10);
+            if (nextIsMissingOrFlag || *value == '\0' || *end != '\0') {
+                std::cerr << "svlsp: --parse-worker-max-rss requires a <MB> number "
+                             "immediately after it (0 = never recycle)\n";
+                return 1;
+            }
+            parseWorkerMaxRssMb = mb;
+            ++i;
         }
     }
 
@@ -265,7 +287,21 @@ int main(int argc, char** argv)
         return buildDb(buildDbConfigPath, buildDbOutputPath, collectDocs);
     }
 
+    // The server parses in a worker process unless told not to; --build-db
+    // above parses in-process (a one-shot run, so its memory goes at exit,
+    // and every file after the first gets a warm DFA).
+    std::unique_ptr<ParseWorker> parseWorker;
+    if (!inProcessParse)
+        parseWorker = std::make_unique<ParseWorker>(
+            ParseWorker::Options{.maxRssMb = parseWorkerMaxRssMb, .log = logStream});
+
     auto& io = lsp::io::standardIO();
     LanguageServer server(io, logStream, requestLog);
+    if (parseWorker)
+        server.setWalker([w = parseWorker.get()](const std::string& source,
+                                                  const std::vector<SourceLine>& sourceMap,
+                                                  bool collectDocs, const std::string& scope) {
+            return w->walk(source, sourceMap, collectDocs, scope);
+        });
     return server.run();
 }

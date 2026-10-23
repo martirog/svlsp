@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <iosfwd>
 #include <string>
+#include "db/compilation_controller.h"
 
 struct ProjectConfig;
 
@@ -52,10 +53,16 @@ public:
     // stores no doc comments. The setting is part of the recorded build
     // version, so switching it forces the same full rebuild a new binary
     // does -- otherwise unchanged files would keep (or keep lacking) docs.
+    //
+    // `walker`, when set, is the parse every file goes through
+    // (CompilationController::setWalker): the live server passes its parse
+    // worker's, so a lazily built library's parse memory stays out of the
+    // server too (plan.md §6.33 C1). Unset, the parse runs in-process.
     static Result build(const std::string& configPath, const std::string& outputPath,
                         std::ostream* progressLog = nullptr,
                         const std::string& currentVersion = "",
-                        bool collectDocs = true);
+                        bool collectDocs = true,
+                        const CompilationController::Walker& walker = {});
 
     // For each `config.libraryDbSources` entry (plan.md §6.19 piece 3):
     // if its cachePath already exists on disk, leave it alone; otherwise
@@ -71,7 +78,9 @@ public:
     // Deliberately does NOT detect a dependency cycle between configs (e.g.
     // A's libraryDbSources building B, whose own libraryDbSources builds
     // A) -- disclosed, not fixed, in this first cut.
+    // `walker` as for build().
     static void resolveLibraryDbSources(ProjectConfig& config,
                                         std::ostream* progressLog = nullptr,
-                                        const std::string& currentVersion = "");
+                                        const std::string& currentVersion = "",
+                                        const CompilationController::Walker& walker = {});
 };

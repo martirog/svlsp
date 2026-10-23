@@ -16,12 +16,13 @@ namespace {
 // is persisted to the DB here). Honors the project's includeDirs/defines so
 // `-v`/`-y` files preprocess consistently with the rest of the project.
 std::vector<std::string> declaredTypeNames(const std::string& text, const std::string& path,
-                                            const ProjectConfig& config) {
+                                            const ProjectConfig& config,
+                                            const CompilationController& controller) {
     auto stripped = CompilerDirectiveStripper::strip(text, path);
     SvPreprocessor pp(config.includeDirs);
     for (const auto& [name, value] : config.defines) pp.define(name, value);
     auto preprocessed = pp.process(stripped.source, path);
-    auto walked       = SvTreeWalker::walk(preprocessed.source, preprocessed.sourceMap);
+    auto walked = controller.walk(preprocessed.source, preprocessed.sourceMap, true, "");
 
     std::vector<std::string> names;
     for (const auto& r : walked.records) {
@@ -59,7 +60,7 @@ int LibraryResolver::resolve(const ProjectConfig& config, CompilationController&
     for (const auto& vPath : config.libraryFiles) {
         auto text = readFile(vPath);
         if (!text) continue;
-        for (const auto& name : declaredTypeNames(*text, vPath, config)) {
+        for (const auto& name : declaredTypeNames(*text, vPath, config, controller)) {
             vIndex.try_emplace(name, vPath); // first -v file wins on a name clash
         }
         vContent[vPath] = *text;

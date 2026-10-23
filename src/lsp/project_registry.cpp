@@ -59,7 +59,8 @@ const ProjectConfig* ProjectRegistry::loadAndCache(const std::string& configPath
     // piece 3) before compiling -- turns each libraryDbSources entry into
     // an ordinary libraryDbs one, building it first only if its cachePath
     // doesn't already exist.
-    LibraryDbBuilder::resolveLibraryDbSources(config);
+    // The server's parse (its worker, plan.md §6.33 C1) builds them too.
+    LibraryDbBuilder::resolveLibraryDbSources(config, nullptr, "", m_controller.walker());
 
     ProjectCompiler::loadProject(config, m_controller, m_sdb);
 

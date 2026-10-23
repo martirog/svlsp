@@ -38,6 +38,10 @@ public:
     // code the process should use (0 after clean shutdown, 1 otherwise).
     int run();
 
+    // The parse every compile runs (CompilationController::setWalker), e.g.
+    // a ParseWorker's. Call before run().
+    void setWalker(CompilationController::Walker walker) { m_compiler.setWalker(std::move(walker)); }
+
 private:
     ServerState           m_state;
     DocumentStore         m_store;

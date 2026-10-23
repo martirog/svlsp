@@ -2,6 +2,7 @@
 #include "db/symbol_database.h"
 #include "compiler/parse_record.h"
 #include "compiler/project_config.h"
+#include "compiler/sv_tree_walker.h"
 #include <functional>
 #include <iosfwd>
 #include <optional>
@@ -82,11 +83,26 @@ public:
     // doesn't run.
     void setCalleeResolver(CalleeResolver resolver) { m_calleeResolver = std::move(resolver); }
 
+    // Runs the parse (SvTreeWalker::walk's signature). Unset, the walk runs
+    // in this process; the server sets a ParseWorker's (plan.md §6.33 C1,
+    // compiler/parse_worker.h) so ANTLR's memory lives in a child process.
+    using Walker = std::function<WalkResult(const std::string& source,
+                                            const std::vector<SourceLine>& sourceMap,
+                                            bool collectDocs, const std::string& initialScope)>;
+    void setWalker(Walker walker) { m_walker = std::move(walker); }
+    const Walker& walker() const { return m_walker; } // unset = in-process
+
+    // The walk every parse of this controller goes through (also
+    // LibraryResolver's pre-parse of -v files).
+    WalkResult walk(const std::string& source, const std::vector<SourceLine>& sourceMap,
+                    bool collectDocs, const std::string& initialScope) const;
+
 private:
     SymbolDatabase& m_sdb;
     std::ostream*   m_log;
     bool            m_collectDocs{true};
     CalleeResolver  m_calleeResolver;
+    Walker          m_walker;
 
     static std::string hashContent(const std::string& text);
 };

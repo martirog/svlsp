@@ -92,6 +92,14 @@ CompilationController::CompilationController(SymbolDatabase& sdb, std::ostream* 
     , m_log{logStream}
 {}
 
+WalkResult CompilationController::walk(const std::string& source,
+                                       const std::vector<SourceLine>& sourceMap,
+                                       bool collectDocs, const std::string& initialScope) const
+{
+    return m_walker ? m_walker(source, sourceMap, collectDocs, initialScope)
+                    : SvTreeWalker::walk(source, sourceMap, collectDocs, initialScope);
+}
+
 std::string CompilationController::hashContent(const std::string& text)
 {
     // std::hash gives a fast content fingerprint suitable for within-session
@@ -151,8 +159,8 @@ std::vector<ParseError> CompilationController::compile(const std::string& path,
         }
     }
     auto preprocessed = preprocessor.process(stripped.source, path, m_log);
-    auto walked = SvTreeWalker::walk(preprocessed.source, preprocessed.sourceMap, m_collectDocs,
-                                     context ? context->scope : std::string{});
+    auto walked = walk(preprocessed.source, preprocessed.sourceMap, m_collectDocs,
+                       context ? context->scope : std::string{});
     if (!m_collectDocs)
         for (auto& mac : preprocessed.macros) mac.doc.clear();
 

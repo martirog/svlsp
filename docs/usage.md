@@ -3,8 +3,8 @@
 This is a quick reference for the user-facing configuration knobs `svlsp`
 currently has: the completion fuzzy-matching toggle (set by your
 editor/client at connect time), and the `--version`, `--log-files`,
-`--log-requests`, and `--build-db` command-line flags (all set when you
-launch the binary). It
+`--log-requests`, `--parse-worker-max-rss`, `--in-process-parse` and
+`--build-db` command-line flags (all set when you launch the binary). It
 will grow into the full end-user guide tracked by `plan.md` Phase 6.6 as
 more of that phase lands; for now it only covers what's actually
 implemented.
@@ -179,6 +179,33 @@ time. `compile` lines cover `didOpen`/`didChange`/`didSave` compiles (the
 first one in a project also loads its library DBs and project files);
 `recompile` lines are files recompiled because an `` `include``d file
 was saved.
+
+## The parse worker: `--parse-worker-max-rss`, `--in-process-parse`
+
+The server parses in a separate process, a second `svlsp` it starts itself
+(`svlsp --internal-parse-worker`, visible in `ps`). The parser keeps what
+it learns in memory it never gives back: compiling a large unit live (UVM
+as project sources, not as a `libraryDbs` database) grows it to ~7 GB.
+In the worker that memory is released when the worker is replaced, so the
+server's own memory stays small whatever it has compiled.
+
+The worker stays alive between compiles (later parses are faster with
+what it has learned) and is replaced after a compile that leaves it above
+`--parse-worker-max-rss <MB>` (default 1024; `0` = never replace it). The
+peak of a large compile is the same either way; what the limit bounds is
+what stays resident afterwards. A worker that crashes is restarted and
+the parse retried once; if that fails too, the file gets one error
+diagnostic on line 1 ("the parser worker failed").
+
+`--in-process-parse` parses inside the server instead (the behavior
+before the worker). `--build-db` always parses in-process: it is a
+one-shot run whose memory goes when it exits. `--log-files` logs each
+worker start and replacement:
+
+```
+[worker] started pid 41203
+[worker] pid 41203 at 6912 MB > 1024 MB, recycled
+```
 
 ## Pre-building a library database: `--build-db`
 

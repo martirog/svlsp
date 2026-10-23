@@ -157,6 +157,7 @@ add_library(svlsp_compiler STATIC
     src/compiler/doc_comment.cpp
     src/compiler/filelist_parser.cpp
     src/compiler/file_utils.cpp
+    src/compiler/parse_worker.cpp
 )
 target_include_directories(svlsp_compiler PUBLIC src)
 target_link_libraries(svlsp_compiler PUBLIC svlsp_antlr4 svlsp_options)
@@ -258,6 +259,7 @@ add_executable(unit_tests
     tests/unit/compiler/test_sv_error_recovery.cpp
     tests/unit/compiler/test_parse_cache.cpp
     tests/unit/compiler/test_filelist_parser.cpp
+    tests/unit/compiler/test_parse_worker.cpp
     tests/unit/db/test_database.cpp
     tests/unit/db/test_symbol_database.cpp
     tests/unit/db/test_symbol_database_library_attach.cpp
@@ -268,7 +270,9 @@ add_executable(unit_tests
 )
 target_compile_definitions(unit_tests PRIVATE
     SV_EXAMPLES_DIR="${CMAKE_SOURCE_DIR}/examples"
+    SVLSP_EXE="$<TARGET_FILE:svlsp>"
 )
+add_dependencies(unit_tests svlsp) # the parse worker tests run it
 target_link_libraries(unit_tests PRIVATE svlsp_lib svlsp_antlr4 svlsp_db Catch2::Catch2WithMain)
 catch_discover_tests(unit_tests)
 

@@ -12,7 +12,8 @@
 
 LibraryDbBuilder::Result LibraryDbBuilder::build(
     const std::string& configPath, const std::string& outputPath, std::ostream* progressLog,
-    const std::string& currentVersion, bool collectDocs)
+    const std::string& currentVersion, bool collectDocs,
+    const CompilationController::Walker& walker)
 {
     Result result;
     const std::string buildVersion =
@@ -36,7 +37,7 @@ LibraryDbBuilder::Result LibraryDbBuilder::build(
             ? ProjectManifestParser::parse(configPath)
             : FilelistParser::parse(configPath,
                   std::filesystem::path(configPath).parent_path().string());
-        resolveLibraryDbSources(config, progressLog, currentVersion);
+        resolveLibraryDbSources(config, progressLog, currentVersion, walker);
 
         // sqlite3_open (inside the Database constructor) does not create
         // missing parent directories -- the exact bug found live above.
@@ -67,6 +68,7 @@ LibraryDbBuilder::Result LibraryDbBuilder::build(
         CompilationController controller(sdb, progressLog);
         controller.setCollectDocs(collectDocs);
         controller.setCalleeResolver(resolveCallees);
+        if (walker) controller.setWalker(walker);
 
         result.fileCount = ProjectCompiler::loadProject(config, controller, sdb);
 
@@ -92,11 +94,13 @@ LibraryDbBuilder::Result LibraryDbBuilder::build(
 }
 
 void LibraryDbBuilder::resolveLibraryDbSources(ProjectConfig& config, std::ostream* progressLog,
-                                               const std::string& currentVersion)
+                                               const std::string& currentVersion,
+                                               const CompilationController::Walker& walker)
 {
     for (const auto& src : config.libraryDbSources) {
         if (!std::filesystem::exists(src.cachePath)) {
-            Result built = build(src.configPath, src.cachePath, progressLog, currentVersion);
+            Result built = build(src.configPath, src.cachePath, progressLog, currentVersion,
+                                 /*collectDocs=*/true, walker);
             if (!built.ok)
                 throw std::runtime_error(
                     "failed to build cached library DB '" + src.cachePath + "' from '" +
