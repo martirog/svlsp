@@ -6128,7 +6128,7 @@ column is empty). The corpus `uvm.db` is rebuilt at v14 (the v13 one is
 
 **Status:** measurement tooling done 2026-10-22; findings recorded below;
 tooling committed 2026-10-23 (ac3c5c3); C7 done (a5fb6e1), C5 done (24413e8)
-and C1 done (0bf7257) 2026-10-23, its recycle policy open (see C1); C2-C4 open. Requested so
+and C1 done (0bf7257, c91eac2) 2026-10-23/24; C2-C4 open. Requested so
 that (a) a shared server with a memory cap per user can be sized, and (b)
 code reviews can show that a rewrite does not regress latency or memory.
 
@@ -6263,11 +6263,26 @@ code reviews can show that a rewrite does not regress latency or memory.
   by the open file's context compiles, stays at 19 s), other requests
   unchanged or faster. `small` / `uvm`: no regression; the server alone is
   ~12 MB, the worker ~50 MB (uvm total 63.7 vs 55.2 MB).
-  *Open:* the recycle policy -- right after a job (now) or only after the
-  worker has been idle N s (keeps the 10 s warm edits while someone is
-  editing, frees the memory when they stop; the peak a per-user cap must
-  cover is the same). `uvm_src` baseline not refreshed until that is
-  decided.
+  *Recycle policy (2026-10-24, c91eac2; the user chose "after N s
+  idle").* Over the limit after a job -> replaced once idle
+  `--parse-worker-idle` s (60; 0 = right away). Measuring it found the
+  real cause of the slow edits: **malloc arena fragmentation**. The warm
+  worker's edit walk took 27.4 s vs ~10 s in-process -- the big walk
+  fills its thread's glibc arena with long-lived DFA / prediction-context
+  objects between the holes of its freed temporaries, and every later
+  walk on that arena is slower; in the server the project compile and the
+  edits happened to run on different threads (different arenas). A
+  scratch harness (20k-line slice, 700 MB): a small walk 21 ms on the big
+  walk's thread, 13 ms on a second thread. Fix: the worker walks on a
+  walk thread and retires it (parked, so its arena isn't reused) after a
+  walk that grew RSS by >= 256 MB. `uvm_src` vs an in-process run of the
+  same code: **edit -> diagnostics 11.96 -> 12.02 s**, first open 908 ->
+  916 s, **RSS after 75 s idle 6659 -> 46 MB**, peak 6797 -> 6871 MB,
+  other requests the same or faster (no regression). Baselines refreshed
+  (19874cc). Not tried: the same arena effect may cost the in-process
+  server's own later compiles of a big unit, or the first compile after
+  a big one on the same thread; and a malloc with less fragmentation
+  (jemalloc / mimalloc) as an alternative to the thread rotation.
 - *C2 -- make the hot decisions cheap in the grammar*, driven by the
   per-decision profile (`setProfile`; the scratch harness from T2:
   generate from a copy of `Sv.g4`, parse a slice, compare). Order:

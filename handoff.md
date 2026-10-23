@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-10-23 (perf tooling, C7, C5 and C1 committed; C1's recycle policy open).
+**Last updated:** 2026-10-24 (perf tooling, C7, C5 and C1 incl. its recycle policy committed).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -11,15 +11,15 @@ write-up) — read the relevant section there rather than looking for it here.
 
 ## Current state
 
-**PICK UP HERE NEXT TIME -- §6.33 C1's recycle policy (plan.md, C1
-"Open"), then C2 if the user wants it.** C7 (a5fb6e1), C5 (24413e8) and
-C1 (0bf7257 + perf e2167dc, 79e1a2b) are committed. The parse runs in a
-worker process (`compiler/parse_worker.h`; flags in docs/usage.md). Asked
-the user: recycle right after a job over 1024 MB (now; live-UVM edits 19 s
-instead of 10 s) or only after N s idle (keeps warm edits, frees the
-memory when the user stops). Refresh `tests/perf/baselines/uvm_src.json`
-after that (and `small.json`: C7 changed its `fp_` completion count
-1 -> 10, expected).
+**PICK UP HERE NEXT TIME -- §6.33: C1 is finished; ask the user what
+next** (C2 grammar disambiguation, C4 references 2.7 s on live UVM, or
+the older items below). C7 (a5fb6e1), C5 (24413e8) and C1 (0bf7257,
+c91eac2 + perf e2167dc, 79e1a2b, 089293a, baselines 19874cc) are
+committed. The parse runs in a worker process (`compiler/parse_worker.h`;
+flags in docs/usage.md): replaced once idle 60 s over 1024 MB, walks on
+a walk thread retired after a big walk (malloc arena fragmentation made
+later walks 2.5x slower -- plan.md C1). Live UVM: edits 12 s as
+in-process, 46 MB after idle instead of 6.6 GB.
 
 What the worker changes for other work:
 - Nothing in the server parses any more unless `--in-process-parse`; the
@@ -31,7 +31,7 @@ What the worker changes for other work:
   fixture sets.
 - unit_tests depends on the svlsp target (SVLSP_EXE) for the worker tests.
 
-Verified 2026-10-23 (C1): unit 1040/1040, Emacs 309/309, `make
+Verified 2026-10-24 (C1 final): unit 1041/1041, Emacs 309/309, `make
 test-integration-uvm` 13/13 (release), perf-check small + uvm no
 regression, uvm_src as in plan.md. (C7 + C5: UVM corpus 1563 / 31, log
 `build/release/corpus_2026-10-23.log`; the corpus parses in-process, so C1
@@ -242,7 +242,7 @@ by name instead of from the typedef's scope, and merged duplicated helpers
   in workspace symbols, no completion inside comments/strings, and doc
   comments (§6.31) in hover, signature help and completion resolve.
 - Test baselines:
-  - unit: **1040 cases**, all passing (2026-10-23, C1; 1031 with C7; 1029 on the receivers tree;
+  - unit: **1041 cases**, all passing (2026-10-24, C1; 1040 before the idle policy; 1031 with C7; 1029 on the receivers tree;
     1016 at 4e8a10d) (no `[!shouldfail]` known gaps left
     -- the `` `define `` references case passes since the macro follow-up)
   - Emacs functional: **309/309** (2026-10-23, test_48 new; 305 with test_47)
