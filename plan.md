@@ -6127,7 +6127,8 @@ column is empty). The corpus `uvm.db` is rebuilt at v14 (the v13 one is
 ### 6.33 Performance and Memory: Benchmarks, Regression Checks, Findings
 
 **Status:** measurement tooling done 2026-10-22; findings recorded below;
-the optimizations and fixes (C1-C7) are open candidates, none started. Requested so
+tooling committed 2026-10-23 (ac3c5c3); C7 done (a5fb6e1) and C5 done (24413e8)
+2026-10-23; C1 next (user's order: C7, C5, then C1); C2-C4 open. Requested so
 that (a) a shared server with a memory cap per user can be sized, and (b)
 code reviews can show that a rewrite does not regress latency or memory.
 
@@ -6260,10 +6261,21 @@ code reviews can show that a rewrite does not regress latency or memory.
 - *C4 -- references(`get_name`) 4.0 s* on a live UVM project (3.8 s in
   the corpus test): over the 1 s navigation budget; profile separately.
 - *C5 -- fix F7*: compute the version at build time, not configure time.
+  **Done 2026-10-23 (24413e8).** Target `svlsp_git_version` runs
+  `cmake/GitVersion.cmake` on every build; it rewrites
+  `<build>/version/svlsp_git_version.h` only when `git describe` changed.
+  Checked: an unchanged tree rebuilds nothing, a changed version
+  recompiles `main.cpp` only, `--version` matches `git describe`.
 - *C7 -- completion prefix = text before the cursor* (F6): change
   `wordAtPosition`'s use in completion (not hover/definition, which want
   the whole word) to stop at the cursor; unit + Emacs test for a cursor
   at the start / middle of an existing word.
+  **Done 2026-10-23 (a5fb6e1).** `wordBeforePosition` (symbol_utils)
+  is the prefix for both bare-name and dot completion;
+  `dotCompletionContext` / `wordAtPosition` unchanged (resolution and
+  signature help want the whole word). Unit cases, Emacs test_48.
+  Verified: unit 1031/1031, Emacs 309/309, UVM corpus 1563 / 31 (14:10,
+  6.96 GB), unchanged.
 - *C6 -- default `PERF_SCENARIOS` for reviews*: `small uvm` (seconds);
   `uvm_src` only for parser/walker/compile changes (~25 min, ~7 GB).
 

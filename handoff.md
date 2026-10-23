@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-10-22 (receivers committed 59df9d9 + 13ce8e1; perf memory / regression tooling and the §6.33 findings **not committed**).
+**Last updated:** 2026-10-23 (perf tooling ac3c5c3 + 3b7dcbe, C7 a5fb6e1, C5 24413e8 committed; C1 next).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -11,21 +11,30 @@ write-up) — read the relevant section there rather than looking for it here.
 
 ## Current state
 
-**PICK UP HERE NEXT TIME -- §6.33 (plan.md): commit the perf tooling,
-then pick an optimization with the user.** Uncommitted on `main`:
-- `tools/lsp_perf.py`: per-phase server memory (RSS end / anon / peak via
-  VmHWM + `clear_refs`), `--max-rss MB`, `--baseline FILE` regression
-  check, host/version in `--json`, `copyDir` from a `${VAR}` with
-  `exclude`; Python 3.6 (no `capture_output`).
-- `tests/perf/emacs_perf.el`: the same memory phases through lsp-mode.
-- `tests/perf/uvm_src.json` (UVM sources as a live project, ~25 min,
-  ~7 GB), `tests/perf/baselines/{small,uvm,uvm_src}.json` (this laptop,
-  2026-10-22), `make perf-check` / `make perf-baseline`.
-- Docs: tests/perf/README.md (regression check, memory, Emacs settings),
-  docs/usage.md (`gc-cons-threshold`, `--build-db` resources), plan.md
-  §6.33 (findings F1-F7, tried T1-T5, candidates C1-C7).
-Commit as `test(perf): memory per phase, baseline regression check and a
-live-UVM scenario` + `docs(plan,handoff,usage): ...` when the user says.
+**PICK UP HERE NEXT TIME -- §6.33 C1 (plan.md): compile in a worker
+process.** The user's order was C7, C5, then C1; C7 and C5 are done and
+committed (2026-10-23), the perf tooling too (`make perf-check`). C2 (the
+grammar) stays open after C1 -- the two are independent: C1 bounds the
+server's resident memory, C2 the compile time.
+
+C1 design so far (not started):
+- The only ANTLR step is `SvTreeWalker::walk`, called from
+  `compilation_controller.cpp` (the compile) and `library_resolver.cpp`
+  (-v/-y resolution). Preprocessing (0.06 s on UVM), DB writes and callee
+  resolution stay in the server; only the walk moves.
+- A worker mode of the svlsp binary itself (exec of /proc/self/exe, pipes,
+  binary serialization of the walk's input -- source, SourceLine map,
+  collectDocs, initial scope -- and of WalkResult), not a bare fork(): the
+  server is multithreaded (debouncer thread).
+- The worker stays alive across compiles (warm DFA for small edits); the
+  server kills it when its RSS is over a threshold after a job, so idle
+  memory is bounded. In-process walk stays available (unit tests,
+  probably `--build-db`).
+- Measure with `make perf-check` and `PERF_SCENARIOS=uvm_src`.
+
+Verified 2026-10-23 (C7 + C5): unit 1031/1031, Emacs 309/309 (test_48
+new), UVM corpus 1563 / 31 (log `build/release/corpus_2026-10-23.log`,
+14:10, 6.96 GB), `make perf-check` small + uvm: no regression.
 
 Main findings: the library-DB workflow is cheap (55 MB, all p90 <= 15 ms);
 the old "completion response size" item was Emacs GC (closed); a live
@@ -34,9 +43,6 @@ compile of UVM costs ~14 min and 6.8 GB **and the server keeps 6.6 GB**
 `primary` ambiguities). Best next steps: C1 (compile in a child process,
 bounds the server's resident memory) and C2 (grammar disambiguation,
 measured -20..-26% on a slice so far; goal SLL-clean).
-
-Also found: completion uses the whole word under the cursor as the
-prefix, including characters after it (§6.33 F6 / C7) -- small fix.
 
 For code reviews: `make perf-check` (small + uvm against
 `tests/perf/baselines/`, same machine for timings); refresh a baseline
@@ -235,10 +241,10 @@ by name instead of from the typedef's scope, and merged duplicated helpers
   in workspace symbols, no completion inside comments/strings, and doc
   comments (§6.31) in hover, signature help and completion resolve.
 - Test baselines:
-  - unit: **1029 cases**, all passing (2026-10-21, receivers tree;
+  - unit: **1031 cases**, all passing (2026-10-23, C7; 1029 on the receivers tree;
     1016 at 4e8a10d) (no `[!shouldfail]` known gaps left
     -- the `` `define `` references case passes since the macro follow-up)
-  - Emacs functional: **305/305** (test_47 new, uncommitted; 295 at 4e8a10d)
+  - Emacs functional: **309/309** (2026-10-23, test_48 new; 305 with test_47)
   - UVM corpus (opt-in): **1563 assertions / 31 cases**, all passing
     (unchanged by the receivers change, 2026-10-22).
     (1903 -> 1563 with declare-before-use: in-class empty prefix
