@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-10-22 (§6.30: struct / interface / hierarchical receivers implemented and fully verified, **not committed** -- awaiting the user's go-ahead).
+**Last updated:** 2026-10-22 (receivers committed 59df9d9 + 13ce8e1; perf memory / regression tooling and the §6.33 findings **not committed**).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -11,21 +11,40 @@ write-up) — read the relevant section there rather than looking for it here.
 
 ## Current state
 
-**PICK UP HERE NEXT TIME -- commit the receivers change when the user
-says so.** Code, tests and verification are done (plan.md §6.30,
-"Follow-up: struct, interface and hierarchical receivers"; uncommitted on
-`main`). Verified 2026-10-22: UVM corpus 1563 / 31 cases, no pin moved
-(log `build/release/corpus_2026-10-22.log`); `--build-db` identical to
-the corpus `uvm.db` in every table (UVM has no instances or virtual
-interfaces), so `uvm.db` was not swapped; `make test-integration-uvm`
-13/13. The usual two commits: `feat(walker,resolution,completion): ...`
-(code + tests incl. `tests/integration/test_47_receivers.sh`,
-`fixtures/rcvr_top.sv`) and `docs(plan,handoff): ...`.
+**PICK UP HERE NEXT TIME -- §6.33 (plan.md): commit the perf tooling,
+then pick an optimization with the user.** Uncommitted on `main`:
+- `tools/lsp_perf.py`: per-phase server memory (RSS end / anon / peak via
+  VmHWM + `clear_refs`), `--max-rss MB`, `--baseline FILE` regression
+  check, host/version in `--json`, `copyDir` from a `${VAR}` with
+  `exclude`; Python 3.6 (no `capture_output`).
+- `tests/perf/emacs_perf.el`: the same memory phases through lsp-mode.
+- `tests/perf/uvm_src.json` (UVM sources as a live project, ~25 min,
+  ~7 GB), `tests/perf/baselines/{small,uvm,uvm_src}.json` (this laptop,
+  2026-10-22), `make perf-check` / `make perf-baseline`.
+- Docs: tests/perf/README.md (regression check, memory, Emacs settings),
+  docs/usage.md (`gc-cons-threshold`, `--build-db` resources), plan.md
+  §6.33 (findings F1-F7, tried T1-T5, candidates C1-C7).
+Commit as `test(perf): memory per phase, baseline regression check and a
+live-UVM scenario` + `docs(plan,handoff,usage): ...` when the user says.
 
-After that, the next candidates: the completion response size (below),
-then the two bugs the latency benchmarks found (below): library locations
-resolved against the server's cwd, and didChange blocking the message
-loop during a compile.
+Main findings: the library-DB workflow is cheap (55 MB, all p90 <= 15 ms);
+the old "completion response size" item was Emacs GC (closed); a live
+compile of UVM costs ~14 min and 6.8 GB **and the server keeps 6.6 GB**
+-- all in ANTLR full-LL prediction and its static caches (the grammar's
+`primary` ambiguities). Best next steps: C1 (compile in a child process,
+bounds the server's resident memory) and C2 (grammar disambiguation,
+measured -20..-26% on a slice so far; goal SLL-clean).
+
+Also found: completion uses the whole word under the cursor as the
+prefix, including characters after it (§6.33 F6 / C7) -- small fix.
+
+For code reviews: `make perf-check` (small + uvm against
+`tests/perf/baselines/`, same machine for timings); refresh a baseline
+on the base commit with `make perf-baseline SCENARIO=...`.
+
+After that, the remaining older candidates: the two bugs the latency
+benchmarks found (below): library locations resolved against the
+server's cwd, and didChange blocking the message loop during a compile.
 
 What the receivers change (2026-10-21) needs other work to know:
 - New kind **`Instance`** (module/interface/program instance; scope = the
@@ -124,14 +143,10 @@ Found while writing them, both open:
   completion round trip 60-73 ms, server run 5 ms, `wait` 0). One compile
   at most (~55-70 ms here), but it grows with the file.
 
-**Open: completion response size.** Server-side
-timing (plan.md §6.30, "Server-side request timing: `--log-requests`")
-showed the server spends 2-7 ms per completion on the UVM library, while
-Emacs sees 50-364 ms, growing with the item count. Measure the
-completion payload (bytes per item, the `data` object), then try a
-compact `data` and/or `isIncomplete` capping, and check with
-`SVLSP_BIN=$PWD/build/release/svlsp make test-integration-uvm` (prints
-client and server time per request).
+**Closed 2026-10-22: completion response size** (plan.md §6.33, F2/T3):
+the server is fast (9 ms); the Emacs cost was garbage collection at the
+default `gc-cons-threshold`; with 100 MB the 1067-item completion is
+22 ms through capf. Compacting `data` saves < 1 ms -- not done.
 
 Committed 2026-10-06: the small §6.30 follow-ups (e719dcd; plan.md
 §6.30, "Follow-up: the constructor and out-of-class completion gaps") --
@@ -474,7 +489,9 @@ build/debug/unit_tests "[compiler][parser]"   # subset by tag
 DISPLAY=:99 make test-integration             # Emacs functional suite (needs Xvfb :99)
 bash tools/emacs-test-daemon.sh tests/integration/test_12_signature_help.sh
 make test-integration-uvm                     # opt-in Emacs UVM completion + timings (SVLSP_BIN to profile release)
-make perf-lsp [SCENARIO=uvm|small]           # latency benchmark, svlsp alone (tests/perf/README.md)
+make perf-lsp [SCENARIO=uvm|small|uvm_src]   # latency + memory benchmark, svlsp alone (tests/perf/README.md)
+make perf-check [PERF_SCENARIOS="small uvm"] # regression check vs tests/perf/baselines/ (code reviews)
+make perf-baseline SCENARIO=...              # refresh a baseline (on the base commit)
 DISPLAY=:99 make perf-emacs [SCENARIO=...]   # the same scenario through Emacs + lsp-mode
 
 cmake --build --preset release --target uvm_corpus_tests && ./build/release/uvm_corpus_tests

@@ -6124,6 +6124,149 @@ symbol rows, 553 macro rows, 163 files, 960 symbol docs + 30 macro docs,
 column is empty). The corpus `uvm.db` is rebuilt at v14 (the v13 one is
 `uvm.db.v13.bak`); `make test-integration-uvm` 13/13 against it.
 
+### 6.33 Performance and Memory: Benchmarks, Regression Checks, Findings
+
+**Status:** measurement tooling done 2026-10-22; findings recorded below;
+the optimizations and fixes (C1-C7) are open candidates, none started. Requested so
+that (a) a shared server with a memory cap per user can be sized, and (b)
+code reviews can show that a rewrite does not regress latency or memory.
+
+**Tooling (tests/perf/README.md).**
+- `tools/lsp_perf.py` and the Emacs harness (`tests/perf/emacs_perf.el`)
+  read the server's `/proc/<pid>/status` at the end of each phase
+  (initialize/open = first compile, library load, requests, edits, typing,
+  2 s idle) and print RSS at the end, its anonymous part and the peak
+  during the phase (VmHWM, reset per phase through `clear_refs`; a 10 ms
+  sampler where the reset is refused). `--max-rss MB` fails a run over a
+  per-user limit.
+- `--baseline FILE` compares a run with an earlier `--json` result: a
+  request regresses when its client p90 or server median run is over by
+  >25% **and** >5 ms, memory when peak or end RSS is over by >10% **and**
+  >10 MB; changed result counts are shown. Results record host, CPU and
+  `svlsp --version`. `make perf-check` (scenarios `small uvm`, add
+  `PERF_SCENARIOS=uvm_src`) runs all against `tests/perf/baselines/`;
+  `make perf-baseline SCENARIO=...` refreshes one. Checked: a doctored
+  baseline (edit 2x faster, peak RSS halved) is flagged and exits 1; a
+  +1 ms change on a 0.1 ms request is not.
+- New scenario `uvm_src`: the UVM sources as the project, no library DB --
+  the server compiles `uvm_pkg` live (worst single-user load).
+
+**Findings (2026-10-22, release build, i7 laptop, 8 threads, 15 GB).**
+- *F1 -- library-DB workflow is cheap.* `uvm` scenario (testbench +
+  UVM `libraryDbs`): every request p90 <= 15 ms standalone, first compile
+  1.6 s, server peak RSS **55 MB** (45 MB anonymous). `small`: 38 MB.
+- *F2 -- the "completion response size" open item is a client setting.*
+  The 1067-item empty-prefix completion is 155 KB (145 B/item, 61% of it
+  the `data` object). In Emacs the 45 ms raw / 85 ms capf round trip (9 ms
+  server) is garbage collection at the default `gc-cons-threshold`
+  (800 KB): with 100 MB it is 14 / 22 ms, and the ~30-40 ms p90 spikes on
+  every other request disappear. `read-process-output-max` (1 MB) alone:
+  no change. JSON parse of the response is only 5.9 ms. Documented in
+  docs/usage.md and tests/perf/README.md. Closed; see T3 for `data`.
+- *F3 -- a live compile of a large unit is the problem.* `uvm_src`: first
+  open -> diagnostics **896 s**, peak **6.8 GB**, and the server **keeps
+  6.6 GB** afterwards (anonymous); edit -> diagnostics **10.3 s** (the
+  open file recompiled in its include context); references(`get_name`)
+  4.0 s; other requests 3-26 ms. `--build-db` of UVM has the same profile
+  (14:13, 6.96 GB).
+- *F4 -- the time is ANTLR's full-LL prediction.* Stack samples (gdb, 29
+  over a `--build-db`) are all in `ParserATNSimulator::adaptivePredict`
+  (`execATN`, `closure_`, `PredictionContext::merge`, the merge cache).
+  Preprocessing UVM (86k lines, 3 MB) takes 0.06 s and lexing (808k
+  tokens) 0.24 s. Parse: **~850 s cold, 409 s warm** (second parse in the
+  same process, DFA cache filled). ANTLR's profiler (`setProfile`),
+  top decisions by prediction time:
+
+  | decision | rule | share | invocations | LL fallbacks | SLL max look |
+  |---|---|---|---|---|---|
+  | 1060 | `primary` | 24.0% | 47237 | 26521 | 326 |
+  | 1061 | `primary` | 17.6% | 52952 | 5422 | 1899 |
+  | 307 | `class_type` | 9.7% | 6795 | 93 | **368910** |
+  | 957 | `subroutine_call` | 6.0% | 4275 | 2670 | 347 |
+  | 720 | `seq_block` | 5.8% | 9400 | 2068 | 178 |
+  | 969 | `method_call_body` | 5.3% | 6156 | 6137 | 147 |
+  | 1095 | `hierarchical_identifier` | 5.2% | 33360 | 8757 | 262 |
+
+  The grammar (transcribed from the LRM) is ambiguous where it matters
+  most: a bare `a.b.c` is `class_qualifier hierarchical_identifier select`
+  (two ways), a paren-less `tf_call`, `primary '.' method_call_body`,
+  `sequence_method_call`, and an identifier alone is also `let_expression`
+  and `randomize_call` (`IDENTIFIER`-led). Full LL must look far ahead to
+  find that these alternatives never diverge.
+- *F5 -- the memory is ANTLR's static caches.* Freeing the parser, tree
+  and tokens returns nothing (1273 -> 1270 MB on a 24k-line slice). The
+  DFA and the shared prediction-context cache are process-wide statics;
+  `clearDFA()` + `malloc_trim(0)` gets back 56% (-> 561 MB), the context
+  cache has no API to clear it, and a cleared DFA makes the next parse
+  cold (~2x slower). So the server holds roughly its peak for life.
+- *F6 -- completion filters by the whole word under the cursor.* The
+  first `uvm_src` run's "empty prefix" completion returned 3 items: the
+  position was the start of `m_children` on a non-blank line, and
+  `wordAtPosition` (used for the bare-name and the dot prefix) takes
+  identifier characters on **both** sides of the cursor, so the prefix
+  was `m_children` (likewise `child.|get_name` -> `get_name`).
+  Reproduced on a 3-file miniature (2 items vs 131 on a blank line). The
+  scenario now completes on a blank line and after `child.get_name`; LSP
+  clients treat only the text before the cursor as the prefix (C7).
+- *F7 -- stale version string.* `svlsp --version` reports the `git
+  describe` from CMake *configure* time (`c8d4992-dirty` on a build of
+  13ce8e1), so `--build-db`'s "different version -> full rebuild" check and
+  the perf baselines can carry a stale version.
+
+**Tried (2026-10-22).**
+- *T1 SLL prediction / two-stage parse* -- **not usable.** SLL parses UVM
+  in 114 s cold / 14 s warm but reports **19,348** spurious syntax errors
+  (LL: 1 real one), so an SLL-first parse with LL fallback would always
+  fall back; it can only pay off once the grammar is SLL-clean (C2).
+- *T2 grammar disambiguation in `primary`* (scratch experiment, walker not
+  adapted; 12.5k-line slice, LL, cold): baseline 29.7 s. E1 -- drop
+  `let_expression` and `sequence_method_call` from `primary` /
+  `restricted_constant_primary` (both covered by other alternatives),
+  guard `randomize_call` with `{LT(1) == "randomize"}?`: **23.8 s
+  (-20%)**. E2 -- E1 plus `tf_call` requires parentheses (a paren-less
+  call statement gets its own `subroutine_call` alternative): **22.1 s
+  (-26%)**, still 0 errors. Worth doing, far from enough alone: on the
+  slice the left-recursive `primary` loop decision (1061) still costs
+  4.3 ms per prediction.
+- *T3 compact completion `data`* (array instead of object, kind/scope
+  only for Function/Task): 155 -> 107-122 KB, Emacs parse 5.9 -> 5.0 ms.
+  **Not worth it** (F2: the cost was GC).
+- *T4 `gc-cons-threshold`* -- see F2; documented, client side.
+- *T5 `clearDFA()` + `malloc_trim(0)` after a compile* -- see F5; frees
+  56%, costs the next compile its warm DFA.
+
+**Candidates (open, roughly in order of value / cost).**
+- *C1 -- compile in a child process.* The compile's results go to SQLite
+  anyway; a forked worker (preprocess + walk + DB write) returns all of
+  ANTLR's memory at exit, so the server between compiles stays near the
+  F1 numbers (~50 MB) whatever was compiled; the peak stays (6.8 GB for
+  UVM, transient). Cost: every compile is DFA-cold (UVM-sized unit ~2x;
+  small files: to measure). Measure with `make perf-check` and
+  `PERF_SCENARIOS=uvm_src`. Optionally keep the worker alive across
+  edits and recycle it above an RSS threshold (warm DFA, bounded memory).
+- *C2 -- make the hot decisions cheap in the grammar*, driven by the
+  per-decision profile (`setProfile`; the scratch harness from T2:
+  generate from a copy of `Sv.g4`, parse a slice, compare). Order:
+  `primary` (E1 + E2, then the left-recursive `.` loop), `class_type` /
+  `ps_class_identifier` (368910-token SLL lookahead), `subroutine_call`,
+  `method_call_body`, `hierarchical_identifier`, `seq_block`. The parse
+  tree is the walker's API (`enterTf_call` records calls, including
+  paren-less ones for the missing-argument check), so each change needs
+  the unit, Emacs and corpus suites. Goal: SLL-clean on UVM, then T1's
+  two-stage parse (SLL warm was 14 s vs LL 409 s).
+- *C3 -- a different parser* (e.g. slang's hand-written one) if C2
+  stalls. Not measured here; the walker would be rewritten against its
+  syntax tree.
+- *C4 -- references(`get_name`) 4.0 s* on a live UVM project (3.8 s in
+  the corpus test): over the 1 s navigation budget; profile separately.
+- *C5 -- fix F7*: compute the version at build time, not configure time.
+- *C7 -- completion prefix = text before the cursor* (F6): change
+  `wordAtPosition`'s use in completion (not hover/definition, which want
+  the whole word) to stop at the cursor; unit + Emacs test for a cursor
+  at the start / middle of an existing word.
+- *C6 -- default `PERF_SCENARIOS` for reviews*: `small uvm` (seconds);
+  `uvm_src` only for parser/walker/compile changes (~25 min, ~7 GB).
+
 ---
 
 ## Appendix A — Technology Stack Summary

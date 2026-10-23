@@ -44,6 +44,21 @@ one) via `:initialization-options` when registering the client:
   (lambda () (list :svlsp (list :fuzzyCompletion :json-false)))))
 ```
 
+**Emacs: raise `gc-cons-threshold`.** lsp-mode's own performance guide
+recommends it, and for svlsp it is what makes large completion lists
+fast: with Emacs's default 800 KB threshold, parsing a 1000-item
+completion response triggers garbage collections of ~30 ms each. Measured
+on the UVM library (tests/perf/README.md): the empty-prefix completion
+drops from 85 ms to 22 ms through `completion-at-point`, and the ~30-40 ms
+spikes on every other request go away.
+
+```elisp
+(setq gc-cons-threshold (* 100 1024 1024))
+```
+
+`read-process-output-max` (also in that guide) made no measurable
+difference here.
+
 ### Fuzzy completion matching (`fuzzyCompletion`)
 
 By default, `textDocument/completion` fuzzy-matches your typed prefix
@@ -208,6 +223,14 @@ smaller file:
 ```bash
 svlsp --build-db /path/to/uvm.f --output /path/to/uvm.db --no-doc-comments
 ```
+
+**Resources.** Building the full UVM library takes about 14 minutes and
+peaks at about 7 GB of memory (one job; don't run several at once on a
+small machine). A project that uses the finished database instead is
+cheap: a server for a UVM testbench with `libraryDbs` peaks at ~55 MB.
+Opening a large library's own sources as a live project (no database)
+costs the server the same as building it, and the server keeps that
+memory until it exits -- see plan.md §6.33.
 
 The setting is recorded in the database with the building binary's version,
 so rebuilding into the same `<db-path>` with the flag added or removed
