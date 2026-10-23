@@ -18,6 +18,10 @@
 (defvar svlsp-perf/log nil "The server's `--log-requests' file.")
 (defvar svlsp-perf/log-pos 0 "How much of `svlsp-perf/log' has been read.")
 (defvar svlsp-perf/diag-time nil "When diagnostics last arrived.")
+(defvar svlsp-perf/pid nil "The scenario server's process id.")
+(defvar svlsp-perf/memory nil "Memory rows (plists), latest first.")
+(defvar svlsp-perf/exact-peak nil
+  "Non-nil if each phase's peak is exact (VmHWM reset at the phase start).")
 
 ;;; Helpers -------------------------------------------------------------
 
@@ -138,6 +142,49 @@ METHOD names the server log line to pair with each run."
 (defun svlsp-perf/on-diagnostics ()
   (setq svlsp-perf/diag-time (float-time)))
 
+;;; Memory --------------------------------------------------------------
+;; The same per-phase readings as tools/lsp_perf.py's `Memory': the RSS
+;; at a phase's end, its anonymous part and the peak during it (VmHWM,
+;; reset through clear_refs at each phase start; without that reset, the
+;; peak since the server started -- no sampler here, a timer would
+;; perturb the timings).
+
+(defun svlsp-perf/mem-status ()
+  "Alist (FIELD . kB) of the server's Vm*/Rss* status lines, or nil."
+  (ignore-errors
+    (with-temp-buffer
+      (insert-file-contents (format "/proc/%d/status" svlsp-perf/pid))
+      (let (out)
+        (while (re-search-forward "^\\(\\(?:Vm\\|Rss\\)[A-Za-z]+\\):\\s-+\\([0-9]+\\)" nil t)
+          (push (cons (match-string 1) (string-to-number (match-string 2))) out))
+        out))))
+
+(defun svlsp-perf/reset-peak ()
+  (condition-case nil
+      (progn (write-region "5" nil (format "/proc/%d/clear_refs" svlsp-perf/pid) nil 'silent)
+             t)
+    (error nil)))
+
+(defun svlsp-perf/mem-start (pid)
+  (setq svlsp-perf/pid pid
+        svlsp-perf/memory nil
+        svlsp-perf/exact-peak (svlsp-perf/reset-peak)))
+
+(defun svlsp-perf/mem-phase (name)
+  "Close the memory phase that started at the previous call as NAME."
+  (when-let ((s (and svlsp-perf/pid (svlsp-perf/mem-status))))
+    (push (list :name name :rss_kb (cdr (assoc "VmRSS" s))
+                :anon_kb (or (cdr (assoc "RssAnon" s)) :null)
+                :peak_kb (cdr (assoc "VmHWM" s)))
+          svlsp-perf/memory)
+    (when svlsp-perf/exact-peak (svlsp-perf/reset-peak))))
+
+(defun svlsp-perf/mem-summary ()
+  (let ((rows (reverse svlsp-perf/memory)))
+    (list :exact_peak (if svlsp-perf/exact-peak t :false)
+          :phases (vconcat rows)
+          :peak_kb (apply #'max 0 (mapcar (lambda (r) (plist-get r :peak_kb)) rows)))))
+
 ;;; The run ---------------------------------------------------------------
 
 (defun svlsp-perf/open (dir file ready timeout)
@@ -154,6 +201,10 @@ METHOD names the server log line to pair with each run."
     (unless (with-current-buffer svlsp-perf/buf (svlsp-test/wait-for-lsp timeout))
       (error "no initialized workspace"))
     (push (cons "initialize" (svlsp-perf/ms-since t0)) phases)
+    (svlsp-perf/mem-start
+     (with-current-buffer svlsp-perf/buf
+       (process-id (lsp--workspace-cmd-proc (car (lsp-workspaces))))))
+    (svlsp-perf/mem-phase "initialize + open")
     (when ready
       (let ((pos (svlsp-perf/lsp-position (svlsp-perf/point-at (plist-get ready :at))))
             (deadline (+ (float-time) timeout)) found)
@@ -170,7 +221,8 @@ METHOD names the server log line to pair with each run."
           (unless found
             (when (> (float-time) deadline) (error "library never became visible"))
             (sit-for 0.5)))
-        (push (cons "open -> library visible" (svlsp-perf/ms-since t0)) phases)))
+        (push (cons "open -> library visible" (svlsp-perf/ms-since t0)) phases)
+        (svlsp-perf/mem-phase "library load")))
     (nreverse phases)))
 
 (defun svlsp-perf/requests (scenario repeat warmup only)
@@ -321,18 +373,24 @@ after each, as an auto-popup completion UI does."
               (setq phases (svlsp-perf/open dir (plist-get scenario :open)
                                             (plist-get scenario :ready) 300))
               (setq rows (svlsp-perf/requests scenario repeat warmup only))
+              (svlsp-perf/mem-phase "requests")
               (unless only
                 (when-let ((edit (plist-get scenario :edit)))
-                  (setq rows (append rows (list (svlsp-perf/edit edit repeat warmup)))))
+                  (setq rows (append rows (list (svlsp-perf/edit edit repeat warmup))))
+                  (svlsp-perf/mem-phase "edits (recompiles)"))
                 (when-let ((typing (plist-get scenario :typing)))
-                  (setq rows (append rows (list (svlsp-perf/typing typing interval-ms))))))
+                  (setq rows (append rows (list (svlsp-perf/typing typing interval-ms))))
+                  (svlsp-perf/mem-phase "typing (capf + recompiles)")))
+              (sit-for 2)
+              (svlsp-perf/mem-phase "idle 2 s after")
               (with-temp-file out
                 (insert (json-serialize
                          (list :scenario (plist-get scenario :name)
                                :client "emacs" :settings settings
                                :phases (vconcat (mapcar (lambda (p) (list :name (car p) :ms (cdr p)))
                                                         phases))
-                               :rows (vconcat rows)))))
+                               :rows (vconcat rows)
+                               :memory (svlsp-perf/mem-summary)))))
               t)
           (remove-hook 'lsp-diagnostics-updated-hook #'svlsp-perf/on-diagnostics)
           (setq lsp-log-io saved-log-io)

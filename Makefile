@@ -55,7 +55,7 @@ build: configure
 # Tests
 # ---------------------------------------------------------------------------
 
-.PHONY: test test-unit test-integration test-integration-uvm perf-lsp perf-emacs
+.PHONY: test test-unit test-integration test-integration-uvm perf-lsp perf-check perf-baseline perf-emacs
 
 test: test-unit test-integration
 
@@ -78,6 +78,21 @@ PERF_SVLSP ?= $(CURDIR)/build/release/svlsp
 
 perf-lsp:
 	python3 tools/lsp_perf.py tests/perf/$(SCENARIO).json --server $(PERF_SVLSP) $(PERF_ARGS)
+
+# Regression check for a review: each scenario against its baseline in
+# tests/perf/baselines/ (timings from this machine; memory anywhere).
+# Refresh a baseline with `make perf-baseline SCENARIO=...` on the
+# reviewed base commit. PERF_SCENARIOS=uvm_src adds the live UVM compile.
+PERF_SCENARIOS ?= small uvm
+perf-check:
+	@rc=0; for s in $(PERF_SCENARIOS); do \
+	  python3 tools/lsp_perf.py tests/perf/$$s.json --server $(PERF_SVLSP) \
+	    --baseline tests/perf/baselines/$$s.json $(PERF_ARGS) || rc=1; \
+	done; exit $$rc
+
+perf-baseline:
+	python3 tools/lsp_perf.py tests/perf/$(SCENARIO).json --server $(PERF_SVLSP) \
+	  --json tests/perf/baselines/$(SCENARIO).json $(PERF_ARGS)
 
 perf-emacs:
 	SVLSP_BIN=$(PERF_SVLSP) SVLSP_PERF_SCENARIO=$(SCENARIO) \

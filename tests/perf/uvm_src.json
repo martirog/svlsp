@@ -1,0 +1,39 @@
+{
+  "name": "uvm_src",
+  "description": "The UVM source itself as the project (no library DB): the server compiles uvm_pkg live, the heaviest single-user load.",
+  "vars": {
+    "UVM_SRC": {
+      "env": "SVLSP_UVM_CORPUS_DIR",
+      "default": "/home/martin/src/verilator_test/uvm-core/src",
+      "mustExist": true
+    }
+  },
+  "copyDir": "${UVM_SRC}",
+  "exclude": ["*.db", "*.db.*", ".svlsp.json"],
+  "write": {
+    ".svlsp.json": { "files": ["uvm.sv"], "includeDirs": ["."], "defines": { "UVM_NO_DPI": "" } }
+  },
+  "open": "base/uvm_component.svh",
+  "ready": { "at": { "find": "function bit uvm_component::m_add_child(uvm_component child);\n", "offset": "end" }, "label": "m_children_by_handle" },
+  "requests": [
+    { "name": "completion: empty prefix in a method (blank line)", "method": "textDocument/completion",
+      "tier": "keystroke", "at": { "find": "function bit uvm_component::m_add_child(uvm_component child);\n", "offset": "end" } },
+    { "name": "completion: dot on an argument (child.get_name)", "method": "textDocument/completion",
+      "tier": "keystroke", "at": { "find": "  m_children[child.get_name()] = child;", "sub": "get_name", "offset": "end" } },
+    { "name": "signatureHelp: set_name(", "method": "textDocument/signatureHelp",
+      "tier": "keystroke", "at": { "find": "m_rh.set_name(get_full_name());", "offset": 14 } },
+    { "name": "hover: own method", "method": "textDocument/hover",
+      "tier": "point", "at": { "find": "m_rh.set_name(get_full_name());", "sub": "get_full_name" } },
+    { "name": "definition: own method", "method": "textDocument/definition",
+      "tier": "point", "at": { "find": "m_rh.set_name(get_full_name());", "sub": "get_full_name" } },
+    { "name": "documentSymbol", "method": "textDocument/documentSymbol", "tier": "point" },
+    { "name": "references: get_name (whole library)", "method": "textDocument/references",
+      "tier": "navigation", "at": { "find": "m_children[child.get_name()] = child;", "sub": "get_name" },
+      "params": { "context": { "includeDeclaration": true } } },
+    { "name": "workspace/symbol: uvm_comp", "method": "workspace/symbol",
+      "tier": "navigation", "params": { "query": "uvm_comp" } }
+  ],
+  "edit": { "at": { "find": "  m_children[child.get_name()] = child;", "offset": "end" }, "text": " " },
+  "typing": { "at": { "find": "  m_children[child.get_name()] = child;", "offset": "end" },
+              "text": "\n  child.get_fu" }
+}

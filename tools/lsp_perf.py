@@ -12,10 +12,18 @@ judged against tests/perf/budgets.json on their p90.
     tools/lsp_perf.py tests/perf/uvm.json                 # release build
     tools/lsp_perf.py tests/perf/small.json --repeat 20 --check
     tools/lsp_perf.py tests/perf/uvm.json --json out.json
+    tools/lsp_perf.py tests/perf/uvm.json --baseline tests/perf/baselines/uvm.json
 
 The round trip is measured to the last byte of the response, before JSON
 decoding, so it is the server plus the pipe -- an editor adds its own
 decoding and rendering on top (tests/perf/emacs_perf.sh measures that).
+
+It also reads the server's memory per phase (startup, first compile,
+library load, requests, edits, typing, idle): the RSS at each phase's end
+and the peak during it; `--max-rss MB` fails a run whose peak goes over a
+per-user limit. `--baseline FILE` compares the run with an earlier `--json`
+result and exits 1 on a regression (a code review's check, `make
+perf-check`).
 
 `--prepare-only DIR` just writes the scenario's workspace into DIR (used
 by the Emacs harness, so both run the same workspace).
@@ -63,10 +71,16 @@ def scenario_vars(scenario):
 def prepare_workspace(scenario, workdir):
     env = scenario_vars(scenario)
     if "copyDir" in scenario:
-        src = ROOT / scenario["copyDir"]  # into an existing dir (3.6: no dirs_exist_ok)
-        for entry in src.iterdir():
+        # Relative to the repo, or absolute (a ${VAR}); `exclude` globs are
+        # skipped (a corpus's own library DBs, say).
+        src = ROOT / expand_vars(scenario["copyDir"], env)
+        ignore = shutil.ignore_patterns(*scenario.get("exclude", []))
+        skip = ignore(str(src), [e.name for e in src.iterdir()])
+        for entry in src.iterdir():  # into an existing dir (3.6: no dirs_exist_ok)
+            if entry.name in skip:
+                continue
             if entry.is_dir():
-                shutil.copytree(str(entry), str(Path(workdir) / entry.name))
+                shutil.copytree(str(entry), str(Path(workdir) / entry.name), ignore=ignore)
             else:
                 shutil.copy(str(entry), str(workdir))
     for dest, src in scenario.get("files", {}).items():
@@ -180,6 +194,72 @@ class Client:
             return found()
 
 
+class Memory:
+    """The server's memory per phase, from /proc/<pid>/status (Linux).
+
+    `phase(name)` closes the phase that started at the previous call: the
+    RSS at its end (and its anonymous part, the server's own heap; the
+    rest is mapped files such as an attached library DB) and the peak RSS
+    during it. The peak is the kernel's high-water mark (VmHWM), reset at
+    each phase start through /proc/<pid>/clear_refs; where that reset is
+    not allowed, a 10 ms sampler stands in (and can miss a short spike)."""
+
+    def __init__(self, pid):
+        self.pid = pid
+        self.rows = []
+        self.sampled = 0
+        self.exact = self._reset_peak()
+        self.lock = threading.Lock()
+        if not self.exact:
+            threading.Thread(target=self._sample, daemon=True).start()
+
+    def status(self):
+        """{field: kB} for the Vm*/Rss* lines, or {} once the process is gone."""
+        out = {}
+        try:
+            with open(f"/proc/{self.pid}/status") as f:
+                for line in f:
+                    key, _, rest = line.partition(":")
+                    if key.startswith(("Vm", "Rss")):
+                        out[key] = int(rest.split()[0])
+        except (OSError, ValueError):
+            pass
+        return out
+
+    def _reset_peak(self):
+        try:
+            with open(f"/proc/{self.pid}/clear_refs", "w") as f:
+                f.write("5")
+            return True
+        except OSError:
+            return False
+
+    def _sample(self):
+        while True:
+            rss = self.status().get("VmRSS")
+            if rss is None:
+                return
+            with self.lock:
+                self.sampled = max(self.sampled, rss)
+            time.sleep(0.01)
+
+    def phase(self, name):
+        s = self.status()
+        if not s:
+            return
+        with self.lock:
+            peak = s.get("VmHWM", 0) if self.exact else max(self.sampled, s["VmRSS"])
+            self.sampled = 0
+        self.rows.append({"name": name, "rss_kb": s["VmRSS"], "anon_kb": s.get("RssAnon"),
+                          "peak_kb": peak})
+        if self.exact:
+            self._reset_peak()
+
+    def summary(self):
+        return {"exact_peak": self.exact, "phases": self.rows,
+                "peak_kb": max((r["peak_kb"] for r in self.rows), default=0)}
+
+
 class RequestLog:
     """Reads the server's --log-requests lines as they are appended."""
     LINE = re.compile(r"^\[request\] (\S+).* wait ([0-9.]+) ms, run ([0-9.]+) ms$")
@@ -272,6 +352,28 @@ def print_table(rows, budgets):
         + f"; instant <= {budgets['instant_ms']} ms, flow <= {budgets['flow_ms']} ms")
 
 
+def fmt_mb(kb):
+    return "-" if kb is None else f"{kb / 1024:8.1f}"
+
+
+def print_memory(memory, max_rss_mb=None):
+    """The per-phase memory table; True if the peak is over `max_rss_mb`."""
+    if not memory or not memory.get("phases"):
+        return False
+    how = "VmHWM" if memory.get("exact_peak") else "sampled every 10 ms"
+    print(f"\n{'server memory (MB)':40} {'rss at end':>10} {'of it anon':>10}"
+          f" {'peak during':>11}   (peak: {how})")
+    for p in memory["phases"]:
+        print(f"{p['name'][:40]:40} {fmt_mb(p['rss_kb']):>10} {fmt_mb(p.get('anon_kb')):>10}"
+              f" {fmt_mb(p['peak_kb']):>11}")
+    peak_mb = memory["peak_kb"] / 1024
+    over = max_rss_mb is not None and peak_mb > max_rss_mb
+    limit = "" if max_rss_mb is None else \
+        f" -- limit {max_rss_mb} MB: {'OVER' if over else 'ok'}"
+    print(f"peak RSS {peak_mb:.1f} MB{limit}")
+    return over
+
+
 # ---------------------------------------------------------------- run
 
 def run(args):
@@ -286,6 +388,7 @@ def run(args):
     uri = path.as_uri()
     text = path.read_text()
     client = Client([args.server, "--log-requests", str(reqlog_path)], work / "stderr.log")
+    memory = Memory(client.proc.pid)
     rows = []
     phases = {}
 
@@ -297,6 +400,7 @@ def run(args):
             "hover": {"contentFormat": ["markdown", "plaintext"]}}},
     })
     phases["initialize"] = ms
+    memory.phase("initialize")
     client.notify("initialized", {})
     version = 1
     t0 = time.perf_counter()
@@ -304,6 +408,7 @@ def run(args):
         "uri": uri, "languageId": "systemverilog", "version": version, "text": text}})
     t = client.wait_diagnostics(uri, version, t0)
     phases["open -> first diagnostics"] = (t - t0) * 1000
+    memory.phase("open -> first diagnostics")
 
     if "ready" in scenario:  # the library loads on the first request for the file
         pos = position_of(text, scenario["ready"]["at"])
@@ -319,6 +424,7 @@ def run(args):
                 sys.exit("lsp_perf: library never became visible")
             time.sleep(0.5)
         phases["open -> library visible"] = (time.perf_counter() - t0) * 1000
+        memory.phase("library load")
 
     print(f"svlsp perf: scenario {scenario['name']} -- {scenario['description']}")
     print(f"  server {args.server}; workspace {work}; {args.repeat} runs after {args.warmup} warm-up")
@@ -357,6 +463,7 @@ def run(args):
                         result_count(method, msg.get("result")), size)
         row["verdict"] = verdict(row, budgets)
         rows.append(row)
+    memory.phase("requests")
 
     # Edit -> diagnostics: insert, then remove, the scenario's edit text,
     # waiting each time for the diagnostics of the new version (the
@@ -388,6 +495,7 @@ def run(args):
                         diag_ms, [float(s) for s in srun], [], 1, 0)
         row["verdict"] = verdict(row, budgets)
         rows.append(row)
+        memory.phase("edits (recompiles)")
 
     # Typing: one character every --type-interval ms, completion after
     # each (as an auto-popup completion UI does); the debounced compile
@@ -424,6 +532,10 @@ def run(args):
         client.notify("textDocument/didChange", {
             "textDocument": {"uri": uri, "version": version}, "contentChanges": [{"text": text}]})
         client.wait_diagnostics(uri, version, t0)
+        memory.phase("typing (completion + recompiles)")
+
+    time.sleep(args.idle)
+    memory.phase(f"idle {args.idle:g} s after")
 
     client.request("shutdown", None)
     client.notify("exit", None)
@@ -433,14 +545,100 @@ def run(args):
         client.proc.kill()
 
     print_table(rows, budgets)
+    mem = memory.summary()
+    mem_over = print_memory(mem, args.max_rss)
+    result = {"scenario": scenario["name"], "server": args.server,
+              "host": host_info(args.server), "settings": {"repeat": args.repeat},
+              "phases": phases, "rows": rows, "memory": mem}
     if args.json:
-        Path(args.json).write_text(json.dumps(
-            {"scenario": scenario["name"], "server": args.server, "phases": phases,
-             "rows": rows}, indent=2) + "\n")
+        Path(args.json).write_text(json.dumps(result, indent=2) + "\n")
+    regressed = compare(result, args.baseline) if args.baseline else False
     if not args.keep:
         shutil.rmtree(work)
     over = [r for r in rows if r["verdict"] in ("OVER BUDGET", "BREAKS FLOW")]
-    return 1 if args.check and over else 0
+    return 1 if (args.check and over) or mem_over or regressed else 0
+
+
+def host_info(server):
+    """What a baseline was measured on: timings only compare on one machine."""
+    cpu = ""
+    try:
+        cpu = next((l.split(":", 1)[1].strip() for l in open("/proc/cpuinfo")
+                    if l.startswith("model name")), "")
+    except OSError:
+        pass
+    try:
+        version = subprocess.run([server, "--version"], stdout=subprocess.PIPE,
+                                 stderr=subprocess.DEVNULL, universal_newlines=True,
+                                 timeout=10).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        version = ""
+    return {"host": os.uname().nodename, "cpu": cpu, "cpus": os.cpu_count(),
+            "server_version": version}
+
+
+# A regression must clear both the relative and the absolute margin: a
+# 1 ms request that takes 2 ms is noise, not a 100% regression.
+REGRESSION = {"ms_pct": 25.0, "ms_abs": 5.0, "mem_pct": 10.0, "mem_abs_mb": 10.0}
+
+
+def worse(new, old, pct_limit, abs_limit):
+    return (new is not None and old is not None and new > old * (1 + pct_limit / 100)
+            and new - old > abs_limit)
+
+
+def compare(result, baseline_path):
+    """Print `result` against a baseline --json file; True on a regression.
+
+    Judged per request on the client p90 and the server's own median run
+    (the steadier of the two), and on the peak and end RSS."""
+    base = json.loads(Path(baseline_path).read_text())
+    if base.get("scenario") != result["scenario"]:
+        sys.exit(f"lsp_perf: baseline is for scenario {base.get('scenario')}, "
+                 f"not {result['scenario']}")
+    bh, rh = base.get("host", {}), result.get("host", {})
+    print(f"\nagainst baseline {baseline_path}")
+    print(f"  baseline: {bh.get('server_version', '?')} on {bh.get('host', '?')}")
+    print(f"  this run: {rh.get('server_version', '?')} on {rh.get('host', '?')}")
+    if (bh.get("host"), bh.get("cpu")) != (rh.get("host"), rh.get("cpu")):
+        print("  NOTE: another machine -- timings are not comparable, memory is")
+    r = REGRESSION
+    print(f"  regression: > +{r['ms_pct']:g}% and > +{r['ms_abs']:g} ms (p90 or server run); "
+          f"memory > +{r['mem_pct']:g}% and > +{r['mem_abs_mb']:g} MB")
+    print(f"\n{'request':58} {'p90 base':>9} {'p90 now':>9} {'srv base':>9} {'srv now':>9}  verdict")
+    regressed = False
+    old_rows = {row["name"]: row for row in base.get("rows", [])}
+    for row in result["rows"]:
+        old = old_rows.pop(row["name"], None)
+        if old is None:
+            print(f"{row['name'][:58]:58} {'-':>9} {fmt_ms(row['p90']):>9} {'-':>9}"
+                  f" {fmt_ms(row['server_run_median']):>9}  new")
+            continue
+        bad = [what for what, key in (("p90", "p90"), ("server", "server_run_median"))
+               if worse(row[key], old[key], r["ms_pct"], r["ms_abs"])]
+        better = (not bad and old["p90"] - row["p90"] > r["ms_abs"]
+                  and row["p90"] < old["p90"] / (1 + r["ms_pct"] / 100))
+        regressed |= bool(bad)
+        verdict_ = ("REGRESSED (" + ", ".join(bad) + ")") if bad else "faster" if better else "ok"
+        if old["results"] != row["results"]:
+            verdict_ += f"  results {old['results']} -> {row['results']}"
+        print(f"{row['name'][:58]:58} {fmt_ms(old['p90']):>9} {fmt_ms(row['p90']):>9}"
+              f" {fmt_ms(old['server_run_median']):>9} {fmt_ms(row['server_run_median']):>9}"
+              f"  {verdict_}")
+    for name in old_rows:
+        print(f"{name[:58]:58} (in the baseline only)")
+    om, nm = base.get("memory"), result.get("memory")
+    if om and nm:
+        old_end = om["phases"][-1]["rss_kb"] if om["phases"] else None
+        new_end = nm["phases"][-1]["rss_kb"] if nm["phases"] else None
+        for what, o, n in (("peak RSS", om["peak_kb"], nm["peak_kb"]),
+                           ("RSS at the end", old_end, new_end)):
+            bad = worse(n and n / 1024, o and o / 1024, r["mem_pct"], r["mem_abs_mb"])
+            regressed |= bad
+            print(f"{what:58} {fmt_mb(o):>9} {fmt_mb(n):>9} MB{'':10}"
+                  f"  {'REGRESSED' if bad else 'ok'}")
+    print("\nresult: " + ("REGRESSED" if regressed else "no regression"))
+    return regressed
 
 
 def report(path):
@@ -461,6 +659,7 @@ def report(path):
         row["verdict"] = verdict(row, budgets)
         rows.append(row)
     print_table(rows, budgets)
+    print_memory(data.get("memory"))
     return 0
 
 
@@ -478,6 +677,12 @@ def main():
     ap.add_argument("--timeout", type=int, default=300, help="seconds to wait for the library")
     ap.add_argument("--json", help="also write the results here")
     ap.add_argument("--check", action="store_true", help="exit 1 if any p90 is over budget")
+    ap.add_argument("--max-rss", type=float, metavar="MB",
+                    help="exit 1 if the server's peak RSS goes over MB (a per-user limit)")
+    ap.add_argument("--baseline", metavar="JSON",
+                    help="compare with an earlier --json result; exit 1 on a regression")
+    ap.add_argument("--idle", type=float, default=2.0,
+                    help="seconds to wait after the run before the last memory reading")
     ap.add_argument("--keep", action="store_true", help="keep the temp workspace (and its logs)")
     ap.add_argument("--prepare-only", metavar="DIR",
                     help="write the scenario's workspace into DIR and exit")

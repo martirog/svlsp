@@ -1,0 +1,201 @@
+{
+  "scenario": "small",
+  "server": "/home/martin/src/svlsp/build/release/svlsp",
+  "host": {
+    "host": "martin-XPS-13-7390",
+    "cpu": "Intel(R) Core(TM) i7-10510U CPU @ 1.80GHz",
+    "cpus": 8,
+    "server_version": "svlsp 0.1.0 (git c8d4992-dirty, Release build)"
+  },
+  "settings": {
+    "repeat": 10
+  },
+  "phases": {
+    "initialize": 2.2597159986617044,
+    "open -> first diagnostics": 318.31278699974064
+  },
+  "rows": [
+    {
+      "name": "completion: prefix (fp_)",
+      "tier": "keystroke",
+      "n": 10,
+      "min": 0.48636100109433755,
+      "median": 0.567011498787906,
+      "p90": 0.5859630036866292,
+      "max": 0.5928520040470175,
+      "server_run_median": 0.4405,
+      "server_wait_max": 0.0,
+      "results": 1,
+      "bytes": 198,
+      "verdict": "instant"
+    },
+    {
+      "name": "hover: exported class",
+      "tier": "point",
+      "n": 10,
+      "min": 0.4715409959317185,
+      "median": 0.4795714994543232,
+      "p90": 0.49564299843041226,
+      "max": 0.49666400445858017,
+      "server_run_median": 0.3605,
+      "server_wait_max": 0.0,
+      "results": 1,
+      "bytes": 194,
+      "verdict": "instant"
+    },
+    {
+      "name": "definition: exported class",
+      "tier": "point",
+      "n": 10,
+      "min": 0.4639230028260499,
+      "median": 0.46695300261490047,
+      "p90": 0.473307998618111,
+      "max": 0.4774410044774413,
+      "server_run_median": 0.3435,
+      "server_wait_max": 0.0,
+      "results": 1,
+      "bytes": 173,
+      "verdict": "instant"
+    },
+    {
+      "name": "definition: -y library module",
+      "tier": "point",
+      "n": 10,
+      "min": 0.4355220007710159,
+      "median": 0.49539799874764867,
+      "p90": 0.5128079938003793,
+      "max": 0.5138389969943091,
+      "server_run_median": 0.3645,
+      "server_wait_max": 0.0,
+      "results": 1,
+      "bytes": 177,
+      "verdict": "instant"
+    },
+    {
+      "name": "documentSymbol",
+      "tier": "point",
+      "n": 10,
+      "min": 0.13727299665333703,
+      "median": 0.15631299902452156,
+      "p90": 0.1702939989627339,
+      "max": 0.2170610023313202,
+      "server_run_median": 0.028,
+      "server_wait_max": 0.0,
+      "results": 7,
+      "bytes": 1493,
+      "verdict": "instant"
+    },
+    {
+      "name": "references: local wire",
+      "tier": "navigation",
+      "n": 10,
+      "min": 1.0345129994675517,
+      "median": 1.120272499974817,
+      "p90": 1.1413530010031536,
+      "max": 1.3138200010871515,
+      "server_run_median": 0.962,
+      "server_wait_max": 0.0,
+      "results": 2,
+      "bytes": 308,
+      "verdict": "instant"
+    },
+    {
+      "name": "rename: local wire",
+      "tier": "navigation",
+      "n": 10,
+      "min": 0.9568710011080839,
+      "median": 0.9826980021898635,
+      "p90": 1.0094060053233989,
+      "max": 1.0331860030419193,
+      "server_run_median": 0.8714999999999999,
+      "server_wait_max": 0.0,
+      "results": 2,
+      "bytes": 298,
+      "verdict": "instant"
+    },
+    {
+      "name": "workspace/symbol: Fp",
+      "tier": "navigation",
+      "n": 10,
+      "min": 0.2264319991809316,
+      "median": 0.24449650300084613,
+      "p90": 0.27936999686062336,
+      "max": 0.28336300601949915,
+      "server_run_median": 0.1085,
+      "server_wait_max": 0.0,
+      "results": 13,
+      "bytes": 2576,
+      "verdict": "instant"
+    },
+    {
+      "name": "edit -> diagnostics (incl. 300 ms debounce)",
+      "tier": "diagnostics",
+      "n": 10,
+      "min": 357.7681399983703,
+      "median": 382.95488500443753,
+      "p90": 390.17746500030626,
+      "max": 390.68133199907606,
+      "server_run_median": 82.459,
+      "server_wait_max": null,
+      "results": 1,
+      "bytes": 0,
+      "verdict": "ok"
+    },
+    {
+      "name": "typing: completion per keystroke (150 ms apart)",
+      "tier": "keystroke",
+      "n": 8,
+      "min": 1.6789739966043271,
+      "median": 4.310082000301918,
+      "p90": 5.196286998398136,
+      "max": 6.020648004778195,
+      "server_run_median": 2.874,
+      "server_wait_max": 0.0,
+      "results": 1,
+      "bytes": 0,
+      "verdict": "instant"
+    }
+  ],
+  "memory": {
+    "exact_peak": true,
+    "phases": [
+      {
+        "name": "initialize",
+        "rss_kb": 6904,
+        "anon_kb": 660,
+        "peak_kb": 6904
+      },
+      {
+        "name": "open -> first diagnostics",
+        "rss_kb": 31044,
+        "anon_kb": 21688,
+        "peak_kb": 31364
+      },
+      {
+        "name": "requests",
+        "rss_kb": 31044,
+        "anon_kb": 21688,
+        "peak_kb": 31044
+      },
+      {
+        "name": "edits (recompiles)",
+        "rss_kb": 38696,
+        "anon_kb": 29340,
+        "peak_kb": 38696
+      },
+      {
+        "name": "typing (completion + recompiles)",
+        "rss_kb": 38696,
+        "anon_kb": 29340,
+        "peak_kb": 38696
+      },
+      {
+        "name": "idle 2 s after",
+        "rss_kb": 38696,
+        "anon_kb": 29340,
+        "peak_kb": 38696
+      }
+    ],
+    "peak_kb": 38696
+  }
+}

@@ -1,0 +1,208 @@
+{
+  "scenario": "uvm_src",
+  "server": "/home/martin/src/svlsp/build/release/svlsp",
+  "host": {
+    "host": "martin-XPS-13-7390",
+    "cpu": "Intel(R) Core(TM) i7-10510U CPU @ 1.80GHz",
+    "cpus": 8,
+    "server_version": "svlsp 0.1.0 (git c8d4992-dirty, Release build)"
+  },
+  "settings": {
+    "repeat": 5
+  },
+  "phases": {
+    "initialize": 2.457998001773376,
+    "open -> first diagnostics": 891365.3684969977,
+    "open -> library visible": 891383.6847260026
+  },
+  "rows": [
+    {
+      "name": "completion: empty prefix in a method (blank line)",
+      "tier": "keystroke",
+      "n": 5,
+      "min": 20.485517001361586,
+      "median": 21.78012899821624,
+      "p90": 21.974441995553207,
+      "max": 21.974441995553207,
+      "server_run_median": 16.983,
+      "server_wait_max": 0.0,
+      "results": 743,
+      "bytes": 123691,
+      "verdict": "instant"
+    },
+    {
+      "name": "completion: dot on an argument (child.get_name)",
+      "tier": "keystroke",
+      "n": 5,
+      "min": 12.17897399328649,
+      "median": 12.22280000365572,
+      "p90": 13.441909999528434,
+      "max": 13.441909999528434,
+      "server_run_median": 12.011,
+      "server_wait_max": 0.0,
+      "results": 3,
+      "bytes": 678,
+      "verdict": "instant"
+    },
+    {
+      "name": "signatureHelp: set_name(",
+      "tier": "keystroke",
+      "n": 5,
+      "min": 25.735062001331244,
+      "median": 25.81485499831615,
+      "p90": 25.92009100044379,
+      "max": 25.92009100044379,
+      "server_run_median": 25.608,
+      "server_wait_max": 0.0,
+      "results": 1,
+      "bytes": 164,
+      "verdict": "instant"
+    },
+    {
+      "name": "hover: own method",
+      "tier": "point",
+      "n": 5,
+      "min": 6.4061730008688755,
+      "median": 6.448725005611777,
+      "p90": 6.877740001073107,
+      "max": 6.877740001073107,
+      "server_run_median": 6.297,
+      "server_wait_max": 0.0,
+      "results": 1,
+      "bytes": 230,
+      "verdict": "instant"
+    },
+    {
+      "name": "definition: own method",
+      "tier": "point",
+      "n": 5,
+      "min": 5.636588000925258,
+      "median": 5.6767159985611215,
+      "p90": 5.7758770053624175,
+      "max": 5.7758770053624175,
+      "server_run_median": 5.545,
+      "server_wait_max": 0.0,
+      "results": 1,
+      "bytes": 187,
+      "verdict": "instant"
+    },
+    {
+      "name": "documentSymbol",
+      "tier": "point",
+      "n": 5,
+      "min": 18.12992600025609,
+      "median": 18.631189996085595,
+      "p90": 18.89327599928947,
+      "max": 18.89327599928947,
+      "server_run_median": 8.22,
+      "server_wait_max": 0.0,
+      "results": 761,
+      "bytes": 169267,
+      "verdict": "instant"
+    },
+    {
+      "name": "references: get_name (whole library)",
+      "tier": "navigation",
+      "n": 5,
+      "min": 3953.974254000059,
+      "median": 3963.1272870028624,
+      "p90": 3968.522283998027,
+      "max": 3968.522283998027,
+      "server_run_median": 3960.481,
+      "server_wait_max": 0.0,
+      "results": 318,
+      "bytes": 48860,
+      "verdict": "BREAKS FLOW"
+    },
+    {
+      "name": "workspace/symbol: uvm_comp",
+      "tier": "navigation",
+      "n": 5,
+      "min": 2.990461995068472,
+      "median": 3.015915004652925,
+      "p90": 3.705138005898334,
+      "max": 3.705138005898334,
+      "server_run_median": 2.329,
+      "server_wait_max": 0.0,
+      "results": 60,
+      "bytes": 14623,
+      "verdict": "instant"
+    },
+    {
+      "name": "edit -> diagnostics (incl. 300 ms debounce)",
+      "tier": "diagnostics",
+      "n": 5,
+      "min": 10274.902891003876,
+      "median": 10282.625088002533,
+      "p90": 10304.0262909999,
+      "max": 10304.0262909999,
+      "server_run_median": 9980.5825,
+      "server_wait_max": null,
+      "results": 1,
+      "bytes": 0,
+      "verdict": "BREAKS FLOW"
+    },
+    {
+      "name": "typing: completion per keystroke (150 ms apart)",
+      "tier": "keystroke",
+      "n": 12,
+      "min": 12.710848997812718,
+      "median": 27.542298499611206,
+      "p90": 29.396078003628645,
+      "max": 33.19450799608603,
+      "server_run_median": 26.299500000000002,
+      "server_wait_max": 0.0,
+      "results": 1,
+      "bytes": 0,
+      "verdict": "instant"
+    }
+  ],
+  "memory": {
+    "exact_peak": true,
+    "phases": [
+      {
+        "name": "initialize",
+        "rss_kb": 6908,
+        "anon_kb": 664,
+        "peak_kb": 6908
+      },
+      {
+        "name": "open -> first diagnostics",
+        "rss_kb": 6768016,
+        "anon_kb": 6758220,
+        "peak_kb": 6960112
+      },
+      {
+        "name": "library load",
+        "rss_kb": 6768016,
+        "anon_kb": 6758220,
+        "peak_kb": 6768016
+      },
+      {
+        "name": "requests",
+        "rss_kb": 6768016,
+        "anon_kb": 6758220,
+        "peak_kb": 6768016
+      },
+      {
+        "name": "edits (recompiles)",
+        "rss_kb": 6819228,
+        "anon_kb": 6809432,
+        "peak_kb": 6819228
+      },
+      {
+        "name": "typing (completion + recompiles)",
+        "rss_kb": 6819228,
+        "anon_kb": 6809432,
+        "peak_kb": 6819228
+      },
+      {
+        "name": "idle 2 s after",
+        "rss_kb": 6819228,
+        "anon_kb": 6809432,
+        "peak_kb": 6819228
+      }
+    ],
+    "peak_kb": 6960112
+  }
+}

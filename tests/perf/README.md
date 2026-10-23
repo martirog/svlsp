@@ -8,14 +8,16 @@ Two harnesses time the same scenarios:
 | `make perf-emacs` | `tests/perf/emacs_perf.sh` in the Emacs test daemon | the same through lsp-mode: JSON parse into Lisp, plus `[capf]` (lsp-mode's completion pipeline) and `[render]` (hover rendering) rows |
 
 Both default to the release build (`PERF_SVLSP=...` to change it) and the
-`uvm` scenario (`SCENARIO=small` for the one that needs no corpus). Neither
-is part of `make test`.
+`uvm` scenario (`SCENARIO=small` for the one that needs no corpus,
+`uvm_src` for the largest). Neither is part of `make test`.
 
 ```sh
 make perf-lsp                                   # uvm, 10 runs per request
 make perf-lsp SCENARIO=small PERF_ARGS="--repeat 20 --check"
 tools/lsp_perf.py tests/perf/uvm.json --only hover --repeat 50
 tools/lsp_perf.py tests/perf/uvm.json --type-interval 300   # typing that overlaps compiles
+make perf-check                                 # regression check against tests/perf/baselines/
+make perf-baseline SCENARIO=uvm                 # refresh one baseline (on the base commit)
 DISPLAY=:99 make perf-emacs
 DISPLAY=:99 SVLSP_PERF_SETUP=my-settings.el make perf-emacs  # other lsp-mode settings
 ```
@@ -23,6 +25,55 @@ DISPLAY=:99 SVLSP_PERF_SETUP=my-settings.el make perf-emacs  # other lsp-mode se
 `--json FILE` (`SVLSP_PERF_JSON` for Emacs) keeps the results;
 `tools/lsp_perf.py --report FILE` prints the Emacs ones again. `--check`
 exits 1 when a p90 is over its budget.
+
+## Regression check (code review)
+
+`make perf-check` runs each scenario in `PERF_SCENARIOS` (default `small
+uvm`; add `uvm_src` for the live UVM compile, ~minutes) against
+`tests/perf/baselines/<scenario>.json` and exits 1 on a regression. A
+request regresses when its client p90 or the server's median run time is
+over the baseline by more than 25% **and** 5 ms (both, so a 1 -> 2 ms
+request is not a "100% regression"); memory when the peak or end RSS is
+over by 10% **and** 10 MB. A changed result count is shown too: a
+rewrite that returns fewer items is not a speed-up.
+
+Timings only compare on one machine (the baseline records host, CPU and
+`svlsp --version`, and the comparison says when they differ); memory
+compares anywhere. For a review, build the base commit, `make
+perf-baseline SCENARIO=...` (writes the baseline), then build the change
+and `make perf-check`. Commit a refreshed baseline with a change that
+moves it on purpose, saying why.
+
+## Memory
+
+Both harnesses read the server's `/proc/<pid>/status` at the end of each
+phase -- initialize/open (the first compile), library load, the requests,
+the edits (recompiles), typing, and 2 s idle after -- and print the RSS at
+the phase's end, its anonymous part (the server's own heap; the rest is
+mapped files, mostly SQLite pages of the project and library DBs) and the
+peak during the phase. The peak is the kernel's high-water mark (VmHWM),
+reset at each phase start through `/proc/<pid>/clear_refs`; where the
+reset is refused, `lsp_perf.py` samples every 10 ms (and may miss a short
+spike) and the Emacs harness reports the peak since the start.
+
+`--max-rss MB` fails a run whose peak goes over a per-user limit, e.g.
+for a shared server with a memory cap per user:
+`make perf-lsp SCENARIO=uvm_src PERF_ARGS="--max-rss 1024"`.
+
+Not covered here: building a library DB (`svlsp --build-db`) is a
+one-off, offline job measured with `/usr/bin/time -v` (handoff.md has the
+UVM numbers); its memory is not what an editing session holds.
+
+## Emacs client settings
+
+lsp-mode's own documentation recommends raising `gc-cons-threshold` (to
+~100 MB) and `read-process-output-max` (to 1 MB). For svlsp the first is
+the one that matters: with Emacs's default 800 KB threshold, parsing a
+1067-item completion (155 KB) triggers garbage collections that take
+~30 ms each, so the empty-prefix completion is 45 ms raw / 85 ms through
+capf instead of 14 / 22 ms, and every other request shows ~30-40 ms p90
+spikes. `read-process-output-max` alone made no difference (Emacs 32's
+default is already 64 KB). Time other settings with `SVLSP_PERF_SETUP`.
 
 ## Scenarios
 
@@ -39,6 +90,10 @@ characters (default 1, inside the word) or just after it.
 - `uvm` -- `uvm_perf_tb.sv`, a small testbench on the full UVM library DB
   (`SVLSP_UVM_DB`, default the corpus `uvm.db`).
 - `small` -- the 6-file `full_project` integration fixture.
+- `uvm_src` -- the UVM source itself as the project, no library DB
+  (`SVLSP_UVM_CORPUS_DIR`, copied without its `*.db` files): the server
+  compiles `uvm_pkg` live for `base/uvm_component.svh`, the heaviest
+  single-user load.
 
 ## Columns
 
