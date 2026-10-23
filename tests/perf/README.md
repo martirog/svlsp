@@ -88,7 +88,9 @@ file to `open`, an optional `ready` probe (completion polled until a label
 appears: the library DB loads on the first request), the `requests`, an
 `edit` and a `typing` session. `compileTimeout` (seconds, default 900) is
 how long a response or a compile's diagnostics may take
-(`--compile-timeout` overrides it); `--server-arg ARG` passes ARG to the
+(`--compile-timeout` overrides it), `idle` (seconds, default 2) how long
+the run waits before the last memory reading (`--idle`; `uvm_src` waits
+75 s, past the parse worker's 60 s idle replacement); `--server-arg ARG` passes ARG to the
 server, e.g. `--server-arg=--in-process-parse` to compare with the parse
 in-process.
 

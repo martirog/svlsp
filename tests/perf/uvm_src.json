@@ -14,6 +14,7 @@
     ".svlsp.json": { "files": ["uvm.sv"], "includeDirs": ["."], "defines": { "UVM_NO_DPI": "" } }
   },
   "compileTimeout": 3600,
+  "idle": 75,
   "open": "base/uvm_component.svh",
   "ready": { "at": { "find": "function bit uvm_component::m_add_child(uvm_component child);\n", "offset": "end" }, "label": "m_children_by_handle" },
   "requests": [

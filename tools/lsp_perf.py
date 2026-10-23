@@ -574,8 +574,9 @@ def run(args):
         client.wait_diagnostics(uri, version, t0)
         memory.phase("typing (completion + recompiles)")
 
-    time.sleep(args.idle)
-    memory.phase(f"idle {args.idle:g} s after")
+    idle = args.idle if args.idle is not None else scenario.get("idle", 2.0)
+    time.sleep(idle)
+    memory.phase(f"idle {idle:g} s after")
 
     client.request("shutdown", None)
     client.notify("exit", None)
@@ -726,8 +727,9 @@ def main():
                     help="exit 1 if the server's peak RSS goes over MB (a per-user limit)")
     ap.add_argument("--baseline", metavar="JSON",
                     help="compare with an earlier --json result; exit 1 on a regression")
-    ap.add_argument("--idle", type=float, default=2.0,
-                    help="seconds to wait after the run before the last memory reading")
+    ap.add_argument("--idle", type=float,
+                    help="seconds to wait after the run before the last memory reading "
+                         "(default: the scenario's idle, else 2)")
     ap.add_argument("--keep", action="store_true", help="keep the temp workspace (and its logs)")
     ap.add_argument("--prepare-only", metavar="DIR",
                     help="write the scenario's workspace into DIR and exit")
