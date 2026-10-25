@@ -6395,10 +6395,20 @@ code reviews can show that a rewrite does not regress latency or memory.
     statement forms and non-call statements, dotted vs package-scoped
     calls, a half-typed body's scope, two-stage = LL errors and records),
     Emacs 309/309, `make test-integration-uvm` 13/13, UVM corpus 1563 / 31.
-  - *Found, not changed:* a paren-less `f;` statement inside a `begin`
-    block is not recorded as a call (`initial t;` is), before and after; a
-    `const`-first class property (`const local int j = 4;`) is not
-    recorded as a symbol (UVM's `events`), before and after.
+  - *Found by C2, fixed 2026-10-25 (walker only):* a paren-less `t;`
+    leading a block (begin, fork, a function or task body) parsed as an
+    implicit-typed declaration of `t` -- block_item_declaration is tried
+    before any statement -- which the walker dropped as a misparsed
+    assignment; it is now recorded as a call when it is a lone declarator
+    with no dimensions and no `=` (`parenLessCallName`). A `const`-first
+    class property (`const local int j = 4;`) matched class_property's
+    second alternative, which no hook read; `enterClass_property` records
+    its const_identifier as a Signal (type detail as for a
+    data_declaration, access from its qualifiers). All of UVM: +1 call
+    (`m_hb_process;` in uvm_heartbeat's fork), +1 symbol (uvm_transaction's
+    `events`); the corpus symbol count 18440 -> 18441. Unit 1047, Emacs
+    309/309, `make test-integration-uvm` 13/13, corpus 1563 / 31 (log
+    `build/release/corpus_2026-10-25.log`).
 - *C3 -- a different parser* (e.g. slang's hand-written one) if C2
   stalls. Not measured here; the walker would be rewritten against its
   syntax tree.

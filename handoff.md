@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-10-25 (C2 done, not yet committed).
+**Last updated:** 2026-10-25 (C2 committed; its two recording gaps fixed, not yet committed).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -11,44 +11,37 @@ write-up) — read the relevant section there rather than looking for it here.
 
 ## Current state
 
-**§6.33 C2 is done in the working tree, not committed** (the user commits;
-standing pattern: a code+tests commit, then plan.md + handoff.md). The
-grammar is SLL-clean on UVM and the parse is two-stage (plan.md §6.33 C2
-has the full write-up). Measured, release: `--build-db` of UVM 14:13 /
-6.96 GB -> **119 s / 2.96 GB**; the corpus suite ~14 min -> 117 s;
-`uvm_src` first open -> diagnostics 916 -> **108 s**, edit -> diagnostics
-12.0 -> **2.0 s**, peak 6871 -> 2953 MB. What the walker records is
-unchanged (walk_dump of all of UVM identical, `--build-db` symbols / docs /
-macros / include data identical; UVM's one diagnostic is gone -- its
-`const local ... = new(...)` property now parses).
+**§6.33 C2 is committed** (8028b9f code, e353b36 docs, d514915 the
+`uvm_src` perf baseline). The grammar is SLL-clean on UVM and the parse is
+two-stage (plan.md §6.33 C2 has the full write-up). Measured, release:
+`--build-db` of UVM 14:13 / 6.96 GB -> **119 s / 2.96 GB**; the corpus
+suite ~14 min -> 117 s; `uvm_src` first open -> diagnostics 916 ->
+**120 s**, edit -> diagnostics 12.0 -> **2.0 s**, peak 6871 -> 2953 MB.
+The new `uvm_src` baseline records typing completion at 32 ms (machine
+state; the old 10.9 ms one was a quieter machine).
 
-Uncommitted changes: `grammar/Sv.g4` (each change commented "plan.md
-§6.33 C2"), `src/compiler/sv_tree_walker.{h,cpp}` (`ParsePrediction`,
-two-stage parse, `paren_less_tf_call`, `classScopeName`, `bodyStop`), 5 new
-unit cases (test_sv_parser.cpp, test_sv_listener.cpp), the new harness
-`tools/grammar_profile.sh` + `tools/grammar_profile/`, plan.md.
-
-Verified 2026-10-25 on the final tree: unit **1046/1046**, Emacs
-**309/309**, `make test-integration-uvm` 13/13 (release), UVM corpus
-1563 / 31 (log `build/release/corpus_2026-10-24.log`), `--build-db` as
-above, `make perf-check PERF_SCENARIOS="small uvm uvm_src"`: small / uvm
-no regression; uvm_src flags typing completion (server 10.9 -> 18-32 ms),
-shown to be machine drift, not the change (plan.md C2, *perf-check*).
+**Uncommitted: C2's two recording gaps, fixed in the walker** (plan.md C2,
+*Found by C2*): a paren-less `t;` leading a block is recorded as a call
+(`parenLessCallName`), and a `const`-first class property (`const local
+int j = 4;`) as a Signal (`enterClass_property`). Changes:
+`src/compiler/sv_tree_walker.cpp`, test_sv_listener.cpp (1 new case, the
+access case extended), the corpus symbol count 18440 -> 18441
+(test_hover_uvm.cpp), plan.md. Verified: unit **1047/1047**, Emacs
+**309/309**, `make test-integration-uvm` 13/13, UVM corpus 1563 / 31 (log
+`build/release/corpus_2026-10-25.log`); walk_dump of all of UVM differs
+from C2's by exactly +1 call (`m_hb_process;`) and +1 record (`events`).
 
 Next steps:
-1. Commit (after the user's go-ahead), then refresh the `uvm_src` perf
-   baseline on the new commit (`make perf-baseline SCENARIO=uvm_src`): its
-   first-open / edit numbers are obsolete. Rebuild the corpus `uvm.db` if
-   wanted (identical symbols; only the diagnostic and build version
-   differ).
-2. Optional, LL cost on files with syntax errors (only they reach LL now):
+1. Commit the gap fixes (after the user's go-ahead). Rebuild the corpus
+   `uvm.db` if wanted (C2's diagnostic is gone and `events` is new).
+2. C4: references(`get_name`) 2.7 s on live UVM (3.7 s in the corpus
+   test), over the 1 s navigation budget; and `uvm_src` edit ->
+   diagnostics 2.0 s, over the 1 s diagnostics budget.
+3. Optional, LL cost on files with syntax errors (only they reach LL now):
    the remaining LL time is true ambiguity in `primary` (decision 1068)
    and `hierarchical_identifier` (1103): `a.b` is a name, a name + select
    `.b`, or a name + the method loop. Profile with `tools/grammar_profile.sh
    -- --profile`.
-3. Found, unchanged by C2: a paren-less `f;` statement in a `begin` block is
-   not recorded as a call (`initial t;` is); a `const`-first class property
-   (`const local int j = 4;`, UVM's `events`) is not recorded as a symbol.
 
 What C2 changes for other work:
 - **Grammar edits are checked with the harness**: `tools/grammar_profile.sh
@@ -290,7 +283,7 @@ by name instead of from the typedef's scope, and merged duplicated helpers
   in workspace symbols, no completion inside comments/strings, and doc
   comments (§6.31) in hover, signature help and completion resolve.
 - Test baselines:
-  - unit: **1046 cases**, all passing (2026-10-25, C2; 1041 on 2026-10-24, C1; 1040 before the idle policy; 1031 with C7; 1029 on the receivers tree;
+  - unit: **1047 cases**, all passing (2026-10-25, C2 gap fixes; 1046 with C2; 1041 on 2026-10-24, C1; 1040 before the idle policy; 1031 with C7; 1029 on the receivers tree;
     1016 at 4e8a10d) (no `[!shouldfail]` known gaps left
     -- the `` `define `` references case passes since the macro follow-up)
   - Emacs functional: **309/309** (2026-10-23, test_48 new; 305 with test_47)
