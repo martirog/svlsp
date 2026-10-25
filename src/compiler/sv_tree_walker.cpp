@@ -77,6 +77,23 @@ static std::string classTypeName(SvParser::Class_typeContext* ct)
     return name;
 }
 
+// The same name path for a class_scope, `[pkg::]C[::Nested...]::`, which
+// spells its class type out (plan.md §6.33 C2) -- without the trailing `::`.
+static std::string classScopeName(SvParser::Class_scopeContext* cs)
+{
+    if (!cs) return "";
+    std::string name = packageScopeName(cs->package_scope());
+    if (!name.empty()) name += "::";
+    bool first = true;
+    for (auto* id : cs->class_identifier()) {
+        if (!id->IDENTIFIER()) return "";
+        if (!first) name += "::";
+        name += id->IDENTIFIER()->getText();
+        first = false;
+    }
+    return first ? "" : name;
+}
+
 // The identifier of a data_type_or_implicit that is nothing but one
 // unqualified, unparameterized name (`b`, or `b [4]` read as packed
 // dimensions), else nullptr. In a tf_port_item with no port_identifier this
@@ -113,7 +130,7 @@ static std::string dataTypeName(SvParser::Data_typeContext* dt)
         if (!ti->IDENTIFIER()) return "";
         std::string qualifier;
         if (auto* cs = dt->class_scope())
-            qualifier = classTypeName(cs->class_type());
+            qualifier = classScopeName(cs);
         else
             qualifier = packageScopeName(dt->package_scope());
         const std::string name = ti->IDENTIFIER()->getText();
@@ -629,7 +646,7 @@ public:
     }
 
     void exitFunction_body_declaration(SvParser::Function_body_declarationContext* ctx) override {
-        backpatchEnd(lastScopeSegment(currentScope()), translatedEnd(ctx->stop));
+        backpatchEnd(lastScopeSegment(currentScope()), translatedEnd(bodyStop(ctx, "endfunction")));
         popScope();
     }
 
@@ -659,7 +676,7 @@ public:
     void exitClass_constructor_declaration(
         SvParser::Class_constructor_declarationContext* ctx) override {
         if (!newKeyword(ctx)) return;
-        backpatchEnd(lastScopeSegment(currentScope()), translatedEnd(ctx->stop));
+        backpatchEnd(lastScopeSegment(currentScope()), translatedEnd(bodyStop(ctx, "endfunction")));
         popScope();
     }
 
@@ -714,7 +731,7 @@ public:
     }
 
     void exitTask_body_declaration(SvParser::Task_body_declarationContext* ctx) override {
-        backpatchEnd(lastScopeSegment(currentScope()), translatedEnd(ctx->stop));
+        backpatchEnd(lastScopeSegment(currentScope()), translatedEnd(bodyStop(ctx, "endtask")));
         popScope();
     }
 
@@ -1054,27 +1071,26 @@ public:
 
     // ---- Function/task calls (plan.md §6.23) ----
     // tf_call: ps_or_hierarchical_tf_identifier attribute_instance*
-    //          ('(' list_of_arguments ')')?
-    // -- reaches this same rule for both bare (`my_func(`) and dotted
-    // (`obj.method(`) calls, since ps_or_hierarchical_tf_identifier's own
-    // hierarchical_tf_identifier alternative degenerates to a bare
-    // identifier with zero '.'-separated prefix segments; distinguishing
-    // them is a property of the extracted text, not the grammar shape.
-    // Scoped to bare calls only, matching §6.22 follow-up's own signature-
-    // help scope limit -- a dotted call needs completion's own chain-
-    // resolution machinery, not this check.
+    //          '(' list_of_arguments ')'
+    // paren_less_tf_call: the same without the parens, a call statement
+    // (`initial t;`) -- zero argument slots.
+    // Both are bare calls only: `f(`, `pkg::f(`, `Class::f(` (the grammar
+    // parses a dotted call `obj.method(` as a primary name with call parens,
+    // plan.md §6.33 C2), matching §6.22 follow-up's own signature-help
+    // scope limit -- a dotted call needs completion's own chain-resolution
+    // machinery, not this check.
     void enterTf_call(SvParser::Tf_callContext* ctx) override {
-        auto* idCtx = ctx->ps_or_hierarchical_tf_identifier();
-        if (!idCtx) return;
+        recordCall(ctx->ps_or_hierarchical_tf_identifier(), ctx->list_of_arguments());
+    }
 
-        // A real hierarchical/dotted reference always has a literal '.' in
-        // its own text; a bare name never does -- package-scoped
-        // ("pkg::foo(") and class-scoped ("Class::foo(") forms use "::",
-        // not ".", so they fall through to the bare-name handling below
-        // unchanged (matching signature_help.cpp's own equally permissive
-        // treatment of a package/class-qualified call).
+    void enterParen_less_tf_call(SvParser::Paren_less_tf_callContext* ctx) override {
+        recordCall(ctx->ps_or_hierarchical_tf_identifier(), nullptr);
+    }
+
+    void recordCall(SvParser::Ps_or_hierarchical_tf_identifierContext* idCtx,
+                    SvParser::List_of_argumentsContext* args) {
+        if (!idCtx) return;
         const std::string idText = m_tokens->getText(idCtx);
-        if (idText.find('.') != std::string::npos) return;
 
         // The callee's own bare name is always the last token of this
         // subtree regardless of alternative matched -- a "pkg::"/"Class::"
@@ -1096,7 +1112,7 @@ public:
                                        m_sourceMap);
 
         m_calls.push_back({std::move(name), std::move(scope),
-                            extractArgSlots(ctx->list_of_arguments()), line, col, file,
+                            extractArgSlots(args), line, col, file,
                             nameLine, nameCol});
     }
 
@@ -1173,6 +1189,26 @@ private:
 
     // A scope's end: its stop token's line and the column just past it,
     // translated through the source map; {0, 0} if the token is null.
+    // The last token of a subroutine body: the rule's stop token, or -- when
+    // a syntax error ended the rule early, as a half-typed line does
+    // (`occ` alone before `endfunction`) -- the body's own end keyword
+    // further on, so that line stays inside the body's scope (completion
+    // there needs the body's locals and, out of class, its class). Never
+    // past the start of another subroutine.
+    antlr4::Token* bodyStop(antlr4::ParserRuleContext* ctx, const std::string& endKeyword) const {
+        antlr4::Token* stop = ctx->stop;
+        if (!ctx->exception || !stop || stop->getText() == endKeyword) return stop;
+        for (size_t i = stop->getTokenIndex() + 1; i < m_tokens->size(); ++i) {
+            antlr4::Token* t = m_tokens->get(i);
+            if (t->getType() == antlr4::Token::EOF) break;
+            if (t->getChannel() != antlr4::Token::DEFAULT_CHANNEL) continue;
+            const std::string text = t->getText();
+            if (text == endKeyword) return t;
+            if (text == "function" || text == "task") break;
+        }
+        return stop;
+    }
+
     EndPos translatedEnd(antlr4::Token* stop) const {
         if (!stop) return {};
         const int compiledLine = static_cast<int>(stop->getLine());
@@ -1215,7 +1251,7 @@ private:
                             const std::string& detail = "") {
         if (!id) return;
         std::vector<std::string> segs;
-        const std::string written = classTypeName(cs->class_type());
+        const std::string written = classScopeName(cs);
         for (size_t start = 0;;) {
             size_t sep = written.find("::", start);
             segs.push_back(written.substr(start, sep == std::string::npos ? std::string::npos
@@ -1493,19 +1529,41 @@ private:
 WalkResult SvTreeWalker::walk(const std::string& source,
                                const std::vector<SourceLine>& sourceMap,
                                bool collectDocs,
-                               const std::string& initialScope) {
+                               const std::string& initialScope,
+                               ParsePrediction prediction) {
     antlr4::ANTLRInputStream input(source);
     SvLexer lexer(&input);
     antlr4::CommonTokenStream tokens(&lexer);
     SvParser parser(&tokens);
+    auto* simulator = parser.getInterpreter<antlr4::atn::ParserATNSimulator>();
 
     SvErrorListener errListener(sourceMap);
     lexer.removeErrorListeners();
     lexer.addErrorListener(&errListener);
     parser.removeErrorListeners();
-    parser.addErrorListener(&errListener);
 
-    antlr4::tree::ParseTree* tree = parser.source_text();
+    antlr4::tree::ParseTree* tree = nullptr;
+    if (prediction == ParsePrediction::TwoStage) {
+        // The first syntax error cancels the SLL parse (it is not reported:
+        // the generated rules report before the strategy's recover throws,
+        // hence no parser listener yet); the lexer's errors are reported
+        // once, as each token is lexed only once.
+        simulator->setPredictionMode(antlr4::atn::PredictionMode::SLL);
+        parser.setErrorHandler(std::make_shared<antlr4::BailErrorStrategy>());
+        try {
+            tree = parser.source_text();
+        } catch (const antlr4::ParseCancellationException&) {
+            parser.reset();
+            parser.setErrorHandler(std::make_shared<antlr4::DefaultErrorStrategy>());
+        }
+    }
+    if (!tree) {
+        simulator->setPredictionMode(prediction == ParsePrediction::SLL
+                                         ? antlr4::atn::PredictionMode::SLL
+                                         : antlr4::atn::PredictionMode::LL);
+        parser.addErrorListener(&errListener);
+        tree = parser.source_text();
+    }
 
     SvRecordListener listener(sourceMap, &tokens, collectDocs);
     for (size_t start = 0; !initialScope.empty();) {

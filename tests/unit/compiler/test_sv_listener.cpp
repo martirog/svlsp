@@ -1515,6 +1515,94 @@ TEST_CASE("a dotted call is never recorded as a CallRecord",
     CHECK(findCall(result.calls, "bar") == nullptr);
 }
 
+TEST_CASE("calls in a dotted chain are not recorded, a package-scoped call is",
+          "[compiler][listener][call]") {
+    // plan.md §6.33 C2: a dotted call parses as a primary name with call
+    // parens, not a tf_call; `pkg::f(` and `Class::f(` still are tf_calls.
+    auto result = walkSource(
+        "module top;\n"
+        "  initial begin\n"
+        "    a.b(1).c(2);\n"
+        "    this_obj.d();\n"
+        "    pkg::f(1, 2);\n"
+        "  end\n"
+        "endmodule\n");
+    CHECK(findCall(result.calls, "b") == nullptr);
+    CHECK(findCall(result.calls, "c") == nullptr);
+    CHECK(findCall(result.calls, "d") == nullptr);
+    auto* f = findCall(result.calls, "f");
+    REQUIRE(f != nullptr);
+    CHECK(f->calleeScope == "pkg");
+    CHECK(f->args.size() == 2);
+}
+
+TEST_CASE("a half-typed line keeps a method body's scope open to its end keyword",
+          "[compiler][listener][scope]") {
+    // A body rule ended by a syntax error (`occ` alone before `endfunction`,
+    // the usual state while typing) would otherwise end its scope at the
+    // header, and completion on that line would see neither the body's
+    // locals nor, out of class, its class (plan.md §6.33 C2).
+    auto result = walkSource(
+        "package p;\n"                                  // 1
+        "  class C;\n"                                  // 2
+        "    int fld;\n"                                // 3
+        "    extern function void run();\n"             // 4
+        "    task t();\n"                               // 5
+        "      int x;\n"                                // 6
+        "      occ\n"                                   // 7
+        "    endtask\n"                                 // 8
+        "  endclass\n"                                  // 9
+        "  function void C::run();\n"                   // 10
+        "    occ\n"                                     // 11
+        "  endfunction\n"                               // 12
+        "  function void after(); endfunction\n"        // 13
+        "endpackage\n");                                // 14
+    auto* t = findRecord(result.records, ParseRecordKind::Task, "t");
+    REQUIRE(t != nullptr);
+    CHECK(t->endLine == 8);
+    const ParseRecord* body = nullptr;
+    for (const auto& r : result.records)
+        if (r.kind == ParseRecordKind::Function && r.name == "run" && r.endLine != 0) body = &r;
+    REQUIRE(body != nullptr);
+    CHECK(body->scope == "p::C");
+    CHECK(body->endLine == 12);
+    auto* after = findRecord(result.records, ParseRecordKind::Function, "after");
+    REQUIRE(after != nullptr);
+    CHECK(after->scope == "p");
+}
+
+TEST_CASE("the two-stage parse reports exactly the errors and records of an LL parse",
+          "[compiler][listener][sll]") {
+    // SLL first, then LL from the start after a syntax error (plan.md §6.33
+    // C2): the SLL attempt's error is never reported, the lexer's errors
+    // only once, and the records are LL's error-recovered ones.
+    const std::string src =
+        "module m;\n"
+        "  int a;\n"
+        "  initial begin\n"
+        "    a = 1 +;\n"
+        "    $display(\"unterminated);\n"
+        "  end\n"
+        "  function void f(); occ\n"
+        "  endfunction\n"
+        "endmodule\n";
+    const auto two = SvTreeWalker::walk(src);
+    const auto ll = SvTreeWalker::walk(src, {}, true, "", ParsePrediction::LL);
+    REQUIRE_FALSE(ll.parseErrors.empty());
+    REQUIRE(two.parseErrors.size() == ll.parseErrors.size());
+    for (size_t i = 0; i < ll.parseErrors.size(); ++i) {
+        CHECK(two.parseErrors[i].line == ll.parseErrors[i].line);
+        CHECK(two.parseErrors[i].column == ll.parseErrors[i].column);
+        CHECK(two.parseErrors[i].message == ll.parseErrors[i].message);
+    }
+    REQUIRE(two.records.size() == ll.records.size());
+    for (size_t i = 0; i < ll.records.size(); ++i) {
+        CHECK(two.records[i].name == ll.records[i].name);
+        CHECK(two.records[i].scope == ll.records[i].scope);
+        CHECK(two.records[i].endLine == ll.records[i].endLine);
+    }
+}
+
 TEST_CASE("a file with no calls produces an empty calls vector",
           "[compiler][listener][call]") {
     auto result = walkSource("module m; endmodule\n");

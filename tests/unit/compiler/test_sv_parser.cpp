@@ -13,13 +13,16 @@ static std::string readFile(const std::string& path) {
     return ss.str();
 }
 
-static int parseErrors(const std::string& src) {
+static int parseErrors(const std::string& src, bool sll = false) {
     antlr4::ANTLRInputStream input(src);
     SvLexer lexer(&input);
     antlr4::CommonTokenStream tokens(&lexer);
     SvParser parser(&tokens);
     lexer.removeErrorListeners();
     parser.removeErrorListeners();
+    if (sll)
+        parser.getInterpreter<antlr4::atn::ParserATNSimulator>()->setPredictionMode(
+            antlr4::atn::PredictionMode::SLL);
     parser.source_text();
     return static_cast<int>(parser.getNumberOfSyntaxErrors());
 }
@@ -334,19 +337,15 @@ TEST_CASE("SvParser parses a const class property initialized with a general exp
     // Regression test: class_property's `const` alternative restricted the
     // initializer to constant_expression, excluding new(...) and other general
     // runtime expressions -- only parameter/localparam require a true
-    // compile-time constant. Mirrors base/uvm_transaction.svh:443's shape
-    // (`const local uvm_event_pool events = new("events");`), though that
-    // exact case still hits a separate, pre-existing data_type/
-    // variable_decl_assignment grammar ambiguity (confirmed present on
-    // unmodified grammar, unrelated to this fix) whenever a 'local' or
-    // 'protected' qualifier precedes the type -- flagged for future
-    // investigation, not fixed here. This case (no qualifier) is unaffected
-    // by that ambiguity and confirms the constant_expression restriction
-    // itself is lifted.
+    // compile-time constant. With a qualifier after `const`
+    // (base/uvm_transaction.svh:443, `const local uvm_event_pool events =
+    // new("events");`) only class_property's `const` alternative applies,
+    // which takes a class_new too since plan.md §6.33 C2.
     std::string src =
         "class E; function new(string s=\"\"); endfunction endclass\n"
-        "class C; const E h = new(\"x\"); endclass\n";
+        "class C; const E h = new(\"x\"); const local E e = new(\"e\"); endclass\n";
     REQUIRE(parseErrors(src) == 0);
+    REQUIRE(parseErrors(src, true) == 0);
 }
 
 TEST_CASE("SvParser still parses a const class property with a constant_expression initializer",
@@ -411,4 +410,64 @@ TEST_CASE("SvParser still parses super.new(...) as a constructor's first stateme
         "super.new(name); "
         "endfunction endclass\n";
     REQUIRE(parseErrors(src) == 0);
+}
+
+TEST_CASE("SvParser parses the constructs SLL prediction used to misparse, under SLL too",
+          "[compiler][parser][sll]") {
+    // plan.md §6.33 C2: SLL prediction can't see a rule's caller, so where the
+    // grammar decided by context (a `.` loop that must stop before a call's
+    // parens, a `::` loop that must stop before a class scope's last `::`,
+    // `9200s` read as a number) it reported errors LL didn't -- 19,348 on
+    // UVM. Each line here is one such shape (the original grammar: 31 SLL
+    // errors on this source, 0 LL). The first `x = a.b + 1;` is a block's
+    // leading statement, which the grammar also reads as a declaration.
+    const std::string src =
+        "package pkg; function int g(int a); return a; endfunction endpackage\n"
+        "class C;\n"
+        "  function void f();\n"
+        "    x = a.b + 1;\n"
+        "    $display(\"x\");\n"
+        "    if (re.len() == 0) x = 1;\n"
+        "    x = a.b + 1;\n"
+        "    x = a.b[i] + a.c[i];\n"
+        "    this.srandom(1);\n"
+        "    map[e.name()] = e;\n"
+        "    x = m[g(1)] + m[a.b(2)] + m[pkg::g(3)];\n"
+        "    if ($time == 9200s) x = 1;\n"
+        "    x = uvm_pkg::UVM_NONE;\n"
+        "    g(x).h();\n"
+        "    a.b(x).c(y);\n"
+        "    x = D#(int)::g(1);\n"
+        "    D::E::g();\n"
+        "    void'(obj.randomize() with { a < 3; });\n"
+        "    x = arr.sum() with (item * 2);\n"
+        "    t;\n"
+        "  endfunction\n"
+        "  uvm_pkg::uvm_report_object o;\n"
+        "  uvm_config_db#(uvm_object) db;\n"
+        "endclass\n";
+    CHECK(parseErrors(src) == 0);
+    CHECK(parseErrors(src, true) == 0);
+}
+
+TEST_CASE("SvParser accepts every call statement form, and still rejects non-call statements",
+          "[compiler][parser][sll]") {
+    // subroutine_call spells out the `.method` chain per callee form instead
+    // of `primary '.' method_call_body` (plan.md §6.33 C2); a bare primary
+    // there would have made `5;` a statement.
+    auto wrap = [](const std::string& stmt) {
+        return "module m; initial begin " + stmt + " end endmodule\n";
+    };
+    for (const std::string stmt :
+         {"t;", "x.y;", "f(1);", "f(1).g();", "a.b(1).c(2);", "a[1].b();", "this.m(1);",
+          "super.m();", "pkg::f(1).g;", "C#(int)::f(1);", "x.randomize() with {a < 1;};",
+          "std::randomize(x);", "void'(a.b(1));", "$display(1);"}) {
+        INFO(stmt);
+        CHECK(parseErrors(wrap(stmt)) == 0);
+        CHECK(parseErrors(wrap(stmt), true) == 0);
+    }
+    for (const std::string stmt : {"5;", "\"s\";", "{a, b};"}) {
+        INFO(stmt);
+        CHECK(parseErrors(wrap(stmt)) > 0);
+    }
 }

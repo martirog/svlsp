@@ -469,9 +469,14 @@ class_item :
     | ';'
 ;
 
+// class_new in the `const` alternative: `const local T x = new(...);`
+// (uvm_transaction.svh). The LRM accepts `local const T x = new(...);` (the
+// first alternative), but once `const` comes first it allows only a constant
+// expression. Every simulator accepts both orders, and this was UVM's one
+// syntax error, which sent its whole two-stage parse to LL (plan.md §6.33 C2)
 class_property :
       property_qualifier* data_declaration
-    | 'const' class_item_qualifier* data_type const_identifier ('=' expression)? ';'
+    | 'const' class_item_qualifier* data_type const_identifier ('=' (expression | class_new))? ';'
 ;
 
 class_method :
@@ -756,8 +761,10 @@ data_type :
     | 'string'
     | 'chandle'
     | 'virtual' 'interface'? interface_identifier parameter_value_assignment? ('.' modport_identifier)?
-    | (class_scope | package_scope)? type_identifier packed_dimension*
+    // class_type before the type_identifier alternative: under SLL, a tie
+    // goes to the first alternative, and only class_type takes `T#(...)` (plan.md §6.33 C2)
     | class_type
+    | (class_scope | package_scope)? type_identifier packed_dimension*
     | 'event'
     | ps_covergroup_identifier
     | type_reference
@@ -782,8 +789,11 @@ enum_name_declaration :
       enum_identifier ('[' integral_number (':' integral_number)? ']')? ('=' constant_expression)?
 ;
 
+// class_type inlined: its `::` loop decides differently here (the scope ends
+// at the last `::`) than in a data_type, which SLL prediction can't tell
+// apart in a shared rule (plan.md §6.33 C2)
 class_scope :
-      class_type '::'
+      package_scope? class_identifier parameter_value_assignment? ('::' class_identifier parameter_value_assignment?)* '::'
 ;
 
 class_type :
@@ -3054,8 +3064,15 @@ empty_unpacked_array_concatenation :
 // constant_function_call replaced inline
 //    function_subroutine_call
 
+// tf_call needs its parens: a paren-less one is an identifier everywhere
+// but in a call statement, which has its own rule (the walker records both)
+// (plan.md §6.33 C2)
 tf_call :
-      ps_or_hierarchical_tf_identifier attribute_instance* ('(' list_of_arguments ')')?
+      ps_or_hierarchical_tf_identifier attribute_instance* '(' list_of_arguments ')'
+;
+
+paren_less_tf_call :
+      ps_or_hierarchical_tf_identifier attribute_instance*
 ;
 
 system_tf_call :
@@ -3067,12 +3084,17 @@ system_tf_call :
 
 //replaced inline    | method_call_root '.' method_call_body
 
+// No primary '.' method_call_body (plan.md §6.33 C2): SLL would let the
+// greedy primary take the whole call and then want another '.'. The chain
+// is spelled out after each callee form instead -- a bare call, a name
+// (with call parens, as in primary: `a.b(...).c()`) and `this.`/`super.`.
 subroutine_call :
-      tf_call
+      tf_call ('.' method_call_body)*
     | system_tf_call
-    | primary '.' method_call_body
-    | implicit_class_handle '.' method_call_body
     | ('std' '::')? randomize_call
+    | paren_less_tf_call
+    | (package_scope | class_qualifier) hierarchical_identifier select ('(' list_of_arguments ')')? ('.' method_call_body)*
+    | implicit_class_handle '.' method_call_body ('.' method_call_body)*
 ;
 
 
@@ -3088,9 +3110,11 @@ list_of_arguments :
 // replaced inline method_call :
 //     method_call_root '.' method_call_body
 
+// built_in_method_call inlined, method_identifier merged into
+// array_manipulation_call's array_method_name (the same prefix) (plan.md §6.33 C2)
 method_call_body :
-      method_identifier attribute_instance* ('(' list_of_arguments ')')?
-    | built_in_method_call
+      randomize_call
+    | array_method_name attribute_instance* ('(' list_of_arguments ')')? ('with' '(' expression ')')?
 ;
 
 built_in_method_call :
@@ -3102,8 +3126,10 @@ array_manipulation_call :
       array_method_name attribute_instance* ('(' list_of_arguments ')')? ('with' '(' expression ')')?
 ;
 
+// Only `randomize` (an IDENTIFIER, not a keyword): unguarded, every name
+// was also a randomize_call (plan.md §6.33 C2)
 randomize_call :
-      IDENTIFIER attribute_instance* ('(' (variable_identifier_list | 'null')? ')')? ('with' ('(' identifier_list? ')')? constraint_block)?
+      {_input->LT(1)->getText() == "randomize"}? IDENTIFIER attribute_instance* ('(' (variable_identifier_list | 'null')? ')')? ('with' ('(' identifier_list? ')')? constraint_block)?
 ;
 
 
@@ -3261,21 +3287,22 @@ genvar_expression :
 // replaced inline    | function_subroutine_call
 // replaced inline    | subroutine_call
 
+// As in primary: tf_call first, the name alternative takes call parens, and
+// no primary '.' method_call_body; let_expression dropped (tf_call covers
+// it) (plan.md §6.33 C2)
 constant_primary :
       primary_literal
-    | ps_parameter_identifier constant_select
+    | tf_call
+    | ps_parameter_identifier constant_select ('(' list_of_arguments ')')?
     | specparam_identifier ('[' constant_range_expression ']')?
     | genvar_identifier
     | formal_port_identifier constant_select
     | (package_scope | class_scope)? enum_identifier
     | constant_concatenation ('[' constant_range_expression ']')?
     | constant_multiple_concatenation ('[' constant_range_expression ']')?
-    | tf_call
     | system_tf_call
-    | primary '.' method_call_body
     | implicit_class_handle '.' method_call_body
     | ('std' '::')? randomize_call
-    | (let_expression)
     | '(' constant_mintypmax_expression ')'
     | simple_type SINGLE_QUOTE '(' constant_expression ')'
     | constant_primary SINGLE_QUOTE '(' constant_expression ')'
@@ -3301,7 +3328,6 @@ restricted_constant_primary :
     | system_tf_call
     | implicit_class_handle '.' method_call_body
     | ('std' '::')? randomize_call
-    | (let_expression)
     | '(' constant_mintypmax_expression ')'
     | simple_type SINGLE_QUOTE '(' constant_expression ')'
     | restricted_constant_primary SINGLE_QUOTE '(' constant_expression ')'
@@ -3325,26 +3351,28 @@ module_path_primary :
 // replaced inline   | cast
 // replaced inline   | casting_type SINGLE_QUOTE '(' expression ')'
 
+// SLL-clean ordering (plan.md §6.33 C2): tf_call (undotted, with parens) first, so
+// a bare call stays a tf_call; the name alternatives take call parens, so
+// `a.b(...)` parses whichever way SLL resolves `.` loops; let_expression and
+// sequence_method_call dropped (tf_call and the name alternative cover them).
 primary :
       primary_literal
-    | class_qualifier hierarchical_identifier select
-    | package_scope hierarchical_identifier select
+    | tf_call
+    | package_scope hierarchical_identifier select ('(' list_of_arguments ')')?
+    | class_qualifier hierarchical_identifier select ('(' list_of_arguments ')')?
     | empty_unpacked_array_concatenation
     | concatenation ('[' range_expression ']')?
     | multiple_concatenation ('[' range_expression ']')?
-    | tf_call
     | system_tf_call
     | primary '.' method_call_body
     | implicit_class_handle '.' method_call_body
     | ('std' '::')? randomize_call
-    | let_expression
     | '(' mintypmax_expression ')'
     | simple_type SINGLE_QUOTE '(' expression ')'
     | restricted_constant_primary SINGLE_QUOTE '(' expression ')'
     | (signing | 'string' | 'const') SINGLE_QUOTE '(' expression ')'
     | assignment_pattern_expression
     | streaming_concatenation
-    | sequence_method_call
     | 'this'
     | '$'
     | 'null'
@@ -3359,9 +3387,11 @@ range_expression :
     | part_select_range
 ;
 
+// time_literal first: `9200s` is a number followed by a name under SLL
+// (plan.md §6.33 C2)
 primary_literal :
-      number
-    | time_literal
+      time_literal
+    | number
     | UNBASED_UNSIZED_LITERAL
     | STRING_LITERAL
 ;
@@ -3724,10 +3754,11 @@ ps_or_hierarchical_sequence_identifier :
     | hierarchical_sequence_identifier
 ;
 
+// hierarchical_tf_identifier dropped: a dotted call is primary's name
+// alternative, so tf_call dies at the first '.' (plan.md §6.33 C2)
 ps_or_hierarchical_tf_identifier :
       class_scope tf_identifier
     | package_scope? tf_identifier
-    | hierarchical_tf_identifier
 ;
 
 ps_parameter_identifier :

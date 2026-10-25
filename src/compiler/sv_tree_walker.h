@@ -35,10 +35,19 @@ struct WalkResult {
 // compilation unit): an included file compiled on its own starts in the
 // scope open at its `include (e.g. "uvm_pkg"), so its records are scoped
 // as when its includer is compiled.
+//
+// `prediction` is how ANTLR predicts (plan.md §6.33 C2). TwoStage, what
+// svlsp uses: SLL, and if that finds a syntax error, a full LL parse from
+// the start -- the grammar is SLL-clean, so a file without errors never
+// pays for LL, and a file with errors gets LL's error recovery and
+// messages. LL and SLL alone are for tools/grammar_profile and tests.
+enum class ParsePrediction { TwoStage, LL, SLL };
+
 class SvTreeWalker {
 public:
     static WalkResult walk(const std::string& source,
                            const std::vector<SourceLine>& sourceMap = {},
                            bool collectDocs = true,
-                           const std::string& initialScope = "");
+                           const std::string& initialScope = "",
+                           ParsePrediction prediction = ParsePrediction::TwoStage);
 };
