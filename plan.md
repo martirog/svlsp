@@ -6128,7 +6128,8 @@ column is empty). The corpus `uvm.db` is rebuilt at v14 (the v13 one is
 
 **Status:** measurement tooling done 2026-10-22; findings recorded below;
 tooling committed 2026-10-23 (ac3c5c3); C7 done (a5fb6e1), C5 done (24413e8)
-and C1 done (0bf7257, c91eac2) 2026-10-23/24; C2-C4 open. Requested so
+and C1 done (0bf7257, c91eac2) 2026-10-23/24; C2 done 2026-10-24 (not yet
+committed); C3-C4 open. Requested so
 that (a) a shared server with a memory cap per user can be sized, and (b)
 code reviews can show that a rewrite does not regress latency or memory.
 
@@ -6293,6 +6294,111 @@ code reviews can show that a rewrite does not regress latency or memory.
   paren-less ones for the missing-argument check), so each change needs
   the unit, Emacs and corpus suites. Goal: SLL-clean on UVM, then T1's
   two-stage parse (SLL warm was 14 s vs LL 409 s).
+  **Done 2026-10-24: the grammar is SLL-clean on UVM and the parse is
+  two-stage.** Measured (release, same laptop): `--build-db` of UVM
+  **14:13 / 6.96 GB -> 119 s / 2.96 GB**, the corpus suite ~14 min ->
+  117 s, `uvm_src` first open -> diagnostics **916 -> 108 s**, edit ->
+  diagnostics **12.0 -> 2.0 s**, peak RSS 6871 -> 2953 MB; a warm reparse
+  of all of UVM 1.4 s. What the walker records is unchanged (below).
+  - *Harness* (`tools/grammar_profile.sh`, `tools/grammar_profile/`): a
+    standalone CMake project per grammar file (build/grammar_profile/<name>,
+    the ANTLR runtime reused from build/release). `pp_dump` preprocesses
+    UVM once like the corpus (`UVM_NO_DPI`; build/grammar_profile/uvm.pp.sv,
+    85787 lines, 808156 tokens). `grammar_profile` parses it (the T2 slice:
+    cut after the first `endclass` at or after line 12500, 12523 lines;
+    `--input uvm` for all of it) with LL or `--sll`, prints time, syntax
+    errors and peak RSS, and with `--profile` the decision table (time
+    share, invocations, LL fallbacks, SLL/LL max lookahead, ambiguities,
+    **context sensitivities** -- where SLL conflicted and LL then chose one
+    alternative, i.e. where SLL can go wrong; `--sort ctx`, `--where D`
+    prints their locations). `walk_dump` runs svlsp's own walker on the
+    grammar's parser and prints every record, call, import, instance and
+    error sorted -- `diff` of two dumps is the check that a change kept
+    the walker's API.
+  - *Why SLL went wrong.* An SLL prediction that leaves the decision's
+    rule assumes anything in the global FOLLOW can come next, and a tie
+    goes to the lowest alternative (for a loop: continue). `(` really can
+    follow a hierarchical_identifier (`@ev (a).b();`), so in `re.len()`
+    the `.` loop took `re.len`, and `primary`'s name alternative had no
+    place for the `(`; `class_type`'s `::` loop is shared by class_scope
+    (ends before the last `::`) and data_type; `uvm_config_db#(T) x` took
+    the `type_identifier` alternative before `class_type`; `9200s` was a
+    number. The fix in each case: the greedy alternative first, and able
+    to finish whatever SLL starts.
+  - *Grammar changes* (each commented in Sv.g4 with "plan.md §6.33 C2";
+    in order of the profile): E1 (`let_expression`, `sequence_method_call`
+    out of the primaries, `randomize_call` guarded by
+    `{LT(1) == "randomize"}?`); E2 (`tf_call` needs parens; a call
+    statement without them is `paren_less_tf_call`); `primary` /
+    `constant_primary`: tf_call first, the name alternative (`class_qualifier
+    hierarchical_identifier select`, `ps_parameter_identifier
+    constant_select`) takes optional call parens, `ps_or_hierarchical_tf_
+    identifier` lost its hierarchical alternative (a dotted call is a name
+    with parens, so tf_call dies at the first `.`), no `primary '.'
+    method_call_body` in constant_primary; `subroutine_call` spells out the
+    `.method` chain per callee form (no `primary '.' method_call_body`,
+    which the greedy primary swallowed); `method_call_body` merged with
+    `built_in_method_call` (randomize first); `class_scope` with
+    `class_type` inlined; `data_type`: class_type before type_identifier;
+    `primary_literal`: time_literal first; `class_property`'s `const`
+    alternative takes a class_new (`const local uvm_event_pool events =
+    new("events");` in uvm_transaction.svh, UVM's one syntax error --
+    simulators accept it, and it alone would have sent all of UVM to LL).
+  - *Slice, LL cold, by step:* 32.4 s; E1 26.6; +E2 21.8; +names 11.4;
+    +method_call_body 11.0; +class_scope 9.4 (SLL errors 385 -> 35);
+    +data_type 9.4 (10); +undotted tf_call, subroutine_call, constant_primary,
+    time literal: **7.7 s, 0 SLL errors, 0 context sensitivities**. All of
+    UVM: LL ~914 -> 293 s, SLL 19,348 -> 0 errors (102 s cold, 1.4 s warm).
+    What still costs LL time is true ambiguity (decisions 1068 `primary`,
+    1103 `hierarchical_identifier`: `a.b` is a name, or a name plus select
+    `.b`, or a name plus the method loop) -- it matters only for files with
+    syntax errors now.
+  - *Two-stage parse* (`SvTreeWalker::walk`, `ParsePrediction::TwoStage`,
+    the default): SLL with `BailErrorStrategy` and no parser error
+    listener (ANTLR's generated rules report before the strategy throws);
+    on `ParseCancellationException` `parser.reset()` and a full LL parse
+    with the default strategy and the listener. The lexer listener stays
+    attached throughout (each token is lexed once). LL / SLL alone are for
+    the harness and tests.
+  - *Walker:* `recordCall` shared by `enterTf_call` and
+    `enterParen_less_tf_call` (`initial t;` still a zero-slot call); the
+    '.'-text check is gone (tf_call can't be dotted); `classScopeName` for
+    the inlined class_scope. New: `bodyStop` -- a function/task/constructor
+    body ended early by a syntax error (a half-typed `occ` before
+    `endfunction`) keeps its scope to its own end keyword (never past the
+    next `function`/`task`). The old grammar's long lookahead had made
+    `function void C::run(); occ endfunction` (out of class) record a
+    phantom Function `occ` in a `C::run` scope, which three completion
+    tests depended on; the new grammar recorded `run` with a header-only
+    scope until bodyStop. In-class bodies were truncated before too.
+  - *What it must not lose -- checked.* walk_dump of all of UVM: old
+    grammar LL (914 s) vs new two-stage (98 s) identical (18440 records,
+    4179 calls) except the removed error; the slice identical under LL and
+    SLL. `--build-db`: symbols, docs, macros, include data identical, same
+    size (5320704 bytes), 0 diagnostics (was 1). The repo's 95 .sv
+    fixtures: same LL error counts as before except recovery cascades on
+    two already-invalid inputs (uvm_perf_tb.sv without UVM, 1 -> 2). The
+    language: a paren-less call inside an expression (`x = f;`) was never
+    recorded as a call (LL resolved it to the name) and still isn't; `5;`,
+    `"s";`, `{a,b};` are still statement errors; `a.b[2];` is now accepted
+    (as `a[1];` was).
+  - *perf-check:* `small`, `uvm` no regression. `uvm_src` as above, and
+    one flag: typing completion server run 10.9 -> 18-32 ms over six runs
+    (p90 <= 38 ms, budget 200). Not the change: a temporary DB dump at
+    shutdown showed the live DBs of the old and new binary identical (bar
+    temp paths and the removed diagnostic), and back to back on the same
+    machine state both took 15.3 / 15.4 ms; in-process on the corpus DB
+    10.4 vs 10.7 ms. The baseline (and the earlier 11 ms) came from a
+    cooler machine. The `uvm_src` baseline should be refreshed after the
+    commit (its first-open and edit numbers are obsolete).
+  - *Tests:* unit 1046 (+5: the SLL shapes under LL and SLL, the call
+    statement forms and non-call statements, dotted vs package-scoped
+    calls, a half-typed body's scope, two-stage = LL errors and records),
+    Emacs 309/309, `make test-integration-uvm` 13/13, UVM corpus 1563 / 31.
+  - *Found, not changed:* a paren-less `f;` statement inside a `begin`
+    block is not recorded as a call (`initial t;` is), before and after; a
+    `const`-first class property (`const local int j = 4;`) is not
+    recorded as a symbol (UVM's `events`), before and after.
 - *C3 -- a different parser* (e.g. slang's hand-written one) if C2
   stalls. Not measured here; the walker would be rewritten against its
   syntax tree.

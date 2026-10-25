@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-10-24 (C7, C5, C1 committed; C2 is next).
+**Last updated:** 2026-10-25 (C2 done, not yet committed).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -11,68 +11,63 @@ write-up) — read the relevant section there rather than looking for it here.
 
 ## Current state
 
-**PICK UP HERE NEXT TIME -- §6.33 C2: make the grammar's hot
-decisions cheap** (the user chose C2 as the next task, 2026-10-24).
-C7 (a5fb6e1), C5 (24413e8) and C1 (0bf7257, c91eac2 + perf e2167dc,
-79e1a2b, 089293a, baselines 19874cc) are committed. The parse runs in a
-worker process (`compiler/parse_worker.h`; flags in docs/usage.md),
-replaced once idle 60 s over 1024 MB. Its walks run on a walk thread
-that is retired after a big walk, because malloc arena fragmentation
-made later walks 2.5x slower (plan.md C1). Live UVM: edits take 12 s,
-the same as in-process; 46 MB after idle instead of 6.6 GB.
+**§6.33 C2 is done in the working tree, not committed** (the user commits;
+standing pattern: a code+tests commit, then plan.md + handoff.md). The
+grammar is SLL-clean on UVM and the parse is two-stage (plan.md §6.33 C2
+has the full write-up). Measured, release: `--build-db` of UVM 14:13 /
+6.96 GB -> **119 s / 2.96 GB**; the corpus suite ~14 min -> 117 s;
+`uvm_src` first open -> diagnostics 916 -> **108 s**, edit -> diagnostics
+12.0 -> **2.0 s**, peak 6871 -> 2953 MB. What the walker records is
+unchanged (walk_dump of all of UVM identical, `--build-db` symbols / docs /
+macros / include data identical; UVM's one diagnostic is gone -- its
+`const local ... = new(...)` property now parses).
 
-What C2 needs (plan.md §6.33 F4, T1, T2, C2 for the numbers):
-1. **Rebuild the profiling harness first.** The T2 scratch harness is
-   gone (it lived in a scratchpad; nothing in `tools/`). It must:
-   generate a parser from a copy of `grammar/Sv.g4`, parse a fixed UVM
-   slice (preprocessed; T2 used 12.5k lines, baseline 29.7 s LL cold)
-   and the whole of UVM, and print the time, the syntax-error count and
-   the top decisions by `setProfile` (decision, rule, time share,
-   invocations, LL fallbacks, SLL max lookahead). Also run it with SLL
-   prediction: the C2 goal is **SLL-clean on UVM** (T1 today: 19,348
-   SLL errors vs 1 real LL error). Consider committing it under
-   `tools/` so later grammar changes can be checked the same way.
-2. **Order of work** (by the profile): `primary` E1 -- drop
-   `let_expression` and `sequence_method_call` from `primary` /
-   `restricted_constant_primary`, and guard `randomize_call` with
-   `{LT(1) == "randomize"}?` (-20% on the slice); E2 -- `tf_call`
-   requires parentheses, and a paren-less call statement gets its own
-   `subroutine_call` alternative (-26%); then the left-recursive
-   `primary '.' method_call_body` loop (decision 1061, still 4.3 ms per
-   prediction), `class_type` / `ps_class_identifier` (SLL lookahead
-   368910 tokens), `subroutine_call`, `method_call_body`,
-   `hierarchical_identifier`, `seq_block`. Measure after each step and
-   keep only what pays.
-3. **What must not be lost.** C2 must accept the same language; the
-   parse tree is the walker's API (`src/compiler/sv_tree_walker.cpp`).
-   - E2 risk: `enterTf_call` (sv_tree_walker.cpp ~1066) records bare
-     calls for the missing-argument check (§6.23), **including
-     paren-less ones** (`initial t;` -- test_sv_listener.cpp "a task call
-     with no parens at all records zero argument slots"). A paren-less
-     call statement must still produce a Tf_call (or the walker must
-     record the new alternative). A paren-less call inside an
-     expression (`x = f;`) would become a plain `hierarchical_identifier`
-     and drop out of the check. Decide with the user whether that is
-     acceptable (the LRM allows it only for functions with all-default
-     arguments, so missing-argument hits there are rare) or record it
-     another way.
-   - References/rename find paren-less calls by text, not tree
-     (test_references_scoped.cpp "task -- declaration and calls with and
-     without parens"); keep that test green.
-   - E1: the walker uses no `let_expression` / `sequence_method_call` /
-     `randomize_call` context; still grep `SvParser::` in the walker for
-     every rule a change touches.
-   - Each change needs the unit suite, the Emacs suite, `make
-     test-integration-uvm`, and then once per batch the UVM corpus (1563 /
-     31 today; `--build-db` 1 diagnostic, 15731 symbol rows) and `make
-     perf-check PERF_SCENARIOS="small uvm uvm_src"` (uvm_src ~25 min, ~7
-     GB; baselines in `tests/perf/baselines/`). A grammar change
-     regenerates the parser: a full rebuild of build/debug and
-     build/release.
-4. **Payoff.** Once SLL-clean: a two-stage parse (SLL first, LL on
-   error) -- T1 measured SLL 114 s cold / 14 s warm vs LL ~850 s cold /
-   409 s warm on UVM. Memory (ANTLR's static caches) should shrink with
-   the lookahead, too; C1 already bounds it between compiles.
+Uncommitted changes: `grammar/Sv.g4` (each change commented "plan.md
+§6.33 C2"), `src/compiler/sv_tree_walker.{h,cpp}` (`ParsePrediction`,
+two-stage parse, `paren_less_tf_call`, `classScopeName`, `bodyStop`), 5 new
+unit cases (test_sv_parser.cpp, test_sv_listener.cpp), the new harness
+`tools/grammar_profile.sh` + `tools/grammar_profile/`, plan.md.
+
+Verified 2026-10-25 on the final tree: unit **1046/1046**, Emacs
+**309/309**, `make test-integration-uvm` 13/13 (release), UVM corpus
+1563 / 31 (log `build/release/corpus_2026-10-24.log`), `--build-db` as
+above, `make perf-check PERF_SCENARIOS="small uvm uvm_src"`: small / uvm
+no regression; uvm_src flags typing completion (server 10.9 -> 18-32 ms),
+shown to be machine drift, not the change (plan.md C2, *perf-check*).
+
+Next steps:
+1. Commit (after the user's go-ahead), then refresh the `uvm_src` perf
+   baseline on the new commit (`make perf-baseline SCENARIO=uvm_src`): its
+   first-open / edit numbers are obsolete. Rebuild the corpus `uvm.db` if
+   wanted (identical symbols; only the diagnostic and build version
+   differ).
+2. Optional, LL cost on files with syntax errors (only they reach LL now):
+   the remaining LL time is true ambiguity in `primary` (decision 1068)
+   and `hierarchical_identifier` (1103): `a.b` is a name, a name + select
+   `.b`, or a name + the method loop. Profile with `tools/grammar_profile.sh
+   -- --profile`.
+3. Found, unchanged by C2: a paren-less `f;` statement in a `begin` block is
+   not recorded as a call (`initial t;` is); a `const`-first class property
+   (`const local int j = 4;`, UVM's `events`) is not recorded as a symbol.
+
+What C2 changes for other work:
+- **Grammar edits are checked with the harness**: `tools/grammar_profile.sh
+  [--grammar FILE] [--input slice|uvm|FILE] [-- --sll --profile --sort ctx
+  --where D]` (time, errors, decision table with context sensitivities)
+  and `--walk-dump` (svlsp's walker on that grammar; diff two dumps). A
+  grammar change must stay SLL-clean: under SLL a tie goes to the lowest
+  alternative and a rule end assumes the global FOLLOW, so the greedy
+  alternative goes first and must be able to finish what it starts (plan.md
+  C2, *Why SLL went wrong*). Unit case "[sll]" pins the known shapes.
+- `SvTreeWalker::walk` takes `ParsePrediction` (default `TwoStage`; `LL` /
+  `SLL` for tools and tests). A file with a syntax error is parsed twice
+  (SLL up to the error, then LL), with exactly LL's errors and records.
+- Calls: `tf_call` is undotted and needs parens; `paren_less_tf_call` is a
+  call statement without them; a dotted call is a primary name with call
+  parens (no Tf_call); `class_scope` spells out its class type
+  (`classScopeName`, not `classTypeName(cs->class_type())`).
+- A subroutine body ended early by a syntax error keeps its scope to its own
+  `endfunction` / `endtask` (`bodyStop`).
 
 After C2, still open: C4 (references(`get_name`) 2.7 s on live UVM, over
 the 1 s budget), and the two older bugs the latency benchmarks found:
@@ -100,7 +95,7 @@ the old "completion response size" item was Emacs GC (closed); a live
 compile of UVM costs ~14 min and 6.8 GB **and the server keeps 6.6 GB**
 -- all in ANTLR full-LL prediction and its static caches (the grammar's
 `primary` ambiguities). C1 (done) bounds the server's resident memory;
-C2 (next) is for the compile time.
+C2 (done 2026-10-25) cut the compile time ~8x and the peak to 2.9 GB.
 
 For code reviews: `make perf-check` (small + uvm against
 `tests/perf/baselines/`, same machine for timings); refresh a baseline
@@ -295,7 +290,7 @@ by name instead of from the typedef's scope, and merged duplicated helpers
   in workspace symbols, no completion inside comments/strings, and doc
   comments (§6.31) in hover, signature help and completion resolve.
 - Test baselines:
-  - unit: **1041 cases**, all passing (2026-10-24, C1; 1040 before the idle policy; 1031 with C7; 1029 on the receivers tree;
+  - unit: **1046 cases**, all passing (2026-10-25, C2; 1041 on 2026-10-24, C1; 1040 before the idle policy; 1031 with C7; 1029 on the receivers tree;
     1016 at 4e8a10d) (no `[!shouldfail]` known gaps left
     -- the `` `define `` references case passes since the macro follow-up)
   - Emacs functional: **309/309** (2026-10-23, test_48 new; 305 with test_47)
@@ -325,7 +320,8 @@ by name instead of from the typedef's scope, and merged duplicated helpers
     case checks each item and step D's (name, kind) dedup removed 124
     duplicates; +10 for §6.29 part A; +633 for the macro follow-up, whose
     references case checks each of its 313 locations.)
-  - UVM corpus `--build-db`: **1 diagnostic, 18440 symbol rows (1872
+  - UVM corpus `--build-db`: **0 diagnostics since C2 (1 before), 119 s /
+    2.96 GB since C2; 18440 symbol rows (1872
     Block, 511 Typedef incl. 201 forward), 553 macro rows, 166 files, 165
     include_sites rows, 965 symbol docs + 30 macro docs; 5.32 MB (5320704
     bytes), 14 min / 6.9 GB RSS**; identical after the receivers change
