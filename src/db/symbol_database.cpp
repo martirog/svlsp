@@ -122,6 +122,12 @@ void SymbolDatabase::resetAllFiles()
 std::vector<SymbolRow> SymbolDatabase::queryAcrossAttachedDbs(
     const std::string& cond, const std::string& bindValue) const
 {
+    return queryAcrossAttachedDbs(cond, std::vector<std::string>{bindValue});
+}
+
+std::vector<SymbolRow> SymbolDatabase::queryAcrossAttachedDbs(
+    const std::string& cond, const std::vector<std::string>& bindValues) const
+{
     static constexpr const char* kCols =
         "s.id,s.kind,s.name,s.line,s.col,s.parent,s.detail,s.end_line,s.scope,f.path";
 
@@ -137,7 +143,7 @@ std::vector<SymbolRow> SymbolDatabase::queryAcrossAttachedDbs(
     auto stmt = m_db.prepare(sql);
     int idx = 1;
     for (size_t i = 0; i <= m_attachedLibraryPaths.size(); ++i)
-        stmt.bind(idx++, bindValue);
+        for (const auto& v : bindValues) stmt.bind(idx++, v);
 
     std::vector<SymbolRow> rows;
     while (stmt.step()) rows.push_back(rowFromStmt(stmt));
@@ -884,9 +890,10 @@ std::vector<DiagnosticRow> SymbolDatabase::diagnosticsForFile(
 // ---------------------------------------------------------------------------
 
 std::vector<SymbolRow> SymbolDatabase::findSymbolsInScope(
-    const std::string& scope) const
+    const std::string& scope, const std::string& name) const
 {
-    auto rows = queryAcrossAttachedDbs("s.scope = ?", scope);
+    auto rows = name.empty() ? queryAcrossAttachedDbs("s.scope = ?", scope)
+                             : queryAcrossAttachedDbs("s.scope = ? AND s.name = ?", {scope, name});
     std::stable_sort(rows.begin(), rows.end(), [](const SymbolRow& a, const SymbolRow& b) {
         return a.name < b.name;
     });
@@ -1193,10 +1200,32 @@ void SymbolDatabase::keepDeclaredBefore(std::vector<SymbolRow>& rows, const std:
 }
 
 std::vector<SymbolRow> SymbolDatabase::findSymbolsVisibleAt(
-    const std::string& path, SrcPos pos) const
+    const std::string& path, SrcPos pos, const std::string& name,
+    const std::vector<std::string>* chain) const
 {
     // The scope chain from innermost outward, ending with "".
-    const std::vector<std::string> scopes = scopeChain(scopeAtPosition(path, pos));
+    const std::vector<std::string> scopes = chain ? *chain : scopeChain(scopeAtPosition(path, pos));
+
+    // With `name`, every arm also keeps only rows named `name` or the last
+    // segment of a chain scope: keepDeclaredBefore needs the chain's own
+    // Class rows. The extra names are dropped after it.
+    std::vector<std::string> names;
+    if (!name.empty()) {
+        names.push_back(name);
+        for (const auto& sc : scopes) {
+            if (sc.empty()) continue;
+            const auto sep = sc.rfind("::");
+            std::string last = sep == std::string::npos ? sc : sc.substr(sep + 2);
+            if (std::find(names.begin(), names.end(), last) == names.end())
+                names.push_back(std::move(last));
+        }
+    }
+    std::string nameCond;
+    if (!names.empty()) {
+        nameCond = " AND s.name IN (";
+        for (size_t i = 0; i < names.size(); ++i) nameCond += i ? ",?" : "?";
+        nameCond += ")";
+    }
 
     // Load the imports that apply here: wildcard (`import pkg::*`) and
     // specific (`import pkg::Name`), each only if the scope it is written
@@ -1262,13 +1291,13 @@ std::vector<SymbolRow> SymbolDatabase::findSymbolsVisibleAt(
     std::string sql =
         "SELECT s.id,s.kind,s.name,s.line,s.col,s.parent,s.detail,s.end_line,s.scope,f.path "
         "FROM symbols s JOIN files f ON f.id = s.file_id "
-        "WHERE f.path = ? AND s.scope IN (" + localPh + ")";
+        "WHERE f.path = ? AND s.scope IN (" + localPh + ")" + nameCond;
     // Part 1b: the chain's packages' members from every other file.
     if (!chainPkgs.empty())
         sql += " UNION ALL "
                "SELECT s.id,s.kind,s.name,s.line,s.col,s.parent,s.detail,s.end_line,s.scope,f.path "
                "FROM symbols s JOIN files f ON f.id = s.file_id "
-               "WHERE f.path != ? AND s.scope IN (" + chainPkgPh + ")";
+               "WHERE f.path != ? AND s.scope IN (" + chainPkgPh + ")" + nameCond;
 
     // Part 2: top-level symbols from every *other* file (this file's own are
     // already in Part 1's chain, which always ends with ""), plus every
@@ -1290,7 +1319,7 @@ std::vector<SymbolRow> SymbolDatabase::findSymbolsVisibleAt(
         sql += " UNION ALL "
                "SELECT s.id,s.kind,s.name,s.line,s.col,s.parent,s.detail,s.end_line,s.scope,f.path "
                "FROM " + schema + "symbols s JOIN " + schema + "files f ON f.id = s.file_id "
-               "WHERE " + cond;
+               "WHERE (" + cond + ")" + nameCond;
     }
 
     // Part 3: one UNION ALL per specific import, per schema, filtered by scope + name.
@@ -1299,37 +1328,48 @@ std::vector<SymbolRow> SymbolDatabase::findSymbolsVisibleAt(
             sql += " UNION ALL "
                    "SELECT s.id,s.kind,s.name,s.line,s.col,s.parent,s.detail,s.end_line,s.scope,f.path "
                    "FROM " + schema + "symbols s JOIN " + schema + "files f ON f.id = s.file_id "
-                   "WHERE s.scope = ? AND s.name = ?";
+                   "WHERE s.scope = ? AND s.name = ?" + nameCond;
 
     auto stmt = m_db.prepare(sql);
     int idx = 1;
+    auto bindNames = [&] { for (const auto& n : names) stmt.bind(idx++, n); };
     stmt.bind(idx++, path);
     for (const auto& sc : scopes) stmt.bind(idx++, sc);
+    bindNames();
     if (!chainPkgs.empty()) {
         stmt.bind(idx++, path);
         for (const auto& pkg : chainPkgs) stmt.bind(idx++, pkg);
+        bindNames();
     }
     for (size_t i = 0; i < schemas.size(); ++i) {
         stmt.bind(idx++, path);
-        if (wildcardPkgs.empty()) continue;
-        for (const auto& pkg : wildcardPkgs) stmt.bind(idx++, pkg);
-        stmt.bind(idx++, path);
-        for (const auto& sc : scopes) stmt.bind(idx++, sc);
-        if (i == 0 && !chainPkgs.empty())
-            for (const auto& pkg : chainPkgs) stmt.bind(idx++, pkg);
+        if (!wildcardPkgs.empty()) {
+            for (const auto& pkg : wildcardPkgs) stmt.bind(idx++, pkg);
+            stmt.bind(idx++, path);
+            for (const auto& sc : scopes) stmt.bind(idx++, sc);
+            if (i == 0 && !chainPkgs.empty())
+                for (const auto& pkg : chainPkgs) stmt.bind(idx++, pkg);
+        }
+        bindNames();
     }
     for (size_t i = 0; i < schemas.size(); ++i) {
-        for (auto& [pkg, name] : specificImports) {
+        for (auto& [pkg, item] : specificImports) {
             stmt.bind(idx++, pkg);
-            stmt.bind(idx++, name);
+            stmt.bind(idx++, item);
+            bindNames();
         }
     }
 
     std::vector<SymbolRow> rows;
     while (stmt.step()) rows.push_back(rowFromStmt(stmt));
     keepDeclaredBefore(rows, path, pos, scopes);
+    if (!name.empty())
+        std::erase_if(rows, [&](const SymbolRow& r) { return r.name != name; });
 
-    std::sort(rows.begin(), rows.end(), [](const SymbolRow& a, const SymbolRow& b) {
+    // Stable: rows that tie keep the arms' order (the cursor's file, the
+    // chain's packages, the rest), which doesn't depend on the query plan
+    // -- the name-filtered query's plan differs from the unfiltered one's.
+    std::stable_sort(rows.begin(), rows.end(), [](const SymbolRow& a, const SymbolRow& b) {
         if (a.scope.size() != b.scope.size())
             return a.scope.size() > b.scope.size();
         return a.name < b.name;

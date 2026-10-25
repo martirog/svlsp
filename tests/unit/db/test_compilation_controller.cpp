@@ -1,3 +1,4 @@
+#include <set>
 #include <catch2/catch_test_macros.hpp>
 #include "db/database.h"
 #include "db/symbol_database.h"
@@ -1261,6 +1262,33 @@ TEST_CASE("a local declared after the cursor isn't visible; one before it is",
     // On its own declaration a name is visible.
     CHECK(f.has(f.sdb.findSymbolsVisibleAt(f.incA, {5, 8}), "after_l"));
     CHECK_FALSE(f.has(f.sdb.findSymbolsVisibleAt(f.incA, {5, 7}), "after_l"));
+}
+
+TEST_CASE("the visible set filtered by name is the unfiltered set's rows of that name",
+          "[db][ctrl][decl-before-use]") {
+    // findSymbolsVisibleAt(path, pos, name) only fetches rows of `name`
+    // (plus the chain's own class names, which declare-before-use needs):
+    // it must keep and drop exactly what the whole set does.
+    DeclBeforeUse f;
+    const std::vector<std::pair<std::string, SrcPos>> at = {
+        {f.incA, {4, 4}}, {f.incA, {5, 7}}, {f.incA, {5, 8}}, {f.top, {2, 0}},
+        {f.top, {8, 0}},  {f.top, {13, 12}}, {f.top, {16, 0}}};
+    std::set<std::string> names{"dbu_ghost", "no_such_name"};
+    for (const auto& [path, pos] : at)
+        for (const auto& r : f.sdb.findSymbolsVisibleAt(path, pos)) names.insert(r.name);
+    for (const auto& r : f.sdb.findSymbolsVisibleAt(f.top, {16, 0})) names.insert(r.name);
+    REQUIRE(names.size() > 10);
+    for (const auto& [path, pos] : at) {
+        const auto all = f.sdb.findSymbolsVisibleAt(path, pos);
+        for (const auto& name : names) {
+            std::multiset<int64_t> want, got;
+            for (const auto& r : all)
+                if (r.name == name) want.insert(r.id);
+            for (const auto& r : f.sdb.findSymbolsVisibleAt(path, pos, name)) got.insert(r.id);
+            INFO(path << " " << pos.line << ":" << pos.col << " " << name);
+            CHECK(got == want);
+        }
+    }
 }
 
 TEST_CASE("module data declared after the cursor isn't visible",

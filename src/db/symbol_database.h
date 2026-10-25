@@ -314,8 +314,10 @@ public:
     std::vector<DiagnosticRow> diagnosticsForFile(const std::string& path) const;
 
     // All symbols whose direct enclosing scope equals `scope`
-    // (pass "" for top-level symbols).  Ordered by name.
-    std::vector<SymbolRow> findSymbolsInScope(const std::string& scope) const;
+    // (pass "" for top-level symbols).  Ordered by name. With `name`, only
+    // the rows of that name.
+    std::vector<SymbolRow> findSymbolsInScope(const std::string& scope,
+                                              const std::string& name = {}) const;
 
     // The Port rows declared directly in `scope` (a module/interface/
     // program or a function/task's qualified scope), in declaration order
@@ -380,8 +382,14 @@ public:
     // file, since a package is often spread over `include'd files) plus all
     // top-level symbols from every file.  Outside a class, a name declared
     // later in the compilation unit is left out (keepDeclaredBefore).
-    // Ordered innermost-scope-first, then by name.
-    std::vector<SymbolRow> findSymbolsVisibleAt(const std::string& path, SrcPos pos) const;
+    // Ordered innermost-scope-first, then by name. With `name`, only the
+    // rows of that name -- the same rows the unfiltered set has of it, but
+    // without fetching the rest (a bare-name lookup inside uvm_pkg would
+    // otherwise read all of its members). `chain`, if the caller has it, is
+    // scopeChain(scopeAtPosition(path, pos)).
+    std::vector<SymbolRow> findSymbolsVisibleAt(const std::string& path, SrcPos pos,
+                                                const std::string& name = {},
+                                                const std::vector<std::string>* chain = nullptr) const;
 
     // `className`'s own `extends` ancestor chain (plan.md §6.26): starts
     // with `className`'s own fully-qualified scope name ("MyPkg::MyClass"
@@ -434,6 +442,9 @@ private:
     // result in C++ rather than relying on ORDER BY across a UNION ALL.
     std::vector<SymbolRow> queryAcrossAttachedDbs(
         const std::string& cond, const std::string& bindValue) const;
+    // The same with `cond` taking one `?` per `bindValues` entry, in order.
+    std::vector<SymbolRow> queryAcrossAttachedDbs(
+        const std::string& cond, const std::vector<std::string>& bindValues) const;
 
     // The macros-table counterpart: `cond` references only m/f and exactly
     // one `?`. Unordered.

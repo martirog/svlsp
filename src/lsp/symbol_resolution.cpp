@@ -239,8 +239,8 @@ int64_t Resolver::overrideFamilyId(const SymbolRow& row) const
     int64_t root = row.id;
     const auto chain = classChainRows(*cls);
     for (size_t i = 1; i < chain.size(); ++i)
-        for (const auto& r : m_db.findSymbolsInScope(qualifiedScopeOf(chain[i])))
-            if (r.name == row.name && isCallable(r)) {
+        for (const auto& r : m_db.findSymbolsInScope(qualifiedScopeOf(chain[i]), row.name))
+            if (isCallable(r)) {
                 root = r.id;
                 break;
             }
@@ -251,8 +251,8 @@ std::optional<SymbolRow> Resolver::lookupBare(const std::string& path, SrcPos at
                                               const std::string& name, KindFilter filter,
                                               bool withInherited) const
 {
-    const auto visible = m_db.findSymbolsVisibleAt(path, at);
     const auto chain   = scopeChain(path, at);
+    const auto visible = m_db.findSymbolsVisibleAt(path, at, name, &chain);
 
     // 1. The lexical scope chain, innermost first. At a class's own level,
     //    its inherited members come before anything outside the class.
@@ -282,8 +282,8 @@ std::optional<SymbolRow> Resolver::lookupBare(const std::string& path, SrcPos at
         // and the visible set's local chain only covers the cursor's file.
         {
             std::vector<SymbolRow> own;
-            for (auto& r : m_db.findSymbolsInScope(scope))
-                if (r.name == name && kindMatches(r, filter)) own.push_back(r);
+            for (auto& r : m_db.findSymbolsInScope(scope, name))
+                if (kindMatches(r, filter)) own.push_back(r);
             std::vector<const SymbolRow*> ptrs;
             for (auto& r : own) ptrs.push_back(&r);
             if (!ptrs.empty()) return *earliest(ptrs);
@@ -291,8 +291,8 @@ std::optional<SymbolRow> Resolver::lookupBare(const std::string& path, SrcPos at
         if (!withInherited) continue;
         auto ancestors = classChainRows(*cls);
         for (size_t i = 1; i < ancestors.size(); ++i)
-            for (auto& r : m_db.findSymbolsInScope(qualifiedScopeOf(ancestors[i])))
-                if (r.name == name && kindMatches(r, filter)) return r;
+            for (auto& r : m_db.findSymbolsInScope(qualifiedScopeOf(ancestors[i]), name))
+                if (kindMatches(r, filter)) return r;
     }
 
     auto isLocal = [&](const SymbolRow& r) {
@@ -478,10 +478,10 @@ std::optional<SymbolRow> Resolver::memberInScope(const std::string& scope, const
 
     if (auto cls = classRowForScope(scope)) {
         for (auto& c : classChainRows(*cls))
-            if (auto m = pick(m_db.findSymbolsInScope(qualifiedScopeOf(c)))) return m;
+            if (auto m = pick(m_db.findSymbolsInScope(qualifiedScopeOf(c), name))) return m;
         return std::nullopt;
     }
-    return pick(m_db.findSymbolsInScope(scope));
+    return pick(m_db.findSymbolsInScope(scope, name));
 }
 
 // The type of `row`'s value after `indexDepth` index groups, resolved where
@@ -585,8 +585,8 @@ std::optional<SymbolRow> Resolver::resolveReceiver(const std::vector<ChainSegmen
 std::optional<SymbolRow> Resolver::constructorIn(const std::string& classScope) const
 {
     std::vector<SymbolRow> rows;
-    for (auto& r : m_db.findSymbolsInScope(classScope))
-        if (r.name == "new" && isCallable(r)) rows.push_back(r);
+    for (auto& r : m_db.findSymbolsInScope(classScope, "new"))
+        if (isCallable(r)) rows.push_back(r);
     std::vector<const SymbolRow*> ptrs;
     for (auto& r : rows) ptrs.push_back(&r);
     if (ptrs.empty()) return std::nullopt;
@@ -677,8 +677,8 @@ std::optional<SymbolRow> Resolver::enclosingFunctionRow(SrcPos at) const
         if (sep == std::string::npos) continue; // a top-level unit, not a body
         const std::string parent = scope.substr(0, sep), name = scope.substr(sep + 2);
         std::vector<SymbolRow> rows;
-        for (auto& r : m_db.findSymbolsInScope(parent))
-            if (r.name == name && isCallable(r)) rows.push_back(r);
+        for (auto& r : m_db.findSymbolsInScope(parent, name))
+            if (isCallable(r)) rows.push_back(r);
         if (rows.empty()) continue;
         std::vector<const SymbolRow*> ptrs;
         for (auto& r : rows) ptrs.push_back(&r);
@@ -854,8 +854,8 @@ std::optional<ResolvedSymbol> Resolver::resolveAt(size_t offset, int depth)
             if (!paren) return fallback(word);
             auto owner = connectionOwner(*paren, depth);
             if (!owner) return fallback(word);
-            for (auto& r : m_db.findSymbolsInScope(qualifiedScopeOf(owner->row)))
-                if (r.name == word && r.kind == (owner->paramList ? "Parameter" : "Port"))
+            for (auto& r : m_db.findSymbolsInScope(qualifiedScopeOf(owner->row), word))
+                if (r.kind == (owner->paramList ? "Parameter" : "Port"))
                     return ResolvedSymbol{r, true};
             return std::nullopt;
         }
