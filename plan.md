@@ -6128,8 +6128,9 @@ column is empty). The corpus `uvm.db` is rebuilt at v14 (the v13 one is
 
 **Status:** measurement tooling done 2026-10-22; findings recorded below;
 tooling committed 2026-10-23 (ac3c5c3); C7 done (a5fb6e1), C5 done (24413e8)
-and C1 done (0bf7257, c91eac2) 2026-10-23/24; C2 done 2026-10-24 (not yet
-committed); C3-C4 open. Requested so
+and C1 done (0bf7257, c91eac2) 2026-10-23/24; C2 done 2026-10-24/25
+(8028b9f, a3468cd); C4 done 2026-10-25 (d43bdea); C3 open (not
+needed after C2). Requested so
 that (a) a shared server with a memory cap per user can be sized, and (b)
 code reviews can show that a rewrite does not regress latency or memory.
 
@@ -6414,6 +6415,39 @@ code reviews can show that a rewrite does not regress latency or memory.
   syntax tree.
 - *C4 -- references(`get_name`) 4.0 s* on a live UVM project (3.8 s in
   the corpus test): over the 1 s navigation budget; profile separately.
+  **Done 2026-10-25 (d43bdea).** Timed by phase (temporary
+  instrumentation, corpus test): of 3.6 s, 3.5 s was resolving the 327
+  textual hits, and 2.7 s of that was 1187 `findSymbolsVisibleAt` calls
+  fetching 1.2 M rows -- every bare-name lookup (`lookupBare`) read the
+  whole visible set (all of uvm_pkg's members, from ~150 files) to keep
+  the rows of one name. Changes:
+  - `findSymbolsVisibleAt(path, pos, name, chain)`: with `name`, each
+    UNION ALL arm also filters `s.name IN (name, <last segment of each
+    chain scope>)` -- keepDeclaredBefore finds the chain's own Class rows
+    among the fetched rows, so those names stay until after it -- and the
+    extra names are dropped afterwards. `chain` lets `lookupBare` pass the
+    scope chain it already computed (scopeAtPosition ran twice per lookup).
+    Checked: a temporary assertion in `lookupBare` compared the filtered
+    set with the unfiltered one narrowed to the name on every lookup of
+    the unit and corpus suites -- equal as sets everywhere; only the order
+    of ties differed (the query plan differs). The sort is now
+    `std::stable_sort`, so ties keep the arms' order (the cursor's file,
+    the chain's packages, the rest) whatever the plan; the unit case "the
+    visible set filtered by name is the unfiltered set's rows of that
+    name" pins the equivalence on the declare-before-use fixture.
+  - `findSymbolsInScope(scope, name)`: the same for a class's members
+    (`idx_symbols_scope_name`), used by every resolver call that wanted
+    one name -- lookupBare's own/inherited members, memberInScope,
+    overrideFamilyId, constructorIn, enclosingFunctionRow, a port or
+    parameter connection.
+  - *Result:* corpus references(`get_name`) 3653 -> **571 ms** (318
+    locations, unchanged). `make perf-check`, all three scenarios no
+    regression; uvm_src p90: references(`get_name`) 2856 -> **540 ms**,
+    edit -> diagnostics 2118 -> **745 ms** (the missing-argument check
+    resolves every callee through lookupBare), typing completion 35 -> 14
+    ms, signatureHelp 13.7 -> 4.2 ms. Both of uvm_src's BREAKS FLOW rows
+    are now within budget. Unit 1048, Emacs 309/309,
+    `make test-integration-uvm` 13/13, corpus 1563 / 31.
 - *C5 -- fix F7*: compute the version at build time, not configure time.
   **Done 2026-10-23 (24413e8).** Target `svlsp_git_version` runs
   `cmake/GitVersion.cmake` on every build; it rewrites

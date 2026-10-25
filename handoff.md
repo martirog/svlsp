@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-10-25 (C2 committed; its two recording gaps fixed, not yet committed).
+**Last updated:** 2026-10-25 (C4 committed).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -20,23 +20,29 @@ suite ~14 min -> 117 s; `uvm_src` first open -> diagnostics 916 ->
 The new `uvm_src` baseline records typing completion at 32 ms (machine
 state; the old 10.9 ms one was a quieter machine).
 
-**Uncommitted: C2's two recording gaps, fixed in the walker** (plan.md C2,
-*Found by C2*): a paren-less `t;` leading a block is recorded as a call
-(`parenLessCallName`), and a `const`-first class property (`const local
-int j = 4;`) as a Signal (`enterClass_property`). Changes:
-`src/compiler/sv_tree_walker.cpp`, test_sv_listener.cpp (1 new case, the
-access case extended), the corpus symbol count 18440 -> 18441
-(test_hover_uvm.cpp), plan.md. Verified: unit **1047/1047**, Emacs
-**309/309**, `make test-integration-uvm` 13/13, UVM corpus 1563 / 31 (log
-`build/release/corpus_2026-10-25.log`); walk_dump of all of UVM differs
-from C2's by exactly +1 call (`m_hb_process;`) and +1 record (`events`).
+C2's two recording gaps are fixed and committed (a3468cd): a paren-less
+`t;` leading a block is recorded as a call, a `const`-first class property
+as a Signal.
+
+**§6.33 C4 is committed** (d43bdea; plan.md C4 has the write-up):
+bare-name lookups fetch only the rows of the name they look up
+(`findSymbolsVisibleAt(path, pos, name, chain)`,
+`findSymbolsInScope(scope, name)`), instead of the whole visible set.
+Corpus references(`get_name`) 3653 -> 571 ms; uvm_src p90:
+references(`get_name`) 2856 -> 540 ms, edit -> diagnostics 2118 -> 745 ms,
+typing completion 35 -> 14 ms. Changes: `src/db/symbol_database.{h,cpp}`,
+`src/lsp/symbol_resolution.cpp`, 1 unit case (test_compilation_controller.cpp),
+plan.md. Verified: unit **1048/1048**, Emacs 309/309,
+`make test-integration-uvm` 13/13, corpus 1563 / 31, `make perf-check`
+small / uvm / uvm_src no regression.
 
 Next steps:
-1. Commit the gap fixes (after the user's go-ahead). Rebuild the corpus
-   `uvm.db` if wanted (C2's diagnostic is gone and `events` is new).
-2. C4: references(`get_name`) 2.7 s on live UVM (3.7 s in the corpus
-   test), over the 1 s navigation budget; and `uvm_src` edit ->
-   diagnostics 2.0 s, over the 1 s diagnostics budget.
+1. Refresh the `uvm_src` and `uvm` perf baselines on d43bdea (`make
+   perf-baseline SCENARIO=...`): their numbers predate C4. Rebuild the corpus `uvm.db` if
+   wanted (C2's diagnostic is gone and `events` is new).
+2. The two older bugs the latency benchmarks found: library locations
+   resolved against the server's cwd, and didChange blocking the message
+   loop during a compile.
 3. Optional, LL cost on files with syntax errors (only they reach LL now):
    the remaining LL time is true ambiguity in `primary` (decision 1068)
    and `hierarchical_identifier` (1103): `a.b` is a name, a name + select
@@ -62,10 +68,13 @@ What C2 changes for other work:
 - A subroutine body ended early by a syntax error keeps its scope to its own
   `endfunction` / `endtask` (`bodyStop`).
 
-After C2, still open: C4 (references(`get_name`) 2.7 s on live UVM, over
-the 1 s budget), and the two older bugs the latency benchmarks found:
-library locations resolved against the server's cwd, and didChange
-blocking the message loop during a compile.
+What C4 changes for other work:
+- A resolver lookup of one name passes it down: `findSymbolsVisibleAt`
+  and `findSymbolsInScope` take an optional `name`. Leave it out only
+  where every row is wanted (completion).
+- `findSymbolsVisibleAt` sorts stably: rows that tie on (scope length,
+  name) keep the arms' order (the cursor's file, the chain's packages,
+  the rest).
 
 What the worker changes for other work:
 - Nothing in the server parses any more unless `--in-process-parse`; the
@@ -283,7 +292,7 @@ by name instead of from the typedef's scope, and merged duplicated helpers
   in workspace symbols, no completion inside comments/strings, and doc
   comments (§6.31) in hover, signature help and completion resolve.
 - Test baselines:
-  - unit: **1047 cases**, all passing (2026-10-25, C2 gap fixes; 1046 with C2; 1041 on 2026-10-24, C1; 1040 before the idle policy; 1031 with C7; 1029 on the receivers tree;
+  - unit: **1048 cases**, all passing (2026-10-25, C4; 1047 with the C2 gap fixes; 1046 with C2; 1041 on 2026-10-24, C1; 1040 before the idle policy; 1031 with C7; 1029 on the receivers tree;
     1016 at 4e8a10d) (no `[!shouldfail]` known gaps left
     -- the `` `define `` references case passes since the macro follow-up)
   - Emacs functional: **309/309** (2026-10-23, test_48 new; 305 with test_47)
