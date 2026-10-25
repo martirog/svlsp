@@ -184,6 +184,21 @@ static bool isMisparsedAssignment(SvParser::Data_declarationContext* ctx)
     return true;
 }
 
+// The name of a misparsed data_declaration that is really a paren-less call
+// statement in a block (`begin t; end`): a lone declarator with no
+// dimensions and no `=`. A block's leading `t;` matches block_item_declaration
+// before any statement is tried, so it never reaches paren_less_tf_call.
+static SvParser::Variable_identifierContext* parenLessCallName(SvParser::Data_declarationContext* ctx)
+{
+    if (!dynamic_cast<SvParser::Block_item_declarationContext*>(ctx->parent)) return nullptr;
+    auto vdas = ctx->list_of_variable_decl_assignments()->variable_decl_assignment();
+    if (vdas.size() != 1) return nullptr;
+    auto* vda = vdas[0];
+    if (!vda->variable_identifier() || !vda->variable_dimension().empty() || vda->expression())
+        return nullptr;
+    return vda->variable_identifier();
+}
+
 // The identifier a variable_decl_assignment declares, whichever alternative
 // matched: `v = expr`, `v[] = new[n]` (dynamic_array_new) or `v = new(...)`
 // (class_new -- `new(...)` isn't an expression, so a class handle declared
@@ -250,10 +265,8 @@ static std::optional<std::string> structOwnerPath(SvParser::Data_typeContext* dt
 // alternatives have exactly one terminal child and no packed_dimension, so
 // it yields the bare keyword with nothing else attached. "" for every other
 // data_type alternative (built-in scalar types need no tag).
-static std::string builtinBareTypeTag(SvParser::Data_type_or_implicitContext* dtoi)
+static std::string builtinBareTypeTag(SvParser::Data_typeContext* dt)
 {
-    if (!dtoi) return "";
-    auto* dt = dtoi->data_type();
     if (!dt) return "";
     const std::string text = dt->getText();
     if (text == "string") return CONTAINER_STRING;
@@ -595,6 +608,14 @@ public:
 
     void enterClass_property(SvParser::Class_propertyContext* ctx) override {
         beginClassItem(ctx);
+        // `const local int j = 4;`: the const-first alternative declares its
+        // const_identifier directly (`local const ...` is a data_declaration)
+        if (auto* ci = ctx->const_identifier()) {
+            auto* dt = ctx->data_type();
+            const std::string bareTag = builtinBareTypeTag(dt);
+            pushId(ParseRecordKind::Signal, ci->IDENTIFIER(), ctx, currentScope(),
+                   !bareTag.empty() ? bareTag : dataTypeName(dt));
+        }
     }
     void exitClass_property(SvParser::Class_propertyContext*) override { m_itemAccess.clear(); }
     void enterClass_method(SvParser::Class_methodContext* ctx) override { beginClassItem(ctx); }
@@ -844,9 +865,13 @@ public:
     void enterData_declaration(SvParser::Data_declarationContext* ctx) override {
         auto* list = ctx->list_of_variable_decl_assignments();
         if (!list) return;
-        if (isMisparsedAssignment(ctx)) return;
-        const std::string typeName = userTypeName(ctx->data_type_or_implicit());
-        const std::string bareTag  = builtinBareTypeTag(ctx->data_type_or_implicit());
+        if (isMisparsedAssignment(ctx)) {
+            if (auto* id = parenLessCallName(ctx)) recordCall(id, nullptr);
+            return;
+        }
+        auto* dtoi = ctx->data_type_or_implicit();
+        const std::string typeName = userTypeName(dtoi);
+        const std::string bareTag  = builtinBareTypeTag(dtoi ? dtoi->data_type() : nullptr);
         // Element tag/type text to append after any container-dimension
         // tags below -- bareTag ($string/$event) wins over a genuine
         // class/interface typeName the same way it always has (a built-in
@@ -1087,8 +1112,9 @@ public:
         recordCall(ctx->ps_or_hierarchical_tf_identifier(), nullptr);
     }
 
-    void recordCall(SvParser::Ps_or_hierarchical_tf_identifierContext* idCtx,
-                    SvParser::List_of_argumentsContext* args) {
+    // idCtx: the callee name as written (a ps_or_hierarchical_tf_identifier,
+    // or a misparsed block declaration's variable_identifier).
+    void recordCall(antlr4::ParserRuleContext* idCtx, SvParser::List_of_argumentsContext* args) {
         if (!idCtx) return;
         const std::string idText = m_tokens->getText(idCtx);
 

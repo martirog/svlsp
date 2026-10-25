@@ -1502,6 +1502,34 @@ TEST_CASE("a task call with no parens at all records zero argument slots",
     CHECK(c->args.empty());
 }
 
+TEST_CASE("a paren-less call statement in a block is recorded, an assignment is not",
+          "[compiler][listener][call]") {
+    // A block's leading `t;` parses as an implicit-typed declaration of `t`
+    // (block_item_declaration comes before the statements), which the walker
+    // drops as a misparse -- it is a call statement.
+    auto result = walkSource(
+        "module top;\n"                                         // 1
+        "  task t; endtask\n"                                   // 2
+        "  function void f; t; endfunction\n"                   // 3
+        "  initial begin\n"                                     // 4
+        "    t;\n"                                              // 5
+        "  end\n"                                               // 6
+        "  initial fork t; join\n"                              // 7
+        "  initial begin x = 1; end\n"                          // 8
+        "endmodule\n");
+    REQUIRE(result.parseErrors.empty());
+    std::vector<int> lines;
+    for (const auto& c : result.calls) {
+        CHECK(c.calleeName == "t");
+        CHECK(c.args.empty());
+        lines.push_back(c.line);
+    }
+    std::sort(lines.begin(), lines.end());
+    CHECK(lines == std::vector<int>{3, 5, 7});
+    CHECK(findRecord(result.records, ParseRecordKind::Signal, "t") == nullptr);
+    CHECK(findRecord(result.records, ParseRecordKind::Signal, "x") == nullptr);
+}
+
 TEST_CASE("a dotted call is never recorded as a CallRecord",
           "[compiler][listener][call]") {
     auto result = walkSource(
@@ -2158,6 +2186,9 @@ TEST_CASE("a class member's local/protected qualifier is recorded as its access"
         "  rand local int acc_r;\n"
         "  int acc_plain;\n"
         "  local const int acc_k = 1;\n"
+        "  const local int acc_ck = 2;\n"
+        "  const static string acc_cs = \"s\";\n"
+        "  const local acc_C acc_ch = new();\n"
         "  local function void acc_f(int acc_arg);\n"
         "    int acc_tmp;\n"
         "  endfunction\n"
@@ -2180,6 +2211,10 @@ TEST_CASE("a class member's local/protected qualifier is recorded as its access"
     CHECK(access(ParseRecordKind::Signal, "acc_r") == "local");
     CHECK(access(ParseRecordKind::Signal, "acc_plain").empty());
     CHECK(access(ParseRecordKind::Signal, "acc_k") == "local");
+    CHECK(access(ParseRecordKind::Signal, "acc_ck") == "local");
+    CHECK(access(ParseRecordKind::Signal, "acc_cs").empty());
+    CHECK(access(ParseRecordKind::Signal, "acc_ch") == "local");
+    CHECK(findRecord(recs, ParseRecordKind::Signal, "acc_ch")->detail == "acc_C");
     CHECK(access(ParseRecordKind::Function, "acc_f") == "local");
     CHECK(access(ParseRecordKind::Port, "acc_arg").empty());
     CHECK(access(ParseRecordKind::Signal, "acc_tmp").empty());
@@ -2191,7 +2226,7 @@ TEST_CASE("a class member's local/protected qualifier is recorded as its access"
     for (const auto& r : recs)
         if (r.kind == ParseRecordKind::Function && r.name == "acc_ext") {
             ++ext;
-            CHECK(r.access == (r.line == 12 ? "local" : ""));
+            CHECK(r.access == (r.line == 15 ? "local" : ""));
         }
     CHECK(ext == 2);
 }

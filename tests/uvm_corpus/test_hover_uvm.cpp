@@ -107,7 +107,9 @@ TEST_CASE("doc comments: count recorded across the UVM corpus",
     // 15731 -> 18239 (plan.md §6.30, "block scopes"): +1872 Block rows,
     // +636 for/foreach loop variables. 18239 -> 18440 and 960 -> 965
     // (plan.md §6.30, "forward typedefs and declare-before-use"): +201
-    // forward `typedef class` rows, 5 of them with a doc comment.
-    CHECK(symbols == 18440);
+    // forward `typedef class` rows, 5 of them with a doc comment. 18440 ->
+    // 18441 (plan.md §6.33 C2 follow-up): uvm_transaction's
+    // `const local uvm_event_pool events`, a const-first class property.
+    CHECK(symbols == 18441);
     CHECK(documented == 965);
 }
