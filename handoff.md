@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-10-26 (C8 library locations fixed).
+**Last updated:** 2026-10-26 (C9 didChange no longer blocks during a compile).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -61,12 +61,25 @@ corpus 1563 / 31 (log `build/release/corpus_2026-10-26.log`), `make
 perf-check` small / uvm no regression. Library DBs built before the fix
 keep relative paths until rebuilt.
 
+**§6.33 C9, didChange blocking the message loop, is fixed** (f9de8f7;
+plan.md C9 has the write-up). A compile holds
+`m_dataMutex` only for `CompilationController::prepare` (DB reads) and
+`commit` (DB writes), not across `parse`; `m_compileMutex` keeps compiles
+one at a time (`LanguageServer::compileCurrent`). `uvm_src` typing at
+350 ms/char: completion median 3830 -> 4.8 ms, p90 3858 -> 59 ms.
+Changes: `src/db/compilation_controller.{h,cpp}`, `src/lsp/server.{h,cpp}`,
+`src/lsp/request_log.h` (`reportSince`), 2 unit cases. Verified: unit
+**1053/1053**, Emacs 309/309, `make test-integration-uvm` 14/14, corpus
+1563 / 31 (log `build/release/corpus_2026-10-26b.log`), `make perf-check`
+small / uvm / uvm_src no regression.
+
 Next steps:
-1. didChange blocking the message loop during a compile (the other bug
-   the latency benchmarks found).
-2. References from a testbench find no library occurrences:
+1. References from a testbench find no library occurrences:
    `findOccurrences` scans only the main DB's `files` (`allFilePaths`),
    never an attached library DB's (not caused by C8).
+2. Optional, after C9: a commit still holds the data mutex (up to ~300 ms
+   on `uvm_src`), and didOpen / didSave still compile on the message
+   thread.
 3. Optional, LL cost on files with syntax errors (only they reach LL now):
    the remaining LL time is true ambiguity in `primary` (decision 1068)
    and `hierarchical_identifier` (1103): `a.b` is a name, a name + select
@@ -91,6 +104,15 @@ What C2 changes for other work:
   (`classScopeName`, not `classTypeName(cs->class_type())`).
 - A subroutine body ended early by a syntax error keeps its scope to its own
   `endfunction` / `endtask` (`bodyStop`).
+
+What C9 changes for other work:
+- A server compile goes through `compileCurrent`: never call
+  `CompilationController::compile` while holding `m_dataMutex` (it would
+  hold it across the parse again), and take `m_compileMutex` before
+  `m_dataMutex`, never the other way round.
+- Between a compile's prepare and its commit, requests and notifications
+  run against the previous compile's DB state; a new controller step that
+  reads the DB belongs in `prepare` or `commit`, not `parse`.
 
 What C4 changes for other work:
 - A resolver lookup of one name passes it down: `findSymbolsVisibleAt`
@@ -213,11 +235,8 @@ and **1.35 s with the breadcrumb off** (lsp-mode's 1.0 s full-sync delay)
 Found while writing them:
 - **Library locations point at the wrong file** -- fixed 2026-10-26
   (plan.md §6.33 C8; see "Current state").
-- **didChange blocks the message loop during a compile**: its handler
-  takes the data mutex with an untimed `lock_guard`, so a request sent
-  after it queues for the rest of the compile (typing at 300 ms/char:
-  completion round trip 60-73 ms, server run 5 ms, `wait` 0). One compile
-  at most (~55-70 ms here), but it grows with the file.
+- **didChange blocks the message loop during a compile** -- fixed
+  2026-10-26 (plan.md §6.33 C9; see "Current state").
 
 **Closed 2026-10-22: completion response size** (plan.md §6.33, F2/T3):
 the server is fast (9 ms); the Emacs cost was garbage collection at the

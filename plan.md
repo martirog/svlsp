@@ -6130,7 +6130,7 @@ column is empty). The corpus `uvm.db` is rebuilt at v14 (the v13 one is
 tooling committed 2026-10-23 (ac3c5c3); C7 done (a5fb6e1), C5 done (24413e8)
 and C1 done (0bf7257, c91eac2) 2026-10-23/24; C2 done 2026-10-24/25
 (8028b9f, a3468cd); C4 done 2026-10-25 (d43bdea); C8 done 2026-10-26
-(a5757cf); C3 open (not
+(a5757cf); C9 done 2026-10-26 (f9de8f7); C3 open (not
 needed after C2). Requested so
 that (a) a shared server with a memory cap per user can be sized, and (b)
 code reviews can show that a rewrite does not regress latency or memory.
@@ -6486,6 +6486,26 @@ code reviews can show that a rewrite does not regress latency or memory.
   rebuilt. Not caused by this: references from a testbench find no
   library occurrences because `findOccurrences` scans only the main DB's
   `files` (`allFilePaths`), never an attached library's.
+- *C9 -- didChange blocked the message loop during a compile* (found by
+  the latency benchmarks, 2026-10-19) -- **done 2026-10-26 (f9de8f7).** A compile
+  held `m_dataMutex` from start to end, the parse included; didChange
+  takes it (untimed) to update the store on the message thread, so it and
+  every message behind it waited out the compile -- and §6.8's "a request
+  during a compile is answered from the previous state" never held.
+  Fix: `CompilationController::compile` is `prepare` (DB reads: hash,
+  include context, the includer's macros), `parse` (strip, preprocess,
+  walk -- no DB), `commit` (DB writes, callee resolution);
+  `LanguageServer::compileCurrent` holds the data mutex for prepare and
+  commit only, and a new `m_compileMutex` (taken first) keeps compiles one
+  at a time. `TimedLock::reportSince` keeps one `[request] compile` line
+  over the whole compile. Measured on `uvm_src`, typing one character per
+  350 ms (each debounced compile overlaps the next keystroke): completion
+  round trip median 3830 -> 4.8 ms, p90 3858 -> 59 ms, max 3867 -> 302 ms
+  (a keystroke that lands in a commit; the commit still holds the
+  mutex). Edit -> diagnostics unchanged (~750 ms). Unit case "didChange and
+  requests are handled while a compile is parsing" holds a parse with a
+  gated walker. Left: didOpen and didSave still compile on the message
+  thread.
 
 ---
 
