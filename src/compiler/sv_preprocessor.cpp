@@ -473,14 +473,18 @@ static void processInclude(const std::string& filename, const std::string& curre
     }
     for (const auto& d : ctx.includePaths) search.push_back(d);
 
-    // Also try the filename as an absolute/relative path directly
+    // An absolute name is taken as is. A relative one is never tried against
+    // the working directory: the server's (or --build-db's) cwd is arbitrary,
+    // and a hit there names the file relative to it, which providers later
+    // absolutize against a different cwd. Normalized so `./` and `../` don't
+    // give one file two names.
     std::string found;
-    if (fs::exists(filename)) {
-        found = filename;
+    if (fs::path(filename).is_absolute()) {
+        if (fs::exists(filename)) found = fs::path(filename).lexically_normal().string();
     } else {
         for (const auto& dir : search) {
             auto candidate = fs::path(dir) / filename;
-            if (fs::exists(candidate)) { found = candidate.string(); break; }
+            if (fs::exists(candidate)) { found = candidate.lexically_normal().string(); break; }
         }
     }
 

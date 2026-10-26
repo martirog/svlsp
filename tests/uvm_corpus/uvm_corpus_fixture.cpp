@@ -39,11 +39,11 @@ std::string readCorpusFile(const std::string& relPath) {
 }
 
 lsp::DocumentUri uriForRelPath(const std::string& relPath) {
-    return lsp::DocumentUri(lsp::Uri::parse("file:" + relPath));
+    return lsp::FileUri::fromPath((fs::path(uvmCorpusRoot()) / relPath).string());
 }
 
 std::string expectedUriPath(const std::string& relPath) {
-    return std::string(lsp::FileUri::fromPath(relPath).path());
+    return std::string(uriForRelPath(relPath).path());
 }
 
 SymbolDatabase& uvmCorpusDb() {
@@ -58,17 +58,12 @@ SymbolDatabase& uvmCorpusDb() {
         CompilationController controller(sdb);
         controller.setCalleeResolver(resolveCallees);
         ProjectConfig cfg;
-        cfg.includeDirs = {"."};
+        cfg.includeDirs = {root.string()};
         cfg.defines["UVM_NO_DPI"] = "";
 
-        // CompilerDirectiveStripper/SvPreprocessor resolve `include paths
-        // relative to the process's current working directory (matching
-        // every prior session's probe technique), so the working directory
-        // must be the corpus root while compile() runs.
-        const fs::path cwd = fs::current_path();
-        fs::current_path(root);
-        controller.compile("uvm.sv", text, &cfg);
-        fs::current_path(cwd);
+        // Absolute, as the server and --build-db see it: every recorded
+        // path is then the file's absolute path.
+        controller.compile((root / "uvm.sv").string(), text, &cfg);
 
         compiled = true;
     }

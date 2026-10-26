@@ -85,6 +85,11 @@ else
     run_test "dot from a module: public members only (tbc_comp.)" \
         "(svlsp-uvm/check \"probe-outside: tbc_comp.\" '(\"get_name\" \"get_children\") '(\"m_inst_count\" \"m_inst_id\" \"m_tr_h\"))" "t"
 
+    # Library locations are absolute: the DB is built from any directory,
+    # and the server's own cwd plays no part.
+    run_test "definition of a library class opens its file (uvm_component)" \
+        "(svlsp-uvm/check-definition \"extends uvm_component\" \"${UVM_CORPUS}/base/uvm_component.svh\")" "t"
+
     _emacs_eval "(svlsp-uvm/close \"${UVM_WORK}\")" >/dev/null
 
     printf '\n  Timings (%s):\n' "${UVM_PERF}"

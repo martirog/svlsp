@@ -128,13 +128,9 @@ TEST_CASE("references: the `uvm_error macro -- its define and uses across the co
     CHECK(refs.count(at("base/uvm_component.svh", 1934, 5)) == 1);
     CHECK(refs.size() > 100);
     // `uvm_error_begin / `uvm_error_context are other macros.
-    // Result paths are the DB's corpus-relative paths absolutized against
-    // the working directory (see expectedUriPath); undo that to read them.
-    const std::string cwd = std::filesystem::current_path().string() + "/";
     for (const auto& [path, line, col] : refs) {
         INFO(path << ":" << line << ":" << col);
-        const std::string rel = path.rfind(cwd, 0) == 0 ? path.substr(cwd.size()) : path;
-        const std::string text = readCorpusFile(rel);
+        const std::string text = readCorpusFile(path);  // absolute: `/` keeps it
         size_t off = 0;
         for (unsigned l = 0; l < line; ++l) off = text.find('\n', off) + 1;
         CHECK(text.compare(off + col, 9, "uvm_error") == 0);

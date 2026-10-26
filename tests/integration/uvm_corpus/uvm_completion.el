@@ -104,6 +104,29 @@ else a string naming what was missing or unexpected."
           (format "%d items; missing %S; unexpected %S" (length labels) missing extra)))
     (error (format "elisp-error: %s" (error-message-string err)))))
 
+(defun svlsp-uvm/check-definition (anchor want-file)
+  "t if definition on the last character of ANCHOR's text lands in WANT-FILE,
+an absolute path that exists; else a string naming where it went."
+  (condition-case err
+      (let* ((pos (svlsp-uvm/position-after anchor))
+             (pos (plist-put pos :character (1- (plist-get pos :character))))
+             (lsp-response-timeout 300)
+             (result (with-current-buffer svlsp-uvm/buf
+                       (lsp-request "textDocument/definition"
+                                    (list :textDocument (list :uri (lsp--buffer-uri))
+                                          :position pos))))
+             (loc (cond ((hash-table-p result) result)
+                        ((vectorp result) (and (> (length result) 0) (aref result 0)))
+                        ((listp result) (car result))))
+             (file (and loc (lsp--uri-to-path (gethash "uri" loc)))))
+        (svlsp-uvm/log "  %-34s %s" (concat "definition: " anchor) (or file "nothing"))
+        (cond ((null file) "no definition")
+              ((not (file-exists-p file)) (format "%s does not exist" file))
+              ((not (string= (file-truename file) (file-truename want-file)))
+               (format "went to %s, not %s" file want-file))
+              (t t)))
+    (error (format "elisp-error: %s" (error-message-string err)))))
+
 (defun svlsp-uvm/close (dir)
   (when (buffer-live-p svlsp-uvm/buf)
     (with-current-buffer svlsp-uvm/buf (set-buffer-modified-p nil))

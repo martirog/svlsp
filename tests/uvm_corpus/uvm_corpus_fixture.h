@@ -31,28 +31,11 @@ SymbolDatabase& uvmCorpusDb();
 // corpus-root-relative, e.g. "base/uvm_component.svh".
 std::string readCorpusFile(const std::string& relPath);
 
-// Builds a DocumentUri whose .path() is EXACTLY relPath, with no filesystem
-// absolutization -- matching the bare corpus-root-relative paths
-// CompilationController stores for `include`d files (e.g.
-// "base/uvm_component.svh"; confirmed by every prior session's probe, and by
-// reading db/compilation_controller.cpp: included-file paths come straight
-// from the preprocessor's `include resolution, never through
-// lsp::FileUri::fromPath's std::filesystem::absolute()).
-//
-// lsp::FileUri::fromPath (used by every existing test's makeParams, and by
-// this project's own pathToUri()/symbol_utils.cpp for constructing *output*
-// Locations) always calls std::filesystem::absolute() internally, so it
-// cannot represent a bare relative path verbatim -- it's the wrong tool for
-// building *input* query params against these DB keys. This instead goes
-// through the generic lsp::Uri::parse("file:" + relPath), which performs no
-// filesystem access at all and preserves the path text exactly (verified:
-// Uri::parse("file:base/x.svh").path() == "base/x.svh", no leading slash,
-// since there's no "//" authority marker to force absolute-path syntax).
+// The URI of a corpus file, from its corpus-root-relative path (e.g.
+// "base/uvm_component.svh"). The fixture compiles uvm.sv by its absolute
+// path, so the DB names every file by its absolute path, as `--build-db`
+// and the server do.
 lsp::DocumentUri uriForRelPath(const std::string& relPath);
 
-// The inverse of the above, for comparing against Locations providers return
-// (they build output URIs via pathToUri()/FileUri::fromPath(), which DOES
-// absolutize relative to the current working directory at call time) -- so
-// an expected relative path must be run through the same transform before
-// comparing, rather than compared against the bare literal.
+// The path a provider's Location carries for that file.
 std::string expectedUriPath(const std::string& relPath);

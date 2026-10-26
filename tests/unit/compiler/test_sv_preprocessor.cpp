@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include "compiler/sv_preprocessor.h"
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 
@@ -353,6 +354,81 @@ TEST_CASE("include missing file records error", "[compiler][preprocessor]") {
     SvPreprocessor pp;
     auto [out, errs, macros_, map_, sites_] = pp.process("`include \"no_such_file.sv\"\n", "test.sv");
     REQUIRE(!errs.empty());
+}
+
+// A fresh directory for the cwd-independence cases below, and a guard that
+// puts the working directory back.
+static std::filesystem::path freshIncludeDir(const std::string& name) {
+    const auto dir = std::filesystem::temp_directory_path() / name;
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    return dir;
+}
+
+namespace {
+struct CwdGuard {
+    std::filesystem::path saved = std::filesystem::current_path();
+    ~CwdGuard() { std::filesystem::current_path(saved); }
+};
+}  // namespace
+
+TEST_CASE("a relative include is looked up beside its includer, not in the working directory",
+          "[compiler][preprocessor]") {
+    // A file of the same relative name in the working directory must not
+    // win (a library built from its own directory got cwd-relative paths).
+    const auto root = freshIncludeDir("svlsp_test_inc_cwd");
+    std::filesystem::create_directories(root / "lib/base");
+    std::filesystem::create_directories(root / "cwd/base");
+    { std::ofstream f(root / "lib/base/a.svh"); f << "wire from_lib;\n"; }
+    { std::ofstream f(root / "cwd/base/a.svh"); f << "wire from_cwd;\n"; }
+
+    CwdGuard guard;
+    std::filesystem::current_path(root / "cwd");
+    SvPreprocessor pp;
+    auto [out, errs, macros_, map_, sites] =
+        pp.process("`include \"base/a.svh\"\n", (root / "lib/top.sv").string());
+    REQUIRE(errs.empty());
+    CHECK(out.find("wire from_lib;") != std::string::npos);
+    CHECK(out.find("wire from_cwd;") == std::string::npos);
+    REQUIRE(sites.size() == 1);
+    CHECK(sites[0].file == (root / "lib/base/a.svh").string());
+}
+
+TEST_CASE("a relative include found only in the working directory is not found",
+          "[compiler][preprocessor]") {
+    const auto root = freshIncludeDir("svlsp_test_inc_cwd_only");
+    std::filesystem::create_directories(root / "lib");
+    { std::ofstream f(root / "only_in_cwd.svh"); f << "wire w;\n"; }
+
+    CwdGuard guard;
+    std::filesystem::current_path(root);
+    SvPreprocessor pp;
+    auto [out, errs, macros_, map_, sites] =
+        pp.process("`include \"only_in_cwd.svh\"\n", (root / "lib/top.sv").string());
+    REQUIRE(errs.size() == 1);
+    CHECK(errs[0].find("cannot find \"only_in_cwd.svh\"") != std::string::npos);
+    CHECK(sites.empty());
+}
+
+TEST_CASE("an include found through an include dir is named by its full, normalized path",
+          "[compiler][preprocessor]") {
+    const auto root = freshIncludeDir("svlsp_test_inc_normal");
+    std::filesystem::create_directories(root / "src/base");
+    std::filesystem::create_directories(root / "src/macros");
+    { std::ofstream f(root / "src/base/a.svh"); f << "`include \"../macros/m.svh\"\n"; }
+    { std::ofstream f(root / "src/macros/m.svh"); f << "wire from_m;\n"; }
+
+    CwdGuard guard;
+    std::filesystem::current_path(root / "src");
+    SvPreprocessor pp({(root / "src/.").string()});
+    auto [out, errs, macros_, map_, sites] =
+        pp.process("`include \"base/a.svh\"\n", (root / "tb/top.sv").string());
+    REQUIRE(errs.empty());
+    CHECK(out.find("wire from_m;") != std::string::npos);
+    REQUIRE(sites.size() == 2);
+    CHECK(sites[0].file == (root / "src/base/a.svh").string());
+    CHECK(sites[1].file == (root / "src/macros/m.svh").string());
+    CHECK(sites[1].includer == (root / "src/base/a.svh").string());
 }
 
 TEST_CASE("include: __LINE__ inside included file resolves to its own line number",
