@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-10-25 (C4 committed).
+**Last updated:** 2026-10-26 (C4 perf baselines refreshed).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -36,10 +36,16 @@ plan.md. Verified: unit **1048/1048**, Emacs 309/309,
 `make test-integration-uvm` 13/13, corpus 1563 / 31, `make perf-check`
 small / uvm / uvm_src no regression.
 
+The `uvm` and `uvm_src` perf baselines are refreshed on C4 (70c7da4,
+measured at 921598b): `uvm` open -> diagnostics 1513 -> 640 ms, most
+point/navigation p90s ~2x faster, typing completion p90 18.8 -> 24.7 ms
+(noise vs. cost unresolved; within budget); `uvm_src` open -> diagnostics
+110.5 s, references(`get_name`) 541 ms, edit -> diagnostics 769 ms,
+typing completion 23 ms, peak 2953 MB.
+
 Next steps:
-1. Refresh the `uvm_src` and `uvm` perf baselines on d43bdea (`make
-   perf-baseline SCENARIO=...`): their numbers predate C4. Rebuild the corpus `uvm.db` if
-   wanted (C2's diagnostic is gone and `events` is new).
+1. Optional: rebuild the corpus `uvm.db` (C2's diagnostic is gone and
+   `events` is new).
 2. The two older bugs the latency benchmarks found: library locations
    resolved against the server's cwd, and didChange blocking the message
    loop during a compile.
