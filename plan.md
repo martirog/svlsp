@@ -6129,7 +6129,8 @@ column is empty). The corpus `uvm.db` is rebuilt at v14 (the v13 one is
 **Status:** measurement tooling done 2026-10-22; findings recorded below;
 tooling committed 2026-10-23 (ac3c5c3); C7 done (a5fb6e1), C5 done (24413e8)
 and C1 done (0bf7257, c91eac2) 2026-10-23/24; C2 done 2026-10-24/25
-(8028b9f, a3468cd); C4 done 2026-10-25 (d43bdea); C3 open (not
+(8028b9f, a3468cd); C4 done 2026-10-25 (d43bdea); C8 done 2026-10-26
+(a5757cf); C3 open (not
 needed after C2). Requested so
 that (a) a shared server with a memory cap per user can be sized, and (b)
 code reviews can show that a rewrite does not regress latency or memory.
@@ -6466,6 +6467,25 @@ code reviews can show that a rewrite does not regress latency or memory.
   6.96 GB), unchanged.
 - *C6 -- default `PERF_SCENARIOS` for reviews*: `small uvm` (seconds);
   `uvm_src` only for parser/walker/compile changes (~25 min, ~7 GB).
+- *C8 -- library locations named the wrong file* (found by the latency
+  benchmarks, 2026-10-19) -- **done 2026-10-26 (a5757cf).** Definition of
+  `get_full_name` from a testbench returned `<server cwd>/base/
+  uvm_component.svh`. Cause: `processInclude` tried a relative
+  `` `include `` name against the process's working directory before the
+  includer's directory and the include dirs. `--build-db` run from inside
+  the library's own directory (as the corpus `uvm.db` always was) hit
+  there and recorded every included file cwd-relative; providers then
+  absolutize with `FileUri::fromPath` against the *server's* cwd. A live
+  server whose cwd held a same-named file would even include the wrong
+  file. Fix: a relative name is looked up only beside its includer and in
+  the include dirs, an absolute one as is, and the hit is
+  `lexically_normal()`ed (`./`, `../` gave one file two names). The UVM
+  corpus fixture compiled `uvm.sv` from inside the corpus root and so
+  pinned the relative paths (and hid the bug); it now compiles by absolute
+  path. Library DBs built before the fix keep their relative paths until
+  rebuilt. Not caused by this: references from a testbench find no
+  library occurrences because `findOccurrences` scans only the main DB's
+  `files` (`allFilePaths`), never an attached library's.
 
 ---
 

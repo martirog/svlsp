@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-10-26 (C4 perf baselines refreshed).
+**Last updated:** 2026-10-26 (C8 library locations fixed).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -43,12 +43,30 @@ point/navigation p90s ~2x faster, typing completion p90 18.8 -> 24.7 ms
 110.5 s, references(`get_name`) 541 ms, edit -> diagnostics 769 ms,
 typing completion 23 ms, peak 2953 MB.
 
+**§6.33 C8, library locations, is fixed** (a5757cf; plan.md C8
+has the write-up). `processInclude` no longer tries a relative
+`` `include `` against the working directory: only beside the includer and
+in the include dirs, the hit `lexically_normal()`ed. A library DB built
+from inside its own directory had stored every included file cwd-relative
+(the corpus `uvm.db` always was), and providers absolutized those against
+the server's cwd. Changes: `src/compiler/sv_preprocessor.cpp`, 3 unit
+cases (test_sv_preprocessor.cpp), the corpus fixture (compiles `uvm.sv`
+by absolute path, no `chdir`; `uriForRelPath`/`expectedUriPath` give
+absolute paths), a definition check in `make test-integration-uvm`
+(failed on the old DB: `/tmp/svlsp-uvm-completion.*/base/...`). Corpus
+`uvm.db` rebuilt from the corpus dir: 166/166 paths absolute, 18441
+symbols, 0 diagnostics (old one `uvm.db.relpaths.bak`). Verified: unit
+**1051/1051**, Emacs 309/309, `make test-integration-uvm` **14/14**,
+corpus 1563 / 31 (log `build/release/corpus_2026-10-26.log`), `make
+perf-check` small / uvm no regression. Library DBs built before the fix
+keep relative paths until rebuilt.
+
 Next steps:
-1. Optional: rebuild the corpus `uvm.db` (C2's diagnostic is gone and
-   `events` is new).
-2. The two older bugs the latency benchmarks found: library locations
-   resolved against the server's cwd, and didChange blocking the message
-   loop during a compile.
+1. didChange blocking the message loop during a compile (the other bug
+   the latency benchmarks found).
+2. References from a testbench find no library occurrences:
+   `findOccurrences` scans only the main DB's `files` (`allFilePaths`),
+   never an attached library DB's (not caused by C8).
 3. Optional, LL cost on files with syntax errors (only they reach LL now):
    the remaining LL time is true ambiguity in `primary` (decision 1068)
    and `hierarchical_identifier` (1103): `a.b` is a name, a name + select
@@ -192,14 +210,9 @@ library DB: every request's p90 is under 100 ms in both; the slowest is the
 Emacs (lsp-mode's breadcrumb flushes the delayed didChange at 0.5 s idle)
 and **1.35 s with the breadcrumb off** (lsp-mode's 1.0 s full-sync delay)
 -- over the 1 s flow budget; incremental sync would avoid that delay.
-Found while writing them, both open:
-- **Library locations point at the wrong file.** A library DB stores
-  included files relative to their include dir (`base/uvm_component.svh`,
-  every DB since v11), and providers absolutize them against the server's
-  cwd: definition of `get_full_name` from a testbench returned
-  `file:///home/martin/src/svlsp/base/uvm_component.svh`. The corpus tests
-  hide it (`expectedUriPath` does the same transform). Likely also why
-  references from a testbench find no library occurrences.
+Found while writing them:
+- **Library locations point at the wrong file** -- fixed 2026-10-26
+  (plan.md §6.33 C8; see "Current state").
 - **didChange blocks the message loop during a compile**: its handler
   takes the data mutex with an untimed `lock_guard`, so a request sent
   after it queues for the rest of the compile (typing at 300 ms/char:
@@ -230,8 +243,9 @@ and release), UVM corpus 1145 / 30 cases, `--build-db` changed only
 in 190 Port details (dims added).
 - Run the UVM Emacs test with `make test-integration-uvm`; profile with
   `SVLSP_BIN=$PWD/build/release/svlsp make test-integration-uvm`. Its
-  default library DB is `<corpus>/uvm.db`, rebuilt 2026-10-19 with forward
-  typedefs (v16 before them `uvm.db.v16.bak`; v14 with block scopes `uvm.db.blocks.bak`, before
+  default library DB is `<corpus>/uvm.db`, rebuilt 2026-10-26 with
+  absolute paths (C8; before it `uvm.db.relpaths.bak`, 2026-10-19 with
+  forward typedefs; v16 before them `uvm.db.v16.bak`; v14 with block scopes `uvm.db.blocks.bak`, before
   blocks `uvm.db.v14.bak`, v13 `uvm.db.v13.bak`, v11 `uvm.db.v11.bak`);
   rebuild it after any
   change to what the walker records.
@@ -732,10 +746,10 @@ macro's result.
 
 `uvm_corpus_tests` target, deliberately not in ctest. Covers hover,
 definition, documentSymbol, workspace/symbol, completion, and signature help
-against a full UVM compile. `` `include ``d files are stored under
-corpus-relative paths — use `uriForRelPath`/`expectedUriPath` from
-`tests/uvm_corpus/uvm_corpus_fixture.h`, not `FileUri::fromPath` (always
-absolutizes).
+against a full UVM compile. The fixture compiles `uvm.sv` by absolute path,
+so every file is stored absolute; tests name files corpus-relative and
+convert with `uriForRelPath`/`expectedUriPath` from
+`tests/uvm_corpus/uvm_corpus_fixture.h`.
 
 ## Grammar quirks still open (`grammar/Sv.g4`)
 
