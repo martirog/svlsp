@@ -34,7 +34,8 @@ lsp::TextDocument_RenameResult RenameProvider::getRename(
     std::string word;
     const auto occurrences = ReferencesProvider::findOccurrences(
         db, std::string{params.textDocument.uri.path()}, params.position.line,
-        params.position.character, docText, textForPath, &word);
+        params.position.character, docText, textForPath, &word,
+        /*includeLibraries=*/false); // a library is never edited
     if (!occurrences) return nullptr; // not a known symbol
     if (word == "new") {
         throw lsp::RequestError(lsp::MessageError::InvalidParams,

@@ -352,6 +352,20 @@ std::vector<std::string> SymbolDatabase::allFilePaths() const
     return paths;
 }
 
+std::vector<std::string> SymbolDatabase::libraryFilePaths() const
+{
+    std::set<std::string> seen;
+    std::vector<std::string> paths;
+    for (size_t i = 0; i < m_attachedLibraryPaths.size(); ++i) {
+        auto stmt = m_db.prepare("SELECT path FROM lib" + std::to_string(i) + ".files ORDER BY id");
+        while (stmt.step()) {
+            std::string path = stmt.columnText(0);
+            if (seen.insert(path).second) paths.push_back(std::move(path));
+        }
+    }
+    return paths;
+}
+
 void SymbolDatabase::replaceSymbols(int64_t fileId,
                                     const std::vector<ParseRecord>& records)
 {

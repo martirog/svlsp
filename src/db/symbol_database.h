@@ -218,6 +218,10 @@ public:
     // tracking table, only declarations, so those providers fall back to a
     // lexical, cross-file text search over this file set.
     std::vector<std::string> allFilePaths() const;
+    // Every attached library DB's file paths, in attach order, each once.
+    // A project that compiled a library file itself has it in
+    // allFilePaths() too (with its own, newer rows).
+    std::vector<std::string> libraryFilePaths() const;
 
     // The `import`/`export` rows recorded for `path` (main schema only), in
     // no particular order; {} for an unknown path. Lets the LSP-layer

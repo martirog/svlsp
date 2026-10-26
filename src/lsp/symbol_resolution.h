@@ -88,9 +88,11 @@ std::optional<ReceiverType> resolveReceiverType(SymbolDatabase& db, const std::s
                                                 SrcPos at);
 
 // Identifies `row`'s override family: for a class method (Function/Task
-// scoped to a class), the id of the same-named Function/Task declared by
-// the topmost `extends` ancestor that declares one (the method's own id if
-// no ancestor does); for anything else, `row.id`. Two rows with equal ids
-// are the same symbol for references and rename -- a virtual method, its
-// overrides and calls dispatched to either must be renamed together.
-int64_t overrideFamilyId(SymbolDatabase& db, const SymbolRow& row);
+// scoped to a class), the same-named Function/Task declared by the topmost
+// `extends` ancestor that declares one (the method itself if no ancestor
+// does); for anything else, `row`. Two rows with the same root declaration
+// (file, line, column, name -- row ids are per DB, so an attached library's
+// collide with the project's) are the same symbol for references and
+// rename -- a virtual method, its overrides and calls dispatched to either
+// must be renamed together.
+SymbolRow overrideFamilyRoot(SymbolDatabase& db, const SymbolRow& row);

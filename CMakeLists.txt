@@ -244,6 +244,7 @@ add_executable(unit_tests
     tests/unit/lsp/test_hover.cpp
     tests/unit/lsp/test_references.cpp
     tests/unit/lsp/test_references_scoped.cpp
+    tests/unit/lsp/test_references_library.cpp
     tests/unit/lsp/test_rename.cpp
     tests/unit/lsp/test_signature_help.cpp
     tests/unit/lsp/test_macro_resolution.cpp

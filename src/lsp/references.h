@@ -12,12 +12,13 @@
 // There is no reference-tracking table in this schema, only declarations
 // (see plan.md §6.21's own research note on the same underlying gap), so the
 // candidates are a lexical whole-word search across every file the DB knows
-// about (symbol_utils.h's findIdentifierOccurrences; comments and string
-// literals excluded). Each candidate is then resolved with
-// resolveSymbolsAt (plan.md §6.30 step B) and kept only if it refers to
-// the same declaration as the cursor:
+// about, the attached library DBs' included when the symbol is declared in
+// one (symbol_utils.h's findIdentifierOccurrences; comments and string
+// literals excluded). Each candidate is then resolved with resolveSymbolsAt
+// (plan.md §6.30 step B) and kept only if it refers to the same
+// declaration as the cursor:
 //   - an exact resolution must land on the cursor's own row, or for a
-//     class method on the same override family (overrideFamilyId: an
+//     class method on the same override family (overrideFamilyRoot: an
 //     override, or the base method it overrides), so a same-named signal in
 //     another module, a local shadowing a field, or an unrelated class's
 //     same-named member is dropped;
@@ -50,12 +51,15 @@ public:
     };
 
     // The filtered occurrence set both references and rename use (rename
-    // must edit exactly what references reports). The searched name is
-    // written to `*name`. std::nullopt if the cursor isn't on a symbol
-    // that resolves to anything.
+    // edits exactly what references reports in the project's own files).
+    // `includeLibraries` also searches the attached library DBs' files
+    // (SymbolDatabase::libraryFilePaths) -- references does, rename never
+    // edits a library. The searched name is written to `*name`.
+    // std::nullopt if the cursor isn't on a symbol that resolves to
+    // anything.
     static std::optional<std::vector<Occurrence>> findOccurrences(
         SymbolDatabase& db, const std::string& curPath, unsigned line, unsigned character,
         const std::string& docText,
         const std::function<std::optional<std::string>(const std::string&)>& textForPath,
-        std::string* name);
+        std::string* name, bool includeLibraries);
 };

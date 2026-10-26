@@ -144,7 +144,7 @@ public:
         : m_db(db), m_path(path), m_text(blankCommentsAndStrings(text)) {}
 
     std::optional<ResolvedSymbol> resolveAt(size_t offset, int depth);
-    int64_t overrideFamilyId(const SymbolRow& row) const;
+    SymbolRow overrideFamilyRoot(const SymbolRow& row) const;
 
 private:
     SymbolDatabase&    m_db;
@@ -225,23 +225,23 @@ std::vector<SymbolRow> Resolver::classChainRows(const SymbolRow& cls) const
 
 // The id of the topmost ancestor's same-named Function/Task for a class
 // method (the root of its override family), else `row.id`.
-int64_t Resolver::overrideFamilyId(const SymbolRow& row) const
+SymbolRow Resolver::overrideFamilyRoot(const SymbolRow& row) const
 {
-    if (!isCallable(row)) return row.id;
+    if (!isCallable(row)) return row;
     // Constructors are never inherited or overridden: each class's own `new`
     // (its extern prototype and out-of-class body alike) is one symbol.
     if (row.name == "new") {
         auto own = constructorIn(row.scope);
-        return own ? own->id : row.id;
+        return own ? *own : row;
     }
     auto cls = classRowForScope(row.scope);
-    if (!cls) return row.id;
-    int64_t root = row.id;
+    if (!cls) return row;
+    SymbolRow root = row;
     const auto chain = classChainRows(*cls);
     for (size_t i = 1; i < chain.size(); ++i)
         for (const auto& r : m_db.findSymbolsInScope(qualifiedScopeOf(chain[i]), row.name))
             if (isCallable(r)) {
-                root = r.id;
+                root = r;
                 break;
             }
     return root;
@@ -955,8 +955,8 @@ std::optional<ReceiverType> resolveReceiverType(SymbolDatabase& db, const std::s
     return Resolver(db, path, text).receiverTypeOf(segments, at);
 }
 
-int64_t overrideFamilyId(SymbolDatabase& db, const SymbolRow& row)
+SymbolRow overrideFamilyRoot(SymbolDatabase& db, const SymbolRow& row)
 {
     const std::string noText;
-    return Resolver(db, row.filePath, noText).overrideFamilyId(row);
+    return Resolver(db, row.filePath, noText).overrideFamilyRoot(row);
 }

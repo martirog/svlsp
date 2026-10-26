@@ -2,9 +2,39 @@
 #include "lsp/macro_resolution.h"
 #include "lsp/symbol_resolution.h"
 #include "lsp/symbol_utils.h"
+#include <algorithm>
 #include <map>
+#include <set>
+#include <tuple>
 
 namespace {
+
+// The files an occurrence search reads: the project's, then (with
+// `libPaths`, SymbolDatabase::libraryFilePaths) the attached library DBs'
+// the project doesn't have itself.
+std::vector<std::string> searchedPaths(const SymbolDatabase& db,
+                                       const std::vector<std::string>* libPaths)
+{
+    auto paths = db.allFilePaths();
+    if (libPaths) {
+        const std::set<std::string> own(paths.begin(), paths.end());
+        for (const auto& p : *libPaths)
+            if (!own.count(p)) paths.push_back(p);
+    }
+    return paths;
+}
+
+// Whether the library files are worth searching for a name declared at
+// `declPaths`: a library never refers to what only the project declares
+// (it can't import or extend the project), so only when one is a library
+// file.
+bool declaredInLibrary(const std::vector<std::string>& libPaths,
+                       const std::vector<std::string>& declPaths)
+{
+    return std::any_of(declPaths.begin(), declPaths.end(), [&](const std::string& p) {
+        return std::find(libPaths.begin(), libPaths.end(), p) != libPaths.end();
+    });
+}
 
 size_t offsetOfOccurrence(const std::string& text, const TextOccurrence& occ)
 {
@@ -14,22 +44,31 @@ size_t offsetOfOccurrence(const std::string& text, const TextOccurrence& occ)
 }
 
 // A macro's occurrences: every macro-shaped use of `name` (see
-// macro_resolution.h) in every file. Macros are one namespace per compile
-// unit, not scoped, so no per-definition filtering: two unrelated
-// same-named `define`s in different files are merged. A `define of it
+// macro_resolution.h) in every searched file (searchedPaths). Macros are
+// one namespace per compile unit, not scoped, so no per-definition
+// filtering: two unrelated same-named `define`s in different files are
+// merged. A `define of it
 // recorded exactly there is a declaration. std::nullopt if no `define of
 // `name` is recorded at all (a command-line or unknown macro).
 std::optional<std::vector<ReferencesProvider::Occurrence>> findMacroOccurrences(
     SymbolDatabase& db, const std::string& name,
     const std::function<std::optional<std::string>(const std::string&)>& textForPath,
-    std::string* nameOut)
+    std::string* nameOut, bool includeLibraries)
 {
     const auto defs = db.findMacros(name);
     if (defs.empty()) return std::nullopt;
     if (nameOut) *nameOut = name;
 
+    std::vector<std::string> libPaths;
+    if (includeLibraries) {
+        libPaths = db.libraryFilePaths();
+        std::vector<std::string> defPaths;
+        for (const auto& d : defs) defPaths.push_back(d.filePath);
+        if (!declaredInLibrary(libPaths, defPaths)) libPaths.clear();
+    }
+
     std::vector<ReferencesProvider::Occurrence> result;
-    for (const auto& path : db.allFilePaths()) {
+    for (const auto& path : searchedPaths(db, libPaths.empty() ? nullptr : &libPaths)) {
         auto text = textForPath(path);
         if (!text) continue;
         const auto hits = findIdentifierOccurrences(*text, name);
@@ -53,10 +92,10 @@ std::optional<std::vector<ReferencesProvider::Occurrence>> ReferencesProvider::f
     SymbolDatabase& db, const std::string& curPath, unsigned line, unsigned character,
     const std::string& docText,
     const std::function<std::optional<std::string>(const std::string&)>& textForPath,
-    std::string* name)
+    std::string* name, bool includeLibraries)
 {
     if (auto macro = macroNameAt(docText, line, character))
-        return findMacroOccurrences(db, macro->name, textForPath, name);
+        return findMacroOccurrences(db, macro->name, textForPath, name, includeLibraries);
 
     const auto target = resolveSymbolAt(db, curPath, docText, line, character);
     if (!target) return std::nullopt; // not a known symbol -- fail closed
@@ -65,18 +104,31 @@ std::optional<std::vector<ReferencesProvider::Occurrence>> ReferencesProvider::f
 
     const auto declRows = db.findSymbolsByName(word);
 
-    // Override-family ids, cached by row id: every hit on a method resolves
-    // to one of a handful of rows.
-    std::map<int64_t, int64_t> familyCache;
-    auto familyOf = [&](const SymbolRow& row) {
-        auto [it, inserted] = familyCache.try_emplace(row.id, 0);
-        if (inserted) it->second = overrideFamilyId(db, row);
+    // A declaration's identity across the project DB and the attached ones
+    // (row ids are per DB).
+    using DeclKey = std::tuple<std::string, int, int, std::string>;
+    auto keyOf = [](const SymbolRow& r) { return DeclKey{r.filePath, r.line, r.col, r.name}; };
+
+    // Override-family roots, cached by declaration: every hit on a method
+    // resolves to one of a handful of rows.
+    std::map<DeclKey, SymbolRow> familyCache;
+    auto familyOf = [&](const SymbolRow& row) -> const SymbolRow& {
+        auto it = familyCache.find(keyOf(row));
+        if (it == familyCache.end())
+            it = familyCache.emplace(keyOf(row), overrideFamilyRoot(db, row)).first;
         return it->second;
     };
-    const int64_t targetFamily = familyOf(target->row);
+    const SymbolRow targetRoot = familyOf(target->row);
+    const DeclKey targetFamily = keyOf(targetRoot);
+
+    std::vector<std::string> libPaths;
+    if (includeLibraries) {
+        libPaths = db.libraryFilePaths();
+        if (!declaredInLibrary(libPaths, {targetRoot.filePath})) libPaths.clear();
+    }
 
     std::vector<Occurrence> result;
-    for (const auto& path : db.allFilePaths()) {
+    for (const auto& path : searchedPaths(db, libPaths.empty() ? nullptr : &libPaths)) {
         auto text = textForPath(path);
         if (!text) continue;
 
@@ -101,7 +153,7 @@ std::optional<std::vector<ReferencesProvider::Occurrence>> ReferencesProvider::f
             if (!r) continue;
             // A fallback target is only a name-only guess, so it can't rule
             // out an exactly-resolved hit either.
-            if (target->exact && r->exact && familyOf(r->row) != targetFamily) continue;
+            if (target->exact && r->exact && keyOf(familyOf(r->row)) != targetFamily) continue;
 
             const auto& occ = hits[i];
             bool isDeclaration = false;
@@ -125,7 +177,8 @@ lsp::TextDocument_ReferencesResult ReferencesProvider::getReferences(
     std::string word;
     const auto occurrences = findOccurrences(db, std::string{params.textDocument.uri.path()},
                                              params.position.line, params.position.character,
-                                             docText, textForPath, &word);
+                                             docText, textForPath, &word,
+                                             /*includeLibraries=*/true);
     if (!occurrences) return nullptr;
 
     lsp::Array<lsp::Location> locations;

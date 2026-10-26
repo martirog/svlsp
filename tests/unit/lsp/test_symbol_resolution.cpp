@@ -892,7 +892,7 @@ TEST_CASE("resolveSymbolAt: `new` as an argument resolves to the constructor of 
     CHECK_FALSE(resolveAt(f, "/ctx.sv", posOf(text, "@unknown", "new")).has_value());
 }
 
-TEST_CASE("overrideFamilyId: a constructor is its own family, shared by prototype and body",
+TEST_CASE("overrideFamilyRoot: a constructor is its own family, shared by prototype and body",
           "[resolution][ctor]")
 {
     F f;
@@ -902,11 +902,11 @@ TEST_CASE("overrideFamilyId: a constructor is its own family, shared by prototyp
     auto base  = resolveAt(f, "/ctor.sv", posOf(text, "@base_new", "new"));
     REQUIRE(proto.has_value());
     REQUIRE(base.has_value());
-    CHECK(overrideFamilyId(f.sdb, proto->row) == proto->row.id);
-    CHECK(overrideFamilyId(f.sdb, base->row) == base->row.id);
+    CHECK(overrideFamilyRoot(f.sdb, proto->row).id == proto->row.id);
+    CHECK(overrideFamilyRoot(f.sdb, base->row).id == base->row.id);
     // The out-of-class body row joins its prototype's family.
     for (auto& r : f.sdb.findSymbolsByName("new"))
-        if (r.scope == "ctor_p::CtorA") CHECK(overrideFamilyId(f.sdb, r) == proto->row.id);
+        if (r.scope == "ctor_p::CtorA") CHECK(overrideFamilyRoot(f.sdb, r).id == proto->row.id);
 }
 
 // §6.30 follow-up: a Typedef that aliases a class is followed to the class,

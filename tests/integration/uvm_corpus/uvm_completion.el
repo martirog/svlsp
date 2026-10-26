@@ -127,6 +127,44 @@ an absolute path that exists; else a string naming where it went."
               (t t)))
     (error (format "elisp-error: %s" (error-message-string err)))))
 
+(defun svlsp-uvm/check-references (anchor want-file want-line)
+  "t if references on the last character of ANCHOR's text include WANT-FILE
+at 0-based WANT-LINE (a library declaration); else a string saying what came
+back."
+  (condition-case err
+      (let* ((pos (svlsp-uvm/position-after anchor))
+             (pos (plist-put pos :character (1- (plist-get pos :character))))
+             (lsp-response-timeout 300)
+             (t0 (float-time))
+             (result (with-current-buffer svlsp-uvm/buf
+                       (lsp-request "textDocument/references"
+                                    (list :textDocument (list :uri (lsp--buffer-uri))
+                                          :position pos
+                                          :context (list :includeDeclaration t)))))
+             (ms (* 1000 (- (float-time) t0)))
+             (locs (append result nil))
+             (want (file-truename want-file))
+             (library (cl-count-if
+                       (lambda (l) (string-prefix-p (file-name-directory
+                                                     (directory-file-name
+                                                      (file-name-directory want)))
+                                                    (file-truename (lsp--uri-to-path
+                                                                    (gethash "uri" l)))))
+                       locs))
+             (found (cl-some
+                     (lambda (l)
+                       (and (string= (file-truename (lsp--uri-to-path (gethash "uri" l))) want)
+                            (= (gethash "line" (gethash "start" (gethash "range" l)))
+                               want-line)))
+                     locs)))
+        (svlsp-uvm/log "  %-34s %9.1f ms %6d locations (%d in the library)   %s"
+                       (concat "references: " anchor) ms (length locs) library
+                       (svlsp-uvm/last-server-line "textDocument/references"))
+        (if found t
+          (format "%d locations, %d in the library, none at %s:%d"
+                  (length locs) library want-file want-line)))
+    (error (format "elisp-error: %s" (error-message-string err)))))
+
 (defun svlsp-uvm/close (dir)
   (when (buffer-live-p svlsp-uvm/buf)
     (with-current-buffer svlsp-uvm/buf (set-buffer-modified-p nil))

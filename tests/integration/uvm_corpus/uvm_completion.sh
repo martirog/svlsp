@@ -27,6 +27,9 @@ UVM_DIR="${SVLSP_ROOT}/tests/integration/uvm_corpus"
 UVM_CORPUS="${SVLSP_UVM_CORPUS_DIR:-/home/martin/src/verilator_test/uvm-core/src}"
 UVM_DB="${SVLSP_UVM_DB:-${UVM_CORPUS}/uvm.db}"
 UVM_TIMEOUT="${SVLSP_UVM_TIMEOUT:-300}"
+# 0-based line of `virtual class uvm_component` in base/uvm_component.svh.
+UVM_COMPONENT_DECL_LINE="$(grep -n '^virtual class uvm_component ' "${UVM_CORPUS}/base/uvm_component.svh" 2>/dev/null | head -1 | cut -d: -f1)"
+UVM_COMPONENT_DECL_LINE="$(( ${UVM_COMPONENT_DECL_LINE:-1} - 1 ))"
 
 section "UVM library completion (opt-in)"
 
@@ -89,6 +92,9 @@ else
     # and the server's own cwd plays no part.
     run_test "definition of a library class opens its file (uvm_component)" \
         "(svlsp-uvm/check-definition \"extends uvm_component\" \"${UVM_CORPUS}/base/uvm_component.svh\")" "t"
+    # References search the attached library DB's files too.
+    run_test "references to a library class include its declaration (uvm_component)" \
+        "(svlsp-uvm/check-references \"extends uvm_component\" \"${UVM_CORPUS}/base/uvm_component.svh\" ${UVM_COMPONENT_DECL_LINE})" "t"
 
     _emacs_eval "(svlsp-uvm/close \"${UVM_WORK}\")" >/dev/null
 
