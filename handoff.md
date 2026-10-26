@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-10-26 (C9 didChange no longer blocks during a compile).
+**Last updated:** 2026-10-26 (C10 references search library DBs).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -73,14 +73,31 @@ Changes: `src/db/compilation_controller.{h,cpp}`, `src/lsp/server.{h,cpp}`,
 1563 / 31 (log `build/release/corpus_2026-10-26b.log`), `make perf-check`
 small / uvm / uvm_src no regression.
 
+**§6.33 C10, references search the attached library DBs** (0523751;
+plan.md C10 has the write-up): when the target's override-family
+root (a macro: a `define`) is declared in a library file, references also
+search the library DBs' files (`SymbolDatabase::libraryFilePaths`).
+Rename never edits a library (`includeLibraries=false`). Families are
+keyed by root declaration, not row id (`overrideFamilyRoot`). `uvm`
+references(`get_full_name`) 1 -> 726 locations in 320 ms. Changes:
+`src/lsp/references.{h,cpp}`, `src/lsp/rename.cpp`,
+`src/lsp/symbol_resolution.{h,cpp}`, `src/db/symbol_database.{h,cpp}`,
+new `tests/unit/lsp/test_references_library.cpp` (6 cases), a references
+check in `make test-integration-uvm` (5 locations / 0 in the library
+before). Verified: unit **1059/1059**, Emacs 309/309, `make
+test-integration-uvm` **15/15**, corpus 1563 / 31 (log
+`build/release/corpus_2026-10-26c.log`), `make perf-check` small no
+regression, uvm only references(`get_full_name`) (the new results).
+
 Next steps:
-1. References from a testbench find no library occurrences:
-   `findOccurrences` scans only the main DB's `files` (`allFilePaths`),
-   never an attached library DB's (not caused by C8).
-2. Optional, after C9: a commit still holds the data mutex (up to ~300 ms
+1. The §6.30 leftovers ("Other open work" item 0).
+2. Rename of a symbol declared in a library DB renames only the
+   project's uses (the declaration can't be edited); failing closed there
+   may be better.
+3. Optional, after C9: a commit still holds the data mutex (up to ~300 ms
    on `uvm_src`), and didOpen / didSave still compile on the message
    thread.
-3. Optional, LL cost on files with syntax errors (only they reach LL now):
+4. Optional, LL cost on files with syntax errors (only they reach LL now):
    the remaining LL time is true ambiguity in `primary` (decision 1068)
    and `hierarchical_identifier` (1103): `a.b` is a name, a name + select
    `.b`, or a name + the method loop. Profile with `tools/grammar_profile.sh

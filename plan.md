@@ -6130,7 +6130,7 @@ column is empty). The corpus `uvm.db` is rebuilt at v14 (the v13 one is
 tooling committed 2026-10-23 (ac3c5c3); C7 done (a5fb6e1), C5 done (24413e8)
 and C1 done (0bf7257, c91eac2) 2026-10-23/24; C2 done 2026-10-24/25
 (8028b9f, a3468cd); C4 done 2026-10-25 (d43bdea); C8 done 2026-10-26
-(a5757cf); C9 done 2026-10-26 (f9de8f7); C3 open (not
+(a5757cf); C9 done 2026-10-26 (f9de8f7); C10 done 2026-10-26 (0523751); C3 open (not
 needed after C2). Requested so
 that (a) a shared server with a memory cap per user can be sized, and (b)
 code reviews can show that a rewrite does not regress latency or memory.
@@ -6506,6 +6506,23 @@ code reviews can show that a rewrite does not regress latency or memory.
   requests are handled while a compile is parsing" holds a parse with a
   gated walker. Left: didOpen and didSave still compile on the message
   thread.
+- *C10 -- references search the attached library DBs* (found while
+  fixing C8) -- **done 2026-10-26 (0523751).** References from a testbench found no
+  library occurrences: `findOccurrences` searched only the project DB's
+  `files` (`allFilePaths`). Now `SymbolDatabase::libraryFilePaths` lists
+  every attached DB's files and references also search those the project
+  doesn't have itself -- but only when the target's override-family root
+  (a macro: one of its `define`s) is declared in a library file, since a
+  library never refers to what only the project declares (references to
+  a local member stay at 2 ms instead of 11.6). Rename passes
+  `includeLibraries=false`: a library is never edited, so references and
+  rename now differ on library files. Override families are keyed by
+  their root's declaration (file, line, column, name), not its row id:
+  ids are per DB, so a project row and a library row could compare equal
+  (`overrideFamilyId` -> `overrideFamilyRoot`, returning the row).
+  Measured: `uvm` references(`get_full_name`) 1 -> 726 locations, 7 ->
+  320 ms; the UVM Emacs test's references(`uvm_component`) 5 -> 382
+  locations (377 in the library), server 183 ms.
 
 ---
 
