@@ -45,6 +45,15 @@ public:
         m_mutex.unlock();
     }
 
+    // Report the line as if the mutex had been asked for at `start` and
+    // taken at `acquired` -- for a compile, which takes it once to prepare
+    // and once to commit, and is logged as one line over both.
+    void reportSince(Clock::time_point start, Clock::time_point acquired)
+    {
+        m_start    = start;
+        m_acquired = acquired;
+    }
+
     TimedLock(const TimedLock&)            = delete;
     TimedLock& operator=(const TimedLock&) = delete;
 

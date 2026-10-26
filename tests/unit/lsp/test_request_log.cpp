@@ -33,3 +33,23 @@ TEST_CASE("TimedLock without a log is a plain lock", "[request_log]")
     CHECK(m.try_lock());
     m.unlock();
 }
+
+TEST_CASE("TimedLock::reportSince logs from an earlier start and acquisition",
+          "[request_log]")
+{
+    // A compile takes the mutex twice and is logged as one line over both.
+    std::mutex m;
+    std::ostringstream log;
+    const auto now = TimedLock::Clock::now();
+    {
+        TimedLock lock{m, &log, "compile", "/p/a.sv"};
+        lock.reportSince(now - std::chrono::milliseconds(500),
+                         now - std::chrono::milliseconds(400));
+    }
+    std::smatch match;
+    const std::string line = log.str();
+    REQUIRE(std::regex_match(line, match,
+        std::regex(R"(\[request\] compile /p/a\.sv wait ([0-9.]+) ms, run ([0-9.]+) ms\n)")));
+    CHECK(std::stod(match[1]) == 100.0);
+    CHECK(std::stod(match[2]) >= 400.0);
+}

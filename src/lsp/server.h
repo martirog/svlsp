@@ -2,6 +2,7 @@
 
 #include <iosfwd>
 #include <mutex>
+#include <optional>
 #include <lsp/connection.h>
 #include <lsp/messagehandler.h>
 #include <lsp/io/standardio.h>
@@ -59,8 +60,13 @@ private:
     // thread handling a request (hover/definition/completion/documentSymbol/
     // workspace-symbol) or another notification (didOpen/didClose) — see
     // plan.md §6.8. A single coarse mutex is the documented "minimum fix";
-    // none of these operations are hot enough to need finer-grained locking.
+    // a compile holds it only to read and to write the DB, not across its
+    // parse (compileCurrent).
     std::mutex m_dataMutex;
+    // Runs compiles one at a time: one's prepare and commit must not
+    // interleave with another's (CompilationController::prepare). Taken
+    // before m_dataMutex, never while holding it.
+    std::mutex m_compileMutex;
     std::ostream* m_requestLog; // `--log-requests`; null = off
 
     // "<path>:<line>:<character>" for a request's log line ("" with no log).
@@ -89,15 +95,26 @@ private:
 
     void registerHandlers();
 
-    // Run the compiler pipeline (or return cached DB result) for the primary
-    // file and build its LSP diagnostics. When `includedFiles` is non-null,
-    // it is populated with every transitively `` `include ``d file this call
-    // actually recompiled (empty on a cache hit — see
-    // CompilationController::compile's own doc comment on why included
-    // files aren't re-reported then). Caller must hold m_dataMutex.
-    lsp::Array<lsp::Diagnostic> parseDiagnostics(const lsp::DocumentUri& uri,
-                                                  const std::string& text,
-                                                  std::vector<std::string>* includedFiles = nullptr);
+    // What a compile publishes: the document's diagnostics (with its
+    // client-tracked version if open) and {URI, diagnostics} for every
+    // `` `include ``d file it recompiled -- those were never `didOpen`ed, so
+    // they're published with no version (empty on a cache hit, see
+    // CompilationController::compile).
+    struct CompileOutcome {
+        std::optional<int> version;
+        lsp::Array<lsp::Diagnostic> diags;
+        std::vector<std::pair<lsp::DocumentUri, lsp::Array<lsp::Diagnostic>>> includedDiags;
+    };
+
+    // Compiles `uri`'s current text: the open document's, else (unless
+    // `openOnly`) the file on disk; std::nullopt when there is none. Takes
+    // m_compileMutex, and m_dataMutex only for CompilationController's
+    // prepare and commit, so requests and notifications are handled during
+    // the parse. Logs one `what` line over the whole compile. Do not call
+    // while holding either mutex.
+    std::optional<CompileOutcome> compileCurrent(const lsp::DocumentUri& uri, bool openOnly,
+                                                 bool forceRecompile, const char* what);
+    void publish(const lsp::DocumentUri& uri, CompileOutcome&& out);
 
     // Converts already-computed ParseErrors to LSP Diagnostics.
     static lsp::Array<lsp::Diagnostic> toDiagnostics(const std::vector<ParseError>& errs);

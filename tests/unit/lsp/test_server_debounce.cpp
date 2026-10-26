@@ -11,11 +11,14 @@
 // will be wrong, not just a timing/count mismatch.
 #include <catch2/catch_test_macros.hpp>
 #include "lsp/server.h"
+#include "compiler/sv_tree_walker.h"
 #include <lsp/io/stream.h>
 #include <lsp/json/json.h>
 
 #include <chrono>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
 #include <poll.h>
 #include <stdexcept>
 #include <string>
@@ -130,13 +133,15 @@ std::string readLine(int fd)
 // format lsp-mode/Emacs (and every real editor) uses.
 class TestClient {
 public:
-    TestClient()
+    // `walker`, when set, replaces the server's parse (LanguageServer::setWalker).
+    explicit TestClient(CompilationController::Walker walker = {})
     {
         if (::pipe(m_toServer) != 0 || ::pipe(m_fromServer) != 0)
             throw std::runtime_error("test: pipe() failed");
 
         m_serverIo = std::make_unique<PipeStream>(m_toServer[0], m_fromServer[1]);
         m_server   = std::make_unique<LanguageServer>(*m_serverIo);
+        if (walker) m_server->setWalker(std::move(walker));
         m_serverThread = std::thread{[this] { m_server->run(); }};
     }
 
@@ -230,6 +235,14 @@ public:
             R"("textDocument":{"uri":")" + uri + R"("}}})");
     }
 
+    void documentSymbol(int id, const std::string& uri)
+    {
+        sendRaw(
+            R"({"jsonrpc":"2.0","id":)" + std::to_string(id) +
+            R"(,"method":"textDocument/documentSymbol","params":{)"
+            R"("textDocument":{"uri":")" + uri + R"("}}})");
+    }
+
     // Non-blocking check: true if a full message is already waiting (or
     // arrives within timeoutMs), without consuming/blocking indefinitely
     // the way recvMessage() does. Used to prove a *lack* of a message —
@@ -288,6 +301,46 @@ std::pair<int, std::size_t> asPublishDiagnostics(const lsp::json::Value& msg)
 
     return {static_cast<int>(version->number()), diags->array().size()};
 }
+
+// Holds the next parse once armed, until released: a compile that is
+// still parsing, for as long as a test needs.
+class ParseGate {
+public:
+    void arm() { std::lock_guard l{m_mutex}; m_armed = true; }
+
+    // Blocks the armed parse; every other parse goes straight through.
+    void pass()
+    {
+        std::unique_lock l{m_mutex};
+        if (!m_armed) return;
+        m_armed   = false;
+        m_entered = true;
+        m_cv.notify_all();
+        m_cv.wait(l, [this] { return m_released; });
+    }
+
+    bool waitEntered(std::chrono::milliseconds timeout)
+    {
+        std::unique_lock l{m_mutex};
+        return m_cv.wait_for(l, timeout, [this] { return m_entered; });
+    }
+
+    void release() { std::lock_guard l{m_mutex}; m_released = true; m_cv.notify_all(); }
+
+    CompilationController::Walker walker()
+    {
+        return [this](const std::string& source, const std::vector<SourceLine>& sourceMap,
+                      bool collectDocs, const std::string& initialScope) {
+            pass();
+            return SvTreeWalker::walk(source, sourceMap, collectDocs, initialScope);
+        };
+    }
+
+private:
+    std::mutex              m_mutex;
+    std::condition_variable m_cv;
+    bool m_armed{false}, m_entered{false}, m_released{false};
+};
 
 } // namespace
 
@@ -403,6 +456,47 @@ TEST_CASE("a rapid-fire burst of didChange produces exactly one publish, "
     auto [version, count] = asPublishDiagnostics(client.recvMessage());
     CHECK(version == 7);
     CHECK(count > 0);
+
+    client.didClose(uri);
+    client.shutdownAndExit();
+}
+
+TEST_CASE("didChange and requests are handled while a compile is parsing",
+          "[lsp][server][debounce]")
+{
+    // A compile holds the data mutex only to read and to write the DB, not
+    // across the parse: a didChange during it must not stall the message
+    // loop, and a request is answered from the previous compile's state.
+    ParseGate gate;
+    TestClient client{gate.walker()};
+    struct ReleaseOnExit { ParseGate& g; ~ReleaseOnExit() { g.release(); } } releaseOnExit{gate};
+    client.initialize();
+
+    const std::string uri = "file:///debounce_test_parsing.sv";
+    client.didOpen(uri, kValidSv, 1);
+    CHECK(asPublishDiagnostics(client.recvMessage()).first == 1);
+
+    gate.arm();
+    client.didChange(uri, "module m2; endmodule\n", 2);
+    REQUIRE(gate.waitEntered(5s));
+
+    client.didChange(uri, "module m3; endmodule\n", 3);
+    client.documentSymbol(7, uri);
+    REQUIRE(client.hasPendingMessage(3000));
+    const auto response = client.recvMessage();
+    REQUIRE(response.isObject());
+    const auto* id = response.object().find("id");
+    REQUIRE(id != nullptr);
+    CHECK(id->number() == 7);
+    const auto* result = response.object().find("result");
+    REQUIRE(result != nullptr);
+    REQUIRE(result->isArray());
+    REQUIRE(result->array().size() == 1);
+    CHECK(result->array()[0].object().get("name").string() == "m"); // version 1's
+
+    gate.release();
+    CHECK(asPublishDiagnostics(client.recvMessage()).first == 2);
+    CHECK(asPublishDiagnostics(client.recvMessage()).first == 3);
 
     client.didClose(uri);
     client.shutdownAndExit();

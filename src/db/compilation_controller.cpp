@@ -115,31 +115,40 @@ std::vector<ParseError> CompilationController::compile(const std::string& path,
                                                         bool forceRecompile)
 {
     if (includedFiles) includedFiles->clear();
+    auto job = prepare(path, text, config, forceRecompile);
+    if (job.cached) return std::move(*job.cached);
+    return commit(parse(std::move(job)), includedFiles);
+}
 
-    const std::string hash = hashContent(text);
+CompilationController::Prepared CompilationController::prepare(const std::string& path,
+                                                               const std::string& text,
+                                                               const ProjectConfig* config,
+                                                               bool forceRecompile)
+{
+    Prepared job{.path = path, .text = text, .hash = hashContent(text),
+                 .preprocessor = config ? SvPreprocessor(config->includeDirs) : SvPreprocessor()};
 
     // Cache hit: return diagnostics from DB without re-parsing. Included
-    // files aren't reported here -- see this function's own doc comment.
+    // files aren't reported here -- see compile()'s own doc comment.
     // `forceRecompile` skips this shortcut unconditionally (plan.md §6.4) --
     // needed when `path`'s own text is unchanged but something it
     // `` `include ``s just did.
-    if (!forceRecompile && m_sdb.getFileHash(path) == hash) {
+    if (!forceRecompile && m_sdb.getFileHash(path) == job.hash) {
         if (m_log) { *m_log << "[parsed] " << path << " (cached)\n"; m_log->flush(); }
         auto rows = m_sdb.diagnosticsForFile(path);
         std::vector<ParseError> errs;
         errs.reserve(rows.size());
         for (const auto& r : rows)
             errs.push_back({r.line, r.col, r.message, {}, r.severity});
-        return errs;
+        job.cached = std::move(errs);
+        return job;
     }
 
     if (m_log) { *m_log << "[parsed] " << path << "\n"; m_log->flush(); }
 
-    // Cache miss: run the full pipeline.
-    auto stripped = CompilerDirectiveStripper::strip(text, path);
-    SvPreprocessor preprocessor = config ? SvPreprocessor(config->includeDirs) : SvPreprocessor();
+    // Cache miss: the full pipeline runs in parse().
     if (config) {
-        for (const auto& [name, value] : config->defines) preprocessor.define(name, value);
+        for (const auto& [name, value] : config->defines) job.preprocessor.define(name, value);
     }
 
     // An included file compiled on its own (opened or edited) starts where
@@ -150,19 +159,38 @@ std::vector<ParseError> CompilationController::compile(const std::string& path,
     const auto context = m_sdb.includeContextOf(path);
     if (context) {
         for (const auto& m : m_sdb.macrosOfUnit(*context, path))
-            preprocessor.define(MacroRecord{m.name, m.body, m.line, m.col, m.filePath,
-                                            m.isFunctionLike, m.params, m.defaults});
+            job.preprocessor.define(MacroRecord{m.name, m.body, m.line, m.col, m.filePath,
+                                                m.isFunctionLike, m.params, m.defaults});
         if (m_log) {
             *m_log << "[context]  " << path << ": scope '" << context->scope << "' from "
                    << context->includerPath << ":" << context->line << "\n";
             m_log->flush();
         }
+        job.initialScope = context->scope;
     }
-    auto preprocessed = preprocessor.process(stripped.source, path, m_log);
+    return job;
+}
+
+CompilationController::Parsed CompilationController::parse(Prepared&& job) const
+{
+    auto stripped = CompilerDirectiveStripper::strip(job.text, job.path);
+    auto preprocessed = job.preprocessor.process(stripped.source, job.path, m_log);
     auto walked = walk(preprocessed.source, preprocessed.sourceMap, m_collectDocs,
-                       context ? context->scope : std::string{});
+                       job.initialScope);
     if (!m_collectDocs)
         for (auto& mac : preprocessed.macros) mac.doc.clear();
+    return {std::move(job.path), std::move(job.text), std::move(job.hash),
+            std::move(preprocessed), std::move(walked)};
+}
+
+std::vector<ParseError> CompilationController::commit(Parsed&& parsed,
+                                                      std::vector<std::string>* includedFiles)
+{
+    const std::string& path = parsed.path;
+    const std::string& text = parsed.text;
+    const std::string& hash = parsed.hash;
+    const auto& preprocessed = parsed.preprocessed;
+    const auto& walked = parsed.walked;
 
     // Partition records, errors, imports, and instantiations by their
     // original source file. An empty `file` field means the record belongs

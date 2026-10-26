@@ -2,6 +2,7 @@
 #include "db/symbol_database.h"
 #include "compiler/parse_record.h"
 #include "compiler/project_config.h"
+#include "compiler/sv_preprocessor.h"
 #include "compiler/sv_tree_walker.h"
 #include <functional>
 #include <iosfwd>
@@ -64,6 +65,34 @@ public:
                                     const ProjectConfig* config = nullptr,
                                     std::vector<std::string>* includedFiles = nullptr,
                                     bool forceRecompile = false);
+
+    // compile() in three steps, for a caller whose lock over the DB must not
+    // be held across the parse (LanguageServer): prepare() and commit() use
+    // the DB, parse() does not. compile() is exactly prepare, then -- unless
+    // prepare() hit the cache -- parse and commit. A caller must not run
+    // another compile between one job's prepare() and its commit().
+    struct Prepared {
+        std::string path;
+        std::string text;
+        std::string hash;
+        std::optional<std::vector<ParseError>> cached{}; // a cache hit: compile()'s result
+        SvPreprocessor preprocessor;                     // seeded with config + include context
+        std::string initialScope{};
+    };
+    struct Parsed {
+        std::string path;
+        std::string text;
+        std::string hash;
+        PreprocessorResult preprocessed;
+        WalkResult walked;
+    };
+    Prepared prepare(const std::string& path, const std::string& text,
+                     const ProjectConfig* config = nullptr, bool forceRecompile = false);
+    Parsed parse(Prepared&& job) const;
+    // Persists `parsed` and returns compile()'s result; `includedFiles` as
+    // in compile().
+    std::vector<ParseError> commit(Parsed&& parsed,
+                                   std::vector<std::string>* includedFiles = nullptr);
 
     // Whether doc comments (plan.md §6.31) are extracted and stored; on by
     // default. Off leaves symbol_docs empty and macros.doc "", saving the

@@ -42,15 +42,6 @@ int LanguageServer::run()
     return 0;
 }
 
-lsp::Array<lsp::Diagnostic> LanguageServer::parseDiagnostics(
-    const lsp::DocumentUri& uri, const std::string& text,
-    std::vector<std::string>* includedFiles)
-{
-    const std::string path{uri.path()};
-    auto parseErrors = m_compiler.compile(path, text, m_projects.configFor(path), includedFiles);
-    return toDiagnostics(parseErrors);
-}
-
 lsp::Array<lsp::Diagnostic> LanguageServer::toDiagnostics(const std::vector<ParseError>& errs)
 {
     lsp::Array<lsp::Diagnostic> diags;
@@ -73,31 +64,56 @@ LanguageServer::collectIncludedDiagnostics(const std::vector<std::string>& paths
     return result;
 }
 
+std::optional<LanguageServer::CompileOutcome> LanguageServer::compileCurrent(
+    const lsp::DocumentUri& uri, bool openOnly, bool forceRecompile, const char* what)
+{
+    std::lock_guard serial{m_compileMutex};
+    const std::string path{uri.path()};
+    const auto start = TimedLock::Clock::now();
+    TimedLock::Clock::time_point acquired;
+    CompileOutcome out;
+    std::optional<CompilationController::Prepared> job;
+    {
+        std::lock_guard lock{m_dataMutex};
+        acquired = TimedLock::Clock::now();
+        std::optional<std::string> text;
+        if (m_store.contains(uri)) {
+            out.version = m_store.get(uri).version;
+            text        = m_store.get(uri).text;
+        } else if (!openOnly) {
+            text = readFile(path);
+        }
+        if (!text) return std::nullopt;
+        job = m_compiler.prepare(path, *text, m_projects.configFor(path), forceRecompile);
+    }
+
+    // The parse runs without the data mutex: requests are answered from the
+    // previous compile's state meanwhile, and didChange updates the store.
+    std::optional<CompilationController::Parsed> parsed;
+    if (!job->cached) parsed = m_compiler.parse(std::move(*job));
+
+    TimedLock lock{m_dataMutex, m_requestLog, what, m_requestLog ? path : std::string{}};
+    lock.reportSince(start, acquired);
+    std::vector<std::string> includedFiles;
+    out.diags = toDiagnostics(job->cached ? *job->cached
+                                          : m_compiler.commit(std::move(*parsed), &includedFiles));
+    out.includedDiags = collectIncludedDiagnostics(includedFiles);
+    return out;
+}
+
+void LanguageServer::publish(const lsp::DocumentUri& uri, CompileOutcome&& out)
+{
+    m_diagnostics.publish(uri, out.version, out.diags);
+    for (auto& [incUri, incDiags] : out.includedDiags)
+        m_diagnostics.publish(incUri, std::nullopt, std::move(incDiags));
+}
+
 void LanguageServer::compileAndPublish(const lsp::DocumentUri& uri)
 {
-    lsp::Array<lsp::Diagnostic> diags;
-    int version = 0;
-    // {URI, diagnostics} for every `` `include ``d file touched by this
-    // compile -- these were never `didOpen`ed by the client, so they're
-    // published separately, with no client-tracked version (plan.md's own
-    // "LSP diagnostics-visibility gap": this data was already computed and
-    // persisted to the DB per file, just never sent).
-    std::vector<std::pair<lsp::DocumentUri, lsp::Array<lsp::Diagnostic>>> includedDiags;
-    {
-        TimedLock lock{m_dataMutex, m_requestLog, "compile",
-                       m_requestLog ? std::string{uri.path()} : std::string{}};
-        if (!m_store.contains(uri))
-            return; // closed before this fired (didClose cancels the pending
-                     // debounce entry, but guard here too for the narrow race)
-        version = m_store.get(uri).version;
-
-        std::vector<std::string> includedFiles;
-        diags = parseDiagnostics(uri, m_store.get(uri).text, &includedFiles);
-        includedDiags = collectIncludedDiagnostics(includedFiles);
-    }
-    m_diagnostics.publish(uri, version, diags);
-    for (auto& [incUri, incDiags] : includedDiags)
-        m_diagnostics.publish(incUri, std::nullopt, std::move(incDiags));
+    // Nothing if closed before this fired (didClose cancels the pending
+    // debounce entry, but guard here too for the narrow race).
+    if (auto out = compileCurrent(uri, /*openOnly=*/true, /*forceRecompile=*/false, "compile"))
+        publish(uri, std::move(*out));
 }
 
 std::string LanguageServer::requestWhere(const lsp::DocumentUri& uri,
@@ -119,27 +135,9 @@ std::optional<std::string> LanguageServer::currentTextFor(const std::string& pat
 void LanguageServer::forceRecompileAndPublish(const std::string& path)
 {
     const lsp::DocumentUri uri = pathToUri(path);
-
-    std::optional<int> version;
-    lsp::Array<lsp::Diagnostic> diags;
-    std::vector<std::pair<lsp::DocumentUri, lsp::Array<lsp::Diagnostic>>> includedDiags;
-    {
-        TimedLock lock{m_dataMutex, m_requestLog, "recompile", m_requestLog ? path : std::string{}};
-        if (m_store.contains(uri))
-            version = m_store.get(uri).version;
-        auto text = currentTextFor(path);
-        if (!text)
-            return; // deleted/unreadable since being scheduled -- nothing to do
-
-        std::vector<std::string> includedFiles;
-        auto parseErrors = m_compiler.compile(path, *text, m_projects.configFor(path),
-                                               &includedFiles, /*forceRecompile=*/true);
-        diags = toDiagnostics(parseErrors);
-        includedDiags = collectIncludedDiagnostics(includedFiles);
-    }
-    m_diagnostics.publish(uri, version, diags);
-    for (auto& [incUri, incDiags] : includedDiags)
-        m_diagnostics.publish(incUri, std::nullopt, std::move(incDiags));
+    // Nothing if deleted/unreadable since being scheduled.
+    if (auto out = compileCurrent(uri, /*openOnly=*/false, /*forceRecompile=*/true, "recompile"))
+        publish(uri, std::move(*out));
 }
 
 void LanguageServer::registerHandlers()
