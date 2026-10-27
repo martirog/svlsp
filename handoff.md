@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-10-26 (C10 references search library DBs).
+**Last updated:** 2026-10-27 (§6.30 leftovers).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -89,8 +89,18 @@ test-integration-uvm` **15/15**, corpus 1563 / 31 (log
 `build/release/corpus_2026-10-26c.log`), `make perf-check` small no
 regression, uvm only references(`get_full_name`) (the new results).
 
+**§6.30 leftovers are done** (b66bd5d named blocks; 0eb00f2 modports / clocking
+blocks / `$root`; plan.md §6.30 "Follow-up: the
+receivers' leftovers"). New kinds `Modport` / `Clocking`, members listed
+in `detail` and resolved as views of the enclosing scope; a modport-typed
+handle offers only what the modport exposes; `$root.` paths. Verified:
+unit **1067/1067**, Emacs **318/318** (test_49 new), corpus 1563 / 31,
+`--build-db` identical, `make test-integration-uvm` 15/15. `make
+perf-check` is unconfirmed: run on battery (800 MHz), where the HEAD
+binary showed the same ~1.8x on several uvm rows -- rerun on AC.
+
 Next steps:
-1. The §6.30 leftovers ("Other open work" item 0).
+1. Rerun `make perf-check` (small + uvm) on AC power.
 2. Rename of a symbol declared in a library DB renames only the
    project's uses (the declaration can't be edited); failing closed there
    may be better.
@@ -121,6 +131,16 @@ What C2 changes for other work:
   (`classScopeName`, not `classTypeName(cs->class_type())`).
 - A subroutine body ended early by a syntax error keeps its scope to its own
   `endfunction` / `endtask` (`bodyStop`).
+
+What the §6.30 leftovers change for other work:
+- New kinds **`Modport`** and **`Clocking`**: their `detail` lists their
+  members ("input data, import drive, clocking cb"; `viewMemberNames`),
+  which are *not* rows -- resolve a member through `Resolver::memberOf` /
+  `viewMembers` (the enclosing scope's row), never
+  `findSymbolsInScope(<view scope>)`.
+- `resolveTypeName(..., valueType=true)` returns the Modport row for
+  `intf.mp` when there is one.
+- A `$root` receiver is `ReceiverType{nullopt, "$root"}`.
 
 What C9 changes for other work:
 - A server compile goes through `compileCurrent`: never call
@@ -185,9 +205,8 @@ What the receivers change (2026-10-21) needs other work to know:
   `symbol_utils.h`.
 - A bare name exactly at a recorded declaration's position resolves to it
   (exact) even when no lexical chain reaches it (struct members).
-- Disclosed: modports / clocking blocks not recorded (`vif.cb` -> nothing,
-  `vif.cb.sig` -> fallback); no upward names (`$root`); completion after a
-  module receiver skips its named blocks.
+- Disclosed then, closed 2026-10-27 (§6.30 leftovers): modports / clocking
+  blocks, `$root`, named blocks after a module receiver.
 
 Finished and committed 2026-10-19 (4e8a10d): `typedef class` rows +
 declare-before-use (plan.md
@@ -527,10 +546,9 @@ What §6.29 changed that other work must know about:
 
 ## Other open work (priority roughly top-down)
 
-0. **§6.30 leftovers** (all disclosed limits are closed once the
-   receivers change is committed): modports and clocking blocks as
-   symbols (`vif.cb.sig`), upward hierarchical names, named blocks in
-   completion after a module receiver.
+0. **§6.30 leftovers** -- done 2026-10-27 but an unnamed generate
+   block's `genblk<n>` and a typedef's unpacked dimensions; no upward
+   search by an ancestor's instance name (`$root` only, by decision).
 1. **§6.21** semantic reference-resolution diagnostics (unresolved type/import)
    — not started; its prerequisite (per-source diagnostics, v12) is done --
    use `source = 'reference'` with `replaceDiagnostics(..., source)`.

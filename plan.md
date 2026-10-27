@@ -4486,7 +4486,9 @@ column-granular scopes, include context, forward typedefs and
 declare-before-use, struct / interface / hierarchical receivers, ...) are
 done through 2026-10-21. No disclosed limit is left open; the receiver
 follow-up lists what it doesn't cover (modports, clocking blocks, upward
-names).
+names), and its leftovers follow-up (2026-10-27) covers those but an
+unnamed generate block's `genblk<n>` and a typedef's unpacked
+dimensions.
 Planned 2026-09-24. The failing cases are already
 committed as `[!shouldfail]` tests (`ad85a28`).
 
@@ -5844,6 +5846,62 @@ change.
   modules, interfaces, programs or virtual interfaces, so no `Instance`
   rows and no changed details; the corpus `uvm.db` was kept as is;
   `make test-integration-uvm` 13/13.
+
+**Follow-up: the receivers' leftovers (2026-10-27).** Done. Closes the
+disclosed limits above except an unnamed generate block's `genblk<n>`
+and a typedef's unpacked dimensions. Decisions (user, 2026-10-27): new
+kinds for modports and clocking blocks; a modport-typed handle offers only
+what the modport exposes; upward names are `$root` only (no instance-tree
+search).
+- *Named blocks after a module receiver* (b66bd5d). `candidatesFromRows`
+  takes `namedBlocks`: dot completion on a module / interface / block
+  owner offers its named Block rows (CompletionItemKind Module); unnamed
+  ones ("@<line>.<col>") and bare completion are unchanged.
+- *Modports and clocking blocks* (0eb00f2). New kinds `Modport` (SymbolKind
+  Interface, CompletionItemKind Interface) and `Clocking` (Event / Event),
+  recorded in their interface or module with their members listed in
+  `detail`: "<direction> <name>, ..." -- input/output/inout/ref, import/
+  export for a task or function, `clocking` for a modport's clocking block;
+  a clockvar sampled both ways is `inout`. An unnamed clocking block is
+  skipped. The members are *not* rows: they are views of the enclosing
+  scope (`isView`). `Resolver::memberOf(owner, name)` takes a view's
+  member only if the view lists it and finds it in the scope the view is
+  declared in, so `vif.cb.data`, `vmp.data` and `u_if.mp.drive()` resolve
+  to the interface's own signal / task, and references / rename of the
+  signal include the modport and clocking lists and every use through a
+  view (a clockvar row of its own would have split them). `typeOfRow`
+  makes a view its own owner; `KindFilter::Value` includes both;
+  `resolveTypeName(..., valueType=true)` resolves `intf.mp` to its Modport
+  row (the interface when there is none, e.g. a library DB built before).
+  Completion on a view owner offers `viewMembers` (each listed name's row
+  in the enclosing scope). An unlisted member through a modport resolves
+  to nothing (an understood receiver without the member).
+- *`$root`.* A lone `$root` receiver is `ReceiverType{nullopt, "$root"}`;
+  the next segment resolves only as a top-level design unit
+  (`Resolver::rootMember`), and on that segment itself exactly (hover /
+  definition on `top` in `$root.top.u.sig`). Completion after `$root.`
+  offers `topLevelDesignUnits`. A module name used upward (`top.u.sig`)
+  already resolved.
+- *Tests.* Unit: walker ("modports and clocking blocks are recorded with
+  their member lists"), resolver (clocking view, modport view incl.
+  unlisted members and the modport's own list, `$root` paths), references
+  (an interface signal through modports and clocking blocks), completion
+  (named blocks after a module / block receiver, modport / clocking views,
+  `$root.`). Emacs: test_47 gains completion after a module instance
+  offering its named blocks (fails on the binary before); new test_49
+  (`fixtures/views_root.sv`, decoys declared first): definition through a
+  clocking block, a modport-typed handle and a `$root` path, hover on a
+  clocking block, completion after a modport-typed handle and after
+  `$root.` (5 of 7 fail on the binary before; the other two already
+  resolved).
+- *Verification (2026-10-27).* Unit **1067/1067**; Emacs **318/318**;
+  UVM corpus 1563 / 31 (log `build/release/corpus_2026-10-27.log`);
+  `--build-db` identical (18441 symbols, same kinds, 0 diagnostics -- UVM
+  has no modports or clocking blocks; corpus `uvm.db` kept); `make
+  test-integration-uvm` 15/15. `make perf-check` uvm flagged completion /
+  typing / edit / references rows ~1.8x, but on battery (`powersave`, 800
+  MHz) and the HEAD binary without the change measured the same; recheck
+  on AC.
 
 **Ordering:** wildcard-import same-file fix (with its own test, done) → A → B
 (hover/definition first, then references + rename) → C → D. After each
