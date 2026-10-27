@@ -100,14 +100,18 @@ perf-check` small / uvm no regression (on AC; a run on battery at 800 MHz
 flagged ~1.8x on several uvm rows for the old binary too -- run perf
 checks on AC, `energy_performance_preference` = balance_performance).
 
+**Rename fails closed on a library declaration** (plan.md §6.33 C10,
+"Follow-up: rename fails closed"): a symbol whose declaration (override
+family root, or a macro's `define`) only an attached library DB has is
+refused with a `RequestFailed` error naming the library file, instead of
+renaming only the project's uses. Verified: unit **1070/1070**, Emacs
+**321/321** (test_50 new: builds a small library DB with `--build-db`).
+
 Next steps:
-1. Rename of a symbol declared in a library DB renames only the
-   project's uses (the declaration can't be edited); failing closed there
-   may be better.
-2. Optional, after C9: a commit still holds the data mutex (up to ~300 ms
+1. Optional, after C9: a commit still holds the data mutex (up to ~300 ms
    on `uvm_src`), and didOpen / didSave still compile on the message
    thread.
-3. Optional, LL cost on files with syntax errors (only they reach LL now):
+2. Optional, LL cost on files with syntax errors (only they reach LL now):
    the remaining LL time is true ambiguity in `primary` (decision 1068)
    and `hierarchical_identifier` (1103): `a.b` is a name, a name + select
    `.b`, or a name + the method loop. Profile with `tools/grammar_profile.sh
@@ -367,10 +371,10 @@ by name instead of from the typedef's scope, and merged duplicated helpers
   in workspace symbols, no completion inside comments/strings, and doc
   comments (§6.31) in hover, signature help and completion resolve.
 - Test baselines:
-  - unit: **1067 cases**, all passing (2026-10-27, §6.30 leftovers; 1059 with C10; 1053 with C9; 1051 with C8; 1048 on 2026-10-25, C4; 1047 with the C2 gap fixes; 1046 with C2; 1041 on 2026-10-24, C1; 1040 before the idle policy; 1031 with C7; 1029 on the receivers tree;
+  - unit: **1070 cases**, all passing (2026-10-27, library rename fails closed; 1067 with the §6.30 leftovers; 1059 with C10; 1053 with C9; 1051 with C8; 1048 on 2026-10-25, C4; 1047 with the C2 gap fixes; 1046 with C2; 1041 on 2026-10-24, C1; 1040 before the idle policy; 1031 with C7; 1029 on the receivers tree;
     1016 at 4e8a10d) (no `[!shouldfail]` known gaps left
     -- the `` `define `` references case passes since the macro follow-up)
-  - Emacs functional: **318/318** (2026-10-27, test_49 new and 2 test_47 cases; 309 on 2026-10-23, test_48 new; 305 with test_47)
+  - Emacs functional: **321/321** (2026-10-27, test_50 new; 318 with test_49 new and 2 test_47 cases; 309 on 2026-10-23, test_48 new; 305 with test_47)
   - `make test-integration-uvm` (opt-in): **15/15** (2026-10-26: library definition and references checks)
   - UVM corpus (opt-in): **1563 assertions / 31 cases**, all passing
     (unchanged by the receivers change, 2026-10-22).
@@ -702,7 +706,7 @@ Compiler **g++-13** (pinned in `CMakePresets.json`). Debug has ASan+UBSan
 |---|---|
 | Hover / Definition | `resolveSymbolAt` (`src/lsp/symbol_resolution.h`, plan.md §6.30): `::` qualifiers, named connections, `.` receiver chains (class, struct, interface, instance, block, modport / clocking view, `$root`), bare names innermost-scope-first; `exact=false` name-only fallback (`findSymbolsByName` + `pickBestSymbol`) when the qualifier/receiver isn't understood |
 | Completion | `findSymbolsVisibleAt` + keywords (`sv_keywords.h`, scope-kind legality) → fuzzy scoring (toggle: `initializationOptions.svlsp.fuzzyCompletion`). Dot-completion: `dotCompletionContext` → `resolveReceiverType` (the resolver's chain walk) → a class's members across `extends`, a struct/interface/module/block owner's own rows (named blocks included), a modport / clocking view's listed members (`viewMembers`), `$root.`'s top-level design units, or builtin container methods via `sv_builtin_methods.h` |
-| References / Rename | `ReferencesProvider::findOccurrences`: lexical cross-file `findIdentifierOccurrences`, each hit resolved with `resolveSymbolsAt` and kept if it lands on the target declaration / same method override family (`overrideFamilyRoot`, keyed by root declaration, not row id), or only resolves by fallback. References also search the attached library DBs' files when the family root (a macro: a `define`) is declared in one; rename edits that set in the project's files only |
+| References / Rename | `ReferencesProvider::findOccurrences`: lexical cross-file `findIdentifierOccurrences`, each hit resolved with `resolveSymbolsAt` and kept if it lands on the target declaration / same method override family (`overrideFamilyRoot`, keyed by root declaration, not row id), or only resolves by fallback. References also search the attached library DBs' files when the family root (a macro: a `define`) is declared in one; rename edits that set in the project's files only, and fails closed (`RequestFailed`) when the declaration is in a library-only file |
 | Signature help | instantiation ports; bare / `Class::` / `pkg::` / dotted calls resolved with `resolveSymbolAt` (exact Function/Task only; a qualified or dotted call fails closed, an unqualified one nothing visible declares falls back to a name-only search). Labels from `Port.detail` (`"<dir> <type>"`, optional `\x1F<default>` suffix) |
 
 Chain helpers (`peelDimensionLayers`, `splitLayers`,

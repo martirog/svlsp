@@ -6580,6 +6580,20 @@ code reviews can show that a rewrite does not regress latency or memory.
   Measured: `uvm` references(`get_full_name`) 1 -> 726 locations, 7 ->
   320 ms; the UVM Emacs test's references(`uvm_component`) 5 -> 382
   locations (377 in the library), server 183 ms.
+  - *Follow-up: rename fails closed on a library declaration* -- **done
+    2026-10-27.** Rename of a symbol a library declares used to edit only
+    the project's uses, leaving them naming nothing (or a project override
+    of a library method no longer overriding it). `findOccurrences` now
+    reports the library file holding the declaration (the override
+    family's root; for a macro, any of its `define`s) when only an
+    attached DB has that file, and rename throws `RequestFailed` ("'x' is
+    declared in the library file F, which can't be edited") instead of
+    editing. A file the project compiles itself stays renamable. Tests: 4
+    rename cases in `test_references_library.cpp` (library method, library
+    macro, project override, project symbol with a library attached) and
+    `test_50_library_rename.sh` (builds a small library DB with
+    `--build-db`, opens a project attaching it in its own workspace).
+    Unit 1070/1070, Emacs 321/321.
 
 ---
 
