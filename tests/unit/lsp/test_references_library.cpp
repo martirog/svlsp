@@ -2,6 +2,7 @@
 #include "lsp/references.h"
 #include "lsp/rename.h"
 #include "lsp/symbol_resolution.h"
+#include <lsp/error.h>
 #include "db/compilation_controller.h"
 #include "db/database.h"
 #include "db/symbol_database.h"
@@ -13,7 +14,8 @@
 #include <tuple>
 
 // References from a project into an attached library DB (plan.md §6.33
-// C10): the library's files are searched too; rename stays in the project.
+// C10): the library's files are searched too. Rename never edits a library,
+// so it fails closed on a symbol a library declares.
 
 namespace fs = std::filesystem;
 
@@ -153,23 +155,76 @@ TEST_CASE("references from a project find a library macro's definition and uses"
     });
 }
 
-TEST_CASE("rename from a project never edits an attached library's files",
+lsp::TextDocument_RenameResult renameAt(Fixture& f, std::pair<unsigned, unsigned> pos,
+                                        const std::string& newName = "renamed")
+{
+    lsp::RenameParams p;
+    p.textDocument.uri   = lsp::DocumentUri::fromPath(kTbPath);
+    p.position.line      = pos.first;
+    p.position.character = pos.second;
+    p.newName            = newName;
+    return RenameProvider::getRename(p, f.sdb, f.tbText, f.textFor());
+}
+
+// The message of the error renameAt throws, or "" if it doesn't.
+std::string renameError(Fixture& f, std::pair<unsigned, unsigned> pos)
+{
+    try {
+        renameAt(f, pos);
+    } catch (const lsp::RequestError& e) {
+        CHECK(e.code() == lsp::MessageError::RequestFailed);
+        return e.message();
+    }
+    return "";
+}
+
+TEST_CASE("rename of a library method fails closed instead of renaming only the project's uses",
           "[rename][library-attach]")
 {
     Fixture f;
-    lsp::RenameParams p;
-    p.textDocument.uri    = lsp::DocumentUri::fromPath(kTbPath);
-    const auto pos        = posOf(kTbText, "get_id");
-    p.position.line       = pos.first;
-    p.position.character  = pos.second;
-    p.newName             = "get_key";
-    const auto result = RenameProvider::getRename(p, f.sdb, kTbText, f.textFor());
+    const auto msg = renameError(f, posOf(kTbText, "get_id"));
+    CHECK(msg.find("'get_id'") != std::string::npos);
+    CHECK(msg.find(kLibPath) != std::string::npos);
+}
+
+TEST_CASE("rename of a library macro fails closed", "[rename][library-attach]")
+{
+    Fixture f;
+    CHECK(renameError(f, posOf(kTbText, "LIB_TAG")).find(kLibPath) != std::string::npos);
+}
+
+TEST_CASE("rename of a project override of a library method fails closed",
+          "[rename][library-attach]")
+{
+    // Renaming the override alone would stop it overriding.
+    const std::string tb =
+        "module tb;\n"
+        "  import lib_pkg::*;\n"
+        "  class ext extends base;\n"
+        "    function int get_id(); return 2; endfunction\n"
+        "  endclass\n"
+        "endmodule\n";
+    Fixture f{tb};
+    CHECK(renameError(f, posOf(tb, "get_id")).find(kLibPath) != std::string::npos);
+}
+
+TEST_CASE("rename of a project symbol with a library attached edits the project only",
+          "[rename][library-attach]")
+{
+    const std::string tb =
+        "module tb;\n"
+        "  int get_id;\n"
+        "  initial get_id = 1;\n"
+        "endmodule\n";
+    Fixture f{tb};
+    const auto result = renameAt(f, posOf(tb, "get_id"), "get_key");
     REQUIRE_FALSE(result.isNull());
     REQUIRE(result.value().changes);
-    std::set<std::string> paths;
-    for (const auto& [uri, edits] : *result.value().changes)
-        paths.insert(std::string(uri.path()));
-    CHECK(paths == std::set<std::string>{kTbPath});
+    REQUIRE(result.value().changes->size() == 1);
+    const auto& [uri, edits] = *result.value().changes->begin();
+    CHECK(std::string(uri.path()) == kTbPath);
+    CHECK(edits.size() == 2);
+    CHECK(f.reads[kLibPath] == 0);
 }
 
 TEST_CASE("references to a project override reach the library method it overrides",

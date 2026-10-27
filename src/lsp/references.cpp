@@ -24,16 +24,21 @@ std::vector<std::string> searchedPaths(const SymbolDatabase& db,
     return paths;
 }
 
-// Whether the library files are worth searching for a name declared at
-// `declPaths`: a library never refers to what only the project declares
-// (it can't import or extend the project), so only when one is a library
-// file.
-bool declaredInLibrary(const std::vector<std::string>& libPaths,
-                       const std::vector<std::string>& declPaths)
+// The first of `declPaths` that only an attached library DB has (one of
+// `libPaths` the project doesn't compile itself), or nullopt. The library
+// files are only worth searching for such a name: a library never refers to
+// what only the project declares (it can't import or extend the project).
+std::optional<std::string> libraryDeclaration(const SymbolDatabase& db,
+                                              const std::vector<std::string>& libPaths,
+                                              const std::vector<std::string>& declPaths)
 {
-    return std::any_of(declPaths.begin(), declPaths.end(), [&](const std::string& p) {
-        return std::find(libPaths.begin(), libPaths.end(), p) != libPaths.end();
-    });
+    if (libPaths.empty()) return std::nullopt;
+    const auto own = db.allFilePaths();
+    for (const auto& p : declPaths)
+        if (std::find(libPaths.begin(), libPaths.end(), p) != libPaths.end()
+            && std::find(own.begin(), own.end(), p) == own.end())
+            return p;
+    return std::nullopt;
 }
 
 size_t offsetOfOccurrence(const std::string& text, const TextOccurrence& occ)
@@ -53,19 +58,18 @@ size_t offsetOfOccurrence(const std::string& text, const TextOccurrence& occ)
 std::optional<std::vector<ReferencesProvider::Occurrence>> findMacroOccurrences(
     SymbolDatabase& db, const std::string& name,
     const std::function<std::optional<std::string>(const std::string&)>& textForPath,
-    std::string* nameOut, bool includeLibraries)
+    std::string* nameOut, bool includeLibraries, std::string* libraryDeclPath)
 {
     const auto defs = db.findMacros(name);
     if (defs.empty()) return std::nullopt;
     if (nameOut) *nameOut = name;
 
-    std::vector<std::string> libPaths;
-    if (includeLibraries) {
-        libPaths = db.libraryFilePaths();
-        std::vector<std::string> defPaths;
-        for (const auto& d : defs) defPaths.push_back(d.filePath);
-        if (!declaredInLibrary(libPaths, defPaths)) libPaths.clear();
-    }
+    std::vector<std::string> defPaths;
+    for (const auto& d : defs) defPaths.push_back(d.filePath);
+    auto libPaths = db.libraryFilePaths();
+    const auto inLibrary = libraryDeclaration(db, libPaths, defPaths);
+    if (libraryDeclPath) *libraryDeclPath = inLibrary.value_or("");
+    if (!includeLibraries || !inLibrary) libPaths.clear();
 
     std::vector<ReferencesProvider::Occurrence> result;
     for (const auto& path : searchedPaths(db, libPaths.empty() ? nullptr : &libPaths)) {
@@ -92,10 +96,11 @@ std::optional<std::vector<ReferencesProvider::Occurrence>> ReferencesProvider::f
     SymbolDatabase& db, const std::string& curPath, unsigned line, unsigned character,
     const std::string& docText,
     const std::function<std::optional<std::string>(const std::string&)>& textForPath,
-    std::string* name, bool includeLibraries)
+    std::string* name, bool includeLibraries, std::string* libraryDeclPath)
 {
     if (auto macro = macroNameAt(docText, line, character))
-        return findMacroOccurrences(db, macro->name, textForPath, name, includeLibraries);
+        return findMacroOccurrences(db, macro->name, textForPath, name, includeLibraries,
+                                    libraryDeclPath);
 
     const auto target = resolveSymbolAt(db, curPath, docText, line, character);
     if (!target) return std::nullopt; // not a known symbol -- fail closed
@@ -121,11 +126,10 @@ std::optional<std::vector<ReferencesProvider::Occurrence>> ReferencesProvider::f
     const SymbolRow targetRoot = familyOf(target->row);
     const DeclKey targetFamily = keyOf(targetRoot);
 
-    std::vector<std::string> libPaths;
-    if (includeLibraries) {
-        libPaths = db.libraryFilePaths();
-        if (!declaredInLibrary(libPaths, {targetRoot.filePath})) libPaths.clear();
-    }
+    auto libPaths = db.libraryFilePaths();
+    const auto inLibrary = libraryDeclaration(db, libPaths, {targetRoot.filePath});
+    if (libraryDeclPath) *libraryDeclPath = inLibrary.value_or("");
+    if (!includeLibraries || !inLibrary) libPaths.clear();
 
     std::vector<Occurrence> result;
     for (const auto& path : searchedPaths(db, libPaths.empty() ? nullptr : &libPaths)) {

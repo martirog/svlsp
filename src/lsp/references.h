@@ -54,12 +54,14 @@ public:
     // edits exactly what references reports in the project's own files).
     // `includeLibraries` also searches the attached library DBs' files
     // (SymbolDatabase::libraryFilePaths) -- references does, rename never
-    // edits a library. The searched name is written to `*name`.
-    // std::nullopt if the cursor isn't on a symbol that resolves to
-    // anything.
+    // edits a library. The searched name is written to `*name`, and to
+    // `*libraryDeclPath` the library file that declares it (for a method, its
+    // override family's root; for a macro, any `define) when only an
+    // attached library DB has that file, else "". std::nullopt if the
+    // cursor isn't on a symbol that resolves to anything.
     static std::optional<std::vector<Occurrence>> findOccurrences(
         SymbolDatabase& db, const std::string& curPath, unsigned line, unsigned character,
         const std::string& docText,
         const std::function<std::optional<std::string>(const std::string&)>& textForPath,
-        std::string* name, bool includeLibraries);
+        std::string* name, bool includeLibraries, std::string* libraryDeclPath = nullptr);
 };

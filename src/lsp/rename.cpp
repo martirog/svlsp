@@ -31,15 +31,22 @@ lsp::TextDocument_RenameResult RenameProvider::getRename(
             "'" + params.newName + "' is not a valid SystemVerilog identifier");
     }
 
-    std::string word;
+    std::string word, libraryDecl;
     const auto occurrences = ReferencesProvider::findOccurrences(
         db, std::string{params.textDocument.uri.path()}, params.position.line,
         params.position.character, docText, textForPath, &word,
-        /*includeLibraries=*/false); // a library is never edited
+        /*includeLibraries=*/false, &libraryDecl); // a library is never edited
     if (!occurrences) return nullptr; // not a known symbol
     if (word == "new") {
         throw lsp::RequestError(lsp::MessageError::InvalidParams,
             "a class constructor is always named 'new' and can't be renamed");
+    }
+    // Renaming only the project's uses would leave them naming nothing (or,
+    // for an override of a library method, no longer overriding it).
+    if (!libraryDecl.empty()) {
+        throw lsp::RequestError(lsp::MessageError::RequestFailed,
+            "'" + word + "' is declared in the library file " + libraryDecl
+            + ", which can't be edited");
     }
 
     lsp::Map<lsp::DocumentUri, lsp::Array<lsp::TextEdit>> changes;
