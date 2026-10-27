@@ -1045,6 +1045,65 @@ public:
     }
     void exitLoop_statement(SvParser::Loop_statementContext*) override { exitBlock(); }
 
+    // ---- Modports and clocking blocks (plan.md §6.30 leftovers) ----
+    // Views of their enclosing interface or module: the row lists the names
+    // it exposes ("<direction> <name>, ..." in `detail`), and the resolver
+    // finds each in the enclosing scope, so a member is never a row of its
+    // own (renaming `valid` renames `modport mp(input valid)` with it). An
+    // unnamed clocking block has no name to reach it by and is skipped.
+
+    void enterModport_item(SvParser::Modport_itemContext* ctx) override {
+        std::vector<std::string> members;
+        for (auto* decl : ctx->modport_ports_declaration()) {
+            if (auto* simple = decl->modport_simple_ports_declaration()) {
+                const std::string dir = simple->port_direction()->getText();
+                for (auto* port : simple->modport_simple_port())
+                    if (auto* id = port->port_identifier()) members.push_back(dir + " " + id->getText());
+            } else if (auto* tf = decl->modport_tf_ports_declaration()) {
+                const std::string dir = tf->import_export()->getText();
+                for (auto* port : tf->modport_tf_port()) {
+                    antlr4::ParserRuleContext* id = port->tf_identifier();
+                    if (auto* proto = port->method_prototype()) {
+                        if (auto* t = proto->task_prototype()) id = t->task_identifier();
+                        else if (auto* f = proto->function_prototype()) id = f->function_identifier();
+                    }
+                    if (id) members.push_back(dir + " " + id->getText());
+                }
+            } else if (auto* clk = decl->modport_clocking_declaration()) {
+                members.push_back("clocking " + clk->clocking_identifier()->getText());
+            }
+        }
+        pushView(ParseRecordKind::Modport, ctx->modport_identifier()->IDENTIFIER(), ctx, members);
+    }
+
+    void enterClocking_declaration(SvParser::Clocking_declarationContext* ctx) override {
+        const auto ids = ctx->clocking_identifier();
+        if (ids.empty()) return;
+        std::vector<std::string> members;
+        for (auto* item : ctx->clocking_item()) {
+            auto* dirCtx = item->clocking_direction();
+            auto* assigns = item->list_of_clocking_decl_assign();
+            if (!dirCtx || !assigns) continue;
+            const bool in = hasToken(dirCtx, "input"), out = hasToken(dirCtx, "output");
+            const std::string dir = in && out ? "inout" : in ? "input" : out ? "output" : "inout";
+            for (auto* a : assigns->clocking_decl_assign())
+                members.push_back(dir + " " + a->signal_identifier()->getText());
+        }
+        pushView(ParseRecordKind::Clocking, ids[0]->IDENTIFIER(), ctx, members);
+    }
+
+    void pushView(ParseRecordKind kind, antlr4::tree::TerminalNode* id,
+                  antlr4::ParserRuleContext* ctx, const std::vector<std::string>& members) {
+        std::string detail;
+        for (const auto& m : members) detail += (detail.empty() ? "" : ", ") + m;
+        const size_t before = m_records.size();
+        pushId(kind, id, ctx, currentScope(), detail);
+        if (m_records.size() == before) return;
+        const EndPos end = translatedEnd(ctx->stop);
+        m_records.back().endLine = end.line;
+        m_records.back().endCol  = end.col;
+    }
+
     void enterFor_variable_declaration(SvParser::For_variable_declarationContext* ctx) override {
         const std::string type = dataTypeName(ctx->data_type());
         for (auto* vi : ctx->variable_identifier())

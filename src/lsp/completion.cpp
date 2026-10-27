@@ -282,11 +282,16 @@ lsp::TextDocument_CompletionResult CompletionProvider::getCompletion(
         auto recv = resolveReceiverType(db, path, docText, dot->segments, at);
         if (!recv) return nullptr;
         std::vector<Candidate> candidates;
-        if (recv->owner && recv->owner->kind != "Class") {
-            // A struct, interface, module or named block: its own rows.
+        if (recv->builtin == "$root") {
+            candidates = candidatesFromRows(topLevelDesignUnits(db));
+        } else if (recv->owner && recv->owner->kind != "Class") {
+            // A struct, interface, module or named block: its own rows; a
+            // modport or clocking block: what it exposes.
             const auto& o = *recv->owner;
             candidates = candidatesFromRows(
-                db.findSymbolsInScope(o.scope.empty() ? o.name : o.scope + "::" + o.name),
+                o.kind == "Modport" || o.kind == "Clocking"
+                    ? viewMembers(db, o)
+                    : db.findSymbolsInScope(o.scope.empty() ? o.name : o.scope + "::" + o.name),
                 /*namedBlocks=*/true);
         } else {
             // A class by its qualified name (`$unit::` for a top-level one,

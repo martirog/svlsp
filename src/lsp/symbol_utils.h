@@ -149,6 +149,10 @@ std::string displayScope(const std::string& scope);
 // only ("$queue:p::C" -> {"$queue", "p::C"}); "" gives {""}.
 std::vector<std::string> splitLayers(const std::string& detail);
 
+// The member names a Modport / Clocking row's detail lists
+// ("input data, import drive, clocking cb" -> data, drive, cb), in order.
+std::vector<std::string> viewMemberNames(const std::string& detail);
+
 // True for a container-dimension layer tag ($queue, $assoc_array,
 // $dynamic_array, $fixed_array).
 bool isContainerDimensionTag(const std::string& layer);

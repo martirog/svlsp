@@ -38,6 +38,12 @@ enum class ParseRecordKind {
                  // else "@<line>.<col>" of its begin/fork/for/foreach keyword
     Instance,    // a module/interface/program instance; detail is its type, after
                  // any container tags of an instance array ("$fixed_array:sub")
+    Modport,     // an interface's modport; detail lists what it exposes,
+                 // "<direction> <name>, ..." (input/output/inout/ref, import/
+                 // export for a task or function, clocking for a clocking block)
+    Clocking,    // a named clocking block; detail lists its clockvars,
+                 // "<input|output|inout> <name>, ..." -- the enclosing scope's
+                 // signals of those names (plan.md §6.30 leftovers)
 };
 
 // Reserved ParseRecord::detail values for built-in container/data types with

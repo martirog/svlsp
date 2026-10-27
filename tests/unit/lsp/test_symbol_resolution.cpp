@@ -1155,3 +1155,98 @@ TEST_CASE("resolveSymbolAt: a name declared after the use only resolves by fallb
     requireResolves(f, "/later.sv", "@use", "later_v", "/later.sv", "@decl", /*exact=*/false);
     requireResolves(f, "/later.sv", "@cuse", "Lc", "/later.sv", "@cls", /*exact=*/false);
 }
+
+namespace {
+const std::string kViews =
+    "interface vw_if(input logic clk);\n"
+    "  logic [7:0] data; // @data\n"
+    "  logic valid, ready; // @valid\n"
+    "  logic only_if; // @only_if\n"
+    "  task automatic drive(); endtask // @drive\n"
+    "  clocking cb @(posedge clk); // @cb\n"
+    "    input data; // @cb_data\n"
+    "    output valid; // @cb_valid\n"
+    "  endclocking\n"
+    "  modport drv(input data, output valid, import drive, clocking cb); // @drv\n"
+    "  modport mon(input data); // @mon\n"
+    "endinterface\n"
+    "module vw_top(vw_if.mon p);\n"
+    "  logic clk, x;\n"
+    "  vw_if u_if(clk);\n"
+    "  virtual vw_if vif;\n"
+    "  virtual vw_if.drv vdrv;\n"
+    "  initial begin\n"
+    "    x = vif.cb.data; // @vif_cb_data\n"
+    "    vdrv.valid = 1; // @vdrv_valid\n"
+    "    vdrv.cb.valid = 1; // @vdrv_cb\n"
+    "    vdrv.only_if = 0; // @vdrv_only\n"
+    "    u_if.drv.drive(); // @u_if_drv\n"
+    "    x = p.data; // @p_data\n"
+    "    p.valid = 0; // @p_valid\n"
+    "  end\n"
+    "endmodule\n";
+} // namespace
+
+TEST_CASE("resolveSymbolAt: a clocking block is a view of its interface's signals",
+          "[resolution][dot][receivers][views]")
+{
+    F f;
+    f.add("/vw.sv", kViews);
+    requireResolvesTo(f, "/vw.sv", "@vif_cb_data", "cb", "/vw.sv", "@cb", "cb");
+    auto cb = resolveAt(f, "/vw.sv", posOf(kViews, "@vif_cb_data", "cb"));
+    REQUIRE(cb);
+    CHECK(cb->row.kind == "Clocking");
+    // A clockvar is the signal it samples.
+    requireResolvesTo(f, "/vw.sv", "@vif_cb_data", "data", "/vw.sv", "@data", "data");
+    requireResolvesTo(f, "/vw.sv", "@cb_data", "data", "/vw.sv", "@data", "data");
+}
+
+TEST_CASE("resolveSymbolAt: a modport exposes only what it lists",
+          "[resolution][dot][receivers][views]")
+{
+    F f;
+    f.add("/vw.sv", kViews);
+    requireResolvesTo(f, "/vw.sv", "@vdrv_valid", "valid", "/vw.sv", "@valid", "valid");
+    requireResolvesTo(f, "/vw.sv", "@vdrv_cb", "cb", "/vw.sv", "@cb", "cb");
+    requireResolvesTo(f, "/vw.sv", "@vdrv_cb", "valid", "/vw.sv", "@valid", "valid");
+    requireResolvesTo(f, "/vw.sv", "@u_if_drv", "drv", "/vw.sv", "@drv", "drv");
+    requireResolvesTo(f, "/vw.sv", "@u_if_drv", "drive", "/vw.sv", "@drive", "drive");
+    requireResolvesTo(f, "/vw.sv", "@p_data", "data", "/vw.sv", "@data", "data");
+    // In the modport's own list, a name is the interface's member.
+    requireResolvesTo(f, "/vw.sv", "@drv", "valid", "/vw.sv", "@valid", "valid");
+    // Understood receivers without the member.
+    CHECK_FALSE(resolveAt(f, "/vw.sv", posOf(kViews, "@vdrv_only", "only_if")).has_value());
+    CHECK_FALSE(resolveAt(f, "/vw.sv", posOf(kViews, "@p_valid", "valid")).has_value());
+}
+
+namespace {
+const std::string kRoot =
+    "package rt_pkg; endpackage\n"
+    "module rt_sub;\n"
+    "  logic sig; // @sig\n"
+    "endmodule\n"
+    "module rt_top; // @rt_top\n"
+    "  rt_sub u_sub(); // @u_sub\n"
+    "endmodule\n"
+    "module rt_other;\n"
+    "  logic x;\n"
+    "  initial x = $root.rt_top.u_sub.sig; // @root_path\n"
+    "  initial x = $root.rt_nope.sig; // @root_nope\n"
+    "endmodule\n";
+} // namespace
+
+TEST_CASE("resolveSymbolAt: an upward $root path starts at a top-level design unit",
+          "[resolution][dot][receivers][root]")
+{
+    F f;
+    f.add("/rt.sv", kRoot);
+    requireResolvesTo(f, "/rt.sv", "@root_path", "rt_top", "/rt.sv", "@rt_top", "rt_top");
+    requireResolvesTo(f, "/rt.sv", "@root_path", "u_sub", "/rt.sv", "@u_sub", "u_sub");
+    requireResolvesTo(f, "/rt.sv", "@root_path", "sig", "/rt.sv", "@sig", "sig");
+    // `$root.` names only design units: an unknown one is nothing, and a
+    // member after it only a name-only guess, as after any unresolved
+    // receiver segment.
+    CHECK_FALSE(resolveAt(f, "/rt.sv", posOf(kRoot, "@root_nope", "rt_nope")).has_value());
+    const auto guess = resolveAt(f, "/rt.sv", posOf(kRoot, "@root_nope", "sig"));
+    CHECK_FALSE((guess && guess->exact));
+}

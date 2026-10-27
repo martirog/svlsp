@@ -2521,3 +2521,63 @@ TEST_CASE("an unpacked array of a user type parsed as a net declaration keeps it
     CHECK(objs->detail == "$fixed_array:$fixed_array:rcv_K");
     CHECK(one->detail == "rcv_K");
 }
+
+TEST_CASE("modports and clocking blocks are recorded with their member lists",
+          "[compiler][listener][receivers][views]") {
+    // plan.md §6.30 leftovers: a Modport / Clocking row in its interface or
+    // module, its members listed in `detail` ("<direction> <name>, ...");
+    // the members themselves are the enclosing scope's rows.
+    auto result = walkSource(
+        "interface vw_if(input logic clk);\n"
+        "  logic [7:0] data;\n"
+        "  logic valid, ready;\n"
+        "  task automatic drive(); endtask\n"
+        "  clocking cb @(posedge clk);\n"
+        "    default input #1step output #2;\n"
+        "    input data;\n"
+        "    output valid, ready;\n"
+        "  endclocking\n"
+        "  modport drv(input data, output valid, ready, import drive, clocking cb),\n"
+        "          mon(input data, import task drive());\n"
+        "endinterface\n"
+        "module vw_m(input logic clk);\n"
+        "  logic s;\n"
+        "  default clocking mcb @(posedge clk); input #1 output #2 s; endclocking\n"
+        "  clocking @(posedge clk); input s; endclocking\n"
+        "endmodule\n");
+    REQUIRE(result.parseErrors.empty());
+
+    const auto* cb = findRecord(result.records, ParseRecordKind::Clocking, "cb");
+    REQUIRE(cb);
+    CHECK(cb->scope == "vw_if");
+    CHECK(cb->line == 5);
+    CHECK(cb->column == 11);
+    CHECK(cb->endLine == 9);
+    CHECK(cb->detail == "input data, output valid, output ready");
+
+    const auto* drv = findRecord(result.records, ParseRecordKind::Modport, "drv");
+    REQUIRE(drv);
+    CHECK(drv->scope == "vw_if");
+    CHECK(drv->line == 10);
+    CHECK(drv->column == 10);
+    CHECK(drv->detail == "input data, output valid, output ready, import drive, clocking cb");
+    const auto* mon = findRecord(result.records, ParseRecordKind::Modport, "mon");
+    REQUIRE(mon);
+    CHECK(mon->line == 11);
+    CHECK(mon->detail == "input data, import drive");
+
+    const auto* mcb = findRecord(result.records, ParseRecordKind::Clocking, "mcb");
+    REQUIRE(mcb);
+    CHECK(mcb->scope == "vw_m");
+    CHECK(mcb->detail == "inout s");
+
+    // The members are not rows of their own, and an unnamed clocking block
+    // records nothing.
+    for (const auto& r : result.records) {
+        CHECK(r.scope.find("::cb") == std::string::npos);
+        CHECK(r.scope.find("::drv") == std::string::npos);
+    }
+    CHECK(std::count_if(result.records.begin(), result.records.end(), [](const ParseRecord& r) {
+              return r.kind == ParseRecordKind::Clocking;
+          }) == 2);
+}

@@ -54,6 +54,8 @@ lsp::SymbolKind symbolKindFor(const std::string& kind)
     if (kind == "Genvar")      return lsp::SymbolKind::Variable;
     if (kind == "Block")       return lsp::SymbolKind::Namespace;
     if (kind == "Instance")    return lsp::SymbolKind::Object;
+    if (kind == "Modport")     return lsp::SymbolKind::Interface;
+    if (kind == "Clocking")    return lsp::SymbolKind::Event;
     return lsp::SymbolKind::Variable;
 }
 
@@ -75,6 +77,8 @@ lsp::CompletionItemKind completionKindFor(const std::string& kind)
     if (kind == "Genvar")      return lsp::CompletionItemKind::Variable;
     if (kind == "Instance")    return lsp::CompletionItemKind::Module;
     if (kind == "Block")       return lsp::CompletionItemKind::Module;
+    if (kind == "Modport")     return lsp::CompletionItemKind::Interface;
+    if (kind == "Clocking")    return lsp::CompletionItemKind::Event;
     return lsp::CompletionItemKind::Variable;
 }
 
@@ -631,4 +635,18 @@ std::string docMarkdown(const std::string& doc)
         out += doc[i];
     }
     return out;
+}
+
+std::vector<std::string> viewMemberNames(const std::string& detail)
+{
+    std::vector<std::string> names;
+    for (size_t start = 0; start < detail.size();) {
+        size_t end = detail.find(", ", start);
+        if (end == std::string::npos) end = detail.size();
+        const std::string entry = detail.substr(start, end - start);
+        const size_t sp = entry.rfind(' ');
+        names.push_back(sp == std::string::npos ? entry : entry.substr(sp + 1));
+        start = end + 2;
+    }
+    return names;
 }

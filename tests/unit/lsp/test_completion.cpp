@@ -1955,3 +1955,105 @@ TEST_CASE("CompletionProvider: a module or block receiver offers its named block
         CHECK_FALSE(hasItem(items, "g_blk"));
     }
 }
+
+TEST_CASE("CompletionProvider: a modport or clocking block offers only what it exposes",
+          "[completion][dot][receivers][views]")
+{
+    Fixture f;
+    CompilationController ctrl{f.sdb};
+    const std::string text =
+        "interface vwc_if(input logic clk);\n"
+        "  logic [7:0] data;\n"
+        "  logic valid, only_if;\n"
+        "  task automatic drive(); endtask\n"
+        "  clocking cb @(posedge clk);\n"
+        "    input data;\n"
+        "    output valid;\n"
+        "  endclocking\n"
+        "  modport drv(input data, output valid, import drive, clocking cb);\n"
+        "  modport mon(input data);\n"
+        "endinterface\n"
+        "module vwc_top(vwc_if.mon p);\n"
+        "  logic clk;\n"
+        "  virtual vwc_if vif;\n"
+        "  virtual vwc_if.drv vdrv;\n"
+        "  initial begin\n"
+        "  end\n"          // line 16: each probe is inserted before it
+        "endmodule\n";
+    ctrl.compile("/vwc.sv", text);
+
+    auto itemsAt = [&](const std::string& probe) {
+        size_t lineStart = 0;
+        for (unsigned l = 0; l < 16; ++l) lineStart = text.find('\n', lineStart) + 1;
+        const std::string typed = "    " + probe;
+        const std::string doc = text.substr(0, lineStart) + typed + "\n" + text.substr(lineStart);
+        auto result = CompletionProvider::getCompletion(
+            makeParams("/vwc.sv", 16, static_cast<unsigned>(typed.size())), f.sdb, doc);
+        INFO("probe " << probe);
+        REQUIRE_FALSE(result.isNull());
+        return result.get<lsp::Array<lsp::CompletionItem>>();
+    };
+
+    {
+        const auto items = itemsAt("vdrv.");
+        for (const char* l : {"data", "valid", "drive", "cb"}) CHECK(hasItem(items, l));
+        for (const char* l : {"only_if", "mon", "drv", "clk"}) CHECK_FALSE(hasItem(items, l));
+    }
+    {
+        const auto items = itemsAt("vif.cb.");
+        CHECK(hasItem(items, "data"));
+        CHECK(hasItem(items, "valid"));
+        CHECK_FALSE(hasItem(items, "only_if"));
+        CHECK_FALSE(hasItem(items, "drive"));
+    }
+    {
+        // The whole interface, its modports and clocking blocks included.
+        const auto items = itemsAt("vif.");
+        for (const char* l : {"data", "only_if", "drive", "cb", "drv", "mon"}) CHECK(hasItem(items, l));
+    }
+    {
+        const auto items = itemsAt("p.");
+        CHECK(hasItem(items, "data"));
+        CHECK_FALSE(hasItem(items, "valid"));
+    }
+}
+
+TEST_CASE("CompletionProvider: $root. offers the top-level design units",
+          "[completion][dot][receivers][root]")
+{
+    Fixture f;
+    CompilationController ctrl{f.sdb};
+    const std::string text =
+        "package rtc_pkg; endpackage\n"
+        "class rtc_C; endclass\n"
+        "interface rtc_if; endinterface\n"
+        "module rtc_sub; logic sig; endmodule\n"
+        "module rtc_top;\n"
+        "  rtc_sub u_sub();\n"
+        "  initial begin\n"
+        "  end\n"          // line 7: each probe is inserted before it
+        "endmodule\n";
+    ctrl.compile("/rtc.sv", text);
+
+    auto itemsAt = [&](const std::string& probe) {
+        size_t lineStart = 0;
+        for (unsigned l = 0; l < 7; ++l) lineStart = text.find('\n', lineStart) + 1;
+        const std::string typed = "    " + probe;
+        const std::string doc = text.substr(0, lineStart) + typed + "\n" + text.substr(lineStart);
+        auto result = CompletionProvider::getCompletion(
+            makeParams("/rtc.sv", 7, static_cast<unsigned>(typed.size())), f.sdb, doc);
+        INFO("probe " << probe);
+        REQUIRE_FALSE(result.isNull());
+        return result.get<lsp::Array<lsp::CompletionItem>>();
+    };
+
+    {
+        const auto items = itemsAt("$root.");
+        for (const char* l : {"rtc_top", "rtc_sub", "rtc_if"}) CHECK(hasItem(items, l));
+        for (const char* l : {"rtc_pkg", "rtc_C", "sig", "u_sub"}) CHECK_FALSE(hasItem(items, l));
+    }
+    {
+        const auto items = itemsAt("$root.rtc_top.u_sub.");
+        CHECK(hasItem(items, "sig"));
+    }
+}

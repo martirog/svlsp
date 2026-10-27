@@ -802,3 +802,29 @@ TEST_CASE("ReferencesProvider: a constructor's references are its own declaratio
           "endmodule\n");
     CHECK(findRefs(f, "/ctor_refs.sv", "new") == expectedAcross(f, "new"));
 }
+
+TEST_CASE("References: an interface signal through modports and clocking blocks",
+          "[references][scoped][receivers][views]")
+{
+    // Modport and clocking members are the interface's own signals, so the
+    // lists and every use through a view are references (and get renamed).
+    RealCompileFixture f;
+    f.add("/m.sv",
+          "interface refs_vw_if(input logic clk);\n"
+          "  logic refs_d; // @ref @cursor\n"
+          "  clocking cb @(posedge clk);\n"
+          "    input refs_d; // @ref\n"
+          "  endclocking\n"
+          "  modport mp(input refs_d, clocking cb); // @ref\n"
+          "endinterface\n"
+          "module refs_vw_top;\n"
+          "  logic clk, x;\n"
+          "  virtual refs_vw_if vif;\n"
+          "  virtual refs_vw_if.mp vmp;\n"
+          "  initial x = vif.cb.refs_d; // @ref\n"
+          "  initial x = vmp.refs_d; // @ref\n"
+          "  initial x = vmp.cb.refs_d; // @ref\n"
+          "endmodule\n");
+
+    requireExactRefs(f, "/m.sv", "refs_d");
+}

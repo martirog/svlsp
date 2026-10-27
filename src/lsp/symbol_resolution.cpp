@@ -28,6 +28,9 @@ bool isDesignUnit(const SymbolRow& r)
     return r.kind == "Module" || r.kind == "Interface" || r.kind == "Program";
 }
 
+// A modport or named clocking block: a view of its enclosing scope's rows.
+bool isView(const SymbolRow& r) { return r.kind == "Modport" || r.kind == "Clocking"; }
+
 std::optional<size_t> offsetOf(const std::string& text, unsigned line, unsigned character)
 {
     size_t offset = 0;
@@ -102,7 +105,8 @@ bool kindMatches(const SymbolRow& r, KindFilter f)
     case KindFilter::Callable:  return isCallable(r);
     case KindFilter::Value:
         return r.kind == "Signal" || r.kind == "Parameter" || r.kind == "Port" ||
-               r.kind == "Member" || r.kind == "Instance" || r.kind == "Block" || isDesignUnit(r);
+               r.kind == "Member" || r.kind == "Instance" || r.kind == "Block" ||
+               isView(r) || isDesignUnit(r);
     case KindFilter::Typedef:   return r.kind == "Typedef";
     }
     return true;
@@ -139,6 +143,11 @@ public:
     {
         return receiverType(segs, at);
     }
+    // viewMembers' entry point too.
+    std::optional<SymbolRow> memberOf(const SymbolRow& owner, const std::string& name,
+                                      KindFilter prefer) const;
+    // The top-level design unit `$root.<name>` names.
+    std::optional<SymbolRow> rootMember(const std::string& name) const;
 
     Resolver(SymbolDatabase& db, const std::string& path, const std::string& text)
         : m_db(db), m_path(path), m_text(blankCommentsAndStrings(text)) {}
@@ -334,15 +343,15 @@ std::optional<SymbolRow> Resolver::lookupBare(const std::string& path, SrcPos at
 // With `valueType` -- the type of a value a `.` can follow -- a struct/union
 // typedef (one with Member rows) is a result too, and a name no class or
 // typedef has resolves to the Interface/Module/Program of that name (a
-// virtual interface's `intf.mp` drops its modport).
+// virtual interface's `intf.mp` to its Modport row, else the interface).
 std::optional<SymbolRow> Resolver::resolveTypeName(const std::string& typeIn,
                                                    const std::string& ctxPath, SrcPos ctxAt,
                                                    bool valueType) const
 {
     if (typeIn.empty() || m_typeDepth > 16) return std::nullopt;
-    const std::string type =
-        valueType && typeIn.find('.') != std::string::npos ? typeIn.substr(0, typeIn.find('.'))
-                                                           : typeIn;
+    const size_t dot = valueType ? typeIn.find('.') : std::string::npos;
+    const std::string type = typeIn.substr(0, dot);
+    const std::string modport = dot == std::string::npos ? "" : typeIn.substr(dot + 1);
     struct DepthGuard {
         int& d;
         explicit DepthGuard(int& depth) : d(depth) { ++d; }
@@ -387,8 +396,13 @@ std::optional<SymbolRow> Resolver::resolveTypeName(const std::string& typeIn,
     }
     if (classes.size() == 1) return classes.front();
     if (classes.empty() && typedefs.size() == 1) return followTypedef(typedefs.front(), valueType);
-    if (valueType && classes.empty() && typedefs.empty() && !units.empty())
-        return *pickBestSymbol(units, ctxPath);
+    if (valueType && classes.empty() && typedefs.empty() && !units.empty()) {
+        const SymbolRow unit = *pickBestSymbol(units, ctxPath);
+        if (!modport.empty())
+            for (auto& r : m_db.findSymbolsInScope(qualifiedScopeOf(unit), modport))
+                if (r.kind == "Modport") return r;
+        return unit;
+    }
     return std::nullopt;
 }
 
@@ -484,6 +498,28 @@ std::optional<SymbolRow> Resolver::memberInScope(const std::string& scope, const
     return pick(m_db.findSymbolsInScope(scope, name));
 }
 
+// `name` as a member of the receiver `owner`: for a view (isView), only a
+// name its detail lists, found in the scope the view is declared in --
+// a clockvar is the signal it samples, a modport's member the interface's
+// own; otherwise memberInScope over the owner's qualified scope.
+std::optional<SymbolRow> Resolver::memberOf(const SymbolRow& owner, const std::string& name,
+                                            KindFilter prefer) const
+{
+    if (!isView(owner)) return memberInScope(qualifiedScopeOf(owner), name, prefer);
+    const auto names = viewMemberNames(owner.detail);
+    if (std::find(names.begin(), names.end(), name) == names.end()) return std::nullopt;
+    return memberInScope(owner.scope, name, prefer);
+}
+
+std::optional<SymbolRow> Resolver::rootMember(const std::string& name) const
+{
+    std::vector<SymbolRow> units;
+    for (auto& r : m_db.findSymbolsByName(name))
+        if (isDesignUnit(r) && r.scope.empty()) units.push_back(r);
+    if (units.empty()) return std::nullopt;
+    return *pickBestSymbol(units, m_path);
+}
+
 // The type of `row`'s value after `indexDepth` index groups, resolved where
 // the row itself was declared: the row owning its members (see
 // ReceiverType), else the remaining type text for a container or a type
@@ -492,7 +528,8 @@ std::optional<SymbolRow> Resolver::memberInScope(const std::string& scope, const
 // struct-typed variable declared with an inline struct.
 ReceiverType Resolver::typeOfRow(const SymbolRow& row, int indexDepth) const
 {
-    if (row.kind == "Block" || (isDesignUnit(row) && indexDepth == 0)) return {row, ""};
+    if (row.kind == "Block" || isView(row) || (isDesignUnit(row) && indexDepth == 0))
+        return {row, ""};
     std::string detail;
     if (row.kind == "Signal" || row.kind == "Parameter" || row.kind == "Member" ||
         row.kind == "Instance")
@@ -547,6 +584,8 @@ std::optional<ReceiverType> Resolver::receiverType(const std::vector<ChainSegmen
     ReceiverType type;
     if (!first.isCall && first.indexDepth == 0 && first.name == "this") {
         type.owner = enclosingClassRow(at);
+    } else if (!first.isCall && first.indexDepth == 0 && first.name == "$root") {
+        type.builtin = "$root";
     } else if (!first.isCall && first.indexDepth == 0 && first.name == "super") {
         auto self = enclosingClassRow(at);
         if (!self) return std::nullopt;
@@ -561,9 +600,14 @@ std::optional<ReceiverType> Resolver::receiverType(const std::vector<ChainSegmen
     }
 
     for (size_t i = 1; i < segs.size(); ++i) {
-        if (!type.owner) return std::nullopt;
-        auto m = memberInScope(qualifiedScopeOf(*type.owner), segs[i].name,
-                               segs[i].isCall ? KindFilter::Callable : KindFilter::Value);
+        std::optional<SymbolRow> m;
+        if (type.builtin == "$root" && !segs[i].isCall) {
+            m = rootMember(segs[i].name);
+        } else {
+            if (!type.owner) return std::nullopt;
+            m = memberOf(*type.owner, segs[i].name,
+                         segs[i].isCall ? KindFilter::Callable : KindFilter::Value);
+        }
         if (!m) return std::nullopt;
         type = typeOfRow(*m, segs[i].indexDepth);
     }
@@ -863,10 +907,15 @@ std::optional<ResolvedSymbol> Resolver::resolveAt(size_t offset, int depth)
         const lsp::Position endPos = positionForOffset(m_text, end);
         auto dotCtx = dotCompletionContext(m_text, endPos.line, endPos.character);
         if (!dotCtx || dotCtx->prefix != word) return fallback(word);
+        if (dotCtx->segments.size() == 1 && dotCtx->segments[0].name == "$root" &&
+            !dotCtx->segments[0].isCall && dotCtx->segments[0].indexDepth == 0) {
+            if (auto unit = rootMember(word)) return ResolvedSymbol{*unit, true};
+            return std::nullopt;
+        }
         auto owner = resolveReceiver(dotCtx->segments, at);
         if (!owner) return fallback(word);
         const KindFilter prefer = followedByParen ? KindFilter::Callable : KindFilter::Value;
-        if (auto m = memberInScope(qualifiedScopeOf(*owner), word, prefer))
+        if (auto m = memberOf(*owner, word, prefer))
             return ResolvedSymbol{*m, true};
         return std::nullopt;
     }
@@ -953,6 +1002,24 @@ std::optional<ReceiverType> resolveReceiverType(SymbolDatabase& db, const std::s
                                                 SrcPos at)
 {
     return Resolver(db, path, text).receiverTypeOf(segments, at);
+}
+
+std::vector<SymbolRow> topLevelDesignUnits(SymbolDatabase& db)
+{
+    std::vector<SymbolRow> units;
+    for (auto& r : db.findSymbolsInScope(""))
+        if (isDesignUnit(r)) units.push_back(r);
+    return units;
+}
+
+std::vector<SymbolRow> viewMembers(SymbolDatabase& db, const SymbolRow& view)
+{
+    const std::string noText;
+    Resolver resolver(db, view.filePath, noText);
+    std::vector<SymbolRow> rows;
+    for (const auto& name : viewMemberNames(view.detail))
+        if (auto m = resolver.memberOf(view, name, KindFilter::Value)) rows.push_back(*m);
+    return rows;
 }
 
 SymbolRow overrideFamilyRoot(SymbolDatabase& db, const SymbolRow& row)

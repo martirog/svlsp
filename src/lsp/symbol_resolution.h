@@ -69,9 +69,11 @@ std::vector<std::optional<SymbolRow>> resolveCallees(SymbolDatabase& db, const s
 // holds its members: a Class (members include its ancestors'), a struct/
 // union Typedef or a variable/member declared with an inline struct, an
 // Interface/Module/Program (an instance, a virtual interface, an interface
-// port, or a design unit named from the top), or a named Block. Otherwise
-// `builtin` is the remaining type text: a container (`$queue:C`), a
-// built-in (`$string`, `mailbox`) or a type name that resolves to nothing.
+// port, or a design unit named from the top), a named Block, or a Modport /
+// Clocking row (its members are those it lists, see viewMembers).
+// Otherwise `builtin` is the remaining type text: a container (`$queue:C`),
+// a built-in (`$string`, `mailbox`), a type name that resolves to nothing,
+// or `$root`.
 struct ReceiverType {
     std::optional<SymbolRow> owner;
     std::string              builtin;
@@ -81,11 +83,21 @@ struct ReceiverType {
 // `at` (1-based line) in `path`, whose source is `text` -- what dot
 // completion offers members of (plan.md §6.30, "Follow-up: struct,
 // interface and hierarchical receivers"). nullopt when a segment resolves
-// to nothing.
+// to nothing. A lone `$root` is {nullopt, "$root"}: its members are the
+// top-level design units (topLevelDesignUnits).
 std::optional<ReceiverType> resolveReceiverType(SymbolDatabase& db, const std::string& path,
                                                 const std::string& text,
                                                 const std::vector<ChainSegment>& segments,
                                                 SrcPos at);
+
+// Every Module/Interface/Program declared at the top level -- what
+// `$root.` names.
+std::vector<SymbolRow> topLevelDesignUnits(SymbolDatabase& db);
+
+// The rows a Modport / Clocking row exposes: each name its detail lists
+// (viewMemberNames), found in the scope the view is declared in, in list
+// order; a name with no row there (a modport expression port) is skipped.
+std::vector<SymbolRow> viewMembers(SymbolDatabase& db, const SymbolRow& view);
 
 // Identifies `row`'s override family: for a class method (Function/Task
 // scoped to a class), the same-named Function/Task declared by the topmost

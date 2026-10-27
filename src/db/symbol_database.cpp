@@ -31,6 +31,8 @@ static std::string kindStr(ParseRecordKind k)
     case ParseRecordKind::Genvar:      return "Genvar";
     case ParseRecordKind::Block:       return "Block";
     case ParseRecordKind::Instance:    return "Instance";
+    case ParseRecordKind::Modport:     return "Modport";
+    case ParseRecordKind::Clocking:    return "Clocking";
     }
     return "Unknown";
 }
