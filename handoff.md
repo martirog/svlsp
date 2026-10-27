@@ -367,10 +367,11 @@ by name instead of from the typedef's scope, and merged duplicated helpers
   in workspace symbols, no completion inside comments/strings, and doc
   comments (§6.31) in hover, signature help and completion resolve.
 - Test baselines:
-  - unit: **1048 cases**, all passing (2026-10-25, C4; 1047 with the C2 gap fixes; 1046 with C2; 1041 on 2026-10-24, C1; 1040 before the idle policy; 1031 with C7; 1029 on the receivers tree;
+  - unit: **1067 cases**, all passing (2026-10-27, §6.30 leftovers; 1059 with C10; 1053 with C9; 1051 with C8; 1048 on 2026-10-25, C4; 1047 with the C2 gap fixes; 1046 with C2; 1041 on 2026-10-24, C1; 1040 before the idle policy; 1031 with C7; 1029 on the receivers tree;
     1016 at 4e8a10d) (no `[!shouldfail]` known gaps left
     -- the `` `define `` references case passes since the macro follow-up)
-  - Emacs functional: **309/309** (2026-10-23, test_48 new; 305 with test_47)
+  - Emacs functional: **318/318** (2026-10-27, test_49 new and 2 test_47 cases; 309 on 2026-10-23, test_48 new; 305 with test_47)
+  - `make test-integration-uvm` (opt-in): **15/15** (2026-10-26: library definition and references checks)
   - UVM corpus (opt-in): **1563 assertions / 31 cases**, all passing
     (unchanged by the receivers change, 2026-10-22).
     (1903 -> 1563 with declare-before-use: in-class empty prefix
@@ -685,7 +686,10 @@ Compiler **g++-13** (pinned in `CMakePresets.json`). Debug has ASan+UBSan
   synchronously, then queues every `` `include ``r of the saved file on a
   second debouncer (`m_dependencyRechecker`, `forceRecompile=true`).
 - One coarse `m_dataMutex` guards store/DB/compiler/registry; never held
-  across a whole dependency cascade.
+  across a whole dependency cascade, nor across a compile's parse: every
+  compile goes through `compileCurrent` (lock for `prepare`, parse
+  unlocked, lock for `commit`), and `m_compileMutex` (taken first) keeps
+  compiles one at a time (plan.md §6.33 C9).
 - Primary file's diagnostics come from `compile()`'s return value; included
   files' diagnostics are read back from the DB and published with no
   `version`. Anything appended to the DB during `compile()` must also be merged
@@ -696,9 +700,9 @@ Compiler **g++-13** (pinned in `CMakePresets.json`). Debug has ASan+UBSan
 
 | Provider | Resolution |
 |---|---|
-| Hover / Definition | `resolveSymbolAt` (`src/lsp/symbol_resolution.h`, plan.md §6.30): `::` qualifiers, named connections, `.` receiver chains (class, struct, interface, instance, block), bare names innermost-scope-first; `exact=false` name-only fallback (`findSymbolsByName` + `pickBestSymbol`) when the qualifier/receiver isn't understood |
-| Completion | `findSymbolsVisibleAt` + keywords (`sv_keywords.h`, scope-kind legality) → fuzzy scoring (toggle: `initializationOptions.svlsp.fuzzyCompletion`). Dot-completion: `dotCompletionContext` → `resolveReceiverType` (the resolver's chain walk) → a class's members across `extends`, a struct/interface/module/block owner's own rows, or builtin container methods via `sv_builtin_methods.h` |
-| References / Rename | `ReferencesProvider::findOccurrences`: lexical cross-file `findIdentifierOccurrences`, each hit resolved with `resolveSymbolsAt` and kept if it lands on the target row / same method override family (`overrideFamilyId`), or only resolves by fallback. Rename edits exactly that set |
+| Hover / Definition | `resolveSymbolAt` (`src/lsp/symbol_resolution.h`, plan.md §6.30): `::` qualifiers, named connections, `.` receiver chains (class, struct, interface, instance, block, modport / clocking view, `$root`), bare names innermost-scope-first; `exact=false` name-only fallback (`findSymbolsByName` + `pickBestSymbol`) when the qualifier/receiver isn't understood |
+| Completion | `findSymbolsVisibleAt` + keywords (`sv_keywords.h`, scope-kind legality) → fuzzy scoring (toggle: `initializationOptions.svlsp.fuzzyCompletion`). Dot-completion: `dotCompletionContext` → `resolveReceiverType` (the resolver's chain walk) → a class's members across `extends`, a struct/interface/module/block owner's own rows (named blocks included), a modport / clocking view's listed members (`viewMembers`), `$root.`'s top-level design units, or builtin container methods via `sv_builtin_methods.h` |
+| References / Rename | `ReferencesProvider::findOccurrences`: lexical cross-file `findIdentifierOccurrences`, each hit resolved with `resolveSymbolsAt` and kept if it lands on the target declaration / same method override family (`overrideFamilyRoot`, keyed by root declaration, not row id), or only resolves by fallback. References also search the attached library DBs' files when the family root (a macro: a `define`) is declared in one; rename edits that set in the project's files only |
 | Signature help | instantiation ports; bare / `Class::` / `pkg::` / dotted calls resolved with `resolveSymbolAt` (exact Function/Task only; a qualified or dotted call fails closed, an unqualified one nothing visible declares falls back to a name-only search). Labels from `Port.detail` (`"<dir> <type>"`, optional `\x1F<default>` suffix) |
 
 Chain helpers (`peelDimensionLayers`, `splitLayers`,
@@ -721,6 +725,9 @@ uses `SymbolDatabase::pickSameFilePreferred` (the simpler half of
   (`PARAM_DEFAULT_VALUE_SEP`); interface ports store only their header text
   (`intf.mp`, `intf`, `interface`).
 - Instance: the instantiated type, after `$fixed_array:` per unpacked dim.
+- Modport / Clocking: the members it exposes, `"<direction> <name>, ..."`
+  (`input data, import drive, clocking cb`; `viewMemberNames`) -- names
+  of the enclosing scope's rows, not rows of their own.
 - A virtual interface's type is `intf` or `intf.mp` (Signal, Typedef,
   Function return type).
 - `""` as a *scope* means top level — `findSymbolsInScope("")` returns every
