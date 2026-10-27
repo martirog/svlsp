@@ -28,8 +28,12 @@ struct Candidate {
 // D), and a shadowed name would otherwise be offered once per scope.
 // Constructor rows are skipped: `obj.new` isn't legal, and the `new`
 // keyword is already offered where it is. A forward typedef is offered
-// only when no other row has its name.
-std::vector<Candidate> candidatesFromRows(const std::vector<SymbolRow>& rows)
+// only when no other row has its name. Blocks are offered only with
+// `namedBlocks` (after a module or block receiver: `u_sub.g_blk.w`), and
+// then only named ones -- an unnamed block's "@<line>.<col>" can't be
+// written.
+std::vector<Candidate> candidatesFromRows(const std::vector<SymbolRow>& rows,
+                                          bool namedBlocks = false)
 {
     std::vector<Candidate> out;
     out.reserve(rows.size());
@@ -38,7 +42,8 @@ std::vector<Candidate> candidatesFromRows(const std::vector<SymbolRow>& rows)
         if (!isForwardTypedef(row)) declared.insert(row.name);
     std::set<std::pair<std::string, std::string>> seen;
     for (auto& row : rows)
-        if (!(row.kind == "Function" && row.name == "new") && row.kind != "Block" &&
+        if (!(row.kind == "Function" && row.name == "new") &&
+            (row.kind != "Block" || (namedBlocks && row.name.rfind('@', 0) != 0)) &&
             !(isForwardTypedef(row) && declared.count(row.name)) &&
             seen.emplace(row.name, row.kind).second)
             out.push_back({row.name, completionKindFor(row), displayDetail(row), row});
@@ -281,7 +286,8 @@ lsp::TextDocument_CompletionResult CompletionProvider::getCompletion(
             // A struct, interface, module or named block: its own rows.
             const auto& o = *recv->owner;
             candidates = candidatesFromRows(
-                db.findSymbolsInScope(o.scope.empty() ? o.name : o.scope + "::" + o.name));
+                db.findSymbolsInScope(o.scope.empty() ? o.name : o.scope + "::" + o.name),
+                /*namedBlocks=*/true);
         } else {
             // A class by its qualified name (`$unit::` for a top-level one,
             // so baseClassChain never picks a same-named class elsewhere),

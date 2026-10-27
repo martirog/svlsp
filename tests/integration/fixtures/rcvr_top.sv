@@ -42,3 +42,20 @@ module rcvr_top(rcvr_if rcvr_port);
      probe: rcvr_u.
 `endif
 endmodule
+
+module rcvr_nb_sub;
+  if (1) begin : rcvr_gen
+    logic rcvr_w;
+  end
+  initial begin
+    int rcvr_anon;
+  end
+endmodule
+
+module rcvr_nb_top;
+  rcvr_nb_sub rcvr_nb_u();
+`ifdef SVLSP_TEST_PROBES
+     probe: rcvr_nb_u.
+     probe: rcvr_nb_u.rcvr_gen.
+`endif
+endmodule

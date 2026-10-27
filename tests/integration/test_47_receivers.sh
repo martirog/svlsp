@@ -85,3 +85,7 @@ completion_test "receivers: completion after a struct variable offers the struct
     40 14 "\"rcvr_hi\" \"rcvr_lo\"" "\"rcvr_valid\" \"rcvr_sig\""
 completion_test "receivers: completion after a module instance offers the module's members" \
     41 19 "\"rcvr_sig\" \"a\"" "\"rcvr_valid\" \"rcvr_hi\""
+completion_test "receivers: completion after a module instance offers its named blocks" \
+    57 22 "\"rcvr_gen\"" "\"rcvr_anon\" \"rcvr_w\""
+completion_test "receivers: completion after an instance's named block offers the block's members" \
+    58 31 "\"rcvr_w\"" "\"rcvr_gen\""

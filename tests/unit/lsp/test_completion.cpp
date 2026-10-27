@@ -1887,3 +1887,71 @@ TEST_CASE("CompletionProvider: struct, interface and hierarchical receivers offe
         CHECK_FALSE(hasItem(items, "hi"));
     }
 }
+
+TEST_CASE("CompletionProvider: a module or block receiver offers its named blocks",
+          "[completion][dot][receivers]")
+{
+    // §6.30 receivers follow-up, disclosed: `u_sub.` skipped every Block.
+    // Named ones are hierarchy (`u_sub.g_blk.w`); an unnamed one ("@l.c")
+    // can't be named.
+    Fixture f;
+    CompilationController ctrl{f.sdb};
+    const std::string text =
+        "module nbc_sub;\n"
+        "  logic sig;\n"
+        "  if (1) begin : g_blk\n"
+        "    logic w;\n"
+        "  end\n"
+        "  initial begin : run\n"
+        "    begin : inner\n"
+        "      int ix;\n"
+        "    end\n"
+        "  end\n"
+        "  initial begin\n"
+        "    int anon;\n"
+        "  end\n"
+        "endmodule\n"
+        "module nbc_top;\n"
+        "  nbc_sub u_sub();\n"
+        "  initial begin\n"
+        "  end\n"          // line 17: each probe is inserted before it
+        "endmodule\n";
+    ctrl.compile("/nbc.sv", text);
+
+    auto itemsAt = [&](const std::string& probe) {
+        size_t lineStart = 0;
+        for (unsigned l = 0; l < 17; ++l) lineStart = text.find('\n', lineStart) + 1;
+        const std::string typed = "    " + probe;
+        const std::string doc = text.substr(0, lineStart) + typed + "\n" + text.substr(lineStart);
+        auto result = CompletionProvider::getCompletion(
+            makeParams("/nbc.sv", 17, static_cast<unsigned>(typed.size())), f.sdb, doc);
+        INFO("probe " << probe);
+        REQUIRE_FALSE(result.isNull());
+        return result.get<lsp::Array<lsp::CompletionItem>>();
+    };
+    auto kindOf = [](const lsp::Array<lsp::CompletionItem>& items, const std::string& label)
+        -> std::optional<lsp::CompletionItemKind> {
+        for (const auto& i : items)
+            if (i.label == label && i.kind) return lsp::CompletionItemKind(*i.kind);
+        return std::nullopt;
+    };
+
+    {
+        const auto items = itemsAt("u_sub.");
+        CHECK(hasItem(items, "sig"));
+        CHECK(hasItem(items, "g_blk"));
+        CHECK(hasItem(items, "run"));
+        CHECK(kindOf(items, "g_blk") == lsp::CompletionItemKind::Module);
+        for (const auto& i : items) CHECK(i.label.rfind('@', 0) != 0);
+    }
+    {
+        const auto items = itemsAt("u_sub.run.");
+        CHECK(hasItem(items, "inner"));
+        CHECK_FALSE(hasItem(items, "sig"));
+    }
+    {
+        // Bare completion doesn't offer block names.
+        const auto items = itemsAt("");
+        CHECK_FALSE(hasItem(items, "g_blk"));
+    }
+}

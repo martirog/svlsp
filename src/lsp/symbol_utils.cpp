@@ -74,6 +74,7 @@ lsp::CompletionItemKind completionKindFor(const std::string& kind)
     if (kind == "Member")      return lsp::CompletionItemKind::Field;
     if (kind == "Genvar")      return lsp::CompletionItemKind::Variable;
     if (kind == "Instance")    return lsp::CompletionItemKind::Module;
+    if (kind == "Block")       return lsp::CompletionItemKind::Module;
     return lsp::CompletionItemKind::Variable;
 }
 
