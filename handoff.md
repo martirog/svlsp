@@ -95,19 +95,19 @@ receivers' leftovers"). New kinds `Modport` / `Clocking`, members listed
 in `detail` and resolved as views of the enclosing scope; a modport-typed
 handle offers only what the modport exposes; `$root.` paths. Verified:
 unit **1067/1067**, Emacs **318/318** (test_49 new), corpus 1563 / 31,
-`--build-db` identical, `make test-integration-uvm` 15/15. `make
-perf-check` is unconfirmed: run on battery (800 MHz), where the HEAD
-binary showed the same ~1.8x on several uvm rows -- rerun on AC.
+`--build-db` identical, `make test-integration-uvm` 15/15, `make
+perf-check` small / uvm no regression (on AC; a run on battery at 800 MHz
+flagged ~1.8x on several uvm rows for the old binary too -- run perf
+checks on AC, `energy_performance_preference` = balance_performance).
 
 Next steps:
-1. Rerun `make perf-check` (small + uvm) on AC power.
-2. Rename of a symbol declared in a library DB renames only the
+1. Rename of a symbol declared in a library DB renames only the
    project's uses (the declaration can't be edited); failing closed there
    may be better.
-3. Optional, after C9: a commit still holds the data mutex (up to ~300 ms
+2. Optional, after C9: a commit still holds the data mutex (up to ~300 ms
    on `uvm_src`), and didOpen / didSave still compile on the message
    thread.
-4. Optional, LL cost on files with syntax errors (only they reach LL now):
+3. Optional, LL cost on files with syntax errors (only they reach LL now):
    the remaining LL time is true ambiguity in `primary` (decision 1068)
    and `hierarchical_identifier` (1103): `a.b` is a name, a name + select
    `.b`, or a name + the method loop. Profile with `tools/grammar_profile.sh

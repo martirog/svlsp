@@ -5898,10 +5898,9 @@ search).
   UVM corpus 1563 / 31 (log `build/release/corpus_2026-10-27.log`);
   `--build-db` identical (18441 symbols, same kinds, 0 diagnostics -- UVM
   has no modports or clocking blocks; corpus `uvm.db` kept); `make
-  test-integration-uvm` 15/15. `make perf-check` uvm flagged completion /
-  typing / edit / references rows ~1.8x, but on battery (`powersave`, 800
-  MHz) and the HEAD binary without the change measured the same; recheck
-  on AC.
+  test-integration-uvm` 15/15; `make perf-check` small / uvm no
+  regression on AC (on battery, 800 MHz, the binary without the change
+  measured the same ~1.8x on several uvm rows).
 
 **Ordering:** wildcard-import same-file fix (with its own test, done) → A → B
 (hover/definition first, then references + rename) → C → D. After each
