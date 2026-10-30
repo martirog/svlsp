@@ -35,7 +35,7 @@ static int countKind(const std::vector<ParseRecord>& recs, ParseRecordKind kind)
 // ---------------------------------------------------------------------------
 
 TEST_CASE("module record emitted for inline source", "[compiler][listener]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource("module top; endmodule\n");
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource("module top; endmodule\n");
     REQUIRE(errs.empty());
     auto* r = findRecord(recs, ParseRecordKind::Module, "top");
     REQUIRE(r != nullptr);
@@ -43,13 +43,13 @@ TEST_CASE("module record emitted for inline source", "[compiler][listener]") {
 }
 
 TEST_CASE("module record from module_basic.sv", "[compiler][listener]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkFile(SV_EXAMPLES_DIR "/module_basic.sv");
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkFile(SV_EXAMPLES_DIR "/module_basic.sv");
     REQUIRE(errs.empty());
     REQUIRE(findRecord(recs, ParseRecordKind::Module, "adder") != nullptr);
 }
 
 TEST_CASE("multiple modules produce multiple records", "[compiler][listener]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module a; endmodule\n"
         "module b; endmodule\n");
     REQUIRE(errs.empty());
@@ -59,7 +59,7 @@ TEST_CASE("multiple modules produce multiple records", "[compiler][listener]") {
 }
 
 TEST_CASE("module line number is correct", "[compiler][listener]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "\n"
         "\n"
         "module positioned; endmodule\n");
@@ -74,13 +74,13 @@ TEST_CASE("module line number is correct", "[compiler][listener]") {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("interface record from interfaces.sv", "[compiler][listener]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkFile(SV_EXAMPLES_DIR "/interfaces.sv");
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkFile(SV_EXAMPLES_DIR "/interfaces.sv");
     REQUIRE(errs.empty());
     REQUIRE(findRecord(recs, ParseRecordKind::Interface, "bus_if") != nullptr);
 }
 
 TEST_CASE("interface record emitted for inline source", "[compiler][listener]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource("interface my_if; endinterface\n");
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource("interface my_if; endinterface\n");
     REQUIRE(errs.empty());
     REQUIRE(findRecord(recs, ParseRecordKind::Interface, "my_if") != nullptr);
 }
@@ -90,14 +90,14 @@ TEST_CASE("interface record emitted for inline source", "[compiler][listener]") 
 // ---------------------------------------------------------------------------
 
 TEST_CASE("package record from packages.sv", "[compiler][listener]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkFile(SV_EXAMPLES_DIR "/packages.sv");
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkFile(SV_EXAMPLES_DIR "/packages.sv");
     REQUIRE(errs.empty());
     REQUIRE(findRecord(recs, ParseRecordKind::Package, "math_pkg") != nullptr);
     REQUIRE(findRecord(recs, ParseRecordKind::Package, "bus_pkg") != nullptr);
 }
 
 TEST_CASE("package record emitted for inline source", "[compiler][listener]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource("package my_pkg; endpackage\n");
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource("package my_pkg; endpackage\n");
     REQUIRE(errs.empty());
     REQUIRE(findRecord(recs, ParseRecordKind::Package, "my_pkg") != nullptr);
 }
@@ -107,7 +107,7 @@ TEST_CASE("package record emitted for inline source", "[compiler][listener]") {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("class records from classes.sv", "[compiler][listener]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkFile(SV_EXAMPLES_DIR "/classes.sv");
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkFile(SV_EXAMPLES_DIR "/classes.sv");
     REQUIRE(errs.empty());
     REQUIRE(findRecord(recs, ParseRecordKind::Class, "Packet") != nullptr);
     REQUIRE(findRecord(recs, ParseRecordKind::Class, "ErrPacket") != nullptr);
@@ -115,7 +115,7 @@ TEST_CASE("class records from classes.sv", "[compiler][listener]") {
 }
 
 TEST_CASE("class record emitted for inline source", "[compiler][listener]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource("class Foo; endclass\n");
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource("class Foo; endclass\n");
     REQUIRE(errs.empty());
     REQUIRE(findRecord(recs, ParseRecordKind::Class, "Foo") != nullptr);
 }
@@ -125,7 +125,7 @@ TEST_CASE("class record emitted for inline source", "[compiler][listener]") {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("function and task records from functions_tasks.sv", "[compiler][listener]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkFile(SV_EXAMPLES_DIR "/functions_tasks.sv");
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkFile(SV_EXAMPLES_DIR "/functions_tasks.sv");
     REQUIRE(errs.empty());
     REQUIRE(findRecord(recs, ParseRecordKind::Function, "byte_reverse") != nullptr);
     REQUIRE(findRecord(recs, ParseRecordKind::Function, "clog2") != nullptr);
@@ -134,7 +134,7 @@ TEST_CASE("function and task records from functions_tasks.sv", "[compiler][liste
 }
 
 TEST_CASE("function record emitted for inline source", "[compiler][listener]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m;\n"
         "  function automatic int add(input int a, b); return a+b; endfunction\n"
         "endmodule\n");
@@ -143,7 +143,7 @@ TEST_CASE("function record emitted for inline source", "[compiler][listener]") {
 }
 
 TEST_CASE("task record emitted for inline source", "[compiler][listener]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m;\n"
         "  task automatic delay(input int n); repeat(n) @(posedge clk); endtask\n"
         "endmodule\n");
@@ -156,7 +156,7 @@ TEST_CASE("task record emitted for inline source", "[compiler][listener]") {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("ANSI port records emitted", "[compiler][listener]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m (input logic clk, input logic rst, output logic q);\n"
         "endmodule\n");
     REQUIRE(errs.empty());
@@ -167,7 +167,7 @@ TEST_CASE("ANSI port records emitted", "[compiler][listener]") {
 }
 
 TEST_CASE("port records from module_basic.sv", "[compiler][listener]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkFile(SV_EXAMPLES_DIR "/module_basic.sv");
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkFile(SV_EXAMPLES_DIR "/module_basic.sv");
     REQUIRE(errs.empty());
     CHECK(countKind(recs, ParseRecordKind::Port) > 0);
 }
@@ -177,12 +177,12 @@ TEST_CASE("port records from module_basic.sv", "[compiler][listener]") {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("parse errors reported for malformed source", "[compiler][listener]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource("module bad { endmodule\n");
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource("module bad { endmodule\n");
     CHECK(!errs.empty());
 }
 
 TEST_CASE("zero parse errors for valid source", "[compiler][listener]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource("module ok; endmodule\n");
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource("module ok; endmodule\n");
     CHECK(errs.empty());
 }
 
@@ -191,7 +191,7 @@ TEST_CASE("zero parse errors for valid source", "[compiler][listener]") {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("signal record from data_declaration inside module", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m;\n"
         "  logic [7:0] data;\n"
         "endmodule\n");
@@ -200,7 +200,7 @@ TEST_CASE("signal record from data_declaration inside module", "[compiler][liste
 }
 
 TEST_CASE("multiple signals from comma-separated data_declaration", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m;\n"
         "  logic a, b, c;\n"
         "endmodule\n");
@@ -211,7 +211,7 @@ TEST_CASE("multiple signals from comma-separated data_declaration", "[compiler][
 }
 
 TEST_CASE("signal record from net_declaration inside module", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m;\n"
         "  wire w;\n"
         "endmodule\n");
@@ -220,7 +220,7 @@ TEST_CASE("signal record from net_declaration inside module", "[compiler][listen
 }
 
 TEST_CASE("signals from functions_tasks.sv captured", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkFile(SV_EXAMPLES_DIR "/functions_tasks.sv");
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkFile(SV_EXAMPLES_DIR "/functions_tasks.sv");
     REQUIRE(errs.empty());
     REQUIRE(findRecord(recs, ParseRecordKind::Signal, "data") != nullptr);
     REQUIRE(findRecord(recs, ParseRecordKind::Signal, "clk")  != nullptr);
@@ -232,7 +232,7 @@ TEST_CASE("signals from functions_tasks.sv captured", "[compiler][listener][phas
 // ---------------------------------------------------------------------------
 
 TEST_CASE("class-typed signal records its declared type in detail", "[compiler][listener][phase6.10]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m;\n"
         "  MyClass foo;\n"
         "endmodule\n");
@@ -243,7 +243,7 @@ TEST_CASE("class-typed signal records its declared type in detail", "[compiler][
 }
 
 TEST_CASE("built-in-typed signal leaves detail empty", "[compiler][listener][phase6.10]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m;\n"
         "  logic [7:0] data;\n"
         "endmodule\n");
@@ -261,7 +261,7 @@ TEST_CASE("built-in-typed signal leaves detail empty", "[compiler][listener][pha
 // ---------------------------------------------------------------------------
 
 TEST_CASE("queue-typed signal is tagged $queue", "[compiler][listener][phase6.13]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m;\n"
         "  int q[$];\n"
         "endmodule\n");
@@ -272,7 +272,7 @@ TEST_CASE("queue-typed signal is tagged $queue", "[compiler][listener][phase6.13
 }
 
 TEST_CASE("associative-array-typed signal is tagged $assoc_array", "[compiler][listener][phase6.13]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m;\n"
         "  int aa[string];\n"
         "endmodule\n");
@@ -283,7 +283,7 @@ TEST_CASE("associative-array-typed signal is tagged $assoc_array", "[compiler][l
 }
 
 TEST_CASE("dynamic-array-typed signal is tagged $dynamic_array", "[compiler][listener][phase6.13]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m;\n"
         "  int arr[];\n"
         "endmodule\n");
@@ -294,7 +294,7 @@ TEST_CASE("dynamic-array-typed signal is tagged $dynamic_array", "[compiler][lis
 }
 
 TEST_CASE("fixed-size-array-typed signal is tagged $fixed_array", "[compiler][listener][phase6.13]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m;\n"
         "  int arr[8];\n"
         "endmodule\n");
@@ -305,7 +305,7 @@ TEST_CASE("fixed-size-array-typed signal is tagged $fixed_array", "[compiler][li
 }
 
 TEST_CASE("string-typed signal is tagged $string", "[compiler][listener][phase6.13]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m;\n"
         "  string s;\n"
         "endmodule\n");
@@ -316,7 +316,7 @@ TEST_CASE("string-typed signal is tagged $string", "[compiler][listener][phase6.
 }
 
 TEST_CASE("event-typed signal is tagged $event", "[compiler][listener][phase6.13]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m;\n"
         "  event e;\n"
         "endmodule\n");
@@ -328,7 +328,7 @@ TEST_CASE("event-typed signal is tagged $event", "[compiler][listener][phase6.13
 
 TEST_CASE("mailbox-typed signal records its declared type in detail (regression, no tree-walker change needed)",
           "[compiler][listener][phase6.13]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m;\n"
         "  mailbox #(int) mbx;\n"
         "endmodule\n");
@@ -340,7 +340,7 @@ TEST_CASE("mailbox-typed signal records its declared type in detail (regression,
 
 TEST_CASE("process-typed signal records its declared type in detail (regression, no tree-walker change needed)",
           "[compiler][listener][phase6.13]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m;\n"
         "  process p;\n"
         "endmodule\n");
@@ -352,7 +352,7 @@ TEST_CASE("process-typed signal records its declared type in detail (regression,
 
 TEST_CASE("semaphore-typed signal records its declared type in detail (regression, no tree-walker change needed)",
           "[compiler][listener][phase6.13]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m;\n"
         "  semaphore sem;\n"
         "endmodule\n");
@@ -364,7 +364,7 @@ TEST_CASE("semaphore-typed signal records its declared type in detail (regressio
 
 TEST_CASE("queue-typed and plain declarators sharing one data_type are tagged independently",
           "[compiler][listener][phase6.13]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m;\n"
         "  int a[$], b;\n"
         "endmodule\n");
@@ -386,7 +386,7 @@ TEST_CASE("queue-typed and plain declarators sharing one data_type are tagged in
 
 TEST_CASE("class-typed queue is tagged $queue:ClassName (element type appended)",
           "[compiler][listener][phase6.15]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "class MyClass; endclass\n"
         "module m;\n"
         "  MyClass q[$];\n"
@@ -399,7 +399,7 @@ TEST_CASE("class-typed queue is tagged $queue:ClassName (element type appended)"
 
 TEST_CASE("string-element queue is tagged $queue:$string (container wins, element still recorded)",
           "[compiler][listener][phase6.15]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m;\n"
         "  string s[$];\n"
         "endmodule\n");
@@ -414,7 +414,7 @@ TEST_CASE("int-element queue has no trailing element layer (unchanged from §6.1
     // Regression: a built-in scalar element type has no tag, so the detail
     // stays exactly the single container tag, matching §6.13's original
     // (pre-§6.15) behavior for this case.
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m;\n"
         "  int q[$];\n"
         "endmodule\n");
@@ -426,7 +426,7 @@ TEST_CASE("int-element queue has no trailing element layer (unchanged from §6.1
 
 TEST_CASE("a fixed array of queues of a class records all three layers, outermost first",
           "[compiler][listener][phase6.15]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "class MyClass; endclass\n"
         "module m;\n"
         "  MyClass arr[4][$];\n"
@@ -439,7 +439,7 @@ TEST_CASE("a fixed array of queues of a class records all three layers, outermos
 
 TEST_CASE("a fixed array of queues of int has only the two dimension layers, no element layer",
           "[compiler][listener][phase6.15]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m;\n"
         "  int arr[4][$];\n"
         "endmodule\n");
@@ -451,7 +451,7 @@ TEST_CASE("a fixed array of queues of int has only the two dimension layers, no 
 
 TEST_CASE("associative array of a class is tagged $assoc_array:ClassName",
           "[compiler][listener][phase6.15]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "class MyClass; endclass\n"
         "module m;\n"
         "  MyClass aa[string];\n"
@@ -471,7 +471,7 @@ TEST_CASE("associative array of a class is tagged $assoc_array:ClassName",
 
 TEST_CASE("pure virtual function is recorded as a Function symbol with its return type",
           "[compiler][listener][phase6.16]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "virtual class Base;\n"
         "  pure virtual function int get_val(int x);\n"
         "endclass\n");
@@ -484,7 +484,7 @@ TEST_CASE("pure virtual function is recorded as a Function symbol with its retur
 
 TEST_CASE("pure virtual task is recorded as a Task symbol",
           "[compiler][listener][phase6.16]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "virtual class Base;\n"
         "  pure virtual task do_it(int x);\n"
         "endclass\n");
@@ -496,7 +496,7 @@ TEST_CASE("pure virtual task is recorded as a Task symbol",
 
 TEST_CASE("extern function/task prototypes are recorded even with no body anywhere in the source",
           "[compiler][listener][phase6.16]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "class Base;\n"
         "  extern function int get_val(int x);\n"
         "  extern task do_it(int x);\n"
@@ -516,7 +516,7 @@ TEST_CASE("a pure-virtual method does not leak its scope onto declarations that 
     // listener. A prototype has no body -- if its own exit listener didn't
     // pop that frame, "y" below would be wrongly recorded as nested inside
     // get_val's scope instead of directly inside Base.
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "class Base;\n"
         "  pure virtual function int get_val(int x);\n"
         "  int y;\n"
@@ -534,7 +534,7 @@ TEST_CASE("interface class parses cleanly and records itself plus its pure-virtu
     // this: interface_class_declaration was defined in the grammar but never
     // referenced from any reachable parent rule, so this construct always
     // produced spurious parse errors before this fix.
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "package p;\n"
         "  interface class Foo;\n"
         "    pure virtual function int get_val(int x);\n"
@@ -554,7 +554,7 @@ TEST_CASE("interface class parses cleanly and records itself plus its pure-virtu
 
 TEST_CASE("interface class with multiple inheritance records only the first parent in detail",
           "[compiler][listener][phase6.16]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "package p;\n"
         "  interface class A;\n"
         "    pure virtual function int a_fn();\n"
@@ -577,7 +577,7 @@ TEST_CASE("a pure-virtual method still resolves cleanly when the class extends a
     // Models the real-world shape that motivated this fix: a class
     // extending an unresolved base (e.g. UVM's uvm_object, never declared
     // in this same file) with a pure-virtual method of its own.
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "virtual class Base extends uvm_object;\n"
         "  pure virtual function Base get_policy(int par);\n"
         "endclass\n");
@@ -592,7 +592,7 @@ TEST_CASE("a DPI-imported function is recorded as a Function symbol",
     // Falls out for free: dpi_function_proto/dpi_task_proto reduce to the
     // same function_prototype/task_prototype rules pure-virtual/extern
     // methods use, so no separate handling is needed for DPI imports.
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "import \"DPI-C\" function int foo(int x);\n");
     REQUIRE(errs.empty());
     auto* r = findRecord(recs, ParseRecordKind::Function, "foo");
@@ -608,7 +608,7 @@ TEST_CASE("a DPI-imported function is recorded as a Function symbol",
 
 TEST_CASE("a function parameter is recorded as a Port scoped to the function",
           "[compiler][listener][phase6.22]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "function int add(input int a);\n"
         "  return a;\n"
         "endfunction\n");
@@ -624,7 +624,7 @@ TEST_CASE("a function parameter is recorded as a Port scoped to the function",
 
 TEST_CASE("a task parameter is recorded as a Port scoped to the task",
           "[compiler][listener][phase6.22]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "task automatic do_thing(input int x);\n"
         "endtask\n");
     REQUIRE(errs.empty());
@@ -635,7 +635,7 @@ TEST_CASE("a task parameter is recorded as a Port scoped to the task",
 
 TEST_CASE("a non-default parameter direction is kept in detail",
           "[compiler][listener][phase6.22]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "function void foo(output int b);\n"
         "endfunction\n");
     REQUIRE(errs.empty());
@@ -648,7 +648,7 @@ TEST_CASE("a two-token parameter direction keeps its real spacing",
           "[compiler][listener][phase6.22]") {
     // Regression guard for the verbatim-token-stream extraction: ctx->getText()
     // would strip the space and yield "constrefint" instead.
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "function void foo(const ref int x);\n"
         "endfunction\n");
     REQUIRE(errs.empty());
@@ -659,7 +659,7 @@ TEST_CASE("a two-token parameter direction keeps its real spacing",
 
 TEST_CASE("a default parameter value is appended after the separator",
           "[compiler][listener][phase6.22]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "function void foo(int width = 8);\n"
         "endfunction\n");
     REQUIRE(errs.empty());
@@ -670,7 +670,7 @@ TEST_CASE("a default parameter value is appended after the separator",
 
 TEST_CASE("a class method's parameters are scoped to Class::method",
           "[compiler][listener][phase6.22]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "class C;\n"
         "  function int get(int i);\n"
         "    return i;\n"
@@ -684,7 +684,7 @@ TEST_CASE("a class method's parameters are scoped to Class::method",
 
 TEST_CASE("a pure-virtual method's parameters are recorded even with no body",
           "[compiler][listener][phase6.22]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "class C;\n"
         "  pure virtual function int compute(int a, int b);\n"
         "endclass\n");
@@ -707,7 +707,7 @@ TEST_CASE("a pure-virtual method's parameters are recorded even with no body",
 
 TEST_CASE("a comma-shorthand parameter inherits direction and type",
           "[compiler][listener][tf_shorthand]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "function int add(input int a, b);\n"
         "  return a + b;\n"
         "endfunction\n");
@@ -722,7 +722,7 @@ TEST_CASE("a comma-shorthand parameter inherits direction and type",
 
 TEST_CASE("a comma-shorthand parameter inherits a non-default direction",
           "[compiler][listener][tf_shorthand]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "task t(ref int a, b, c);\n"
         "endtask\n");
     REQUIRE(errs.empty());
@@ -734,7 +734,7 @@ TEST_CASE("a comma-shorthand parameter inherits a non-default direction",
 
 TEST_CASE("a comma-shorthand parameter with a default or dimension inherits the type",
           "[compiler][listener][tf_shorthand]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "function void f(input int a = 1, b = 2, c[4]);\n"
         "endfunction\n");
     REQUIRE(errs.empty());
@@ -750,7 +750,7 @@ TEST_CASE("a comma-shorthand parameter with a default or dimension inherits the 
 
 TEST_CASE("a parameter's unpacked dimensions are recorded before its default",
           "[compiler][listener][tf_port]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "function void f(ref MyClass q[$], input int m[string][2] = '{default: 0});\n"
         "endfunction\n");
     REQUIRE(errs.empty());
@@ -766,7 +766,7 @@ TEST_CASE("a parameter's unpacked dimensions are recorded before its default",
 
 TEST_CASE("a comma-shorthand parameter inherits a class or packed type",
           "[compiler][listener][tf_shorthand]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "function void f(MyClass a, b);\n"
         "endfunction\n"
         "function void g(input logic [7:0] x, y);\n"
@@ -787,7 +787,7 @@ TEST_CASE("a comma-shorthand parameter inherits a class or packed type",
 
 TEST_CASE("an explicit direction with no type defaults the type to logic",
           "[compiler][listener][tf_shorthand]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "function void f(input int a, output b);\n"
         "endfunction\n");
     REQUIRE(errs.empty());
@@ -798,7 +798,7 @@ TEST_CASE("an explicit direction with no type defaults the type to logic",
 
 TEST_CASE("an untyped first parameter defaults to logic",
           "[compiler][listener][tf_shorthand]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "function void f(a, b);\n"
         "endfunction\n");
     REQUIRE(errs.empty());
@@ -812,7 +812,7 @@ TEST_CASE("an untyped first parameter defaults to logic",
 
 TEST_CASE("a direction carries over to a later explicitly-typed parameter",
           "[compiler][listener][tf_shorthand]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "function void f(output int a, bit b);\n"
         "endfunction\n");
     REQUIRE(errs.empty());
@@ -823,7 +823,7 @@ TEST_CASE("a direction carries over to a later explicitly-typed parameter",
 
 TEST_CASE("a comma-shorthand parameter is recorded on a prototype",
           "[compiler][listener][tf_shorthand]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "class C;\n"
         "  pure virtual function void f(input int a, b);\n"
         "  extern task t(output bit x, y);\n"
@@ -841,7 +841,7 @@ TEST_CASE("a comma-shorthand parameter is recorded on a prototype",
 
 TEST_CASE("a prototype's unnamed type-only parameters record nothing",
           "[compiler][listener][tf_shorthand]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "class C;\n"
         "  extern function void f(int, my_t);\n"
         "  pure virtual function void g(my_t);\n"
@@ -855,7 +855,7 @@ TEST_CASE("a prototype's unnamed type-only parameters record nothing",
 // ---------------------------------------------------------------------------
 
 TEST_CASE("signal parent is the enclosing module name", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module my_mod;\n"
         "  logic sig;\n"
         "endmodule\n");
@@ -866,7 +866,7 @@ TEST_CASE("signal parent is the enclosing module name", "[compiler][listener][ph
 }
 
 TEST_CASE("port parent is the enclosing module name", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module top (input logic clk);\n"
         "endmodule\n");
     REQUIRE(errs.empty());
@@ -876,7 +876,7 @@ TEST_CASE("port parent is the enclosing module name", "[compiler][listener][phas
 }
 
 TEST_CASE("function parent is the enclosing module name", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m;\n"
         "  function automatic int add(input int a, b); return a+b; endfunction\n"
         "endmodule\n");
@@ -887,7 +887,7 @@ TEST_CASE("function parent is the enclosing module name", "[compiler][listener][
 }
 
 TEST_CASE("top-level module has empty parent", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource("module top_level; endmodule\n");
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource("module top_level; endmodule\n");
     REQUIRE(errs.empty());
     auto* r = findRecord(recs, ParseRecordKind::Module, "top_level");
     REQUIRE(r != nullptr);
@@ -899,7 +899,7 @@ TEST_CASE("top-level module has empty parent", "[compiler][listener][phase44]") 
 // ---------------------------------------------------------------------------
 
 TEST_CASE("input port detail is 'input <type>'", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m (input logic clk);\n"
         "endmodule\n");
     REQUIRE(errs.empty());
@@ -909,7 +909,7 @@ TEST_CASE("input port detail is 'input <type>'", "[compiler][listener][phase44]"
 }
 
 TEST_CASE("output port detail is 'output <type>'", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m (output logic q);\n"
         "endmodule\n");
     REQUIRE(errs.empty());
@@ -919,7 +919,7 @@ TEST_CASE("output port detail is 'output <type>'", "[compiler][listener][phase44
 }
 
 TEST_CASE("inout port detail is 'inout <type>'", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m (inout wire bus);\n"
         "endmodule\n");
     REQUIRE(errs.empty());
@@ -934,7 +934,7 @@ TEST_CASE("inout port detail is 'inout <type>'", "[compiler][listener][phase44]"
 
 TEST_CASE("a module port's declared type is recorded in detail",
           "[compiler][listener][phase6.28]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m (input int width);\n"
         "endmodule\n");
     REQUIRE(errs.empty());
@@ -945,7 +945,7 @@ TEST_CASE("a module port's declared type is recorded in detail",
 
 TEST_CASE("a module port with a user-defined type is recorded in detail",
           "[compiler][listener][phase6.28]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m (input MyIfcClass h);\n"
         "endmodule\n");
     REQUIRE(errs.empty());
@@ -956,7 +956,7 @@ TEST_CASE("a module port with a user-defined type is recorded in detail",
 
 TEST_CASE("an untyped/implicit module port keeps only its direction",
           "[compiler][listener][phase6.28]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m (input wire clk);\n"
         "endmodule\n");
     REQUIRE(errs.empty());
@@ -970,7 +970,7 @@ TEST_CASE("an untyped/implicit module port keeps only its direction",
 
 TEST_CASE("a module port's default value is appended after the separator",
           "[compiler][listener][phase6.28]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m (input int width = 8);\n"
         "endmodule\n");
     REQUIRE(errs.empty());
@@ -981,7 +981,7 @@ TEST_CASE("a module port's default value is appended after the separator",
 
 TEST_CASE("an interface port's detail is its interface header",
           "[compiler][listener][phase6.28]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m (my_if.mp h);\n"
         "endmodule\n");
     REQUIRE(errs.empty());
@@ -992,7 +992,7 @@ TEST_CASE("an interface port's detail is its interface header",
 
 TEST_CASE("a variable-port-header (var) module port records its type",
           "[compiler][listener][phase6.28]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m (output var int q);\n"
         "endmodule\n");
     REQUIRE(errs.empty());
@@ -1006,7 +1006,7 @@ TEST_CASE("a variable-port-header (var) module port records its type",
 // ---------------------------------------------------------------------------
 
 TEST_CASE("class with extends has parent class in detail", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "class Base; endclass\n"
         "class Child extends Base; endclass\n");
     REQUIRE(errs.empty());
@@ -1016,7 +1016,7 @@ TEST_CASE("class with extends has parent class in detail", "[compiler][listener]
 }
 
 TEST_CASE("class without extends has empty detail", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource("class Standalone; endclass\n");
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource("class Standalone; endclass\n");
     REQUIRE(errs.empty());
     auto* r = findRecord(recs, ParseRecordKind::Class, "Standalone");
     REQUIRE(r != nullptr);
@@ -1024,7 +1024,7 @@ TEST_CASE("class without extends has empty detail", "[compiler][listener][phase4
 }
 
 TEST_CASE("class hierarchy from classes.sv detail fields", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkFile(SV_EXAMPLES_DIR "/classes.sv");
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkFile(SV_EXAMPLES_DIR "/classes.sv");
     REQUIRE(errs.empty());
     auto* err_pkt = findRecord(recs, ParseRecordKind::Class, "ErrPacket");
     REQUIRE(err_pkt != nullptr);
@@ -1039,7 +1039,7 @@ TEST_CASE("class hierarchy from classes.sv detail fields", "[compiler][listener]
 // ---------------------------------------------------------------------------
 
 TEST_CASE("function detail contains return type text", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m;\n"
         "  function automatic int add(input int a, b); return a+b; endfunction\n"
         "endmodule\n");
@@ -1054,7 +1054,7 @@ TEST_CASE("function detail contains return type text", "[compiler][listener][pha
 // ---------------------------------------------------------------------------
 
 TEST_CASE("parameter record emitted for module parameter port", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m #(parameter int WIDTH = 8) (input logic clk);\n"
         "endmodule\n");
     REQUIRE(errs.empty());
@@ -1062,7 +1062,7 @@ TEST_CASE("parameter record emitted for module parameter port", "[compiler][list
 }
 
 TEST_CASE("localparam record emitted inside module body", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m;\n"
         "  localparam int DEPTH = 16;\n"
         "endmodule\n");
@@ -1071,7 +1071,7 @@ TEST_CASE("localparam record emitted inside module body", "[compiler][listener][
 }
 
 TEST_CASE("parameter parent is the enclosing module", "[compiler][listener][phase44]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module param_mod #(parameter int N = 4) ();\n"
         "endmodule\n");
     REQUIRE(errs.empty());
@@ -1081,7 +1081,7 @@ TEST_CASE("parameter parent is the enclosing module", "[compiler][listener][phas
 }
 
 TEST_CASE("class-typed localparam records its declared type in detail", "[compiler][listener][phase6.10]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m;\n"
         "  localparam MyClass DEFAULT_FOO = null;\n"
         "endmodule\n");
@@ -1092,7 +1092,7 @@ TEST_CASE("class-typed localparam records its declared type in detail", "[compil
 }
 
 TEST_CASE("built-in-typed parameter leaves detail empty", "[compiler][listener][phase6.10]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m #(parameter int N = 4) ();\n"
         "endmodule\n");
     REQUIRE(errs.empty());
@@ -1106,7 +1106,7 @@ TEST_CASE("built-in-typed parameter leaves detail empty", "[compiler][listener][
 // text, "" for none), scoped to the class/module it parameterizes.
 TEST_CASE("a class's type parameters are recorded with their default types",
           "[compiler][listener][phase6.21]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "package p; class Item #(type X = int); endclass endpackage\n"
         "class C #(type T = int, type U = p::Item #(int), type S = string, type N);\n"
         "  T t;\n"
@@ -1137,7 +1137,7 @@ TEST_CASE("a class's type parameters are recorded with their default types",
 
 TEST_CASE("parameter type and localparam type declarations are type parameters",
           "[compiler][listener][phase6.21]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "package p;\n"
         "  localparam type word_t = logic [7:0];\n"
         "endpackage\n"
@@ -1161,7 +1161,7 @@ TEST_CASE("parameter type and localparam type declarations are type parameters",
 
 TEST_CASE("parameter ports without the parameter keyword are recorded",
           "[compiler][listener][phase6.21]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m1 #(W = 8, type T = int) ();\n"
         "endmodule\n"
         "class C #(int DEPTH = 4, MyClass OBJ = null);\n"
@@ -1190,7 +1190,7 @@ TEST_CASE("parameter ports without the parameter keyword are recorded",
 
 TEST_CASE("walk without source map leaves file field empty",
           "[compiler][listener][sourcemap]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource("module m; endmodule\n");
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource("module m; endmodule\n");
     REQUIRE(errs.empty());
     auto* r = findRecord(recs, ParseRecordKind::Module, "m");
     REQUIRE(r != nullptr);
@@ -1407,7 +1407,7 @@ TEST_CASE("import inside a package that also exports is recorded distinctly",
 // ---------------------------------------------------------------------------
 
 TEST_CASE("program record emitted for inline source", "[compiler][listener][program]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource("program my_prog; endprogram\n");
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource("program my_prog; endprogram\n");
     REQUIRE(errs.empty());
     auto* r = findRecord(recs, ParseRecordKind::Program, "my_prog");
     REQUIRE(r != nullptr);
@@ -1415,7 +1415,7 @@ TEST_CASE("program record emitted for inline source", "[compiler][listener][prog
 }
 
 TEST_CASE("program endLine is backpatched", "[compiler][listener][program]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "program my_prog;\n"
         "  initial begin end\n"
         "endprogram\n");
@@ -1783,7 +1783,7 @@ TEST_CASE("a doubly-scoped call (T::type_id::create) records the whole "
 
 TEST_CASE("package-qualified class-typed signal keeps the package in detail",
           "[compiler][listener][phase6.30]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "package pkg_b; class Item; endclass endpackage\n"
         "module m;\n"
         "  pkg_b::Item x;\n"
@@ -1796,7 +1796,7 @@ TEST_CASE("package-qualified class-typed signal keeps the package in detail",
 
 TEST_CASE("package-qualified queue element keeps the package after the container tag",
           "[compiler][listener][phase6.30]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "package pkg_b; class Item; endclass endpackage\n"
         "module m;\n"
         "  pkg_b::Item q[$];\n"
@@ -1809,7 +1809,7 @@ TEST_CASE("package-qualified queue element keeps the package after the container
 
 TEST_CASE("a nested class type keeps every qualifier; parameters are dropped",
           "[compiler][listener][phase6.30]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "package p;\n"
         "  class Outer #(type T = int); class Inner; endclass endclass\n"
         "endpackage\n"
@@ -1828,7 +1828,7 @@ TEST_CASE("a nested class type keeps every qualifier; parameters are dropped",
 
 TEST_CASE("a $unit-qualified type keeps the $unit qualifier",
           "[compiler][listener][phase6.30]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "class Top; endclass\n"
         "module m;\n"
         "  $unit::Top t;\n"
@@ -1841,7 +1841,7 @@ TEST_CASE("a $unit-qualified type keeps the $unit qualifier",
 
 TEST_CASE("a package-qualified extends keeps the package in the class's detail",
           "[compiler][listener][phase6.30]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "package base_p; class Base; endclass endpackage\n"
         "class Child extends base_p::Base; endclass\n");
     REQUIRE(errs.empty());
@@ -1852,7 +1852,7 @@ TEST_CASE("a package-qualified extends keeps the package in the class's detail",
 
 TEST_CASE("a parameterized extends records only the base class name",
           "[compiler][listener][phase6.30]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "class Base #(type T = int); endclass\n"
         "class Child extends Base #(int); endclass\n");
     REQUIRE(errs.empty());
@@ -1868,7 +1868,7 @@ TEST_CASE("a parameterized extends records only the base class name",
 // recorded -- they'd shadow the real declaration in every scoped lookup.
 TEST_CASE("a leading assignment statement in a function body is not recorded as a declaration",
           "[compiler][listener][phase6.30]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "class Base; int level; endclass\n"
         "class Derived extends Base;\n"
         "  int idx;\n"
@@ -1883,7 +1883,7 @@ TEST_CASE("a leading assignment statement in a function body is not recorded as 
 
 TEST_CASE("implicit-typed declarations that really are declarations are still recorded",
           "[compiler][listener][phase6.30]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m;\n"
         "  initial begin\n"
         "    var v1 = 1;\n"
@@ -1907,7 +1907,7 @@ TEST_CASE("implicit-typed declarations that really are declarations are still re
 
 TEST_CASE("a typedef is recorded as a Typedef, with its aliased type in detail",
           "[compiler][listener][phase6.30][typedef]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "package p;\n"
         "  class Item; endclass\n"
         "  typedef logic [7:0] byte_t;\n"
@@ -1926,7 +1926,7 @@ TEST_CASE("a typedef is recorded as a Typedef, with its aliased type in detail",
 
 TEST_CASE("a forward typedef is recorded as a Typedef whose detail is its keyword",
           "[compiler][listener][phase6.30][typedef]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "package p;\n"
         "  typedef class Fwd;\n"
         "  typedef interface class IFwd;\n"
@@ -1959,7 +1959,7 @@ TEST_CASE("a forward typedef is recorded as a Typedef whose detail is its keywor
 
 TEST_CASE("enum literals are recorded in the enum's own scope",
           "[compiler][listener][phase6.30][enum]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m;\n"
         "  enum {IDLE, BUSY = 3} st;\n"
         "  typedef enum logic [1:0] {RED, GREEN} color_t;\n"
@@ -1982,7 +1982,7 @@ TEST_CASE("enum literals are recorded in the enum's own scope",
 
 TEST_CASE("struct/union members are scoped under their variable or typedef",
           "[compiler][listener][phase6.30][struct]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m;\n"
         "  struct packed { logic [3:0] hi; logic [3:0] lo; } s;\n"
         "  typedef struct { int a; struct { int deep; } inner; } pair_t;\n"
@@ -2013,7 +2013,7 @@ TEST_CASE("struct/union members are scoped under their variable or typedef",
 
 TEST_CASE("genvars are recorded from genvar declarations and inline loop genvars",
           "[compiler][listener][phase6.30][genvar]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "module m;\n"
         "  logic [3:0] v;\n"
         "  genvar g, h;\n"
@@ -2045,7 +2045,7 @@ TEST_CASE("genvars are recorded from genvar declarations and inline loop genvars
 TEST_CASE("an out-of-class function body is scoped under its class, with its locals and "
           "arguments nested under it",
           "[compiler][listener][phase6.30][outofclass]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "package p;\n"
         "  class C;\n"
         "    extern function void m(int a);\n"
@@ -2078,7 +2078,7 @@ TEST_CASE("an out-of-class function body is scoped under its class, with its loc
 
 TEST_CASE("out-of-class task bodies, nested-class qualifiers and top-level classes",
           "[compiler][listener][phase6.30][outofclass]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "package p;\n"
         "  class Outer;\n"
         "    class Inner; extern task run(); endclass\n"
@@ -2117,7 +2117,7 @@ TEST_CASE("out-of-class task bodies, nested-class qualifiers and top-level class
 
 TEST_CASE("an in-class constructor is recorded, with its arguments and locals under it",
           "[compiler][listener][phase6.30][ctor]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "package p;\n"
         "  class C;\n"
         "    function new(string name, int n = 1);\n"
@@ -2152,7 +2152,7 @@ TEST_CASE("an in-class constructor is recorded, with its arguments and locals un
 
 TEST_CASE("an extern constructor prototype and its out-of-class body share the class scope",
           "[compiler][listener][phase6.30][ctor]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "package p;\n"
         "  class C;\n"
         "    extern function new(string name);\n"
@@ -2188,7 +2188,7 @@ TEST_CASE("an extern constructor prototype and its out-of-class body share the c
 
 TEST_CASE("a constructor with no argument list is recorded",
           "[compiler][listener][phase6.30][ctor]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "class C;\n"
         "  function new;\n"
         "  endfunction\n"
@@ -2209,7 +2209,7 @@ TEST_CASE("a constructor with no argument list is recorded",
 
 TEST_CASE("a class variable initialized with new is recorded with its type",
           "[compiler][listener][ctor]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "package p; class A; endclass endpackage\n"
         "class B;\n"
         "  function void f();\n"
@@ -2239,7 +2239,7 @@ TEST_CASE("a class variable initialized with new is recorded with its type",
 
 TEST_CASE("a dynamic array initialized with new[] is recorded and tagged",
           "[compiler][listener][ctor]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "class A; endclass\n"
         "module m;\n"
         "  int arr[] = new[4];\n"
@@ -2261,7 +2261,7 @@ TEST_CASE("a dynamic array initialized with new[] is recorded and tagged",
 
 TEST_CASE("a class member's local/protected qualifier is recorded as its access",
           "[compiler][listener][access]") {
-    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+    auto [recs, errs, imps, insts, calls, incScopes, typeRefs] = walkSource(
         "class acc_C;\n"
         "  local int acc_a, acc_b;\n"
         "  protected static int acc_p;\n"
@@ -2663,4 +2663,162 @@ TEST_CASE("modports and clocking blocks are recorded with their member lists",
     CHECK(std::count_if(result.records.begin(), result.records.end(), [](const ParseRecord& r) {
               return r.kind == ParseRecordKind::Clocking;
           }) == 2);
+}
+
+// ---------------------------------------------------------------------------
+// Type references (plan.md §6.21 step 2): one TypeRefRecord per user type
+// written at a declaration site, at its name token.
+// ---------------------------------------------------------------------------
+
+static std::vector<TypeRefRecord> typeRefsNamed(const WalkResult& r, const std::string& name) {
+    std::vector<TypeRefRecord> out;
+    for (const auto& t : r.typeRefs)
+        if (t.name == name) out.push_back(t);
+    return out;
+}
+
+TEST_CASE("type references: variables, with their qualifiers and name positions",
+          "[compiler][listener][phase6.21][typeref]") {
+    const auto r = walkSource(
+        "package p; class Item; endclass class Outer #(type X = int); class Inner; endclass "
+        "endclass endpackage\n"                                   // 1
+        "class Top; endclass\n"                                   // 2
+        "module m;\n"                                             // 3
+        "  C c;\n"                                                // 4
+        "  p::Item i;\n"                                          // 5
+        "  p::Outer#(int)::Inner n;\n"                            // 6
+        "  $unit::Top t;\n"                                       // 7
+        "  C a, b;\n"                                             // 8
+        "  int x; string s; struct {int f;} st;\n"                // 9
+        "endmodule\n"
+        "class K; C2 k; endclass\n");                             // 11
+    REQUIRE(r.parseErrors.empty());
+    const auto c = typeRefsNamed(r, "C");
+    REQUIRE(c.size() == 2); // `C a, b;` is one written type
+    CHECK(c[0].line == 4);
+    CHECK(c[0].column == 2);
+    CHECK(c[0].qualifier.empty());
+    CHECK(c[1].line == 8);
+    const auto item = typeRefsNamed(r, "Item");
+    REQUIRE(item.size() == 1);
+    CHECK(item[0].qualifier == "p");
+    CHECK(item[0].line == 5);
+    CHECK(item[0].column == 5);
+    const auto inner = typeRefsNamed(r, "Inner");
+    REQUIRE(inner.size() == 1);
+    CHECK(inner[0].qualifier == "p::Outer");
+    CHECK(inner[0].column == 18);
+    CHECK(typeRefsNamed(r, "Outer").empty());
+    const auto top = typeRefsNamed(r, "Top");
+    REQUIRE(top.size() == 1);
+    CHECK(top[0].qualifier == "$unit");
+    CHECK(top[0].column == 9);
+    const auto k = typeRefsNamed(r, "C2");
+    REQUIRE(k.size() == 1);
+    CHECK(k[0].line == 11);
+    for (const auto& t : r.typeRefs) CHECK(t.line != 9);
+    CHECK(r.typeRefs.size() == 6);
+}
+
+TEST_CASE("type references: ANSI module ports", "[compiler][listener][phase6.21][typeref]") {
+    const auto r = walkSource(
+        "interface intf; logic x; modport mp(input x); endinterface\n"
+        "module pm(input p::C a, output D b, intf.mp m, interface g);\n"
+        "endmodule\n");
+    REQUIRE(r.parseErrors.empty());
+    const auto c = typeRefsNamed(r, "C");
+    REQUIRE(c.size() == 1);
+    CHECK(c[0].qualifier == "p");
+    CHECK(typeRefsNamed(r, "D").size() == 1);
+    const auto i = typeRefsNamed(r, "intf");
+    REQUIRE(i.size() == 1);
+    CHECK(i[0].line == 2);
+    CHECK(i[0].column == 36);
+    CHECK(r.typeRefs.size() == 3);
+}
+
+TEST_CASE("type references: function/task arguments count only their own written type",
+          "[compiler][listener][phase6.21][typeref]") {
+    const auto r = walkSource(
+        "class TfK;\n"
+        "  function void f1(C1 a, b); endfunction\n"
+        "  function void f2(input C2 a, D2 b); endfunction\n"
+        "  extern function void f3(int, my_t);\n"
+        "endclass\n");
+    REQUIRE(r.parseErrors.empty());
+    CHECK(typeRefsNamed(r, "C1").size() == 1);
+    CHECK(typeRefsNamed(r, "b").empty()); // the comma shorthand's name
+    CHECK(typeRefsNamed(r, "C2").size() == 1);
+    CHECK(typeRefsNamed(r, "D2").size() == 1);
+    CHECK(typeRefsNamed(r, "my_t").size() == 1);
+    CHECK(r.typeRefs.size() == 4);
+}
+
+TEST_CASE("type references: parameters, typedefs, return types, members, extends and implements",
+          "[compiler][listener][phase6.21][typeref]") {
+    const auto r = walkSource(
+        "package p2;\n"
+        "  class C; endclass class Base; endclass\n"
+        "  interface class I1; endclass interface class I2; endclass\n"
+        "  interface class I3 extends I1, I2; endclass\n"
+        "endpackage\n"
+        "module pr #(parameter p2::C P = null) ();\n"
+        "endmodule\n"
+        "class TpK #(type T = Item);\n"
+        "  typedef p2::C c_t;\n"
+        "  function p2::C get(); return null; endfunction\n"
+        "  extern function p2::Base get2();\n"
+        "  struct { Mem m; } s;\n"
+        "  const Kc kc = null;\n"
+        "endclass\n"
+        "class D extends p2::Base implements p2::I1, p2::I2; endclass\n");
+    REQUIRE(r.parseErrors.empty());
+    const auto c = typeRefsNamed(r, "C");
+    REQUIRE(c.size() == 3); // P's type, the typedef's, get's return type
+    for (const auto& t : c) CHECK(t.qualifier == "p2");
+    CHECK(c[0].line == 6);
+    CHECK(c[1].line == 9);
+    CHECK(c[2].line == 10);
+    CHECK(typeRefsNamed(r, "Item").size() == 1);
+    const auto base = typeRefsNamed(r, "Base");
+    REQUIRE(base.size() == 2); // get2's return type, D's extends
+    CHECK(base[1].line == 15);
+    CHECK(base[1].column == 20);
+    CHECK(typeRefsNamed(r, "Mem").size() == 1);
+    CHECK(typeRefsNamed(r, "Kc").size() == 1);
+    const auto i1 = typeRefsNamed(r, "I1");
+    REQUIRE(i1.size() == 2); // I3's extends, D's implements
+    CHECK(i1[0].qualifier.empty());
+    CHECK(i1[1].qualifier == "p2");
+    CHECK(typeRefsNamed(r, "I2").size() == 2);
+    CHECK(r.typeRefs.size() == 12);
+}
+
+TEST_CASE("type references: identifiers read as a data_type inside expressions are not recorded",
+          "[compiler][listener][phase6.21][typeref]") {
+    const auto r = walkSource(
+        "module leaf #(parameter int W = 1) (); endmodule\n"
+        "module neg;\n"
+        "  logic sig;\n"
+        "  localparam int SIZE = 4;\n"
+        "  int arr[SIZE];\n"
+        "  int w = $bits(sig);\n"
+        "  leaf #(.W(SIZE)) u();\n"
+        "  initial for (int i = 0; i < 2; i++) ;\n"
+        "endmodule\n");
+    REQUIRE(r.parseErrors.empty());
+    CHECK(r.typeRefs.empty());
+}
+
+TEST_CASE("type references: positions are translated through the source map",
+          "[compiler][listener][phase6.21][typeref][sourcemap]") {
+    // As if line 2 came from src.sv line 20, with a macro expansion earlier
+    // on it shifting columns >= 2 by 5.
+    const auto r = SvTreeWalker::walk("module m;\n  C sig;\nendmodule\n",
+                                      {{"", 1}, {"src.sv", 20, {{2, 5}}}, {"", 3}});
+    REQUIRE(r.parseErrors.empty());
+    REQUIRE(r.typeRefs.size() == 1);
+    CHECK(r.typeRefs[0].file == "src.sv");
+    CHECK(r.typeRefs[0].line == 20);
+    CHECK(r.typeRefs[0].column == 7);
 }

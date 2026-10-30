@@ -219,6 +219,24 @@ void get(Reader& r, CallRecord& c)
     c.nameColumn = r.i32();
 }
 
+void put(Writer& w, const TypeRefRecord& t)
+{
+    w.str(t.name);
+    w.str(t.qualifier);
+    w.i32(t.line);
+    w.i32(t.column);
+    w.str(t.file);
+}
+
+void get(Reader& r, TypeRefRecord& t)
+{
+    t.name      = r.str();
+    t.qualifier = r.str();
+    t.line      = r.i32();
+    t.column    = r.i32();
+    t.file      = r.str();
+}
+
 template <class T>
 void putAll(Writer& w, const std::vector<T>& v)
 {
@@ -323,6 +341,7 @@ std::string encodeWalkResult(const WalkResult& result)
     putAll(w, result.calls);
     w.u32(static_cast<uint32_t>(result.includeScopes.size()));
     for (const auto& [file, scope] : result.includeScopes) { w.str(file); w.str(scope); }
+    putAll(w, result.typeRefs);
     return w.take();
 }
 
@@ -339,6 +358,7 @@ bool decodeWalkResult(const std::string& buf, WalkResult& out)
         std::string file = r.str();
         out.includeScopes[std::move(file)] = r.str();
     }
+    getAll(r, out.typeRefs);
     return r.ok() && r.atEnd();
 }
 

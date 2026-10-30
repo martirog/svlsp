@@ -183,3 +183,14 @@ struct CallRecord {
     int         nameLine{0};
     int         nameColumn{0};
 };
+
+// One user type named at a declaration site (plan.md §6.21 step 2): `T x;`,
+// `input p::C c`, `extends Base`, a return type, a typedef's aliased type,
+// ... -- once per written type, not per declarator.
+struct TypeRefRecord {
+    std::string name;       // the type's own identifier (last segment)
+    std::string qualifier;  // "pkg", "p::Outer", "$unit", or "" (unqualified)
+    int         line{0};    // of `name`, 1-based in `file`
+    int         column{0};  // of `name`, 0-based
+    std::string file{};     // empty = same as compiled file
+};

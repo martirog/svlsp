@@ -14,6 +14,7 @@ struct WalkResult {
     // `include (e.g. "uvm_pkg"), keyed like ParseRecord::file. A file
     // with no tokens of its own (only `define's) has no entry.
     std::unordered_map<std::string, std::string> includeScopes;
+    std::vector<TypeRefRecord> typeRefs; // last: tests bind the members in order
 };
 
 // Runs the full ANTLR4 parse pipeline on already-preprocessed SV source and

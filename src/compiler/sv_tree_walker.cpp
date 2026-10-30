@@ -440,6 +440,7 @@ public:
     const std::vector<ImportRecord>& imports() const { return m_imports; }
     const std::vector<InstantiationRecord>& instantiations() const { return m_instantiations; }
     const std::vector<CallRecord>&   calls() const { return m_calls; }
+    const std::vector<TypeRefRecord>& typeRefs() const { return m_typeRefs; }
     const std::unordered_map<std::string, std::string>& includeScopes() const {
         return m_includeScopes;
     }
@@ -592,6 +593,8 @@ public:
         if (ctx->class_identifier().empty()) return;
         auto* id = ctx->class_identifier(0)->IDENTIFIER();
         const std::string parentClass = classTypeName(ctx->class_type());
+        recordTypeRef(ctx->class_type());
+        for (auto* ict : ctx->interface_class_type()) recordTypeRef(ict->ps_class_identifier());
         pushId(ParseRecordKind::Class, id, ctx, currentScope(), parentClass);
     }
 
@@ -612,6 +615,7 @@ public:
         // const_identifier directly (`local const ...` is a data_declaration)
         if (auto* ci = ctx->const_identifier()) {
             auto* dt = ctx->data_type();
+            recordTypeRef(dt);
             const std::string bareTag = builtinBareTypeTag(dt);
             pushId(ParseRecordKind::Signal, ci->IDENTIFIER(), ctx, currentScope(),
                    !bareTag.empty() ? bareTag : dataTypeName(dt));
@@ -641,6 +645,7 @@ public:
                         const auto pkg = packageScopeName(pci->package_scope());
                         parentClass = pkg.empty() ? pid->getText() : pkg + "::" + pid->getText();
                     }
+        for (auto* ict : ctx->interface_class_type()) recordTypeRef(ict->ps_class_identifier());
         pushId(ParseRecordKind::Class, id, ctx, currentScope(), parentClass);
     }
 
@@ -657,9 +662,11 @@ public:
         if (ctx->function_identifier().empty()) return;
         auto* id = ctx->function_identifier(0)->IDENTIFIER();
         std::string retType;
-        if (auto* fdt = ctx->function_data_type_or_implicit())
+        if (auto* fdt = ctx->function_data_type_or_implicit()) {
             retType = fdt->data_type_or_void() ? returnTypeText(fdt->data_type_or_void())
                                                : fdt->getText();
+            if (auto* dtv = fdt->data_type_or_void()) recordTypeRef(dtv->data_type());
+        }
         if (auto* cs = ctx->class_scope())
             pushOutOfClassBody(ParseRecordKind::Function, id, ctx, cs, retType);
         else
@@ -730,8 +737,10 @@ public:
         auto* fid = ctx->function_identifier();
         if (!fid) return;
         std::string retType;
-        if (auto* dtv = ctx->data_type_or_void())
+        if (auto* dtv = ctx->data_type_or_void()) {
             retType = returnTypeText(dtv);
+            recordTypeRef(dtv->data_type());
+        }
         pushId(ParseRecordKind::Function, fid->IDENTIFIER(), ctx, currentScope(), retType);
     }
 
@@ -787,6 +796,7 @@ public:
             port = effectiveTfPort(item, port, list);
             if (item == ctx) break;
         }
+        recordTypeRef(port.ownType); // an unnamed prototype argument's type too
         if (!port.name) return; // no name -- nothing to record
         const std::string& dir  = port.dir;
         const std::string& type = port.type;
@@ -832,12 +842,26 @@ public:
         std::string type;
         if (auto* nh = ctx->net_port_header()) {
             if (auto* pd = nh->port_direction()) dir = pd->getText();
-            if (auto* npt = nh->net_port_type()) type = m_tokens->getText(npt);
+            if (auto* npt = nh->net_port_type()) {
+                type = m_tokens->getText(npt);
+                if (auto* nti = npt->net_type_identifier())
+                    recordTypeRef(nti->IDENTIFIER(), "");
+                else if (auto* dtoi = npt->data_type_or_implicit())
+                    recordTypeRef(dtoi->data_type());
+            }
         } else if (auto* vh = ctx->variable_port_header()) {
             if (auto* pd = vh->port_direction()) dir = pd->getText();
-            if (auto* vpt = vh->variable_port_type()) type = m_tokens->getText(vpt);
+            if (auto* vpt = vh->variable_port_type()) {
+                type = m_tokens->getText(vpt);
+                if (auto* vdt = vpt->var_data_type())
+                    recordTypeRef(vdt->data_type() ? vdt->data_type()
+                                  : vdt->data_type_or_implicit()
+                                      ? vdt->data_type_or_implicit()->data_type()
+                                      : nullptr);
+            }
         } else if (auto* ih = ctx->interface_port_header()) {
             type = m_tokens->getText(ih); // "intf", "intf.mp", "interface"
+            if (auto* ii = ih->interface_identifier()) recordTypeRef(ii->IDENTIFIER(), "");
         }
         if (dir.empty())
             if (auto* pd = ctx->port_direction()) dir = pd->getText();
@@ -870,6 +894,7 @@ public:
             return;
         }
         auto* dtoi = ctx->data_type_or_implicit();
+        recordTypeRef(dtoi ? dtoi->data_type() : nullptr);
         const std::string typeName = userTypeName(dtoi);
         const std::string bareTag  = builtinBareTypeTag(dtoi ? dtoi->data_type() : nullptr);
         // Element tag/type text to append after any container-dimension
@@ -914,6 +939,10 @@ public:
         const std::string typeName = ctx->net_type_identifier()
             ? ctx->net_type_identifier()->IDENTIFIER()->getText()
             : userTypeName(ctx->data_type_or_implicit());
+        if (auto* nti = ctx->net_type_identifier())
+            recordTypeRef(nti->IDENTIFIER(), "");
+        else if (auto* dtoi = ctx->data_type_or_implicit())
+            recordTypeRef(dtoi->data_type());
 
         // Form 1: comma-separated assignment list. Each declarator's
         // unpacked dimensions are fixed-size array layers, as in
@@ -941,6 +970,7 @@ public:
     void enterType_declaration(SvParser::Type_declarationContext* ctx) override {
         const auto ids = ctx->type_identifier();
         if (ctx->data_type()) { // typedef <data_type> name;
+            recordTypeRef(ctx->data_type());
             if (!ids.empty())
                 pushId(ParseRecordKind::Typedef, ids[0]->IDENTIFIER(), ctx, currentScope(),
                        dataTypeName(ctx->data_type()));
@@ -981,6 +1011,7 @@ public:
         if (!owner) return;
         const std::string chain = currentScopeChain();
         const std::string scope = chain.empty() ? *owner : chain + "::" + *owner;
+        if (auto* dtv = ctx->data_type_or_void()) recordTypeRef(dtv->data_type());
         const std::string typeName =
             ctx->data_type_or_void() ? dataTypeName(ctx->data_type_or_void()->data_type()) : "";
         auto* list = ctx->list_of_variable_decl_assignments();
@@ -1105,6 +1136,7 @@ public:
     }
 
     void enterFor_variable_declaration(SvParser::For_variable_declarationContext* ctx) override {
+        recordTypeRef(ctx->data_type());
         const std::string type = dataTypeName(ctx->data_type());
         for (auto* vi : ctx->variable_identifier())
             pushId(ParseRecordKind::Signal, vi->IDENTIFIER(), ctx, currentScope(), type);
@@ -1201,15 +1233,70 @@ public:
                             nameLine, nameCol});
     }
 
+    // ---- Type references (plan.md §6.21 step 2) ----
+    // Recorded only at declaration sites, once per written type: the
+    // grammar also reads a plain identifier as a data_type inside
+    // expressions (`$bits(sig)`, `#(.W(N))`, `arr[SIZE]`), so a listener on
+    // every data_type would record names that aren't types.
+
+    void recordTypeRef(antlr4::tree::TerminalNode* id, std::string qualifier) {
+        if (!id) return;
+        auto* tok = id->getSymbol();
+        const int compiledLine = static_cast<int>(tok->getLine());
+        auto [file, line] = translateLine(compiledLine, m_sourceMap);
+        const int col = translateColumn(compiledLine,
+                                        static_cast<int>(tok->getCharPositionInLine()),
+                                        m_sourceMap);
+        m_typeRefs.push_back({id->getText(), std::move(qualifier), line, col, file});
+    }
+
+    // The user type a data_type names, if any: `[pkg::|C::]T`, a class type
+    // `[pkg::]C[#(...)][::Nested...]` (the last segment, qualified by the
+    // rest), or a virtual interface's interface. Built-in, inline
+    // struct/union/enum and `type(...)` types name none.
+    void recordTypeRef(SvParser::Data_typeContext* dt) {
+        if (!dt) return;
+        if (auto* ti = dt->type_identifier()) {
+            recordTypeRef(ti->IDENTIFIER(), dt->class_scope() ? classScopeName(dt->class_scope())
+                                                              : packageScopeName(dt->package_scope()));
+        } else if (auto* ct = dt->class_type()) {
+            recordTypeRef(ct);
+        } else if (auto* ii = dt->interface_identifier()) {
+            recordTypeRef(ii->IDENTIFIER(), "");
+        }
+    }
+
+    void recordTypeRef(SvParser::Class_typeContext* ct) {
+        if (!ct) return;
+        auto* psci = ct->ps_class_identifier();
+        if (!psci || !psci->class_identifier()) return;
+        std::string qualifier = packageScopeName(psci->package_scope());
+        auto* last = psci->class_identifier();
+        for (auto* nested : ct->class_identifier()) {
+            if (last->IDENTIFIER())
+                qualifier += (qualifier.empty() ? "" : "::") + last->IDENTIFIER()->getText();
+            last = nested;
+        }
+        recordTypeRef(last->IDENTIFIER(), std::move(qualifier));
+    }
+
+    void recordTypeRef(SvParser::Ps_class_identifierContext* psci) {
+        if (!psci || !psci->class_identifier()) return;
+        recordTypeRef(psci->class_identifier()->IDENTIFIER(),
+                      packageScopeName(psci->package_scope()));
+    }
+
     // ---- Parameters ----
 
     void enterParameter_declaration(SvParser::Parameter_declarationContext* ctx) override {
+        if (auto* dtoi = ctx->data_type_or_implicit()) recordTypeRef(dtoi->data_type());
         extractParams(ctx->list_of_param_assignments(), userTypeName(ctx->data_type_or_implicit()));
         extractTypeParams(ctx->list_of_type_assignments());
     }
 
     void enterLocal_parameter_declaration(
         SvParser::Local_parameter_declarationContext* ctx) override {
+        if (auto* dtoi = ctx->data_type_or_implicit()) recordTypeRef(dtoi->data_type());
         extractParams(ctx->list_of_param_assignments(), userTypeName(ctx->data_type_or_implicit()));
         extractTypeParams(ctx->list_of_type_assignments());
     }
@@ -1219,6 +1306,7 @@ public:
     // two listeners above), and `#(W = 8, ...)`'s leading assignments.
     void enterParameter_port_declaration(
         SvParser::Parameter_port_declarationContext* ctx) override {
+        recordTypeRef(ctx->data_type());
         extractParams(ctx->list_of_param_assignments(), dataTypeName(ctx->data_type()));
         extractTypeParams(ctx->list_of_type_assignments());
     }
@@ -1235,6 +1323,7 @@ private:
     std::vector<ImportRecord> m_imports;
     std::vector<InstantiationRecord> m_instantiations;
     std::vector<CallRecord>   m_calls;
+    std::vector<TypeRefRecord> m_typeRefs;
     std::unordered_map<std::string, std::string> m_includeScopes;
     std::string               m_lastRuleFile; // file of the last rule entered
     int                       m_lastTokenLine{0};  // output line of the last token visited
@@ -1253,6 +1342,9 @@ private:
         std::string dir{"input"};
         std::string type;
         bool isFirst{true};
+        // The item's own written type, when it is the type (not inherited,
+        // and not a bare identifier taken as the argument's name).
+        SvParser::Data_typeContext* ownType{nullptr};
     };
 
     // `item` resolved against the argument before it: a missing direction is
@@ -1281,6 +1373,7 @@ private:
         }
         auto* tpd = item->tf_port_direction();
         p.dir = tpd ? m_tokens->getText(tpd) : prev.dir;
+        if (!typeText.empty()) p.ownType = dtoi->data_type();
         if (!typeText.empty())            p.type = typeText;
         else if (prev.isFirst || tpd)     p.type = "logic";
         else                              p.type = prev.type;
@@ -1597,6 +1690,7 @@ private:
             if (!ti || !ti->IDENTIFIER()) continue;
             std::string detail;
             if (auto* dt = ta->data_type()) {
+                recordTypeRef(dt);
                 detail = builtinBareTypeTag(dt);
                 if (detail.empty()) detail = dataTypeName(dt);
                 if (detail.empty()) detail = m_tokens->getText(dt);
@@ -1694,5 +1788,5 @@ WalkResult SvTreeWalker::walk(const std::string& source,
     listener.finishTokens();
 
     return {listener.records(), errListener.errors(), listener.imports(), listener.instantiations(),
-            listener.calls(), listener.includeScopes()};
+            listener.calls(), listener.includeScopes(), listener.typeRefs()};
 }

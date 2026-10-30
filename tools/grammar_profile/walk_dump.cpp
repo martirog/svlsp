@@ -71,6 +71,7 @@ int main(int argc, char** argv) {
     const auto r = SvTreeWalker::walk(text, {}, true, "", prediction);
     std::cerr << "walk_dump: " << std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count()
               << " s, " << r.records.size() << " records, " << r.calls.size() << " calls, "
+              << r.typeRefs.size() << " type refs, "
               << r.parseErrors.size() << " errors\n";
 
     std::vector<std::string> lines;
@@ -93,6 +94,9 @@ int main(int argc, char** argv) {
               << ',';
         lines.push_back(l.str());
     }
+    for (const auto& t : r.typeRefs)
+        lines.push_back("typeref " + std::to_string(t.line) + ':' + std::to_string(t.column) + ' ' +
+                        (t.qualifier.empty() ? "" : t.qualifier + "::") + t.name);
     for (const auto& i : r.imports)
         lines.push_back("import " + std::to_string(i.line) + ' ' + i.pkgName + "::" + i.item +
                         (i.isExport ? " export" : "") + " scope=" + i.scope);

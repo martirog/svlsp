@@ -83,6 +83,7 @@ TEST_CASE("parse worker: a walk result survives encode/decode", "[parse_worker]"
     REQUIRE_FALSE(walked.instantiations.empty());
     REQUIRE_FALSE(walked.calls.empty());
     REQUIRE_FALSE(walked.includeScopes.empty());
+    REQUIRE_FALSE(walked.typeRefs.empty());
     REQUIRE(std::any_of(walked.records.begin(), walked.records.end(), [](const ParseRecord& r) {
         return r.kind == ParseRecordKind::TypeParameter;
     }));
