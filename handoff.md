@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-10-27 (§6.30 leftovers).
+**Last updated:** 2026-10-30 (§6.21 step 1, type parameters).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -107,7 +107,23 @@ refused with a `RequestFailed` error naming the library file, instead of
 renaming only the project's uses. Verified: unit **1070/1070**, Emacs
 **321/321** (test_50 new: builds a small library DB with `--build-db`).
 
+**§6.21 step 1, type parameters, is done** (plan.md §6.21, "Revised
+steps" and "Step 1: type parameters"): `parameter type` / `localparam
+type` / `#(type T = ...)` are rows of the new kind `TypeParameter`
+(detail = default type), and keyword-less parameter ports (`#(int W = 8)`,
+`#(W = 8)`) are recorded as Parameters. A value of a type parameter's type
+resolves through its default (`REQ req; req.` -> `uvm_sequence_item`).
+Verified: unit **1077/1077**, Emacs **326/326** (test_51 new), corpus
+1563 / 31 (symbol pin 18441 -> 18737; log
+`build/release/corpus_2026-10-30.log`), `--build-db` 0 diagnostics, +288
+TypeParameter / +8 Parameter rows, the rest identical (corpus `uvm.db`
+swapped in, previous `uvm.db.c10.bak`), `make test-integration-uvm`
+15/15, `make perf-check` small / uvm no regression (uvm hover/definition
++1.2-1.5 ms server, under threshold).
+
 Next steps:
+0. **§6.21 step 2**: `TypeRefRecord` per declared type reference (plan.md
+   §6.21 "Revised steps"), then the check (step 3).
 1. Optional, after C9: a commit still holds the data mutex (up to ~300 ms
    on `uvm_src`), and didOpen / didSave still compile on the message
    thread.
@@ -135,6 +151,12 @@ What C2 changes for other work:
   (`classScopeName`, not `classTypeName(cs->class_type())`).
 - A subroutine body ended early by a syntax error keeps its scope to its own
   `endfunction` / `endtask` (`bodyStop`).
+
+What §6.21 step 1 changes for other work:
+- New kind **`TypeParameter`**: anything switching on kind strings must
+  consider it. It is not a value (`KindFilter::Value` excludes it);
+  `resolveTypeName` follows its detail (the default type) where it is
+  declared; a `::` qualifier never does (`T::type_id` fails closed).
 
 What the §6.30 leftovers change for other work:
 - New kinds **`Modport`** and **`Clocking`**: their `detail` lists their
@@ -302,8 +324,9 @@ and release), UVM corpus 1145 / 30 cases, `--build-db` changed only
 in 190 Port details (dims added).
 - Run the UVM Emacs test with `make test-integration-uvm`; profile with
   `SVLSP_BIN=$PWD/build/release/svlsp make test-integration-uvm`. Its
-  default library DB is `<corpus>/uvm.db`, rebuilt 2026-10-26 with
-  absolute paths (C8; before it `uvm.db.relpaths.bak`, 2026-10-19 with
+  default library DB is `<corpus>/uvm.db`, rebuilt 2026-10-30 with
+  type parameters (§6.21 step 1; before it `uvm.db.c10.bak`, 2026-10-26
+  with absolute paths, C8; before that `uvm.db.relpaths.bak`, 2026-10-19 with
   forward typedefs; v16 before them `uvm.db.v16.bak`; v14 with block scopes `uvm.db.blocks.bak`, before
   blocks `uvm.db.v14.bak`, v13 `uvm.db.v13.bak`, v11 `uvm.db.v11.bak`);
   rebuild it after any
@@ -371,10 +394,10 @@ by name instead of from the typedef's scope, and merged duplicated helpers
   in workspace symbols, no completion inside comments/strings, and doc
   comments (§6.31) in hover, signature help and completion resolve.
 - Test baselines:
-  - unit: **1070 cases**, all passing (2026-10-27, library rename fails closed; 1067 with the §6.30 leftovers; 1059 with C10; 1053 with C9; 1051 with C8; 1048 on 2026-10-25, C4; 1047 with the C2 gap fixes; 1046 with C2; 1041 on 2026-10-24, C1; 1040 before the idle policy; 1031 with C7; 1029 on the receivers tree;
+  - unit: **1077 cases**, all passing (2026-10-30, §6.21 step 1; 1070 on 2026-10-27, library rename fails closed; 1067 with the §6.30 leftovers; 1059 with C10; 1053 with C9; 1051 with C8; 1048 on 2026-10-25, C4; 1047 with the C2 gap fixes; 1046 with C2; 1041 on 2026-10-24, C1; 1040 before the idle policy; 1031 with C7; 1029 on the receivers tree;
     1016 at 4e8a10d) (no `[!shouldfail]` known gaps left
     -- the `` `define `` references case passes since the macro follow-up)
-  - Emacs functional: **321/321** (2026-10-27, test_50 new; 318 with test_49 new and 2 test_47 cases; 309 on 2026-10-23, test_48 new; 305 with test_47)
+  - Emacs functional: **326/326** (2026-10-30, test_51 new; 321 on 2026-10-27, test_50 new; 318 with test_49 new and 2 test_47 cases; 309 on 2026-10-23, test_48 new; 305 with test_47)
   - `make test-integration-uvm` (opt-in): **15/15** (2026-10-26: library definition and references checks)
   - UVM corpus (opt-in): **1563 assertions / 31 cases**, all passing
     (unchanged by the receivers change, 2026-10-22).
@@ -403,7 +426,8 @@ by name instead of from the typedef's scope, and merged duplicated helpers
     duplicates; +10 for §6.29 part A; +633 for the macro follow-up, whose
     references case checks each of its 313 locations.)
   - UVM corpus `--build-db`: **0 diagnostics since C2 (1 before), 119 s /
-    2.96 GB since C2; 18440 symbol rows (1872
+    2.96 GB since C2; 18737 symbol rows since §6.21 step 1 (288
+    TypeParameter; 18441 before it, 18440 before the C2 gap fix) (1872
     Block, 511 Typedef incl. 201 forward), 553 macro rows, 166 files, 165
     include_sites rows, 965 symbol docs + 30 macro docs; 5.32 MB (5320704
     bytes), 14 min / 6.9 GB RSS**; identical after the receivers change
@@ -555,8 +579,9 @@ What §6.29 changed that other work must know about:
    block's `genblk<n>` and a typedef's unpacked dimensions; no upward
    search by an ancestor's instance name (`$root` only, by decision).
 1. **§6.21** semantic reference-resolution diagnostics (unresolved type/import)
-   — not started; its prerequisite (per-source diagnostics, v12) is done --
-   use `source = 'reference'` with `replaceDiagnostics(..., source)`.
+   — step 1 (type parameters) done 2026-10-30; steps 2-5 in plan.md §6.21
+   "Revised steps". Use `source = 'reference'` with
+   `replaceDiagnostics(..., source)`.
 2. **§6.24** audit compiler warnings from `tools/build.sh` — not started.
 3. **§6.12** configurable debounce interval (`debounceMs`) — not started.
 4. **§6.20** external read-only DB access — not started.

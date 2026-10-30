@@ -2911,8 +2911,10 @@ happen independently for external access to be possible at all.
 
 ### 6.21 Semantic Reference-Resolution Diagnostics (unresolved type/import usage)
 
-**Status:** not started; its prerequisite, per-source diagnostics, is done
-(2026-10-01, "Prerequisite done" below). Added to the plan 2026-09-12, found
+**Status:** step 1 of 5 done (2026-10-30, type parameters, "Step 1: type
+parameters" below); the check itself not started. Its prerequisite,
+per-source diagnostics, is done (2026-10-01, "Prerequisite done" below).
+Added to the plan 2026-09-12, found
 researching §6.4's own "why don't import edges need cross-file invalidation"
 question.
 
@@ -3043,6 +3045,82 @@ than `Error` (mirroring §6.7's own "an unrecognized value defaults to
 Warning, not Error, so a typo doesn't become build-breaking" reasoning) is
 the likely right choice, but not decided here — revisit once real usage shows
 how often this actually false-positives in practice.
+
+**Revised steps (2026-10-30).** The design above predates the resolver
+rework (§6.30) and doesn't hold as written:
+`Resolver::resolveTypeName` returns nothing for a valid enum or built-in
+typedef (`followTypedef` has nothing to follow), and a type parameter had no
+row at all. The steps:
+1. Record type parameters (done, below).
+2. A `TypeRefRecord {name, qualifier, line, col, file}` per declared type
+   reference from the walker (Signal/Port/Parameter/Typedef alias/return
+   type) -- a diagnostic needs the type name's own position, which
+   `detail` doesn't carry -- added to the worker encoding.
+3. A "type name is declared" predicate (Class, Typedef incl. forward,
+   TypeParameter, Interface, covergroup; qualified through
+   `resolveQualifierScope`), not `resolveTypeName`, run in `commit` after
+   the unit is persisted through a controller callback like
+   `setCalleeResolver`, `source = 'reference'`, Warning. Skips: built-in
+   classes (`mailbox`, `semaphore`, `process`), names expanded from a macro,
+   a qualifier the resolver doesn't understand (`T::type_id`); no
+   declare-before-use in v1. `commit` holds `m_dataMutex` (C9): measure
+   `uvm_src`, cache per-name results per compile.
+4. An Emacs test.
+5. Acceptance: UVM `--build-db` gives 0 `'reference'` diagnostics (UVM is
+   valid code; every hit is a false positive), and `make perf-check`
+   `uvm_src` no regression. Cross-file re-flagging (§6.4) disclosed, not
+   built.
+
+**Step 1: type parameters (2026-10-30).** `parameter type T = ...`,
+`localparam type T = ...` and `#(type T = ...)` were never recorded (the
+corpus `uvm.db` had no row named `T`, `REQ` or `RSP`), so every `T m;` in
+UVM would have been flagged, and hover/definition/completion on a type
+parameter found nothing.
+- New kind **`TypeParameter`** (appended to `ParseRecordKind`; the worker
+  encodes kind as a byte, so no encoding change; no schema change). Detail
+  = the default type: `$string`/`$event`, else the user type's name
+  (`dataTypeName`: qualifiers kept, `#(...)` dropped), else the built-in's
+  text (`logic [7:0]`), else "" (no default). Scoped to the class/module/
+  package it is declared in. LSP SymbolKind / CompletionItemKind
+  `TypeParameter`.
+- Walker: `extractTypeParams`, from `enterParameter_declaration` /
+  `enterLocal_parameter_declaration` and a new
+  `enterParameter_port_declaration`. The same listener and a new
+  `enterParameter_port_list` also record the parameter ports written
+  without the keyword, `#(int W = 8)` and `#(W = 8)`, which never reached
+  `parameter_declaration` (8 new Parameter rows in UVM: `Tname`, `N`,
+  `FIELD`).
+- Resolver, decided with the user: a value whose type is a type parameter
+  **follows the parameter's default**. `resolveTypeName`'s bare-name path
+  first looks up a visible TypeParameter (`KindFilter::TypeParameter`, no
+  inherited members) and resolves its detail where the parameter is
+  declared, so `REQ req; req.` offers `uvm_sequence_item`'s members, and
+  `RSP = REQ` chains. A visible type parameter shadows a same-named class;
+  no default resolves to nothing. `::` qualifiers are unchanged
+  (`resolveQualifierScope` matches only Package/Class), so
+  `BUSTYPE::type_id::create` still fails closed (§6.26). A `#(.T(...))`
+  named connection resolves to the TypeParameter.
+- Declare-before-use: TypeParameter is a subject (a package's
+  `localparam type` used before its declaration isn't offered).
+- *Tests:* 7 unit cases -- 3 listener (class type parameters and their
+  details, `parameter`/`localparam type`, the keyword-less port forms),
+  2 resolution (name / `#(.T())` -> the parameter; a value through its
+  default, shadowing), completion (item kind, dot through the default, none
+  for `int` / no default), declare-before-use -- plus a type parameter in
+  the worker round-trip fixture. Emacs test_51 (5 checks, fixture
+  `typeparam.sv`).
+- *Verified:* unit **1077/1077**, Emacs **326/326**. UVM `--build-db`: 0
+  diagnostics, 1:48 / 2.97 GB, **18737 symbols** (+288 TypeParameter, +8
+  Parameter; every other row identical); corpus `uvm.db` swapped in, the
+  previous one is `uvm.db.c10.bak`. Corpus 1563 / 31 with the symbol pin
+  moved 18441 -> 18737 (log `build/release/corpus_2026-10-30.log`); the
+  completion-list cases unchanged; references(`get_name`) 318 -> 324
+  locations (calls through a type parameter's default now resolve), 1006 ms
+  (1041 ms on 2026-10-27 before this change). `make test-integration-uvm`
+  15/15, probe counts unchanged. `make perf-check` small / uvm no
+  regression; uvm hover/definition/signatureHelp server time +1.2-1.5 ms
+  (under the 5 ms threshold) -- the extra visible-set lookup per
+  `resolveTypeName`.
 
 ### 6.22 References, Rename, Signature Help (`textDocument/references`/`rename`/`signatureHelp`)
 
