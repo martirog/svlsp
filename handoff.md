@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-10-30 (§6.21 step 1, type parameters).
+**Last updated:** 2026-10-30 (§6.21 step 2, type references).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -121,9 +121,16 @@ swapped in, previous `uvm.db.c10.bak`), `make test-integration-uvm`
 15/15, `make perf-check` small / uvm no regression (uvm hover/definition
 +1.2-1.5 ms server, under threshold).
 
+**§6.21 step 2, type references, is done** (plan.md §6.21 "Step 2"):
+`WalkResult::typeRefs`, one `TypeRefRecord` per user type written at a
+declaration site, at its name. Not consumed yet. Verified: unit
+**1083/1083**, Emacs 326/326, `--build-db` identical, `make perf-check`
+no regression; UVM's only undeclared referenced names are `process`,
+`semaphore`, `mailbox` and one macro-expanded phantom.
+
 Next steps:
-0. **§6.21 step 2**: `TypeRefRecord` per declared type reference (plan.md
-   §6.21 "Revised steps"), then the check (step 3).
+0. **§6.21 step 3**: the "type name is declared" check in `commit`
+   (plan.md §6.21 "Revised steps").
 1. Optional, after C9: a commit still holds the data mutex (up to ~300 ms
    on `uvm_src`), and didOpen / didSave still compile on the message
    thread.
@@ -151,6 +158,14 @@ What C2 changes for other work:
   (`classScopeName`, not `classTypeName(cs->class_type())`).
 - A subroutine body ended early by a syntax error keeps its scope to its own
   `endfunction` / `endtask` (`bodyStop`).
+
+What §6.21 step 2 changes for other work:
+- `WalkResult::typeRefs` is the last member; a new WalkResult member goes
+  after it (the listener tests' structured bindings list them in order)
+  and into `parse_worker.cpp`'s encoding.
+- A new declaration site that writes a type must call `recordTypeRef`, or
+  step 3 never checks it. Never record from a generic `data_type`
+  listener (`$bits(sig)`, `#(.W(N))`, `arr[SIZE]` parse as data_types).
 
 What §6.21 step 1 changes for other work:
 - New kind **`TypeParameter`**: anything switching on kind strings must
@@ -394,7 +409,7 @@ by name instead of from the typedef's scope, and merged duplicated helpers
   in workspace symbols, no completion inside comments/strings, and doc
   comments (§6.31) in hover, signature help and completion resolve.
 - Test baselines:
-  - unit: **1077 cases**, all passing (2026-10-30, §6.21 step 1; 1070 on 2026-10-27, library rename fails closed; 1067 with the §6.30 leftovers; 1059 with C10; 1053 with C9; 1051 with C8; 1048 on 2026-10-25, C4; 1047 with the C2 gap fixes; 1046 with C2; 1041 on 2026-10-24, C1; 1040 before the idle policy; 1031 with C7; 1029 on the receivers tree;
+  - unit: **1083 cases**, all passing (2026-10-30, §6.21 step 2; 1077 with step 1; 1070 on 2026-10-27, library rename fails closed; 1067 with the §6.30 leftovers; 1059 with C10; 1053 with C9; 1051 with C8; 1048 on 2026-10-25, C4; 1047 with the C2 gap fixes; 1046 with C2; 1041 on 2026-10-24, C1; 1040 before the idle policy; 1031 with C7; 1029 on the receivers tree;
     1016 at 4e8a10d) (no `[!shouldfail]` known gaps left
     -- the `` `define `` references case passes since the macro follow-up)
   - Emacs functional: **326/326** (2026-10-30, test_51 new; 321 on 2026-10-27, test_50 new; 318 with test_49 new and 2 test_47 cases; 309 on 2026-10-23, test_48 new; 305 with test_47)
@@ -579,7 +594,7 @@ What §6.29 changed that other work must know about:
    block's `genblk<n>` and a typedef's unpacked dimensions; no upward
    search by an ancestor's instance name (`$root` only, by decision).
 1. **§6.21** semantic reference-resolution diagnostics (unresolved type/import)
-   — step 1 (type parameters) done 2026-10-30; steps 2-5 in plan.md §6.21
+   — steps 1-2 (type parameters, type references) done 2026-10-30; steps 3-5 in plan.md §6.21
    "Revised steps". Use `source = 'reference'` with
    `replaceDiagnostics(..., source)`.
 2. **§6.24** audit compiler warnings from `tools/build.sh` — not started.

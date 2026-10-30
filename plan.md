@@ -2911,8 +2911,8 @@ happen independently for external access to be possible at all.
 
 ### 6.21 Semantic Reference-Resolution Diagnostics (unresolved type/import usage)
 
-**Status:** step 1 of 5 done (2026-10-30, type parameters, "Step 1: type
-parameters" below); the check itself not started. Its prerequisite,
+**Status:** steps 1-2 of 5 done (2026-10-30: type parameters, "Step 1";
+type references with positions, "Step 2"); the check itself not started. Its prerequisite,
 per-source diagnostics, is done (2026-10-01, "Prerequisite done" below).
 Added to the plan 2026-09-12, found
 researching §6.4's own "why don't import edges need cross-file invalidation"
@@ -3121,6 +3121,48 @@ parameter found nothing.
   regression; uvm hover/definition/signatureHelp server time +1.2-1.5 ms
   (under the 5 ms threshold) -- the extra visible-set lookup per
   `resolveTypeName`.
+
+**Step 2: type references with positions (2026-10-30).** The walker emits
+a `TypeRefRecord {name, qualifier, line, column, file}` (`parse_record.h`)
+for each user type written at a declaration site, at the name token
+(translated through the source map like a call's name), once per written
+type -- `C a, b;` is one. `WalkResult::typeRefs` is the **last** member
+(the listener tests bind the members in order) and is in the worker
+encoding (`parse_worker.cpp`) and `walk_dump` (`typeref` lines). Nothing
+consumes it yet; no DB change.
+- Sites: data declarations, net declarations (the `MyClass foo;` form's
+  `net_type_identifier` too), a const-first class property, `for`
+  variables, function/task arguments (only an argument's own written
+  type: `TfPort::ownType`, so the comma shorthand's `(C a, b)` `b` is a
+  name, and an unnamed prototype argument's type counts), ANSI ports
+  (net / variable headers, an interface port's interface, not the generic
+  `interface`), value parameters and parameter ports, type parameter
+  defaults, `typedef <type> name;`, return types (body and prototype),
+  struct/union members, `extends` and `implements`, an interface class's
+  `extends`.
+- A `data_type` names a type through `type_identifier` (qualifier from its
+  class/package scope), `class_type` (the last segment; the rest is the
+  qualifier, `#(...)` dropped: `p::Outer#(int)::Inner` -> `Inner` in
+  `p::Outer`) or a virtual interface's interface (modport not checked);
+  built-in, inline struct/union/enum and `type(...)` name none.
+- Not a listener on every `data_type`: the grammar also reads a plain name
+  as one in `$bits(sig)`, `#(.W(N))` and `arr[SIZE]` (unit case pins
+  none). *Not covered:* type arguments inside `#(...)`, casts and other
+  expressions, non-ANSI body port declarations (no rows either),
+  covergroup types.
+- *Tests:* 6 listener cases (variables with qualifiers and positions,
+  ANSI ports, argument types, parameters/typedefs/returns/members/
+  extends/implements, the expression shapes, source-map translation) and
+  `typeRefs` in the worker round trip.
+- *Verified:* unit **1083/1083**, Emacs 326/326. `walk_dump` over all of
+  UVM: 7715 type refs, 386 distinct names, 0 errors; names nothing in UVM
+  declares as a Class / Typedef / TypeParameter / Interface: `process`
+  (43), `semaphore` (4), `mailbox` (2) -- step 3's built-in skip list --
+  and `UVM_LEGACY_FIELD_MACRO_SEMANTICS` (1), the known unevaluated
+  `` `ifdef `` inside `` `m_uvm_field_op_begin ``'s body (it already makes
+  a phantom Signal `behavior`); a macro expansion, which step 3 skips by
+  position. `--build-db`: symbols and diagnostics identical, 1:47 / 2.97
+  GB. `make perf-check` small / uvm no regression.
 
 ### 6.22 References, Rename, Signature Help (`textDocument/references`/`rename`/`signatureHelp`)
 
