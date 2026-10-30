@@ -110,6 +110,8 @@ TEST_CASE("doc comments: count recorded across the UVM corpus",
     // forward `typedef class` rows, 5 of them with a doc comment. 18440 ->
     // 18441 (plan.md §6.33 C2 follow-up): uvm_transaction's
     // `const local uvm_event_pool events`, a const-first class property.
-    CHECK(symbols == 18441);
+    // 18441 -> 18737 (plan.md §6.21 step 1): +288 TypeParameter rows, +8
+    // parameter ports written without the `parameter` keyword.
+    CHECK(symbols == 18737);
     CHECK(documented == 965);
 }

@@ -95,7 +95,7 @@ bool scopeOpBefore(const std::string& text, size_t i)
 // Value: anything a `.` can follow -- a variable, a struct member, an
 // instance, a named block or a design unit named from the top
 // (`top.u_sub.sig`).
-enum class KindFilter { Any, ScopeLike, Callable, Value, Typedef };
+enum class KindFilter { Any, ScopeLike, Callable, Value, Typedef, TypeParameter };
 
 bool kindMatches(const SymbolRow& r, KindFilter f)
 {
@@ -108,6 +108,7 @@ bool kindMatches(const SymbolRow& r, KindFilter f)
                r.kind == "Member" || r.kind == "Instance" || r.kind == "Block" ||
                isView(r) || isDesignUnit(r);
     case KindFilter::Typedef:   return r.kind == "Typedef";
+    case KindFilter::TypeParameter: return r.kind == "TypeParameter";
     }
     return true;
 }
@@ -379,6 +380,12 @@ std::optional<SymbolRow> Resolver::resolveTypeName(const std::string& typeIn,
     // `extends` name, looked up from the class's declaration line) resolves
     // in the lexical scopes around it, and consulting the class's own
     // ancestors here would recurse back into resolving that same name.
+    // A visible type parameter is its default type, resolved where the
+    // parameter is declared (plan.md §6.21 step 1); it shadows any class of
+    // that name, and no default resolves to nothing.
+    if (auto tp = lookupBare(ctxPath, ctxAt, type, KindFilter::TypeParameter,
+                             /*withInherited=*/false))
+        return resolveTypeName(tp->detail, tp->filePath, posOf(*tp), valueType);
     if (auto r = lookupBare(ctxPath, ctxAt, type, KindFilter::ScopeLike, /*withInherited=*/false);
         r && r->kind == "Class")
         return r;
@@ -899,7 +906,8 @@ std::optional<ResolvedSymbol> Resolver::resolveAt(size_t offset, int depth)
             auto owner = connectionOwner(*paren, depth);
             if (!owner) return fallback(word);
             for (auto& r : m_db.findSymbolsInScope(qualifiedScopeOf(owner->row), word))
-                if (r.kind == (owner->paramList ? "Parameter" : "Port"))
+                if (owner->paramList ? r.kind == "Parameter" || r.kind == "TypeParameter"
+                                     : r.kind == "Port")
                     return ResolvedSymbol{r, true};
             return std::nullopt;
         }

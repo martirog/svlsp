@@ -1205,11 +1205,26 @@ public:
 
     void enterParameter_declaration(SvParser::Parameter_declarationContext* ctx) override {
         extractParams(ctx->list_of_param_assignments(), userTypeName(ctx->data_type_or_implicit()));
+        extractTypeParams(ctx->list_of_type_assignments());
     }
 
     void enterLocal_parameter_declaration(
         SvParser::Local_parameter_declarationContext* ctx) override {
         extractParams(ctx->list_of_param_assignments(), userTypeName(ctx->data_type_or_implicit()));
+        extractTypeParams(ctx->list_of_type_assignments());
+    }
+
+    // A parameter port without the `parameter`/`localparam` keyword:
+    // `#(int W = 8)`, `#(type T = int)` (the keyword forms go through the
+    // two listeners above), and `#(W = 8, ...)`'s leading assignments.
+    void enterParameter_port_declaration(
+        SvParser::Parameter_port_declarationContext* ctx) override {
+        extractParams(ctx->list_of_param_assignments(), dataTypeName(ctx->data_type()));
+        extractTypeParams(ctx->list_of_type_assignments());
+    }
+
+    void enterParameter_port_list(SvParser::Parameter_port_listContext* ctx) override {
+        extractParams(ctx->list_of_param_assignments());
     }
 
 private:
@@ -1570,6 +1585,23 @@ private:
             auto* pi = pa->parameter_identifier();
             if (!pi || !pi->IDENTIFIER()) continue;
             pushId(ParseRecordKind::Parameter, pi->IDENTIFIER(), pa, currentScope(), typeName);
+        }
+    }
+
+    // Detail = the default type: a user type's name, `$string`/`$event`, a
+    // built-in's text, "" for none (plan.md §6.21 step 1).
+    void extractTypeParams(SvParser::List_of_type_assignmentsContext* list) {
+        if (!list) return;
+        for (auto* ta : list->type_assignment()) {
+            auto* ti = ta->type_identifier();
+            if (!ti || !ti->IDENTIFIER()) continue;
+            std::string detail;
+            if (auto* dt = ta->data_type()) {
+                detail = builtinBareTypeTag(dt);
+                if (detail.empty()) detail = dataTypeName(dt);
+                if (detail.empty()) detail = m_tokens->getText(dt);
+            }
+            pushId(ParseRecordKind::TypeParameter, ti->IDENTIFIER(), ta, currentScope(), detail);
         }
     }
 

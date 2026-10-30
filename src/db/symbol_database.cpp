@@ -33,6 +33,7 @@ static std::string kindStr(ParseRecordKind k)
     case ParseRecordKind::Instance:    return "Instance";
     case ParseRecordKind::Modport:     return "Modport";
     case ParseRecordKind::Clocking:    return "Clocking";
+    case ParseRecordKind::TypeParameter: return "TypeParameter";
     }
     return "Unknown";
 }
@@ -1169,7 +1170,7 @@ void SymbolDatabase::keepDeclaredBefore(std::vector<SymbolRow>& rows, const std:
         auto subject = [&](const SymbolRow& r) {
             const std::string& k = r.kind;
             return (k == "Signal" || k == "Parameter" || k == "Typedef" || k == "Class" ||
-                    k == "EnumLiteral" || k == "Genvar") &&
+                    k == "EnumLiteral" || k == "Genvar" || k == "TypeParameter") &&
                    in(scopes, r.scope) && !in(classes, r.scope);
         };
         // Rows come grouped by file: remember the last file's prefix.

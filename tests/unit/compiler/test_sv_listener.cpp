@@ -1101,6 +1101,89 @@ TEST_CASE("built-in-typed parameter leaves detail empty", "[compiler][listener][
     CHECK(r->detail.empty());
 }
 
+// plan.md §6.21 step 1: a type parameter is a TypeParameter row whose detail
+// is its default type (a user type's name, `$string`/`$event`, a built-in's
+// text, "" for none), scoped to the class/module it parameterizes.
+TEST_CASE("a class's type parameters are recorded with their default types",
+          "[compiler][listener][phase6.21]") {
+    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+        "package p; class Item #(type X = int); endclass endpackage\n"
+        "class C #(type T = int, type U = p::Item #(int), type S = string, type N);\n"
+        "  T t;\n"
+        "endclass\n");
+    REQUIRE(errs.empty());
+    auto* t = findRecord(recs, ParseRecordKind::TypeParameter, "T");
+    REQUIRE(t != nullptr);
+    CHECK(t->detail == "int");
+    CHECK(t->scope == "C");
+    CHECK(t->line == 2);
+    CHECK(t->column == 15);
+    auto* u = findRecord(recs, ParseRecordKind::TypeParameter, "U");
+    REQUIRE(u != nullptr);
+    CHECK(u->detail == "p::Item");
+    auto* s = findRecord(recs, ParseRecordKind::TypeParameter, "S");
+    REQUIRE(s != nullptr);
+    CHECK(s->detail == "$string");
+    auto* n = findRecord(recs, ParseRecordKind::TypeParameter, "N");
+    REQUIRE(n != nullptr);
+    CHECK(n->detail.empty());
+    auto* x = findRecord(recs, ParseRecordKind::TypeParameter, "X");
+    REQUIRE(x != nullptr);
+    CHECK(x->scope == "p::Item");
+    CHECK(countKind(recs, ParseRecordKind::TypeParameter) == 5);
+    // The parameter is not a variable.
+    CHECK(findRecord(recs, ParseRecordKind::Signal, "T") == nullptr);
+}
+
+TEST_CASE("parameter type and localparam type declarations are type parameters",
+          "[compiler][listener][phase6.21]") {
+    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+        "package p;\n"
+        "  localparam type word_t = logic [7:0];\n"
+        "endpackage\n"
+        "module m #(parameter type D = bit) ();\n"
+        "  parameter type E = int unsigned;\n"
+        "endmodule\n");
+    REQUIRE(errs.empty());
+    auto* w = findRecord(recs, ParseRecordKind::TypeParameter, "word_t");
+    REQUIRE(w != nullptr);
+    CHECK(w->scope == "p");
+    CHECK(w->detail == "logic [7:0]");
+    auto* d = findRecord(recs, ParseRecordKind::TypeParameter, "D");
+    REQUIRE(d != nullptr);
+    CHECK(d->scope == "m");
+    CHECK(d->detail == "bit");
+    auto* e = findRecord(recs, ParseRecordKind::TypeParameter, "E");
+    REQUIRE(e != nullptr);
+    CHECK(e->scope == "m");
+    CHECK(e->detail == "int unsigned");
+}
+
+TEST_CASE("parameter ports without the parameter keyword are recorded",
+          "[compiler][listener][phase6.21]") {
+    auto [recs, errs, imps, insts, calls, incScopes] = walkSource(
+        "module m1 #(W = 8, type T = int) ();\n"
+        "endmodule\n"
+        "class C #(int DEPTH = 4, MyClass OBJ = null);\n"
+        "endclass\n");
+    REQUIRE(errs.empty());
+    auto* w = findRecord(recs, ParseRecordKind::Parameter, "W");
+    REQUIRE(w != nullptr);
+    CHECK(w->scope == "m1");
+    auto* t = findRecord(recs, ParseRecordKind::TypeParameter, "T");
+    REQUIRE(t != nullptr);
+    CHECK(t->scope == "m1");
+    auto* depth = findRecord(recs, ParseRecordKind::Parameter, "DEPTH");
+    REQUIRE(depth != nullptr);
+    CHECK(depth->scope == "C");
+    CHECK(depth->detail.empty());
+    auto* obj = findRecord(recs, ParseRecordKind::Parameter, "OBJ");
+    REQUIRE(obj != nullptr);
+    CHECK(obj->detail == "MyClass");
+    // Each declared exactly once.
+    CHECK(countKind(recs, ParseRecordKind::Parameter) == 3);
+}
+
 // ---------------------------------------------------------------------------
 // Source map line translation
 // ---------------------------------------------------------------------------

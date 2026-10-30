@@ -2057,3 +2057,51 @@ TEST_CASE("CompletionProvider: $root. offers the top-level design units",
         CHECK(hasItem(items, "sig"));
     }
 }
+
+// plan.md §6.21 step 1: a type parameter is offered by bare-name completion
+// as a TypeParameter, and a value of its type completes through its default
+// type (none for a built-in default or no default).
+TEST_CASE("CompletionProvider: type parameters are offered, and dot completion follows their "
+          "default type", "[completion][dot][phase6.21]")
+{
+    Fixture f;
+    CompilationController ctrl{f.sdb};
+    const std::string text =
+        "class TpcItem; int tpc_field; endclass\n"
+        "class TpcBox #(type T = TpcItem, type V = int, type N);\n"
+        "  T t;\n"
+        "  V v;\n"
+        "  N n;\n"
+        "  function void f();\n"
+        "    t.\n"      // line 6
+        "    v.\n"      // line 7
+        "    n.\n"      // line 8
+        "    V\n"       // line 9
+        "  endfunction\n"
+        "endclass\n";
+    ctrl.compile("/tpc.sv", text);
+    auto at = [&](unsigned line, unsigned col) {
+        return CompletionProvider::getCompletion(makeParams("/tpc.sv", line, col), f.sdb, text);
+    };
+
+    {
+        auto result = at(6, 6);
+        REQUIRE_FALSE(result.isNull());
+        CHECK(hasItem(result.get<lsp::Array<lsp::CompletionItem>>(), "tpc_field"));
+    }
+    for (unsigned line : {7u, 8u}) {
+        auto result = at(line, 6);
+        CHECK((result.isNull() ||
+               !hasItem(result.get<lsp::Array<lsp::CompletionItem>>(), "tpc_field")));
+    }
+    auto result = at(9, 5);
+    REQUIRE_FALSE(result.isNull());
+    bool found = false;
+    for (const auto& i : result.get<lsp::Array<lsp::CompletionItem>>())
+        if (i.label == "V") {
+            found = true;
+            REQUIRE(i.kind);
+            CHECK(lsp::CompletionItemKind(*i.kind) == lsp::CompletionItemKind::TypeParameter);
+        }
+    CHECK(found);
+}

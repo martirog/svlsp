@@ -656,3 +656,24 @@ TEST_CASE("Completion visibility: a name declared later isn't offered, unless a 
     CHECK(std::count(labels.begin(), labels.end(), "dv_late") == 1);
     CHECK(std::count(labels.begin(), labels.end(), "dv_ghost") == 1);
 }
+
+// plan.md §6.21 step 1: a package's `localparam type` is a declare-before-use
+// subject like a typedef.
+TEST_CASE("Completion visibility: a type parameter declared later isn't offered",
+          "[completion][visibility][decl-before-use][phase6.21]")
+{
+    Fixture f;
+    const std::string text =
+        "package dvt_p;\n"
+        "  localparam type dvt_early_t = int;\n"
+        "    \n" // @here
+        "  localparam type dvt_late_t = int;\n"
+        "endpackage\n";
+    f.ctrl.compile("/dvt.sv", text);
+    auto result = CompletionProvider::getCompletion(makeParams("/dvt.sv", 2, 4), f.sdb, text);
+    REQUIRE_FALSE(result.isNull());
+    std::vector<std::string> labels;
+    for (auto& item : result.get<lsp::Array<lsp::CompletionItem>>()) labels.emplace_back(item.label);
+    CHECK(has(labels, "dvt_early_t"));
+    CHECK_FALSE(has(labels, "dvt_late_t"));
+}

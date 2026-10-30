@@ -44,6 +44,8 @@ enum class ParseRecordKind {
     Clocking,    // a named clocking block; detail lists its clockvars,
                  // "<input|output|inout> <name>, ..." -- the enclosing scope's
                  // signals of those names (plan.md §6.30 leftovers)
+    TypeParameter, // `parameter type T = int` / `localparam type` / `#(type T)`; detail
+                   // is the default type ("" for none; plan.md §6.21 step 1)
 };
 
 // Reserved ParseRecord::detail values for built-in container/data types with
@@ -103,6 +105,7 @@ struct ParseRecord {
     std::string     parent;        // immediate enclosing scope name (e.g. "MyClass")
     std::string     detail;        // kind-specific: port direction, class parent, return type,
                                     // macro body, declared user type (Signal/Parameter/Member),
+                                    // default type (TypeParameter),
                                     // aliased type (Typedef; the keyword
                                     // of a forward typedef), enum typedef name (EnumLiteral)
     int             endLine{0};    // 1-based; last line of scope body; 0 for leaf symbols

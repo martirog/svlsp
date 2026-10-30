@@ -961,6 +961,55 @@ TEST_CASE("resolveSymbolAt: a class typedef as a `::` qualifier, parameterized o
     requireResolves(f, "/td.sv", "@param", "td_ps", "/td.sv", "@ps");
 }
 
+// plan.md §6.21 step 1: a type parameter is a declaration of its own, and a
+// value of that type resolves through the parameter's default type. A type
+// parameter shadows a same-named class; TpDecoy's tp_get is the decoy a
+// name-only lookup could pick.
+const std::string kTypeParams =
+    "package tp_p;\n"
+    "  class TpItem;\n"
+    "    function int tp_get(); return 0; endfunction // @get\n"
+    "  endclass\n"
+    "  class TpBox #(type T = TpItem, type V = int); // @params\n"
+    "    T t; // @tdecl\n"
+    "    function void f();\n"
+    "      void'(t.tp_get()); // @recv\n"
+    "    endfunction\n"
+    "  endclass\n"
+    "  class TpShadow #(type TpItem = int);\n"
+    "    TpItem s;\n"
+    "    function void g(); void'(s.tp_get()); endfunction // @shadow\n"
+    "  endclass\n"
+    "endpackage\n"
+    "class TpDecoy;\n"
+    "  function int tp_get(); return 1; endfunction\n"
+    "endclass\n"
+    "module tp_top;\n"
+    "  import tp_p::*;\n"
+    "  TpBox #(.T(TpItem)) b; // @conn\n"
+    "endmodule\n";
+
+TEST_CASE("resolveSymbolAt: a type parameter's name resolves to the parameter",
+          "[resolution][typeparam]")
+{
+    F f;
+    f.add("/tp.sv", kTypeParams);
+    requireResolvesTo(f, "/tp.sv", "@tdecl", "T", "/tp.sv", "@params", "T =");
+    requireResolvesTo(f, "/tp.sv", "@conn", "T(", "/tp.sv", "@params", "T =");
+}
+
+TEST_CASE("resolveSymbolAt: a value of a type parameter's type resolves through its default",
+          "[resolution][typeparam]")
+{
+    F f;
+    f.add("/tp.sv", kTypeParams);
+    requireResolves(f, "/tp.sv", "@recv", "tp_get", "/tp.sv", "@get");
+    // TpItem is the type parameter here, defaulting to int: no members.
+    const std::string& text = f.files.at("/tp.sv");
+    auto r = resolveAt(f, "/tp.sv", posOf(text, "@shadow", "tp_get"));
+    CHECK((!r || !r->exact));
+}
+
 // ---------------------------------------------------------------------------
 // Block scopes (plan.md §6.30, "block scopes")
 // ---------------------------------------------------------------------------

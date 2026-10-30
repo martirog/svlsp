@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include "compiler/parse_worker.h"
 #include "compiler/sv_tree_walker.h"
+#include <algorithm>
 #include <csignal>
 #include <sstream>
 #include <thread>
@@ -18,7 +19,7 @@ const std::string kSource =
     "  /// A doc comment.\n"                         // 2
     "  function int f(int a, int b = 2); return a; endfunction\n" // 3
     "  import q::*;\n"                               // 4
-    "  class C; local int m; endclass\n"             // 5
+    "  class C #(type T = int); local T m; endclass\n" // 5
     "  task t(); f(.a(1)); f(1, ); endtask\n"        // 6
     "  typedef struct { int x; } s_t;\n"             // 7 (inc.svh 1)
     "  int v;\n"                                     // 8 (inc.svh 2)
@@ -82,6 +83,9 @@ TEST_CASE("parse worker: a walk result survives encode/decode", "[parse_worker]"
     REQUIRE_FALSE(walked.instantiations.empty());
     REQUIRE_FALSE(walked.calls.empty());
     REQUIRE_FALSE(walked.includeScopes.empty());
+    REQUIRE(std::any_of(walked.records.begin(), walked.records.end(), [](const ParseRecord& r) {
+        return r.kind == ParseRecordKind::TypeParameter;
+    }));
 
     WalkResult back;
     REQUIRE(decodeWalkResult(encodeWalkResult(walked), back));
