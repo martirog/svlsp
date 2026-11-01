@@ -64,7 +64,8 @@ public:
                                     const std::string& text,
                                     const ProjectConfig* config = nullptr,
                                     std::vector<std::string>* includedFiles = nullptr,
-                                    bool forceRecompile = false);
+                                    bool forceRecompile = false,
+                                    std::vector<std::string>* refreshedFiles = nullptr);
 
     // compile() in three steps, for a caller whose lock over the DB must not
     // be held across the parse (LanguageServer): prepare() and commit() use
@@ -78,6 +79,7 @@ public:
         std::optional<std::vector<ParseError>> cached{}; // a cache hit: compile()'s result
         SvPreprocessor preprocessor;                     // seeded with config + include context
         std::string initialScope{};
+        bool checkTypes{false}; // compiled under a project config (plan.md §6.21 step 3)
     };
     struct Parsed {
         std::string path;
@@ -85,14 +87,18 @@ public:
         std::string hash;
         PreprocessorResult preprocessed;
         WalkResult walked;
+        bool checkTypes{false};
     };
     Prepared prepare(const std::string& path, const std::string& text,
                      const ProjectConfig* config = nullptr, bool forceRecompile = false);
     Parsed parse(Prepared&& job) const;
     // Persists `parsed` and returns compile()'s result; `includedFiles` as
-    // in compile().
+    // in compile(). `refreshedFiles`: the files outside this compile whose
+    // 'reference' diagnostics this compile cleared (it declared what they
+    // name), to republish.
     std::vector<ParseError> commit(Parsed&& parsed,
-                                   std::vector<std::string>* includedFiles = nullptr);
+                                   std::vector<std::string>* includedFiles = nullptr,
+                                   std::vector<std::string>* refreshedFiles = nullptr);
 
     // Whether doc comments (plan.md §6.31) are extracted and stored; on by
     // default. Off leaves symbol_docs empty and macros.doc "", saving the
@@ -111,6 +117,21 @@ public:
     // which svlsp_db can't link itself. Unset (the default), the check
     // doesn't run.
     void setCalleeResolver(CalleeResolver resolver) { m_calleeResolver = std::move(resolver); }
+
+    // For each of `refs` (declared type names of the unit whose primary file
+    // is `path`, in the order they are written; `texts` has the source text
+    // of the files at hand, by path): nullopt if the type is visible there,
+    // else the warning's message.
+    using TypeChecker = std::function<std::vector<std::optional<std::string>>(
+        SymbolDatabase&, const std::string& path,
+        const std::unordered_map<std::string, std::string>& texts,
+        const std::vector<TypeRefRecord>& refs)>;
+
+    // The checker the declared-type check (plan.md §6.21 step 3, 'reference'
+    // diagnostics, Warnings) uses -- in practice lsp/symbol_resolution.h's
+    // checkTypeRefs. It runs only on files compiled under a project config;
+    // unset (the default), it doesn't run.
+    void setTypeChecker(TypeChecker checker) { m_typeChecker = std::move(checker); }
 
     // Runs the parse (SvTreeWalker::walk's signature). Unset, the walk runs
     // in this process; the server sets a ParseWorker's (plan.md §6.33 C1,
@@ -131,6 +152,12 @@ private:
     std::ostream*   m_log;
     bool            m_collectDocs{true};
     CalleeResolver  m_calleeResolver;
+    TypeChecker     m_typeChecker;
+
+    std::vector<ParseError> checkTypeRefs(const Parsed& parsed, int64_t fid,
+                                          const std::vector<std::string>& included);
+    void refreshTypeRefDiagnostics(int64_t fid, const std::vector<std::string>& included,
+                                   std::vector<std::string>* refreshedFiles);
     Walker          m_walker;
 
     static std::string hashContent(const std::string& text);

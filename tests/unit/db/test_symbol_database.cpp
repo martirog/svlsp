@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 #include "db/database.h"
 #include "db/symbol_database.h"
+#include "db/compilation_controller.h"
 #include "compiler/parse_record.h"
 #include <algorithm>
 #include <filesystem>
@@ -1086,4 +1087,36 @@ TEST_CASE("findSymbolsVisibleAt keeps a same-line sibling scope's locals out",
     CHECK(std::find(inF.begin(), inF.end(), "a") != inF.end());
     auto after = names({2, 45});
     CHECK(std::find(after.begin(), after.end(), "a") == after.end());
+}
+
+// plan.md §6.21 step 3: the declared-type check reads a file's scope rows
+// once (scopeSpansOf) and picks each position's scope in memory (scopeAt);
+// it must pick exactly what scopeAtPosition does, everywhere.
+TEST_CASE("scopeAt over scopeSpansOf agrees with scopeAtPosition at every position",
+          "[db][symbol-db][scope-col][phase6.21]") {
+    Fixture f;
+    CompilationController ctrl{f.sdb};
+    const std::string text =
+        "package sa_p;\n"
+        "  class C; int a; function void f(); begin : blk int b; end endfunction\n"
+        "    task t(); fork int c; join endtask\n"
+        "  endclass\n"
+        "  function void C::g(); for (int i = 0; i < 2; i++) begin end endfunction\n"
+        "endpackage\n"
+        "module sa_m; initial begin int d; end function int h(); return 0; endfunction endmodule\n"
+        "interface sa_if; logic s; endinterface\n";
+    ctrl.compile("/sa.sv", text);
+    const auto spans = f.sdb.scopeSpansOf("/sa.sv");
+    REQUIRE(spans.size() > 6);
+    const std::string outside = f.sdb.scopeOutside("/sa.sv");
+    int line = 1;
+    for (size_t start = 0; start < text.size(); ++line) {
+        const size_t end = text.find('\n', start);
+        for (int col = 0; col <= static_cast<int>(end - start) + 1; ++col) {
+            INFO("line " << line << " col " << col);
+            CHECK(SymbolDatabase::scopeAt(spans, {line, col}, outside) ==
+                  f.sdb.scopeAtPosition("/sa.sv", {line, col}));
+        }
+        start = end + 1;
+    }
 }

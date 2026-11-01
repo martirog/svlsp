@@ -5,6 +5,7 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include <unordered_map>
 #include <utility>
 
 // Scope-aware resolution of the identifier under the cursor to the single
@@ -61,6 +62,19 @@ std::vector<std::optional<ResolvedSymbol>> resolveSymbolsAt(
 // position in `text` (one expanded from a macro). This is
 // CompilationController's CalleeResolver for the missing-argument check
 // (plan.md §6.23).
+// For each of `refs` (declared type names of one compile unit, whose primary
+// file is `path`; a ref's `file` is "" there, else its own path): nullopt
+// if a type of that name is visible where it is written, else the warning's
+// message (plan.md §6.21 step 3). `refs` must be in the order they are
+// written (the walker's). A reference whose name isn't at its recorded
+// position in its file's text in `texts` (one a macro expanded to) is not
+// checked; a file with no entry skips that test. CompilationController's
+// TypeChecker.
+std::vector<std::optional<std::string>> checkTypeRefs(
+    SymbolDatabase& db, const std::string& path,
+    const std::unordered_map<std::string, std::string>& texts,
+    const std::vector<TypeRefRecord>& refs);
+
 std::vector<std::optional<SymbolRow>> resolveCallees(SymbolDatabase& db, const std::string& path,
                                                      const std::string& text,
                                                      const std::vector<CallRecord>& calls);

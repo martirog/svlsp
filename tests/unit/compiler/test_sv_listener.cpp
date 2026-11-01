@@ -2822,3 +2822,24 @@ TEST_CASE("type references: positions are translated through the source map",
     CHECK(r.typeRefs[0].line == 20);
     CHECK(r.typeRefs[0].column == 7);
 }
+
+TEST_CASE("a covergroup is recorded as a leaf Covergroup row",
+          "[compiler][listener][phase6.21]") {
+    const auto r = walkSource(
+        "module cgm;\n"
+        "  logic clk, a;\n"
+        "  covergroup cg_t @(posedge clk); coverpoint a; endgroup\n"
+        "  cg_t cg_inst = new;\n"
+        "  logic after;\n"
+        "endmodule\n");
+    REQUIRE(r.parseErrors.empty());
+    auto* cg = findRecord(r.records, ParseRecordKind::Covergroup, "cg_t");
+    REQUIRE(cg != nullptr);
+    CHECK(cg->scope == "cgm");
+    CHECK(cg->line == 3);
+    // Not a scope frame: what follows stays in the module.
+    auto* after = findRecord(r.records, ParseRecordKind::Signal, "after");
+    REQUIRE(after != nullptr);
+    CHECK(after->scope == "cgm");
+    CHECK(typeRefsNamed(r, "cg_t").size() == 1);
+}

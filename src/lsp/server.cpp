@@ -27,6 +27,7 @@ LanguageServer::LanguageServer(lsp::io::Stream& io, std::ostream* logStream,
 {
     m_db.initSchema();
     m_compiler.setCalleeResolver(resolveCallees);
+    m_compiler.setTypeChecker(checkTypeRefs);
     registerHandlers();
 }
 
@@ -94,9 +95,13 @@ std::optional<LanguageServer::CompileOutcome> LanguageServer::compileCurrent(
 
     TimedLock lock{m_dataMutex, m_requestLog, what, m_requestLog ? path : std::string{}};
     lock.reportSince(start, acquired);
-    std::vector<std::string> includedFiles;
+    std::vector<std::string> includedFiles, refreshedFiles;
     out.diags = toDiagnostics(job->cached ? *job->cached
-                                          : m_compiler.commit(std::move(*parsed), &includedFiles));
+                                          : m_compiler.commit(std::move(*parsed), &includedFiles,
+                                                              &refreshedFiles));
+    // Files whose declared-type warnings this compile cleared (plan.md
+    // §6.21 step 3) are republished with the included ones.
+    includedFiles.insert(includedFiles.end(), refreshedFiles.begin(), refreshedFiles.end());
     out.includedDiags = collectIncludedDiagnostics(includedFiles);
     return out;
 }

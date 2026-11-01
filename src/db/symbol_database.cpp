@@ -1,3 +1,4 @@
+#include <tuple>
 #include "db/symbol_database.h"
 #include "compiler/parse_record.h"
 #include <algorithm>
@@ -34,6 +35,7 @@ static std::string kindStr(ParseRecordKind k)
     case ParseRecordKind::Modport:     return "Modport";
     case ParseRecordKind::Clocking:    return "Clocking";
     case ParseRecordKind::TypeParameter: return "TypeParameter";
+    case ParseRecordKind::Covergroup:    return "Covergroup";
     }
     return "Unknown";
 }
@@ -729,6 +731,42 @@ void SymbolDatabase::clearDiagnostics(const std::string& source)
     del.step();
 }
 
+std::vector<SubjectDiagnosticRow> SymbolDatabase::diagnosticsFromSource(
+    const std::string& source) const
+{
+    auto q = m_db.prepare("SELECT d.file_id, f.path, d.line, d.col, d.subject "
+                          "FROM diagnostics d JOIN files f ON f.id = d.file_id "
+                          "WHERE d.source = ? ORDER BY f.path, d.line, d.col");
+    q.bind(1, source);
+    std::vector<SubjectDiagnosticRow> rows;
+    while (q.step())
+        rows.push_back({q.columnInt(0), q.columnText(1), static_cast<int>(q.columnInt(2)),
+                        static_cast<int>(q.columnInt(3)), q.columnText(4)});
+    return rows;
+}
+
+void SymbolDatabase::clearDiagnostics(const std::string& source,
+                                      const std::vector<std::string>& paths)
+{
+    if (paths.empty()) return;
+    std::string ph;
+    for (size_t i = 0; i < paths.size(); ++i) ph += i ? ",?" : "?";
+    auto del = m_db.prepare("DELETE FROM diagnostics WHERE source = ? AND file_id IN "
+                            "(SELECT id FROM files WHERE path IN (" + ph + "))");
+    int idx = 1;
+    del.bind(idx++, source);
+    for (const auto& p : paths) del.bind(idx++, p);
+    del.step();
+}
+
+void SymbolDatabase::deleteDiagnostic(int64_t fileId, int line, int col, const std::string& source)
+{
+    auto del = m_db.prepare(
+        "DELETE FROM diagnostics WHERE file_id = ? AND line = ? AND col = ? AND source = ?");
+    del.bind(1, fileId).bind(2, line).bind(3, col).bind(4, source);
+    del.step();
+}
+
 std::vector<ParseError> SymbolDatabase::refreshLibraryDiagnostics(int64_t fileId)
 {
     std::vector<std::pair<std::string, std::string>> tagged; // (module name, message)
@@ -962,8 +1000,48 @@ std::string SymbolDatabase::scopeAtPosition(
     stmt.bind(1, path);
     bindContains(stmt, 2, pos);
     if (stmt.step()) return stmt.columnText(0);
+    return scopeOutside(path);
+}
+
+std::string SymbolDatabase::scopeOutside(const std::string& path) const
+{
     const auto site = includeContextOf(path);
     return site ? site->scope : std::string{};
+}
+
+std::vector<ScopeSpan> SymbolDatabase::scopeSpansOf(const std::string& path) const
+{
+    auto stmt = m_db.prepare(
+        "SELECT CASE WHEN s.scope = '' THEN s.name ELSE s.scope || '::' || s.name END, "
+        "       s.line, s.col, s.end_line, s.end_col, length(s.scope) "
+        "FROM symbols s JOIN files f ON f.id = s.file_id "
+        "WHERE f.path = ? "
+        "  AND s.kind IN ('Module','Interface','Program','Package','Class','Function','Task',"
+        "'Block')");
+    stmt.bind(1, path);
+    std::vector<ScopeSpan> spans;
+    while (stmt.step())
+        spans.push_back({stmt.columnText(0), static_cast<int>(stmt.columnInt(1)),
+                         static_cast<int>(stmt.columnInt(2)), static_cast<int>(stmt.columnInt(3)),
+                         static_cast<int>(stmt.columnInt(4)),
+                         static_cast<size_t>(stmt.columnInt(5))});
+    return spans;
+}
+
+// kContains and scopeAtPosition's ORDER BY, over spans in memory.
+std::string SymbolDatabase::scopeAt(const std::vector<ScopeSpan>& spans, SrcPos pos,
+                                    const std::string& outside)
+{
+    const ScopeSpan* best = nullptr;
+    for (const auto& s : spans) {
+        const bool starts = s.line < pos.line || (s.line == pos.line && s.col <= pos.col);
+        const bool ends = s.endLine > pos.line ||
+                          (s.endLine == pos.line && (s.endCol == 0 || s.endCol >= pos.col));
+        if (!starts || !ends) continue;
+        if (!best || std::tie(s.depth, s.line, s.col) > std::tie(best->depth, best->line, best->col))
+            best = &s;
+    }
+    return best ? best->scope : outside;
 }
 
 std::string SymbolDatabase::scopeKindAtPosition(
@@ -1170,7 +1248,8 @@ void SymbolDatabase::keepDeclaredBefore(std::vector<SymbolRow>& rows, const std:
         auto subject = [&](const SymbolRow& r) {
             const std::string& k = r.kind;
             return (k == "Signal" || k == "Parameter" || k == "Typedef" || k == "Class" ||
-                    k == "EnumLiteral" || k == "Genvar" || k == "TypeParameter") &&
+                    k == "EnumLiteral" || k == "Genvar" || k == "TypeParameter" ||
+                    k == "Covergroup") &&
                    in(scopes, r.scope) && !in(classes, r.scope);
         };
         // Rows come grouped by file: remember the last file's prefix.

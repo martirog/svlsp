@@ -96,3 +96,16 @@ TEST_CASE("DiagnosticsPublisher: buildParams preserves diagnostic range",
     REQUIRE(params.diagnostics[0].range.start.line      == 9);
     REQUIRE(params.diagnostics[0].range.start.character == 4);
 }
+
+TEST_CASE("DiagnosticsPublisher: buildDiagnostic maps each ParseError severity",
+          "[diagnostics][phase6.21]")
+{
+    auto severityOf = [](int s) {
+        ParseError e{3, 4, "m"};
+        e.severity = s;
+        return DiagnosticsPublisher::buildDiagnostic(e).severity.value();
+    };
+    CHECK(severityOf(1) == lsp::DiagnosticSeverity::Error);
+    CHECK(severityOf(2) == lsp::DiagnosticSeverity::Warning);
+    CHECK(severityOf(3) == lsp::DiagnosticSeverity::Information);
+}

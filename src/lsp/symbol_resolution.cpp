@@ -2,8 +2,10 @@
 #include "lsp/symbol_utils.h"
 #include <algorithm>
 #include <cctype>
+#include <map>
 #include <set>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 namespace {
@@ -43,6 +45,25 @@ std::optional<size_t> offsetOf(const std::string& text, unsigned line, unsigned 
     if (lineEnd == std::string::npos) lineEnd = text.size();
     if (offset + character > lineEnd) return std::nullopt;
     return offset + character;
+}
+
+// The built-in classes (`std::process` and friends) no file declares.
+bool isBuiltinClass(const std::string& name)
+{
+    return name == "process" || name == "semaphore" || name == "mailbox";
+}
+
+// Whether `name` is written at (1-based `line`, `col`) in `text` -- not, as
+// for a name a macro expanded to, somewhere else.
+bool nameAt(const std::string& text, int line, int col, const std::string& name)
+{
+    if (line < 1 || col < 0) return false;
+    auto offset = offsetOf(text, static_cast<unsigned>(line - 1), static_cast<unsigned>(col));
+    if (!offset) return false;
+    const size_t end = *offset + name.size();
+    const char next = end < text.size() ? text[end] : ' ';
+    return text.compare(*offset, name.size(), name) == 0 &&
+           !(std::isalnum(static_cast<unsigned char>(next)) || next == '_' || next == '$');
 }
 
 SrcPos posAt(const std::string& text, size_t offset)
@@ -95,7 +116,7 @@ bool scopeOpBefore(const std::string& text, size_t i)
 // Value: anything a `.` can follow -- a variable, a struct member, an
 // instance, a named block or a design unit named from the top
 // (`top.u_sub.sig`).
-enum class KindFilter { Any, ScopeLike, Callable, Value, Typedef, TypeParameter };
+enum class KindFilter { Any, ScopeLike, Callable, Value, Typedef, TypeParameter, TypeLike };
 
 bool kindMatches(const SymbolRow& r, KindFilter f)
 {
@@ -109,6 +130,9 @@ bool kindMatches(const SymbolRow& r, KindFilter f)
                isView(r) || isDesignUnit(r);
     case KindFilter::Typedef:   return r.kind == "Typedef";
     case KindFilter::TypeParameter: return r.kind == "TypeParameter";
+    case KindFilter::TypeLike: // what a declared type name may name (plan.md §6.21 step 3)
+        return r.kind == "Class" || r.kind == "Typedef" || r.kind == "TypeParameter" ||
+               r.kind == "Interface" || r.kind == "Covergroup";
     }
     return true;
 }
@@ -137,8 +161,22 @@ const SymbolRow* closestBefore(const std::vector<const SymbolRow*>& rows, SrcPos
     return best ? best : earliest(rows);
 }
 
+// What checkTypeRefs has found visible so far in one compile unit: a name
+// declared in a scope on a later reference's chain is visible there too
+// (references are checked in the order they are written, so declare-before-
+// use can't hide it). Top-level ("") declarations count only in their file.
+struct TypeRefCache {
+    std::map<std::string, std::set<std::string>> declaredIn; // name -> declaring scopes
+    std::set<std::tuple<std::string, std::string, std::string>> seen; // (path, innermost scope, name)
+    std::set<std::pair<std::string, std::string>> qualified; // (qualifier, name)
+};
+
 class Resolver {
 public:
+    // checkTypeRefs' entry point: nullopt if `ref` names a type visible
+    // where it is written, else the warning's message.
+    std::optional<std::string> typeRefProblem(const std::string& path, const TypeRefRecord& ref,
+                                              TypeRefCache& cache) const;
     // resolveReceiverType's entry point.
     std::optional<ReceiverType> receiverTypeOf(const std::vector<ChainSegment>& segs, SrcPos at) const
     {
@@ -153,6 +191,10 @@ public:
     Resolver(SymbolDatabase& db, const std::string& path, const std::string& text)
         : m_db(db), m_path(path), m_text(blankCommentsAndStrings(text)) {}
 
+    // Reads each file's scope rows once, for a caller resolving at many
+    // positions (checkTypeRefs); a single request is cheaper without.
+    void cacheScopes() { m_scopeSpans.emplace(); }
+
     std::optional<ResolvedSymbol> resolveAt(size_t offset, int depth);
     SymbolRow overrideFamilyRoot(const SymbolRow& row) const;
 
@@ -161,6 +203,10 @@ private:
     const std::string& m_path;
     const std::string  m_text; // comments/strings blanked, same offsets
     mutable int        m_typeDepth = 0; // guards resolveTypeName's own recursion
+    mutable std::map<std::string, std::vector<SymbolRow>> m_classChains; // classChainRows
+    // With cacheScopes: each file's scope rows and outside scope, by path.
+    mutable std::optional<std::map<std::string, std::pair<std::vector<ScopeSpan>, std::string>>>
+        m_scopeSpans;
 
     std::optional<ResolvedSymbol> fallback(const std::string& name) const;
 
@@ -205,7 +251,12 @@ std::optional<ResolvedSymbol> Resolver::fallback(const std::string& name) const
 // Same chain findSymbolsVisibleAt builds: innermost scope first, ending "".
 std::vector<std::string> Resolver::scopeChain(const std::string& path, SrcPos at) const
 {
-    return SymbolDatabase::scopeChain(m_db.scopeAtPosition(path, at));
+    if (!m_scopeSpans) return SymbolDatabase::scopeChain(m_db.scopeAtPosition(path, at));
+    auto it = m_scopeSpans->find(path);
+    if (it == m_scopeSpans->end())
+        it = m_scopeSpans->emplace(path, std::pair{m_db.scopeSpansOf(path), m_db.scopeOutside(path)})
+                 .first;
+    return SymbolDatabase::scopeChain(SymbolDatabase::scopeAt(it->second.first, at, it->second.second));
 }
 
 std::optional<SymbolRow> Resolver::classRowForScope(const std::string& scope) const
@@ -223,6 +274,11 @@ std::optional<SymbolRow> Resolver::classRowForScope(const std::string& scope) co
 // cycle.
 std::vector<SymbolRow> Resolver::classChainRows(const SymbolRow& cls) const
 {
+    // Memoized: a lookup with inherited members walks every class on its
+    // scope chain, and the declared-type check does thousands of lookups.
+    const std::string key =
+        qualifiedScopeOf(cls) + '\x1F' + cls.filePath + '\x1F' + std::to_string(cls.line);
+    if (auto it = m_classChains.find(key); it != m_classChains.end()) return it->second;
     std::vector<SymbolRow> chain{cls};
     std::set<std::string> seen{qualifiedScopeOf(cls)};
     while (!chain.back().detail.empty()) {
@@ -230,7 +286,7 @@ std::vector<SymbolRow> Resolver::classChainRows(const SymbolRow& cls) const
         if (!parent || !seen.insert(qualifiedScopeOf(*parent)).second) break;
         chain.push_back(*parent);
     }
-    return chain;
+    return m_classChains[key] = std::move(chain);
 }
 
 // The id of the topmost ancestor's same-named Function/Task for a class
@@ -968,21 +1024,12 @@ std::vector<std::optional<SymbolRow>> resolveCallees(SymbolDatabase& db, const s
                                                      const std::string& text,
                                                      const std::vector<CallRecord>& calls)
 {
-    auto isIdentChar = [](char c) {
-        return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '$';
-    };
     std::vector<std::optional<SymbolRow>> callees(calls.size());
     std::vector<std::pair<unsigned, unsigned>> positions;
     std::vector<size_t> callOf; // positions[i] is calls[callOf[i]]'s name
     for (size_t c = 0; c < calls.size(); ++c) {
         const CallRecord& call = calls[c];
-        if (call.nameLine < 1 || call.nameColumn < 0) continue;
-        auto offset = offsetOf(text, call.nameLine - 1, call.nameColumn);
-        if (!offset) continue;
-        const size_t end = *offset + call.calleeName.size();
-        if (text.compare(*offset, call.calleeName.size(), call.calleeName) != 0 ||
-            (end < text.size() && isIdentChar(text[end])))
-            continue;
+        if (!nameAt(text, call.nameLine, call.nameColumn, call.calleeName)) continue;
         positions.emplace_back(call.nameLine - 1, call.nameColumn);
         callOf.push_back(c);
     }
@@ -1034,4 +1081,124 @@ SymbolRow overrideFamilyRoot(SymbolDatabase& db, const SymbolRow& row)
 {
     const std::string noText;
     return Resolver(db, row.filePath, noText).overrideFamilyRoot(row);
+}
+
+// ---- Declared type references (plan.md §6.21 step 3) ----
+
+std::optional<std::string> Resolver::typeRefProblem(const std::string& path,
+                                                    const TypeRefRecord& ref,
+                                                    TypeRefCache& cache) const
+{
+    const SrcPos at{ref.line, ref.column};
+    const std::string& name = ref.name;
+
+    if (!ref.qualifier.empty()) {
+        if (cache.qualified.count({ref.qualifier, name})) return std::nullopt;
+        std::vector<std::string> segs;
+        for (size_t start = 0;;) {
+            const size_t sep = ref.qualifier.find("::", start);
+            segs.push_back(ref.qualifier.substr(start, sep == std::string::npos ? sep : sep - start));
+            if (sep == std::string::npos) break;
+            start = sep + 2;
+        }
+        // `std::process`; `T::type_id` -- what a type parameter holds is
+        // unknown here.
+        if (segs[0] == "std") return std::nullopt;
+        if (lookupBare(path, at, segs[0], KindFilter::TypeParameter)) return std::nullopt;
+        const auto scope = resolveQualifierScope(segs, path, at);
+        if (!scope) {
+            for (auto& r : m_db.findSymbolsByName(segs[0]))
+                if (r.kind == "Package" || kindMatches(r, KindFilter::TypeLike))
+                    return std::nullopt; // exists, but we can't follow it
+            return "unknown package or class '" + segs[0] + "'";
+        }
+        if (auto m = memberInScope(*scope, name, KindFilter::TypeLike);
+            m && kindMatches(*m, KindFilter::TypeLike)) {
+            cache.qualified.insert({ref.qualifier, name});
+            return std::nullopt;
+        }
+        return "unknown type '" + name + "' in '" + ref.qualifier + "'";
+    }
+
+    if (isBuiltinClass(name)) return std::nullopt;
+    const auto chain = scopeChain(path, at);
+    // A top-level declaration is keyed by its file.
+    auto scopeKey = [&](const std::string& s) { return s.empty() ? "\x1F" + path : s; };
+    if (auto it = cache.declaredIn.find(name); it != cache.declaredIn.end())
+        for (const auto& s : chain)
+            if (it->second.count(scopeKey(s))) return std::nullopt;
+    const std::string inner = chain.empty() ? "" : chain.front();
+    if (cache.seen.count({path, inner, name})) return std::nullopt;
+
+    // Any visible declaration will do, not just the innermost: the visible
+    // set first (one query), the walk through class members and ancestors
+    // only when that has none.
+    std::optional<SymbolRow> found;
+    for (auto& r : m_db.findSymbolsVisibleAt(path, at, name, &chain))
+        if (kindMatches(r, KindFilter::TypeLike)) {
+            found = std::move(r);
+            break;
+        }
+    if (!found) found = lookupBare(path, at, name, KindFilter::TypeLike);
+    if (auto r = found) {
+        if (std::find(chain.begin(), chain.end(), r->scope) != chain.end() &&
+            (!r->scope.empty() || r->filePath == path))
+            cache.declaredIn[name].insert(scopeKey(r->scope));
+        else
+            cache.seen.insert({path, inner, name}); // imported, inherited, another file's
+        return std::nullopt;
+    }
+
+    // Not visible: say whether it exists somewhere else.
+    std::vector<std::string> where;
+    for (auto& r : m_db.findSymbolsByName(name))
+        if (kindMatches(r, KindFilter::TypeLike)) {
+            const std::string s = r.scope.empty() ? "the compilation unit" : displayScope(r.scope);
+            if (std::find(where.begin(), where.end(), s) == where.end()) where.push_back(s);
+        }
+    if (where.empty()) return "unknown type '" + name + "'";
+    std::string list;
+    for (const auto& s : where) list += (list.empty() ? "" : ", ") + s;
+    return "type '" + name + "' is not visible here (declared in " + list +
+           "; missing import?)";
+}
+
+std::vector<std::optional<std::string>> checkTypeRefs(
+    SymbolDatabase& db, const std::string& path,
+    const std::unordered_map<std::string, std::string>& texts,
+    const std::vector<TypeRefRecord>& refs)
+{
+    std::vector<std::optional<std::string>> problems(refs.size());
+    const std::string noText;
+    Resolver resolver(db, path, noText);
+    resolver.cacheScopes();
+    TypeRefCache cache;
+    // Each text's line starts, so testing a name's position doesn't rescan
+    // the file from its start.
+    std::unordered_map<std::string, std::vector<size_t>> lineStarts;
+    auto writtenAt = [&](const std::string& text, const std::string& file, const TypeRefRecord& ref) {
+        auto& starts = lineStarts[file];
+        if (starts.empty()) {
+            starts.push_back(0);
+            for (size_t i = 0; i < text.size(); ++i)
+                if (text[i] == '\n') starts.push_back(i + 1);
+        }
+        if (ref.line < 1 || ref.column < 0 || static_cast<size_t>(ref.line) > starts.size())
+            return false;
+        const size_t lineStart = starts[ref.line - 1];
+        const size_t lineEnd = static_cast<size_t>(ref.line) < starts.size()
+                                   ? starts[ref.line] - 1 : text.size();
+        const size_t at = lineStart + ref.column;
+        if (at + ref.name.size() > lineEnd || text.compare(at, ref.name.size(), ref.name) != 0)
+            return false;
+        const char next = at + ref.name.size() < text.size() ? text[at + ref.name.size()] : ' ';
+        return !(std::isalnum(static_cast<unsigned char>(next)) || next == '_' || next == '$');
+    };
+    for (size_t i = 0; i < refs.size(); ++i) {
+        const std::string& file = refs[i].file.empty() ? path : refs[i].file;
+        if (auto t = texts.find(file); t != texts.end() && !writtenAt(t->second, file, refs[i]))
+            continue;
+        problems[i] = resolver.typeRefProblem(file, refs[i], cache);
+    }
+    return problems;
 }

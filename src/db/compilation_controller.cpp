@@ -4,6 +4,7 @@
 #include "compiler/sv_preprocessor.h"
 #include "compiler/sv_tree_walker.h"
 #include <algorithm>
+#include <chrono>
 #include <functional>
 #include <optional>
 #include <ostream>
@@ -112,12 +113,14 @@ std::vector<ParseError> CompilationController::compile(const std::string& path,
                                                         const std::string& text,
                                                         const ProjectConfig* config,
                                                         std::vector<std::string>* includedFiles,
-                                                        bool forceRecompile)
+                                                        bool forceRecompile,
+                                                        std::vector<std::string>* refreshedFiles)
 {
     if (includedFiles) includedFiles->clear();
+    if (refreshedFiles) refreshedFiles->clear();
     auto job = prepare(path, text, config, forceRecompile);
     if (job.cached) return std::move(*job.cached);
-    return commit(parse(std::move(job)), includedFiles);
+    return commit(parse(std::move(job)), includedFiles, refreshedFiles);
 }
 
 CompilationController::Prepared CompilationController::prepare(const std::string& path,
@@ -127,6 +130,7 @@ CompilationController::Prepared CompilationController::prepare(const std::string
 {
     Prepared job{.path = path, .text = text, .hash = hashContent(text),
                  .preprocessor = config ? SvPreprocessor(config->includeDirs) : SvPreprocessor()};
+    job.checkTypes = config != nullptr;
 
     // Cache hit: return diagnostics from DB without re-parsing. Included
     // files aren't reported here -- see compile()'s own doc comment.
@@ -180,12 +184,14 @@ CompilationController::Parsed CompilationController::parse(Prepared&& job) const
     if (!m_collectDocs)
         for (auto& mac : preprocessed.macros) mac.doc.clear();
     return {std::move(job.path), std::move(job.text), std::move(job.hash),
-            std::move(preprocessed), std::move(walked)};
+            std::move(preprocessed), std::move(walked), job.checkTypes};
 }
 
 std::vector<ParseError> CompilationController::commit(Parsed&& parsed,
-                                                      std::vector<std::string>* includedFiles)
+                                                      std::vector<std::string>* includedFiles,
+                                                      std::vector<std::string>* refreshedFiles)
 {
+    if (refreshedFiles) refreshedFiles->clear();
     const std::string& path = parsed.path;
     const std::string& text = parsed.text;
     const std::string& hash = parsed.hash;
@@ -335,11 +341,109 @@ std::vector<ParseError> CompilationController::commit(Parsed&& parsed,
     for (const auto& file : sitedFiles)
         m_sdb.replaceDiagnostics(m_sdb.upsertFile(file, ""), contextDiagnostics(m_sdb, file),
                                  "context");
+    // Declared types (plan.md §6.21 step 3), once the include sites above
+    // are persisted: an included file's package-level positions are in the
+    // scope it is `include'd in only through them.
+    const std::vector<ParseError> primaryTypeDiags =
+        parsed.checkTypes ? checkTypeRefs(parsed, fid, allIncluded) : std::vector<ParseError>{};
+    refreshTypeRefDiagnostics(fid, allIncluded, refreshedFiles);
+
     if (includedFiles) *includedFiles = std::move(allIncluded);
 
     auto result = errsByFile[""];
     result.insert(result.end(), primaryContextDiags.begin(), primaryContextDiags.end());
     result.insert(result.end(), primaryCallDiags.begin(), primaryCallDiags.end());
+    result.insert(result.end(), primaryTypeDiags.begin(), primaryTypeDiags.end());
     result.insert(result.end(), primaryUnresolvedDiags.begin(), primaryUnresolvedDiags.end());
     return result;
+}
+
+// The declared-type check (plan.md §6.21 step 3): each type name `parsed`'s
+// unit writes at a declaration, in the primary file (`fid`) and each of
+// `included`, checked once the whole unit is persisted, as 'reference'
+// Warnings with the written name as subject. Every file of the unit has its
+// old rows replaced, even with no references left. Returns the primary's.
+std::vector<ParseError> CompilationController::checkTypeRefs(
+    const Parsed& parsed, int64_t fid, const std::vector<std::string>& included)
+{
+    if (!m_typeChecker) return {};
+    const auto start = std::chrono::steady_clock::now();
+    const auto& refs = parsed.walked.typeRefs;
+
+    // The unit's files' texts: the primary's, and each included file with
+    // references, as the preprocessor read it.
+    std::unordered_map<std::string, std::string> texts{{parsed.path, parsed.text}};
+    for (const auto& ref : refs)
+        if (!ref.file.empty() && !texts.count(ref.file))
+            if (auto text = readFile(ref.file)) texts.emplace(ref.file, std::move(*text));
+    const auto problems = m_typeChecker(m_sdb, parsed.path, texts, refs);
+
+    std::unordered_map<std::string, std::vector<ParseError>> warningsByFile;
+    std::unordered_map<std::string, std::vector<std::string>> subjectsByFile;
+    for (size_t i = 0; i < refs.size() && i < problems.size(); ++i) {
+        if (!problems[i]) continue;
+        ParseError diag{refs[i].line, refs[i].column, *problems[i]};
+        diag.severity = 2;
+        warningsByFile[refs[i].file].push_back(diag);
+        subjectsByFile[refs[i].file].push_back(
+            refs[i].qualifier.empty() ? refs[i].name : refs[i].qualifier + "::" + refs[i].name);
+    }
+
+    // Every file of the unit has its old rows replaced, even with none left.
+    std::vector<std::string> files{parsed.path};
+    files.insert(files.end(), included.begin(), included.end());
+    m_sdb.clearDiagnostics("reference", files);
+    size_t warnings = 0;
+    for (const auto& [filePath, diags] : warningsByFile) {
+        const int64_t fileId = filePath.empty() ? fid : m_sdb.upsertFile(filePath, "");
+        const auto& subjects = subjectsByFile[filePath];
+        for (size_t i = 0; i < diags.size(); ++i)
+            m_sdb.appendDiagnostics(fileId, {diags[i]}, "reference", subjects[i]);
+        warnings += diags.size();
+    }
+    if (m_log) {
+        const auto ms = std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - start).count();
+        *m_log << "[types]    " << parsed.path << ": " << refs.size() << " refs, " << warnings
+               << " warnings, " << static_cast<int>(ms) << " ms\n";
+        m_log->flush();
+    }
+    return warningsByFile[""];
+}
+
+// Re-checks the 'reference' rows of files outside the unit just committed
+// (`fid` and `included`), which may now resolve: a project load compiles a
+// file before the one declaring its types, or the missing type was just
+// added. Deletes the ones that do; their files go to `refreshedFiles`.
+void CompilationController::refreshTypeRefDiagnostics(int64_t fid,
+                                                      const std::vector<std::string>& included,
+                                                      std::vector<std::string>* refreshedFiles)
+{
+    if (!m_typeChecker) return;
+    std::vector<SubjectDiagnosticRow> rows;
+    for (auto& row : m_sdb.diagnosticsFromSource("reference"))
+        if (row.fileId != fid &&
+            std::find(included.begin(), included.end(), row.filePath) == included.end())
+            rows.push_back(std::move(row));
+    for (size_t begin = 0; begin < rows.size();) {
+        size_t end = begin;
+        std::vector<TypeRefRecord> refs;
+        for (; end < rows.size() && rows[end].fileId == rows[begin].fileId; ++end) {
+            const auto& row = rows[end];
+            const size_t sep = row.subject.rfind("::");
+            refs.push_back({sep == std::string::npos ? row.subject : row.subject.substr(sep + 2),
+                            sep == std::string::npos ? "" : row.subject.substr(0, sep), row.line,
+                            row.col, row.filePath});
+        }
+        const auto problems = m_typeChecker(m_sdb, rows[begin].filePath, {}, refs);
+        bool cleared = false;
+        for (size_t i = 0; i < refs.size() && i < problems.size(); ++i)
+            if (!problems[i]) {
+                const auto& row = rows[begin + i];
+                m_sdb.deleteDiagnostic(row.fileId, row.line, row.col, "reference");
+                cleared = true;
+            }
+        if (cleared && refreshedFiles) refreshedFiles->push_back(rows[begin].filePath);
+        begin = end;
+    }
 }

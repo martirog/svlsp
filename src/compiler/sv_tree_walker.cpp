@@ -1021,6 +1021,12 @@ public:
                 pushIdInScope(ParseRecordKind::Member, id, ctx, scope, currentScope(), typeName);
     }
 
+    void enterCovergroup_declaration(SvParser::Covergroup_declarationContext* ctx) override {
+        if (ctx->covergroup_identifier().empty()) return;
+        pushId(ParseRecordKind::Covergroup, ctx->covergroup_identifier(0)->IDENTIFIER(), ctx,
+               currentScope());
+    }
+
     void enterGenvar_declaration(SvParser::Genvar_declarationContext* ctx) override {
         if (auto* list = ctx->list_of_genvar_identifiers())
             for (auto* gi : list->genvar_identifier())

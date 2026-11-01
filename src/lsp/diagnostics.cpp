@@ -37,6 +37,8 @@ lsp::Diagnostic DiagnosticsPublisher::buildDiagnostic(const ParseError& err)
     };
     diag.message  = err.message;
     diag.severity = lsp::DiagnosticSeverityEnum{
-        err.severity == 3 ? lsp::DiagnosticSeverity::Information : lsp::DiagnosticSeverity::Error};
+        err.severity == 3   ? lsp::DiagnosticSeverity::Information
+        : err.severity == 2 ? lsp::DiagnosticSeverity::Warning
+                            : lsp::DiagnosticSeverity::Error};
     return diag;
 }

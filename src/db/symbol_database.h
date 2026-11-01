@@ -47,6 +47,26 @@ struct DiagnosticRow {
     int         severity{1}; // as ParseError::severity
 };
 
+// A scope row of one file as scopeAtPosition sees it: its qualified name,
+// span and nesting depth (the length of its own scope).
+struct ScopeSpan {
+    std::string scope;
+    int         line;
+    int         col;
+    int         endLine;
+    int         endCol;
+    size_t      depth;
+};
+
+// A diagnostic with what it is about (diagnostics.subject).
+struct SubjectDiagnosticRow {
+    int64_t     fileId;
+    std::string filePath;
+    int         line;
+    int         col;
+    std::string subject;
+};
+
 struct ImportRow {
     std::string pkgName;
     std::string item;      // symbol name, or "*" for wildcard
@@ -290,6 +310,16 @@ public:
     // Deletes every diagnostic from `source`, in every file.
     void clearDiagnostics(const std::string& source);
 
+    // Every diagnostic from `source` in this DB (not attached ones), with
+    // its subject, ordered by (file, line, col).
+    std::vector<SubjectDiagnosticRow> diagnosticsFromSource(const std::string& source) const;
+
+    // Deletes the diagnostics from `source` of every file in `paths`.
+    void clearDiagnostics(const std::string& source, const std::vector<std::string>& paths);
+
+    // Deletes `fileId`'s diagnostics from `source` at (line, col).
+    void deleteDiagnostic(int64_t fileId, int line, int col, const std::string& source);
+
     // Re-anchors `fileId`'s 'library' diagnostics (LibraryResolver's
     // unresolved instantiations) to its current instantiations, once a
     // recompile has replaced them: each module name (subject) they were
@@ -344,6 +374,15 @@ public:
     // for/foreach; plan.md §6.30) count unless `withBlocks` is false, which
     // gives the innermost design unit, package, class or subroutine instead.
     std::string scopeAtPosition(const std::string& path, SrcPos pos, bool withBlocks = true) const;
+
+    // scopeAtPosition (with blocks) for a caller asking about many positions
+    // in one file: the file's scope rows once, then scopeAt for each
+    // position, with `outside` the scope beyond them all (the include
+    // context's, scopeOutside).
+    std::vector<ScopeSpan> scopeSpansOf(const std::string& path) const;
+    std::string scopeOutside(const std::string& path) const;
+    static std::string scopeAt(const std::vector<ScopeSpan>& spans, SrcPos pos,
+                               const std::string& outside);
 
     // Returns the ParseRecordKind string (e.g. "Module", "Class", "Function")
     // of the innermost scope-defining symbol that contains `pos` in `path`.

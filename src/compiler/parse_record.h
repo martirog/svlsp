@@ -46,6 +46,8 @@ enum class ParseRecordKind {
                  // signals of those names (plan.md §6.30 leftovers)
     TypeParameter, // `parameter type T = int` / `localparam type` / `#(type T)`; detail
                    // is the default type ("" for none; plan.md §6.21 step 1)
+    Covergroup,    // `covergroup name ...`: a leaf row, so the type is declared
+                   // (plan.md §6.21 step 3); coverpoints aren't recorded
 };
 
 // Reserved ParseRecord::detail values for built-in container/data types with
@@ -122,7 +124,7 @@ struct ParseError {
     int         column;  // 0-based
     std::string message;
     std::string file{};  // original source file; empty = same as compiled file
-    int         severity{1}; // LSP DiagnosticSeverity: 1 error, 3 information
+    int         severity{1}; // LSP DiagnosticSeverity: 1 error, 2 warning, 3 information
 };
 
 // One package import/export statement: `import pkgName::item`, `import pkgName::*`,

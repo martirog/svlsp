@@ -57,6 +57,7 @@ lsp::SymbolKind symbolKindFor(const std::string& kind)
     if (kind == "Modport")     return lsp::SymbolKind::Interface;
     if (kind == "Clocking")    return lsp::SymbolKind::Event;
     if (kind == "TypeParameter") return lsp::SymbolKind::TypeParameter;
+    if (kind == "Covergroup")    return lsp::SymbolKind::Class;
     return lsp::SymbolKind::Variable;
 }
 
@@ -81,6 +82,7 @@ lsp::CompletionItemKind completionKindFor(const std::string& kind)
     if (kind == "Modport")     return lsp::CompletionItemKind::Interface;
     if (kind == "Clocking")    return lsp::CompletionItemKind::Event;
     if (kind == "TypeParameter") return lsp::CompletionItemKind::TypeParameter;
+    if (kind == "Covergroup")    return lsp::CompletionItemKind::Class;
     return lsp::CompletionItemKind::Variable;
 }
 

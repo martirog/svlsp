@@ -68,6 +68,7 @@ LibraryDbBuilder::Result LibraryDbBuilder::build(
         CompilationController controller(sdb, progressLog);
         controller.setCollectDocs(collectDocs);
         controller.setCalleeResolver(resolveCallees);
+        controller.setTypeChecker(checkTypeRefs);
         if (walker) controller.setWalker(walker);
 
         result.fileCount = ProjectCompiler::loadProject(config, controller, sdb);
