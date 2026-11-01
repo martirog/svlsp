@@ -3242,10 +3242,45 @@ svlsp only knows the open files.
   diagnostics server 34.7 -> 38.5 ms); `uvm_src` edit -> diagnostics
   unchanged (server 463 -> 468 ms: an edited UVM file is its own unit),
   but references(`get_name`) **REGRESSED 540 -> 914 ms** (318 -> 324
-  results). Not from §6.21: the corpus suite's timing of the same request
-  went 597 ms (2026-10-26) -> 1041 ms (2026-10-27, the §6.30 leftovers,
-  whose perf check ran small / uvm only) and is 1006 ms here; the +6
-  results are step 1's (calls through a type parameter's default). Open.
+  results). That was attributed to the §6.30 leftovers at the time; the
+  bisect below shows it was step 1's, and fixes it.
+
+#### Follow-up: the references(`get_name`) slowdown (2026-11-01)
+- *Bisect* (`uvm_src`, `tools/lsp_perf.py --only references --repeat
+  20`, release builds in a scratch worktree, server run median; the
+  2026-11-01 HEAD re-run gave 586 ms, so the 914 ms above was a noisy or
+  stale-binary run):
+
+  | commit | what | median | results |
+  |---|---|---|---|
+  | 70c7da4 | C4, the baseline | 515 ms | 318 |
+  | 0523751 | C8-C10 | 515 ms | 318 |
+  | 0eb00f2 | §6.30 leftovers | 515 ms | 318 |
+  | 3af586a | §6.21 step 1 | **1125 ms** | 324 |
+  | 12b0248 | §6.21 step 3 | 586 ms | 324 |
+  | fix | below | **387 ms** | 324 |
+
+  The §6.30 leftovers are not the cause on `uvm_src` (the corpus's
+  2026-10-27 jump to 1041 ms was unconfirmed). Step 1 made every
+  `resolveTypeName` run a TypeParameter `lookupBare` (a full
+  `findSymbolsVisibleAt` query) before the class lookup, roughly doubling
+  a type resolution; step 3's `classChainRows` memo then hid about half of
+  that.
+- *Fix:* `Resolver::isTypeParameterName` -- the TypeParameter lookup runs
+  only for a name some TypeParameter row has (`findSymbolsByName`, project
+  and attached DBs, memoized per `Resolver`). `uvm_object` and the like
+  never are, so their resolution is back to one query. Behavior unchanged.
+- *The +6 results* are correct: `seq.get_name()` in
+  `reg/sequences/uvm_reg_mem_built_in_seq.svh` (lines 92-149), where `seq`
+  is a `uvm_reg_*_seq` extending `uvm_reg_sequence #(type BASE=...)
+  extends BASE`; `BASE` now resolves through its default to
+  `uvm_sequence`, so the call reaches `uvm_object::get_name`.
+- *Verified:* unit 1096/1096, Emacs 328/328, corpus 1563 / 31
+  (references(`get_name`) 624 -> 411 ms, 324 locations; log
+  `build/release/corpus_2026-11-01.log`). `make perf-check` small / uvm /
+  `uvm_src` no regression: `uvm_src` references 540 -> 385 ms, edit ->
+  diagnostics server 463 -> 294 ms (the missing-argument and type checks
+  resolve types too), typing 18.0 -> 11.5 ms.
 
 ### 6.22 References, Rename, Signature Help (`textDocument/references`/`rename`/`signatureHelp`)
 

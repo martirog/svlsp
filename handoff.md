@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-10-31 (§6.21 step 3, the declared-type check).
+**Last updated:** 2026-11-01 (the references(`get_name`) slowdown, fixed).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -134,18 +134,26 @@ strict visibility (a missing import is flagged). UVM `--build-db`: 0
 warnings; the check costs 294 ms on the full UVM unit. Verified: unit
 **1096/1096**, Emacs **328/328** (test_52 new), corpus 1563 / 31, `make
 test-integration-uvm` 15/15, `make perf-check` small / uvm no regression;
-`uvm_src` flags references(`get_name`) 540 -> 914 ms, which predates §6.21
-(the corpus timing jumped 597 -> 1041 ms with the §6.30 leftovers,
-2026-10-27) -- see next step 1.
+`uvm_src` flagged references(`get_name`) 540 -> 914 ms, fixed below.
+
+**The references(`get_name`) slowdown is fixed** (plan.md §6.21
+"Follow-up: the references(`get_name`) slowdown"): a `uvm_src` bisect put
+it on §6.21 step 1 (515 -> 1125 ms; not the §6.30 leftovers, as assumed),
+whose TypeParameter lookup ran a visible-set query in every
+`resolveTypeName`. It now runs only for a name some TypeParameter row has
+(`Resolver::isTypeParameterName`). `uvm_src` references 540 -> 385 ms,
+edit -> diagnostics server 463 -> 294 ms; corpus 624 -> 411 ms. The +6
+results (318 -> 324) are correct calls through a type parameter's
+default. Verified: unit 1096/1096, Emacs 328/328, corpus 1563 / 31, `make
+perf-check` small / uvm / `uvm_src` no regression. The `uvm_src` baseline
+is still C4's (refresh it with `make perf-baseline SCENARIO=uvm_src` when
+convenient).
 
 Next steps:
-1. **Investigate the references(`get_name`) slowdown** from the §6.30
-   leftovers (b66bd5d / 0eb00f2): corpus 597 -> 1041 ms, `uvm_src` 540 ->
-   914 ms. Bisect with the corpus suite's timing line.
-2. Optional, after C9: a commit still holds the data mutex (up to ~300 ms
+1. Optional, after C9: a commit still holds the data mutex (up to ~300 ms
    on `uvm_src`), and didOpen / didSave still compile on the message
    thread.
-3. Optional, LL cost on files with syntax errors (only they reach LL now):
+2. Optional, LL cost on files with syntax errors (only they reach LL now):
    the remaining LL time is true ambiguity in `primary` (decision 1068)
    and `hierarchical_identifier` (1103): `a.b` is a name, a name + select
    `.b`, or a name + the method loop. Profile with `tools/grammar_profile.sh
