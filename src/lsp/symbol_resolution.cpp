@@ -204,11 +204,26 @@ private:
     const std::string  m_text; // comments/strings blanked, same offsets
     mutable int        m_typeDepth = 0; // guards resolveTypeName's own recursion
     mutable std::map<std::string, std::vector<SymbolRow>> m_classChains; // classChainRows
+    mutable std::map<std::string, bool> m_typeParameterNames; // isTypeParameterName
     // With cacheScopes: each file's scope rows and outside scope, by path.
     mutable std::optional<std::map<std::string, std::pair<std::vector<ScopeSpan>, std::string>>>
         m_scopeSpans;
 
     std::optional<ResolvedSymbol> fallback(const std::string& name) const;
+    // Whether any TypeParameter row (project or attached DB) is named `name`.
+    bool isTypeParameterName(const std::string& name) const
+    {
+        auto it = m_typeParameterNames.find(name);
+        if (it == m_typeParameterNames.end()) {
+            const auto rows = m_db.findSymbolsByName(name);
+            it = m_typeParameterNames
+                     .emplace(name, std::any_of(rows.begin(), rows.end(), [](const SymbolRow& r) {
+                         return r.kind == "TypeParameter";
+                     }))
+                     .first;
+        }
+        return it->second;
+    }
 
     std::vector<std::string> scopeChain(const std::string& path, SrcPos at) const;
     std::optional<SymbolRow> classRowForScope(const std::string& scope) const;
@@ -438,9 +453,12 @@ std::optional<SymbolRow> Resolver::resolveTypeName(const std::string& typeIn,
     // ancestors here would recurse back into resolving that same name.
     // A visible type parameter is its default type, resolved where the
     // parameter is declared (plan.md §6.21 step 1); it shadows any class of
-    // that name, and no default resolves to nothing.
-    if (auto tp = lookupBare(ctxPath, ctxAt, type, KindFilter::TypeParameter,
-                             /*withInherited=*/false))
+    // that name, and no default resolves to nothing. The visible-set query
+    // runs only for a name some TypeParameter row has.
+    if (auto tp = isTypeParameterName(type)
+                      ? lookupBare(ctxPath, ctxAt, type, KindFilter::TypeParameter,
+                                   /*withInherited=*/false)
+                      : std::nullopt)
         return resolveTypeName(tp->detail, tp->filePath, posOf(*tp), valueType);
     if (auto r = lookupBare(ctxPath, ctxAt, type, KindFilter::ScopeLike, /*withInherited=*/false);
         r && r->kind == "Class")
