@@ -2911,8 +2911,9 @@ happen independently for external access to be possible at all.
 
 ### 6.21 Semantic Reference-Resolution Diagnostics (unresolved type/import usage)
 
-**Status:** steps 1-2 of 5 done (2026-10-30: type parameters, "Step 1";
-type references with positions, "Step 2"); the check itself not started. Its prerequisite,
+**Status:** done (2026-10-31): type parameters ("Step 1"), type
+references with positions ("Step 2"), the check ("Step 3"); its Emacs
+test and the UVM acceptance gate (steps 4-5) are part of step 3. Its prerequisite,
 per-source diagnostics, is done (2026-10-01, "Prerequisite done" below).
 Added to the plan 2026-09-12, found
 researching §6.4's own "why don't import edges need cross-file invalidation"
@@ -3096,10 +3097,13 @@ parameter found nothing.
   inherited members) and resolves its detail where the parameter is
   declared, so `REQ req; req.` offers `uvm_sequence_item`'s members, and
   `RSP = REQ` chains. A visible type parameter shadows a same-named class;
-  no default resolves to nothing. `::` qualifiers are unchanged
-  (`resolveQualifierScope` matches only Package/Class), so
-  `BUSTYPE::type_id::create` still fails closed (§6.26). A `#(.T(...))`
-  named connection resolves to the TypeParameter.
+  no default resolves to nothing. *Correction (step 3):* this was first
+  written as "`::` qualifiers are unchanged", which is wrong --
+  `resolveQualifierScope` resolves a first segment that isn't a package
+  through `resolveTypeName`, so `T::type_id::create` with a class default
+  resolves into the default class; with an `int` default (the §6.26 test
+  fixtures) it still fails closed. A `#(.T(...))` named connection
+  resolves to the TypeParameter.
 - Declare-before-use: TypeParameter is a subject (a package's
   `localparam type` used before its declaration isn't offered).
 - *Tests:* 7 unit cases -- 3 listener (class type parameters and their
@@ -3163,6 +3167,85 @@ consumes it yet; no DB change.
   a phantom Signal `behavior`); a macro expansion, which step 3 skips by
   position. `--build-db`: symbols and diagnostics identical, 1:47 / 2.97
   GB. `make perf-check` small / uvm no regression.
+
+**Step 3: the check (2026-10-31).** A type name written at a declaration
+(step 2's `TypeRefRecord`s) that no visible declaration covers is a
+**Warning**, `source = 'reference'` -- this settles the severity question
+above. Decided with the user: **strict visibility** (scope chain, imports,
+include context, inherited members, declare-before-use -- a type that
+exists but isn't imported is flagged too), and **only for files compiled
+under a project config** (`.svlsp.json` / `.f`, `--build-db`): without one
+svlsp only knows the open files.
+- `checkTypeRefs` (`lsp/symbol_resolution.{h,cpp}`, through
+  `Resolver::typeRefProblem`) is the controller's `TypeChecker`
+  (`setTypeChecker`, set by the server and `LibraryDbBuilder`; svlsp_db
+  can't link it). Type-like kinds (`KindFilter::TypeLike`): Class, Typedef
+  (forward ones too), TypeParameter, Interface, Covergroup. A bare name
+  is visible if the visible set (`findSymbolsVisibleAt`) has a type-like
+  row of it, else if `lookupBare` with inherited members finds one; `q::T`
+  needs a type-like `T` in the scope `resolveQualifierScope` gives `q`
+  (a class's ancestors too). Skipped: `process` / `semaphore` / `mailbox`,
+  a `std::` qualifier, a qualifier starting with a visible type parameter
+  (`T::type_id`), a qualifier that doesn't resolve but names something
+  (only one naming nothing is flagged), and a name not written at its
+  recorded position (a macro expansion -- also a type written as a macro
+  argument, whose recorded column is the expansion's). Messages: "unknown
+  type 'X'", "type 'X' is not visible here (declared in pkg; missing
+  import?)", "unknown type 'X' in 'q'", "unknown package or class 'q'".
+- `CompilationController::commit` runs it once the unit's include sites are
+  persisted (an included file's package-level positions are in its include
+  scope only through them -- run before, UVM had 284 false positives),
+  over the whole unit's references in the order they are written, then
+  `clearDiagnostics("reference", <unit files>)` and one row per warning
+  with the written name as `subject`. The primary's are in the return
+  value. Then `refreshTypeRefDiagnostics` re-checks every other file's
+  'reference' rows and deletes those that now resolve -- this clears a
+  project load's order artifacts (a file compiled before the one declaring
+  its types) and a warning once the type is added elsewhere; their files
+  come back through `commit`'s / `compile`'s new `refreshedFiles`, and the
+  server republishes them with the included files. *Not built:* removing
+  a declaration doesn't re-flag other files until they recompile (§6.4).
+- New kind **`Covergroup`** (a leaf row, `enterCovergroup_declaration`):
+  `cg_t cg = new;` names one. LSP Class kinds; a declare-before-use
+  subject. UVM has none.
+- Diagnostics: severity 2 is now a Warning (`DiagnosticsPublisher::
+  buildDiagnostic` made everything but 3 an Error). The range is still one
+  character at the name, as every svlsp diagnostic (a name-length range
+  needs a `diagnostics` column).
+- *Performance.* The first version took 1.9 s on the full UVM unit (7715
+  references): a per-file cache (166 files), the inherited-member walk on
+  every miss, a `scopeAtPosition` query per reference, a
+  `replaceDiagnostics` per file. Now 294 ms: one cache for the unit
+  (references in written order, so a type found visible stays visible for
+  every later reference whose scope chain holds its declaring scope; a
+  top-level one only in its file; an imported or inherited one per
+  innermost scope), `Resolver::classChainRows` memoized, each file's scope
+  rows read once (`SymbolDatabase::scopeSpansOf` + `scopeAt`, the same
+  rule as `scopeAtPosition`, pinned at every position of a fixture), the
+  visible set before the inherited walk, line starts indexed for the
+  position test, and one `DELETE` per unit. 536 lookups remain (198 ms).
+- *Tests:* `tests/unit/lsp/test_type_ref_check.cpp` (10 cases: imported /
+  removed, exists but not imported, attached library DB, qualified forms,
+  every kind of type declaration incl. inherited typedefs and type
+  parameters, macro expansions, no config, refresh across files, forward
+  typedef / declare-before-use, recompile clears), the scopeAt agreement
+  case (test_symbol_database), severity mapping (test_diagnostics), a
+  Covergroup row (test_sv_listener). Emacs test_52 (fixture
+  `typeref_proj/`, 2 checks: one Warning at `tref_missing`, fixing the
+  edit clears it).
+- *Verified:* unit **1096/1096**, Emacs **328/328**. UVM `--build-db`:
+  **0 'reference' rows** (the acceptance gate), symbols identical, CPU time
+  unchanged (100 s). Corpus 1563 / 31 (log
+  `build/release/corpus_2026-10-31.log`; its fixture compiles without a
+  config, so the check doesn't run there). `make test-integration-uvm`
+  15/15. `make perf-check` small / uvm no regression (uvm edit ->
+  diagnostics server 34.7 -> 38.5 ms); `uvm_src` edit -> diagnostics
+  unchanged (server 463 -> 468 ms: an edited UVM file is its own unit),
+  but references(`get_name`) **REGRESSED 540 -> 914 ms** (318 -> 324
+  results). Not from §6.21: the corpus suite's timing of the same request
+  went 597 ms (2026-10-26) -> 1041 ms (2026-10-27, the §6.30 leftovers,
+  whose perf check ran small / uvm only) and is 1006 ms here; the +6
+  results are step 1's (calls through a type parameter's default). Open.
 
 ### 6.22 References, Rename, Signature Help (`textDocument/references`/`rename`/`signatureHelp`)
 

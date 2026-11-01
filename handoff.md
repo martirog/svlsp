@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-10-30 (§6.21 step 2, type references).
+**Last updated:** 2026-10-31 (§6.21 step 3, the declared-type check).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -128,13 +128,24 @@ declaration site, at its name. Not consumed yet. Verified: unit
 no regression; UVM's only undeclared referenced names are `process`,
 `semaphore`, `mailbox` and one macro-expanded phantom.
 
+**§6.21 is done** (plan.md §6.21 "Step 3"): in a project, a declared type
+no visible declaration covers is a Warning (`source = 'reference'`), with
+strict visibility (a missing import is flagged). UVM `--build-db`: 0
+warnings; the check costs 294 ms on the full UVM unit. Verified: unit
+**1096/1096**, Emacs **328/328** (test_52 new), corpus 1563 / 31, `make
+test-integration-uvm` 15/15, `make perf-check` small / uvm no regression;
+`uvm_src` flags references(`get_name`) 540 -> 914 ms, which predates §6.21
+(the corpus timing jumped 597 -> 1041 ms with the §6.30 leftovers,
+2026-10-27) -- see next step 1.
+
 Next steps:
-0. **§6.21 step 3**: the "type name is declared" check in `commit`
-   (plan.md §6.21 "Revised steps").
-1. Optional, after C9: a commit still holds the data mutex (up to ~300 ms
+1. **Investigate the references(`get_name`) slowdown** from the §6.30
+   leftovers (b66bd5d / 0eb00f2): corpus 597 -> 1041 ms, `uvm_src` 540 ->
+   914 ms. Bisect with the corpus suite's timing line.
+2. Optional, after C9: a commit still holds the data mutex (up to ~300 ms
    on `uvm_src`), and didOpen / didSave still compile on the message
    thread.
-2. Optional, LL cost on files with syntax errors (only they reach LL now):
+3. Optional, LL cost on files with syntax errors (only they reach LL now):
    the remaining LL time is true ambiguity in `primary` (decision 1068)
    and `hierarchical_identifier` (1103): `a.b` is a name, a name + select
    `.b`, or a name + the method loop. Profile with `tools/grammar_profile.sh
@@ -159,6 +170,20 @@ What C2 changes for other work:
 - A subroutine body ended early by a syntax error keeps its scope to its own
   `endfunction` / `endtask` (`bodyStop`).
 
+What §6.21 step 3 changes for other work:
+- `'reference'` diagnostics (Warnings, severity 2, subject = the written
+  type name) are written only for files compiled under a project config,
+  and refreshed across files after every commit
+  (`refreshTypeRefDiagnostics`); `commit` / `compile` report the files it
+  changed in `refreshedFiles`, which the server republishes. A new caller
+  that publishes a compile's diagnostics must republish them too.
+- A new controller (production, or a test expecting the warnings) must
+  `setTypeChecker(checkTypeRefs)`, as `setCalleeResolver`.
+- New kind **`Covergroup`** (leaf row). New type-declaring kinds must join
+  `KindFilter::TypeLike` or every use of them is flagged.
+- `SymbolDatabase::scopeSpansOf` / `scopeAt` must stay in step with
+  `scopeAtPosition` (a unit case compares them at every position).
+
 What §6.21 step 2 changes for other work:
 - `WalkResult::typeRefs` is the last member; a new WalkResult member goes
   after it (the listener tests' structured bindings list them in order)
@@ -171,7 +196,8 @@ What §6.21 step 1 changes for other work:
 - New kind **`TypeParameter`**: anything switching on kind strings must
   consider it. It is not a value (`KindFilter::Value` excludes it);
   `resolveTypeName` follows its detail (the default type) where it is
-  declared; a `::` qualifier never does (`T::type_id` fails closed).
+  declared -- and so does a `T::` qualifier through `resolveQualifierScope`
+  (`T::type_id` resolves into a class default; fails closed for `int`).
 
 What the §6.30 leftovers change for other work:
 - New kinds **`Modport`** and **`Clocking`**: their `detail` lists their
@@ -409,10 +435,10 @@ by name instead of from the typedef's scope, and merged duplicated helpers
   in workspace symbols, no completion inside comments/strings, and doc
   comments (§6.31) in hover, signature help and completion resolve.
 - Test baselines:
-  - unit: **1083 cases**, all passing (2026-10-30, §6.21 step 2; 1077 with step 1; 1070 on 2026-10-27, library rename fails closed; 1067 with the §6.30 leftovers; 1059 with C10; 1053 with C9; 1051 with C8; 1048 on 2026-10-25, C4; 1047 with the C2 gap fixes; 1046 with C2; 1041 on 2026-10-24, C1; 1040 before the idle policy; 1031 with C7; 1029 on the receivers tree;
+  - unit: **1096 cases**, all passing (2026-10-31, §6.21 step 3; 1083 with step 2; 1077 with step 1; 1070 on 2026-10-27, library rename fails closed; 1067 with the §6.30 leftovers; 1059 with C10; 1053 with C9; 1051 with C8; 1048 on 2026-10-25, C4; 1047 with the C2 gap fixes; 1046 with C2; 1041 on 2026-10-24, C1; 1040 before the idle policy; 1031 with C7; 1029 on the receivers tree;
     1016 at 4e8a10d) (no `[!shouldfail]` known gaps left
     -- the `` `define `` references case passes since the macro follow-up)
-  - Emacs functional: **326/326** (2026-10-30, test_51 new; 321 on 2026-10-27, test_50 new; 318 with test_49 new and 2 test_47 cases; 309 on 2026-10-23, test_48 new; 305 with test_47)
+  - Emacs functional: **328/328** (2026-10-31, test_52 new; 326 on 2026-10-30, test_51 new; 321 on 2026-10-27, test_50 new; 318 with test_49 new and 2 test_47 cases; 309 on 2026-10-23, test_48 new; 305 with test_47)
   - `make test-integration-uvm` (opt-in): **15/15** (2026-10-26: library definition and references checks)
   - UVM corpus (opt-in): **1563 assertions / 31 cases**, all passing
     (unchanged by the receivers change, 2026-10-22).
@@ -593,10 +619,10 @@ What §6.29 changed that other work must know about:
 0. **§6.30 leftovers** -- done 2026-10-27 but an unnamed generate
    block's `genblk<n>` and a typedef's unpacked dimensions; no upward
    search by an ancestor's instance name (`$root` only, by decision).
-1. **§6.21** semantic reference-resolution diagnostics (unresolved type/import)
-   — steps 1-2 (type parameters, type references) done 2026-10-30; steps 3-5 in plan.md §6.21
-   "Revised steps". Use `source = 'reference'` with
-   `replaceDiagnostics(..., source)`.
+1. **§6.21** semantic reference-resolution diagnostics -- done 2026-10-31
+   for declared types. Open: re-flagging other files when a declaration is
+   removed (§6.4 name index), name-length ranges, types inside `#(...)`
+   and casts.
 2. **§6.24** audit compiler warnings from `tools/build.sh` — not started.
 3. **§6.12** configurable debounce interval (`debounceMs`) — not started.
 4. **§6.20** external read-only DB access — not started.
