@@ -10,10 +10,20 @@ diagnostics, and more — through the Language Server Protocol (LSP).
 
 ### Build
 
-Requires: CMake ≥ 3.20, GCC 13+ (or Clang 19+), Pandoc (for docs).
+Requires: CMake ≥ 3.24, git, a C++20 compiler (GCC ≥ 10 or Clang ≥ 14 with
+a C++20 standard library), `antlr4` 4.13.2 on `PATH` or Java ≥ 11, and the
+`third_party/lsp-framework` submodule (`git submodule update --init
+--recursive`). Pandoc for the docs.
 
 ```bash
-cmake --preset debug
+tools/build.sh --check     # check all of the above, picks the compiler
+tools/build.sh             # from-scratch debug build (CXX=... to choose a compiler)
+```
+
+or by hand, naming the compiler on the first configure:
+
+```bash
+cmake --preset debug $(tools/find-cxx20.sh)
 cmake --build --preset debug
 ```
 
@@ -22,8 +32,7 @@ The server binary is placed at `build/debug/svlsp`.
 For a release build:
 
 ```bash
-cmake --preset release
-cmake --build --preset release
+tools/build.sh release     # or: cmake --preset release $(tools/find-cxx20.sh) && cmake --build --preset release
 ```
 
 ### Run Tests

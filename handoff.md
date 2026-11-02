@@ -693,6 +693,7 @@ docs/              per-phase docs, usage.md (end-user config/CLI), decisions/
 ```bash
 cmake --preset debug && cmake --build --preset debug     # or: make configure build
 tools/build.sh [debug|release] [--target NAME] [--output-dir DIR]   # from-scratch build
+tools/build.sh --check                        # prerequisites only (CMake, git, submodules, ANTLR/Java, C++20 compiler)
 
 build/debug/unit_tests                        # unit tests
 build/debug/unit_tests "[compiler][parser]"   # subset by tag
@@ -714,8 +715,12 @@ build/release/svlsp --log-files /path/to/log.txt
 build/release/svlsp --log-requests /path/to/requests.log   # per-request server time
 ```
 
-Compiler **g++-13** (pinned in `CMakePresets.json`). Debug has ASan+UBSan
-(10-100x slower) — use release for anything corpus-sized.
+Compiler: any with C++20 (`cmake/cxx20_probe.cpp` must compile; GCC >= 10,
+Clang >= 14). Nothing pins it: `tools/find-cxx20.sh` picks one (`$CXX`/`$CC`
+if set, else g++, g++-NN, clang++, clang++-NN) for `tools/build.sh` and a
+fresh `make configure`; CMakeLists.txt rejects one that fails the probe.
+This machine: g++-13 (the system g++ is 7). CMake >= 3.24. Debug has
+ASan+UBSan (10-100x slower) — use release for anything corpus-sized.
 
 **Traps that have bitten before:**
 - **Rebuild the `svlsp` executable before trusting an Emacs result.**
