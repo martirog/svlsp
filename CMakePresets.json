@@ -6,9 +6,7 @@
       "displayName": "Debug",
       "binaryDir": "${sourceDir}/build/debug",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_CXX_COMPILER": "g++-13",
-        "CMAKE_C_COMPILER": "gcc-13"
+        "CMAKE_BUILD_TYPE": "Debug"
       }
     },
     {
@@ -16,9 +14,7 @@
       "displayName": "Release",
       "binaryDir": "${sourceDir}/build/release",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_CXX_COMPILER": "g++-13",
-        "CMAKE_C_COMPILER": "gcc-13"
+        "CMAKE_BUILD_TYPE": "Release"
       }
     }
   ],

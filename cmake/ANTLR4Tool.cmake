@@ -3,8 +3,11 @@
 # Locates the ANTLR4 code-generation tool.
 #
 # Strategy:
-#   1. Check for `antlr4` in PATH (installed via antlr4-tools or manually).
-#   2. If absent, require Java and download the official complete JAR.
+#   1. Check for `antlr4` in PATH (installed via antlr4-tools or manually),
+#      and use it if it reports ANTLR4_TOOL_VERSION (generated code must
+#      match the C++ runtime CMakeLists.txt fetches).
+#   2. Otherwise, require Java >= 11 (ANTLR 4.13) and download the official
+#      complete JAR.
 #
 # After inclusion, the following are set:
 #   ANTLR4_TOOL_COMMAND  — CMake list for use in add_custom_command(COMMAND ...)
@@ -14,15 +17,39 @@ set(ANTLR4_TOOL_VERSION "4.13.2")
 
 find_program(ANTLR4_EXECUTABLE antlr4)
 
+set(_ANTLR4_USE_EXECUTABLE FALSE)
 if(ANTLR4_EXECUTABLE)
-    message(STATUS "Found antlr4 tool: ${ANTLR4_EXECUTABLE}")
+    # Run without arguments it prints "ANTLR Parser Generator  Version X".
+    # (The antlr4-tools wrapper may download its JAR on the first run.)
+    execute_process(
+        COMMAND "${ANTLR4_EXECUTABLE}"
+        OUTPUT_VARIABLE _antlr4_banner
+        ERROR_VARIABLE  _antlr4_banner
+        TIMEOUT 300
+    )
+    string(REGEX MATCH "Version ([0-9.]+)" _antlr4_match "${_antlr4_banner}")
+    if(CMAKE_MATCH_1 STREQUAL ANTLR4_TOOL_VERSION)
+        set(_ANTLR4_USE_EXECUTABLE TRUE)
+    else()
+        message(WARNING
+            "${ANTLR4_EXECUTABLE} is ANTLR '${CMAKE_MATCH_1}', not "
+            "${ANTLR4_TOOL_VERSION} (the C++ runtime's version) -- using the "
+            "${ANTLR4_TOOL_VERSION} JAR instead. With antlr4-tools, set "
+            "ANTLR4_TOOLS_ANTLR_VERSION=${ANTLR4_TOOL_VERSION} to use it.")
+    endif()
+endif()
+
+if(_ANTLR4_USE_EXECUTABLE)
+    message(STATUS "Found antlr4 tool: ${ANTLR4_EXECUTABLE} (${ANTLR4_TOOL_VERSION})")
     set(ANTLR4_TOOL_COMMAND "${ANTLR4_EXECUTABLE}")
 else()
-    message(STATUS "antlr4 not found in PATH — will use JAR fallback")
+    if(NOT ANTLR4_EXECUTABLE)
+        message(STATUS "antlr4 not found in PATH — will use JAR fallback")
+    endif()
 
-    # Java runtime is required to execute the JAR.
-    find_package(Java REQUIRED COMPONENTS Runtime)
-    message(STATUS "Found Java: ${Java_JAVA_EXECUTABLE}")
+    # Java runtime is required to execute the JAR; ANTLR 4.13 needs 11+.
+    find_package(Java 11 REQUIRED COMPONENTS Runtime)
+    message(STATUS "Found Java: ${Java_JAVA_EXECUTABLE} (${Java_VERSION_STRING})")
 
     set(_ANTLR4_JAR_URL
         "https://www.antlr.org/download/antlr-${ANTLR4_TOOL_VERSION}-complete.jar")

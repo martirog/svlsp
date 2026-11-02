@@ -45,8 +45,15 @@ build/docs/%.pdf: %.md
 
 .PHONY: configure build clean
 
+# A fresh build directory gets a C++20 compiler from tools/find-cxx20.sh
+# (honours CXX/CC); an existing one keeps the compiler it was configured with.
 configure:
-	cmake --preset debug
+	@if [ -f build/debug/CMakeCache.txt ]; then \
+	  cmake --preset debug; \
+	else \
+	  args="$$(tools/find-cxx20.sh)" || exit 1; \
+	  cmake --preset debug $$args; \
+	fi
 
 build: configure
 	cmake --build --preset debug

@@ -1,10 +1,51 @@
-cmake_minimum_required(VERSION 3.20)
+# 3.24: CMakePresets.json format version 3 (3.21) and
+# DOWNLOAD_EXTRACT_TIMESTAMP (3.24). tools/build.sh checks the same minimum.
+cmake_minimum_required(VERSION 3.24)
 project(svlsp VERSION 0.1.0 LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# ---------------------------------------------------------------------------
+# Prerequisites: a compiler with the C++20 features the code uses (the probe
+# tools/find-cxx20.sh selects a compiler with), and the cloned submodules.
+# ---------------------------------------------------------------------------
+set(_svlsp_cxx20_hint
+    "Use GCC >= 10 or Clang >= 14 with a C++20 standard library -- "
+    "tools/build.sh picks one, or pass -DCMAKE_CXX_COMPILER=... "
+    "-DCMAKE_C_COMPILER=... (in a fresh build directory).")
+if(NOT "cxx_std_20" IN_LIST CMAKE_CXX_COMPILE_FEATURES)
+    message(FATAL_ERROR
+        "${CMAKE_CXX_COMPILER} (${CMAKE_CXX_COMPILER_ID} "
+        "${CMAKE_CXX_COMPILER_VERSION}) has no C++20 mode.\n"
+        ${_svlsp_cxx20_hint})
+endif()
+try_compile(SVLSP_CXX20_PROBE_OK
+    "${CMAKE_BINARY_DIR}/cxx20_probe"
+    SOURCES "${CMAKE_SOURCE_DIR}/cmake/cxx20_probe.cpp"
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+    OUTPUT_VARIABLE _svlsp_cxx20_probe_log
+)
+if(NOT SVLSP_CXX20_PROBE_OK)
+    message(FATAL_ERROR
+        "${CMAKE_CXX_COMPILER} (${CMAKE_CXX_COMPILER_ID} "
+        "${CMAKE_CXX_COMPILER_VERSION}) can't build C++20 code: "
+        "cmake/cxx20_probe.cpp failed to compile.\n"
+        ${_svlsp_cxx20_hint} "\n"
+        "${_svlsp_cxx20_probe_log}")
+endif()
+
+foreach(_svlsp_submodule third_party/lsp-framework)
+    if(NOT EXISTS "${CMAKE_SOURCE_DIR}/${_svlsp_submodule}/CMakeLists.txt")
+        message(FATAL_ERROR
+            "Submodule ${_svlsp_submodule} is not cloned. Run:\n"
+            "  git submodule update --init --recursive")
+    endif()
+endforeach()
 
 # ---------------------------------------------------------------------------
 # Version info for `svlsp --version` -- resolved at build time: target
@@ -62,7 +103,7 @@ FetchContent_Declare(
     GIT_SHALLOW    TRUE
     SOURCE_SUBDIR  runtime/Cpp
 )
-set(ANTLR4_BUILD_CPP_TESTS OFF CACHE BOOL "" FORCE)
+set(ANTLR_BUILD_CPP_TESTS  OFF CACHE BOOL "" FORCE) # else it fetches and builds googletest
 set(ANTLR4_INSTALL         OFF CACHE BOOL "" FORCE)
 set(WITH_DEMO              FALSE CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(antlr4_runtime)
@@ -120,7 +161,9 @@ else()
         URL      https://www.sqlite.org/2024/sqlite-amalgamation-3470000.zip
         DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     )
-    FetchContent_Populate(sqlite3_amalgamation)
+    # No CMakeLists.txt inside, so MakeAvailable only downloads it (the
+    # one-argument FetchContent_Populate is deprecated since CMake 3.30).
+    FetchContent_MakeAvailable(sqlite3_amalgamation)
     add_library(svlsp_sqlite3 STATIC
         "${sqlite3_amalgamation_SOURCE_DIR}/sqlite3.c")
     target_include_directories(svlsp_sqlite3 PUBLIC

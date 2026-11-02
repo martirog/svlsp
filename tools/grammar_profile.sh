@@ -51,9 +51,19 @@ name="$(basename "$grammar" .g4)"
 [[ "$grammar" == "$root/grammar/Sv.g4" ]] && name=main
 build="$out/$name"
 
+# The harness links the svlsp build's static libraries, so it uses the
+# compiler that build was configured with ($CXX overrides; with no svlsp
+# build yet, tools/find-cxx20.sh picks one and CMake says to build first).
+cxx="${CXX:-$(sed -n 's/^CMAKE_CXX_COMPILER:[A-Z]*=//p' "$svlsp_build/CMakeCache.txt" 2>/dev/null || true)}"
+if [[ -n "$cxx" ]]; then
+    compiler_args=(-DCMAKE_CXX_COMPILER="$cxx")
+else
+    mapfile -t compiler_args < <("$root/tools/find-cxx20.sh" | grep CMAKE_CXX_COMPILER)
+    [[ ${#compiler_args[@]} -gt 0 ]] || exit 1
+fi
+
 cmake -S "$root/tools/grammar_profile" -B "$build" -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_CXX_COMPILER="${CXX:-g++-13}" -DCMAKE_AR="$(command -v gcc-ar-13 || command -v ar)" \
-    -DCMAKE_RANLIB="$(command -v gcc-ranlib-13 || command -v ranlib)" \
+    "${compiler_args[@]}" \
     -DSV_GRAMMAR="$grammar" -DSVLSP_BUILD_DIR="$svlsp_build" >/dev/null
 cmake --build "$build" --target "$tool" pp_dump -j"$(nproc)" >/dev/null
 
