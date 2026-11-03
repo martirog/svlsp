@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-11-02 (§6.24 warning audit; `uvm_src` baseline refreshed).
+**Last updated:** 2026-11-03 (missing-argument check fails closed; `pathToUri` comment).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -186,6 +186,11 @@ What C2 changes for other work:
   (`classScopeName`, not `classTypeName(cs->class_type())`).
 - A subroutine body ended early by a syntax error keeps its scope to its own
   `endfunction` / `endtask` (`bodyStop`).
+
+What the fail-closed callee check changes for other work:
+- The missing-argument diagnostic is only as good as `resolveSymbolAt`:
+  a call it can't resolve exactly is not checked. A resolver gap now
+  hides a check instead of risking a false warning.
 
 What §6.24 changes for other work:
 - The build is warning-free (g++-13, debug and release), and debug
@@ -459,7 +464,7 @@ by name instead of from the typedef's scope, and merged duplicated helpers
   in workspace symbols, no completion inside comments/strings, and doc
   comments (§6.31) in hover, signature help and completion resolve.
 - Test baselines:
-  - unit: **1096 cases**, all passing (2026-10-31, §6.21 step 3; 1083 with step 2; 1077 with step 1; 1070 on 2026-10-27, library rename fails closed; 1067 with the §6.30 leftovers; 1059 with C10; 1053 with C9; 1051 with C8; 1048 on 2026-10-25, C4; 1047 with the C2 gap fixes; 1046 with C2; 1041 on 2026-10-24, C1; 1040 before the idle policy; 1031 with C7; 1029 on the receivers tree;
+  - unit: **1098 cases**, all passing (2026-11-03, the fail-closed callee check; 1096 on 2026-10-31, §6.21 step 3; 1083 with step 2; 1077 with step 1; 1070 on 2026-10-27, library rename fails closed; 1067 with the §6.30 leftovers; 1059 with C10; 1053 with C9; 1051 with C8; 1048 on 2026-10-25, C4; 1047 with the C2 gap fixes; 1046 with C2; 1041 on 2026-10-24, C1; 1040 before the idle policy; 1031 with C7; 1029 on the receivers tree;
     1016 at 4e8a10d) (no `[!shouldfail]` known gaps left
     -- the `` `define `` references case passes since the macro follow-up)
   - Emacs functional: **328/328** (2026-10-31, test_52 new; 326 on 2026-10-30, test_51 new; 321 on 2026-10-27, test_50 new; 318 with test_49 new and 2 test_47 cases; 309 on 2026-10-23, test_48 new; 305 with test_47)
@@ -656,22 +661,12 @@ What §6.29 changed that other work must know about:
 6. **§6.19** library-DB staleness detection (source changed since build) —
    open question, no shape chosen.
 7. **§6.5** performance — open; see "Known gaps" for the concrete costs.
-8. Minor: comment at `pathToUri()` explaining that `fromPath()` always
-    absolutizes.
-9. **Open question (raised 2026-10-08): should the missing-argument
-   diagnostic stay strictly in scope?** Today `resolveCallees`
-   (`src/lsp/symbol_resolution.cpp`, the `byName` /
-   `pickSameFilePreferred` block) checks an *unqualified* call that
-   scoped resolution can't resolve exactly against any same-named callable
-   (same file first), so `f(x)` with no `f` in scope can be checked
-   against another file's `f`. A `::`-qualified call already fails closed,
-   and completion never matches by name. Dropping the fallback makes the
-   diagnostic scope-bound like completion, at the cost of no
-   missing-argument check at all on calls the resolver can't see (e.g. a
-   callee in a library DB or a file not compiled yet). Decide with the
-   user before changing; if changed, check the UVM corpus `--build-db`
-   diagnostic count (1 today), test_39 and the missing-argument cases in
-   `tests/unit/db/test_compilation_controller.cpp`.
+8. Done 2026-11-03: the `pathToUri()` comment (`symbol_utils.h`; it
+   also found the symlink gap under "Known gaps"), and the missing-argument
+   question -- decided: **the check fails closed** (plan.md §6.30
+   "Follow-up: the missing-argument check fails closed"). `resolveCallees`
+   no longer falls back to a same-named callable; signature help still
+   does (a hint, not a diagnostic).
 
 ---
 
@@ -940,6 +935,13 @@ Fixed and documented in plan.md / git history: string escapes, `void'(f())`,
   queries both since 2026-09-27).
 - Covergroup methods and `randomize() with {…}` constraint completion
   unsupported.
+- **Symlinked paths** (found 2026-11-03, not fixed): `pathToUri` ->
+  `FileUri::fromPath` canonicalizes an existing file (resolves symlinks),
+  but a URI from the client is parsed as sent. Opening a file through a
+  symlink, `currentTextFor(path)` misses the open buffer (reads the disk
+  copy, losing unsaved edits), and included files' diagnostics are
+  published under the canonical URI. Fix by normalizing both sides the
+  same way (or not canonicalizing).
 - Doc comments (§6.31): `int a; int b;` on one line gives `b` no doc; no
   NaturalDocs formatting; not shown in workspace/document symbols; lazy
   `libraryDbSources` builds ignore `docComments: false`.

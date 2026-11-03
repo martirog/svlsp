@@ -5507,6 +5507,28 @@ declared, and shared helpers (2026-09-30).** Fixed.
   test read diagnostics after a fixed `sit-for 2`. It now polls for them
   (up to 15 s); fixed with the access follow-up below.
 
+**Follow-up: the missing-argument check fails closed (2026-11-03).** Done
+(the open question raised 2026-10-08, decided by the user).
+- *Why.* An unqualified call scoped resolution couldn't resolve exactly
+  still fell back to any same-named Function/Task (same file first), so
+  `f(1)` with no `f` in scope was checked against an unrelated `f` -- a
+  false warning when the arities differ. Qualified calls already failed
+  closed, and completion and rename never match by name.
+- *Change.* `resolveCallees` keeps only the exact Function/Task
+  `resolveSymbolsAt` gives; the `findSymbolsByName` /
+  `pickSameFilePreferred` fallback is gone. Cost: a callee the resolver
+  can't see (a missing import, a file not compiled yet) gets no check.
+  Signature help keeps its own name-only fallback for unqualified calls --
+  a hint, not a diagnostic.
+- *Tests.* 2 unit cases (`[call-args]`): a function in a package that
+  isn't imported and another class's method aren't checked (failed
+  before); an imported package's function still is.
+- *Verification.* Unit 1098/1098, Emacs 328/328 (test_39's
+  missing-argument cases included), release build 0 warnings, UVM
+  `--build-db` 0 diagnostics / 18737 symbols / 553 macros, as the corpus
+  `uvm.db` (98.7 s, 2.97 GB). UVM had no missing-argument diagnostics, so
+  the fallback never fired there.
+
 **Follow-up: an ancestor's `local` members aren't offered by completion
 (2026-10-04).** Done.
 - *Why.* Bare-name completion inside a class appends every `extends`
@@ -5855,7 +5877,8 @@ apart.
   back to a by-name match when scoped resolution fails are hover,
   definition and references (`Resolver::fallback`, `exact = false`) and
   the missing-argument diagnostic for an unqualified call
-  (`resolveCallees`, `pickSameFilePreferred`); completion never does.
+  (`resolveCallees`, `pickSameFilePreferred`; removed 2026-11-03, see
+  "the missing-argument check fails closed"); completion never does.
 - *Tests.* Old calls converted to `{N, 0}`; one `enclosingClassScopesAt`
   case moved onto the class name (column 0 is now outside). test_44
   checks the one-line scope end through completion.
