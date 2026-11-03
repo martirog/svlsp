@@ -75,6 +75,11 @@ std::vector<std::optional<std::string>> checkTypeRefs(
     const std::unordered_map<std::string, std::string>& texts,
     const std::vector<TypeRefRecord>& refs);
 
+// Each call's callee, for the missing-argument check: the Function/Task
+// `resolveSymbolAt` resolves its name to exactly, else nullopt -- never a
+// same-named callable the call can't see (decided 2026-11-03). A call
+// whose name isn't at its recorded position (macro-expanded) is nullopt.
+// CompilationController's CalleeResolver.
 std::vector<std::optional<SymbolRow>> resolveCallees(SymbolDatabase& db, const std::string& path,
                                                      const std::string& text,
                                                      const std::vector<CallRecord>& calls);

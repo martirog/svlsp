@@ -30,7 +30,11 @@ std::string wordBeforePosition(const std::string& text, unsigned line, unsigned 
 // line1 is 1-based (ParseRecord convention); col0 is 0-based.
 lsp::Range makeRange(int line1, int col0, int nameLen);
 
-// Build a file:// DocumentUri from an absolute filesystem path.
+// Build a file:// DocumentUri from a filesystem path. lsp::FileUri::fromPath
+// always absolutizes it (a relative path against the server's cwd, which is
+// why stored paths must already be absolute -- plan.md §6.33 C8), and
+// canonicalizes it when the file exists, resolving symlinks: the URI can
+// name a different path than the one the client opened.
 lsp::DocumentUri pathToUri(const std::string& path);
 
 // Pick the best match among same-named symbols for hover/definition, given the

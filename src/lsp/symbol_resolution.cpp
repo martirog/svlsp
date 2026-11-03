@@ -1054,17 +1054,8 @@ std::vector<std::optional<SymbolRow>> resolveCallees(SymbolDatabase& db, const s
 
     auto resolved = resolveSymbolsAt(db, path, text, positions);
     for (size_t i = 0; i < resolved.size(); ++i) {
-        const CallRecord& call = calls[callOf[i]];
         const auto& r = resolved[i];
-        if (r && r->exact && isCallable(r->row)) {
-            callees[callOf[i]] = r->row;
-            continue;
-        }
-        if (!call.calleeScope.empty()) continue;
-        std::vector<SymbolRow> byName;
-        for (auto& row : db.findSymbolsByName(call.calleeName))
-            if (isCallable(row)) byName.push_back(row);
-        if (!byName.empty()) callees[callOf[i]] = SymbolDatabase::pickSameFilePreferred(byName, path);
+        if (r && r->exact && isCallable(r->row)) callees[callOf[i]] = r->row;
     }
     return callees;
 }

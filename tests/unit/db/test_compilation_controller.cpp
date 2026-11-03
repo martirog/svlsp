@@ -477,6 +477,44 @@ TEST_CASE("compile does not flag a call to an unresolved callee name",
     CHECK(errs.empty());
 }
 
+TEST_CASE("compile does not check a bare call against a same-named callee it can't see",
+          "[db][ctrl][call-args]") {
+    Fixture f;
+    // Only the scoped resolver picks the callee: `helper` is in a package
+    // `top` doesn't import, and `Other::run` is another class's method, so
+    // neither call is checked (they used to be, by name -- decided
+    // 2026-11-03, handoff "Other open work").
+    f.ctrl.compile("/pkg.sv",
+        "package hidden_p;\n"
+        "  function int helper(int a, int b); helper = a + b; endfunction\n"
+        "endpackage\n");
+    auto errs = f.ctrl.compile("/a.sv",
+        "module top;\n"
+        "  class Other;\n"
+        "    function int run(int a, int b); run = a; endfunction\n"
+        "  endclass\n"
+        "  initial helper(1);\n"
+        "  initial run(1);\n"
+        "endmodule\n");
+    CHECK(errs.empty());
+}
+
+TEST_CASE("compile still checks a call to a package function it imports",
+          "[db][ctrl][call-args]") {
+    Fixture f;
+    f.ctrl.compile("/pkg.sv",
+        "package shown_p;\n"
+        "  function int helper(int a, int b); helper = a + b; endfunction\n"
+        "endpackage\n");
+    auto errs = f.ctrl.compile("/a.sv",
+        "module top;\n"
+        "  import shown_p::*;\n"
+        "  initial helper(1);\n"
+        "endmodule\n");
+    REQUIRE(errs.size() == 1);
+    CHECK(errs[0].message.find("'b'") != std::string::npos);
+}
+
 TEST_CASE("compile does not flag a dotted call — out of scope for this check",
           "[db][ctrl][call-args]") {
     Fixture f;
