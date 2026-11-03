@@ -73,11 +73,25 @@ add_custom_target(svlsp_git_version
 # Dependencies
 # ---------------------------------------------------------------------------
 
+# A vendored target's include directories become system include directories
+# for its consumers, so warnings in its headers (e.g. ANTLR's hidden
+# ParseTree::operator==) don't land in svlsp's translation units.
+# (CMake >= 3.25 could say SYSTEM on add_subdirectory / FetchContent_Declare.)
+function(svlsp_system_includes target)
+    get_target_property(_dirs ${target} INTERFACE_INCLUDE_DIRECTORIES)
+    set_property(TARGET ${target} APPEND PROPERTY
+        INTERFACE_SYSTEM_INCLUDE_DIRECTORIES ${_dirs})
+endfunction()
+
 # lsp-framework (Phase 2): LSP protocol layer — zero external dependencies,
 # LSP 3.17, header+generated types built as a static library.
 set(LSP_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(LSP_INSTALL        OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/lsp-framework)
+# Vendored code (plan.md §6.24): built without warnings, like the generated
+# parser and SQLite, and its headers are system headers to svlsp's targets.
+target_compile_options(lsp PRIVATE -w)
+svlsp_system_includes(lsp)
 
 # Catch2 (Phase 2): unit-test framework, fetched at configure time.
 include(FetchContent)
@@ -106,7 +120,10 @@ FetchContent_Declare(
 set(ANTLR_BUILD_CPP_TESTS  OFF CACHE BOOL "" FORCE) # else it fetches and builds googletest
 set(ANTLR4_INSTALL         OFF CACHE BOOL "" FORCE)
 set(WITH_DEMO              FALSE CACHE BOOL "" FORCE)
+set(ANTLR_BUILD_SHARED     OFF CACHE BOOL "" FORCE) # only antlr4_static is linked
+set(DISABLE_WARNINGS       ON  CACHE BOOL "" FORCE) # vendored, as lsp above
 FetchContent_MakeAvailable(antlr4_runtime)
+svlsp_system_includes(antlr4_static)
 
 # Grammar code generation: Sv.g4 → C++ lexer/parser/visitor sources.
 set(SV_GRAMMAR "${CMAKE_SOURCE_DIR}/grammar/Sv.g4")
@@ -143,7 +160,7 @@ add_custom_command(
 
 # Generated parser target — strict warnings suppressed (machine-generated code).
 add_library(svlsp_antlr4 STATIC ${ANTLR4_GENERATED_CPP})
-target_include_directories(svlsp_antlr4 PUBLIC "${ANTLR4_GENERATED_DIR}")
+target_include_directories(svlsp_antlr4 SYSTEM PUBLIC "${ANTLR4_GENERATED_DIR}")
 target_link_libraries(svlsp_antlr4 PUBLIC antlr4_static)
 target_compile_options(svlsp_antlr4 PRIVATE -w)
 
@@ -181,6 +198,9 @@ target_compile_options(svlsp_options INTERFACE
     -Wall
     -Wextra
     -Wpedantic
+    # The build is warning-free (plan.md §6.24): keep it so where the tests
+    # run, without failing a release build on a compiler that warns more.
+    $<$<CONFIG:Debug>:-Werror>
     $<$<CONFIG:Debug>:-fsanitize=address,undefined>
     $<$<CONFIG:Debug>:-fno-omit-frame-pointer>
 )

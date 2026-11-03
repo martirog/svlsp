@@ -71,10 +71,10 @@ TEST_CASE("isMacroOccurrence classifies a found identifier start", "[macro][phas
 
 TEST_CASE("macroSignature renders parameters and defaults", "[macro][phase6.29]")
 {
-    MacroRow fn{"M", 1, 8, true, {"A", "B"}, {std::nullopt, std::string("1")}, "/m.svh", "A+B"};
+    MacroRow fn{"M", 1, 8, true, {"A", "B"}, {std::nullopt, std::string("1")}, "/m.svh", "A+B", ""};
     CHECK(macroSignature(fn) == "`M(A, B = 1)");
-    MacroRow obj{"W", 1, 8, false, {}, {}, "/m.svh", "8"};
+    MacroRow obj{"W", 1, 8, false, {}, {}, "/m.svh", "8", ""};
     CHECK(macroSignature(obj) == "`W");
-    MacroRow empty{"Z", 1, 8, true, {}, {}, "/m.svh", "0"};
+    MacroRow empty{"Z", 1, 8, true, {}, {}, "/m.svh", "0", ""};
     CHECK(macroSignature(empty) == "`Z()");
 }

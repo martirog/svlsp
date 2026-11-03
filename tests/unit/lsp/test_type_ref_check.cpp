@@ -44,13 +44,6 @@ struct F {
     std::vector<SubjectDiagnosticRow> rows() { return sdb.diagnosticsFromSource("reference"); }
 };
 
-bool mentions(const std::vector<ParseError>& diags, const std::string& text)
-{
-    for (const auto& d : diags)
-        if (d.message.find(text) != std::string::npos) return true;
-    return false;
-}
-
 void writeFile(const std::string& path, const std::string& content)
 {
     fs::create_directories(fs::path(path).parent_path());

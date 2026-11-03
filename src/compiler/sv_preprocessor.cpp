@@ -19,11 +19,11 @@ namespace fs = std::filesystem;
 
 struct MacroDef {
     bool isFunctionLike{false};
-    std::vector<std::string> params;
+    std::vector<std::string> params{};
     // Parallel to `params`; nullopt means that parameter has no default and
     // must be supplied at every invocation (e.g. `define M(A, B=default_expr)).
-    std::vector<std::optional<std::string>> defaults;
-    std::string body;
+    std::vector<std::optional<std::string>> defaults{};
+    std::string body{};
 };
 
 using MacroMap = std::unordered_map<std::string, MacroDef>;
