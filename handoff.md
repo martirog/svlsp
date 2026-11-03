@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-11-01 (the references(`get_name`) slowdown, fixed).
+**Last updated:** 2026-11-02 (§6.24 warning audit; `uvm_src` baseline refreshed).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -147,7 +147,16 @@ results (318 -> 324) are correct calls through a type parameter's
 default. Verified: unit 1096/1096, Emacs 328/328, corpus 1563 / 31, `make
 perf-check` small / uvm / `uvm_src` no regression. The `uvm_src` baseline
 is still C4's (refresh it with `make perf-baseline SCENARIO=uvm_src` when
-convenient).
+convenient) -- done 2026-11-02 at 3c58e39: open -> diagnostics 100.6 s,
+references(`get_name`) 391 ms, edit -> diagnostics 593 ms (server 292),
+typing completion p90 13.7 ms, peak 2956 MB.
+
+**§6.24, the warning audit, is done** (plan.md §6.24 "Outcome"): 12
+distinct warnings from from-scratch debug + release builds, none a bug; 6
+first-party fixed, 6 in vendored code silenced (ANTLR runtime
+`DISABLE_WARNINGS`, lsp-framework `-w`, both include dirs SYSTEM). The
+build is warning-free with g++-13. ANTLR's shared runtime is no longer
+built. Debug builds now use `-Werror` (decided 2026-11-03).
 
 Next steps:
 1. Optional, after C9: a commit still holds the data mutex (up to ~300 ms
@@ -177,6 +186,13 @@ What C2 changes for other work:
   (`classScopeName`, not `classTypeName(cs->class_type())`).
 - A subroutine body ended early by a syntax error keeps its scope to its own
   `endfunction` / `endtask` (`bodyStop`).
+
+What §6.24 changes for other work:
+- The build is warning-free (g++-13, debug and release), and debug
+  builds use `-Werror`: a new warning fails the debug build. Release
+  doesn't, so check a release log with `grep -c warning:` too.
+- A new vendored or generated target gets `-w` and, if svlsp code
+  includes its headers, `svlsp_system_includes(<target>)` (CMakeLists.txt).
 
 What §6.21 step 3 changes for other work:
 - `'reference'` diagnostics (Warnings, severity 2, subject = the written
@@ -631,7 +647,8 @@ What §6.29 changed that other work must know about:
    for declared types. Open: re-flagging other files when a declaration is
    removed (§6.4 name index), name-length ranges, types inside `#(...)`
    and casts.
-2. **§6.24** audit compiler warnings from `tools/build.sh` — not started.
+2. **§6.24** compiler warnings -- done 2026-11-02 (0 warnings; debug
+   `-Werror` since 2026-11-03).
 3. **§6.12** configurable debounce interval (`debounceMs`) — not started.
 4. **§6.20** external read-only DB access — not started.
 5. **§6.22 follow-up**: UVM-corpus coverage for rename (references has

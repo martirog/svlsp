@@ -3729,7 +3729,9 @@ testing" item above one way or the other.
 
 ### 6.24 Audit Compiler Warnings from `tools/build.sh`
 
-**Status:** not started.
+**Status:** done 2026-11-02: reviewed, 12 distinct warnings, 6
+first-party fixed, 6 in vendored code silenced (none a bug); `-Werror`
+in debug builds (step 4, decided 2026-11-03).
 
 **Motivation:** `-Wall -Wextra -Wpedantic` are already enabled for every
 first-party target (`svlsp_options`, `CMakeLists.txt`) — the ANTLR4-generated
@@ -3761,6 +3763,49 @@ captured and gone through line by line.
    classes of bug) to keep new warnings from silently accumulating again —
    flagged here as something to weigh once there's a real "clean" baseline
    to protect, not decided now.
+
+#### Outcome (2026-11-02)
+
+From-scratch builds at 3c58e39 with g++-13: `tools/build.sh release`
+(log `build/warnings/release.log`) and a debug build of the same tree
+(the debug set is the release set minus lsp-framework's two, which only
+show with optimization). clang++-19 (release) reports a subset. 12
+distinct warnings, each reviewed:
+
+| Where | Warning | Verdict | Fix |
+|---|---|---|---|
+| `src/compiler/sv_preprocessor.cpp:769` (2) | `-Wmissing-field-initializers`: `MacroDef{.isFunctionLike, .body}` skips `params` / `defaults` | harmless (empty vectors either way) | `{}` default member initializers on `MacroDef`, which both GCC and Clang accept as initialized |
+| `tests/unit/lsp/test_macro_resolution.cpp:74-78` (3) | same, positional `MacroRow{...}` written before `doc` existed | harmless | pass `""` |
+| `tests/unit/lsp/test_type_ref_check.cpp:47` | `-Wunused-function`: `mentions` | dead since §6.21 step 3 added it | removed |
+| ANTLR runtime `XPathLexer.cpp`, `Vocabulary.cpp` | unused parameter, deprecated declaration | vendored, in its own build (its `-Wall -pedantic -W`) | `DISABLE_WARNINGS=ON` (ANTLR's own option: `-w`) |
+| ANTLR runtime `ParseTree.h:50`, in `sv_tree_walker.cpp` and `test_sv_parser.cpp` | `-Woverloaded-virtual`: `RuleContext::operator==` hides `ParseTree`'s | vendored header, warned in *our* TUs | the runtime's include dirs are system includes for svlsp's targets |
+| lsp-framework `process.cpp:93`, `jsonrpc.cpp` (2) | unchecked `write()` in a child after a failed `execvp`; `-Wmaybe-uninitialized` in `std::variant`'s string (GCC false-positive shape, release only) | vendored, its own `-Wall -Wextra -pedantic` | `-w` on target `lsp`, include dirs system |
+
+So the policy is now what this section assumed it was: first-party
+targets get `-Wall -Wextra -Wpedantic` (`svlsp_options`); every vendored
+or generated target is built with `-w` (generated parser, SQLite, ANTLR
+runtime, lsp-framework), and the include directories of the ANTLR
+runtime, lsp-framework and the generated parser are system includes
+(`svlsp_system_includes` in CMakeLists.txt; CMake >= 3.25 could use
+`SYSTEM` on `add_subdirectory` / `FetchContent_Declare`, the minimum is
+3.24). A warning in a vendored header used by svlsp code is therefore
+not shown -- the price of keeping the build log clean.
+
+Also: `ANTLR_BUILD_SHARED=OFF`. The runtime was compiled twice (shared and
+static); only `antlr4_static` is linked.
+
+Verified: from-scratch `tools/build.sh debug` and a release rebuild with
+**0 warnings** (`build/warnings/{debug,release}-fixed.log`), unit
+1096/1096 in both, Emacs 328/328.
+
+*Step 4, decided 2026-11-03:* `-Werror` for **Debug only**
+(`svlsp_options`, `$<$<CONFIG:Debug>:-Werror>`), where the tests run. A
+release build on a compiler that warns more (a newer GCC, Clang) still
+succeeds, so building svlsp to use it is never blocked by a new warning;
+a debug build fails, so it is fixed before it lands. Vendored targets
+don't link `svlsp_options` and are built with `-w`, so they are
+unaffected. Verified: g++-13 and clang++-19 debug builds with `-Werror`
+pass, unit 1096/1096 each.
 
 ---
 
