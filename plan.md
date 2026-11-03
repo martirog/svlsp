@@ -6849,6 +6849,22 @@ code reviews can show that a rewrite does not regress latency or memory.
   rebuilt. Not caused by this: references from a testbench find no
   library occurrences because `findOccurrences` scans only the main DB's
   `files` (`allFilePaths`), never an attached library's.
+  *Follow-up, symlinked paths (found 2026-11-03 writing the `pathToUri`
+  comment) -- done.* `FileUri::fromPath` also canonicalized an existing
+  file, resolving symlinks, while a client URI is parsed as sent (Emacs
+  sends the path as opened). Through a symlinked directory: an included
+  file's diagnostics went to the real path, and a dependency recompile
+  (`forceRecompileAndPublish`) missed the open buffer, compiled the disk
+  copy as a second file under the real path (duplicate rows) and
+  published there. Fix: `pathToUri` builds the URI itself -- absolute,
+  symlinks kept -- so a stored path maps back to the URI it came from.
+  Tests: unit `[symlink]` (`pathToUri`; a server-level save through a
+  symlinked directory, which failed on the old code), Emacs test_53 (fails
+  on the old binary: diagnostics left under the real directory). A file
+  reached by two names is still two files, as before. Verified: unit
+  1100/1100, Emacs 329/329, `make test-integration-uvm` 15/15, corpus
+  1563 / 31 (log `build/release/corpus_2026-11-03.log`), release build
+  0 warnings.
 - *C9 -- didChange blocked the message loop during a compile* (found by
   the latency benchmarks, 2026-10-19) -- **done 2026-10-26 (f9de8f7).** A compile
   held `m_dataMutex` from start to end, the parse included; didChange
