@@ -1,6 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
 #include "lsp/symbol_utils.h"
 #include "db/symbol_database.h"
+#include <filesystem>
+#include <fstream>
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -478,4 +480,26 @@ TEST_CASE("displayDetail drops a Port's separator, leaves other rows alone",
     sig.kind   = "Signal";
     sig.detail = "$queue:C";
     CHECK(displayDetail(sig) == "$queue:C");
+}
+
+TEST_CASE("pathToUri keeps the path as given: absolute, symlinks not resolved",
+          "[symbol_utils][symlink]")
+{
+    namespace fs = std::filesystem;
+    const fs::path real = "/tmp/svlsp_test_p2u_real";
+    const fs::path link = "/tmp/svlsp_test_p2u_link";
+    fs::remove_all(real);
+    fs::remove(link);
+    fs::create_directories(real);
+    fs::create_directory_symlink(real, link);
+    { std::ofstream ofs(real / "a.sv"); ofs << "module a; endmodule\n"; }
+
+    const std::string viaLink = (link / "a.sv").string();
+    CHECK(pathToUri(viaLink).path() == viaLink);
+    CHECK(pathToUri(viaLink) == lsp::DocumentUri{lsp::Uri::parse("file://" + viaLink)});
+    // A relative path is still made absolute (against the cwd).
+    CHECK(pathToUri("rel.sv").path() == (fs::current_path() / "rel.sv").string());
+
+    fs::remove(link);
+    fs::remove_all(real);
 }

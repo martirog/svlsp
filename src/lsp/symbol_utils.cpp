@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <filesystem>
 #include <unordered_set>
 
 namespace {
@@ -134,7 +135,13 @@ lsp::Range makeRange(int line1, int col0, int nameLen)
 
 lsp::DocumentUri pathToUri(const std::string& path)
 {
-    return lsp::FileUri::fromPath(path);
+    // Not FileUri::fromPath: it canonicalizes, and a URI must name the file
+    // the way the client does to match the one it sent.
+    lsp::Uri uri;
+    uri.setScheme(lsp::FileUri::Scheme);
+    uri.setAuthority({});
+    uri.setPath(std::filesystem::absolute(path).string());
+    return lsp::DocumentUri{std::move(uri)};
 }
 
 const SymbolRow* pickBestSymbol(const std::vector<SymbolRow>& rows, const std::string& curPath)

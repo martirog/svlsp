@@ -20,7 +20,9 @@
 #include <lsp/json/json.h>
 
 #include <fstream>
+#include <filesystem>
 #include <memory>
+#include <optional>
 #include <poll.h>
 #include <stdexcept>
 #include <string>
@@ -291,6 +293,18 @@ PublishedDiagnostics recvFor(TestClient& client, const std::string& uri, int max
     return {};
 }
 
+// As recvFor, but gives up (nullopt) when no message arrives for
+// `timeoutMs` -- for a publish that, on a bug, never comes at all.
+std::optional<PublishedDiagnostics> recvForWithin(TestClient& client, const std::string& uri,
+                                                  int timeoutMs, int maxOther = 10)
+{
+    for (int i = 0; i < maxOther && client.hasPendingMessage(timeoutMs); ++i) {
+        auto pub = asPublishDiagnostics(client.recvMessage());
+        if (pub.uri == uri) return pub;
+    }
+    return std::nullopt;
+}
+
 } // namespace
 
 TEST_CASE("saving an included file force-recompiles every file that includes it",
@@ -466,4 +480,56 @@ TEST_CASE("saving a widely-included file force-recompiles every one of its inclu
         client.didClose(uri);
     client.shutdownAndExit();
     std::remove(incPath.c_str());
+}
+
+TEST_CASE("a file opened through a symlinked directory is recompiled under the client's "
+          "path, from its buffer", "[lsp][server][cross-file-invalidation][symlink]")
+{
+    // The client names files through a symlink; a dependency recompile
+    // used to turn the stored path back into a URI with the symlink
+    // resolved, so it compiled the disk copy under the real path and
+    // published there -- never for the URI the client has open.
+    namespace fs = std::filesystem;
+    const fs::path real = "/tmp/svlsp_test_symlink_real";
+    const fs::path link = "/tmp/svlsp_test_symlink_link";
+    fs::remove_all(real);
+    fs::remove(link);
+    fs::create_directories(real);
+    fs::create_directory_symlink(real, link);
+    const std::string topOnDisk = "`include \"symlink_inc.svh\"\nmodule symlink_top; endmodule\n";
+    { std::ofstream ofs(real / "symlink_inc.svh"); ofs << "module symlink_inc; endmodule\n"; }
+    { std::ofstream ofs(real / "symlink_top.sv"); ofs << topOnDisk; }
+
+    TestClient client;
+    client.initialize();
+
+    const std::string incUri = "file://" + (link / "symlink_inc.svh").string();
+    const std::string topUri = "file://" + (link / "symlink_top.sv").string();
+
+    client.didOpen(incUri, "module symlink_inc; endmodule\n", 1);
+    REQUIRE(recvForWithin(client, incUri, 5000));
+    // The buffer has an unsaved syntax error the disk copy doesn't.
+    const std::string topBuffer =
+        "`include \"symlink_inc.svh\"\nmodule symlink_top { endmodule\n";
+    client.didOpen(topUri, topBuffer, 1);
+    auto pubTop1 = recvForWithin(client, topUri, 5000);
+    REQUIRE(pubTop1);
+    CHECK(pubTop1->count > 0);
+    // The header's echo as an included file, under the client's URI.
+    REQUIRE(recvForWithin(client, incUri, 5000));
+
+    client.didSave(incUri);
+    REQUIRE(recvForWithin(client, incUri, 5000)); // the header's own recompile
+
+    auto pubTop2 = recvForWithin(client, topUri, 5000);
+    REQUIRE(pubTop2.has_value());
+    CHECK(pubTop2->count > 0); // the buffer, not the clean disk copy
+    CHECK(pubTop2->hasVersion);
+    REQUIRE(recvForWithin(client, incUri, 5000)); // its echo of the header
+
+    client.didClose(incUri);
+    client.didClose(topUri);
+    client.shutdownAndExit();
+    fs::remove(link);
+    fs::remove_all(real);
 }
