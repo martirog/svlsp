@@ -16,6 +16,13 @@
   "compileTimeout": 3600,
   "idle": 75,
   "open": "base/uvm_component.svh",
+  "duringLoad": [
+    { "name": "hover: own method", "method": "textDocument/hover",
+      "tier": "point", "at": { "find": "m_rh.set_name(get_full_name());", "sub": "get_full_name" } },
+    { "name": "completion: dot on an argument (child.get_name)", "method": "textDocument/completion",
+      "tier": "keystroke", "at": { "find": "  m_children[child.get_name()] = child;", "sub": "get_name", "offset": "end" } },
+    { "name": "documentSymbol", "method": "textDocument/documentSymbol", "tier": "point" }
+  ],
   "ready": { "at": { "find": "function bit uvm_component::m_add_child(uvm_component child);\n", "offset": "end" }, "label": "m_children_by_handle" },
   "requests": [
     { "name": "completion: empty prefix in a method (blank line)", "method": "textDocument/completion",

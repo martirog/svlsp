@@ -1,0 +1,42 @@
+{
+  "name": "gen_tb",
+  "description": "A generated multi-unit UVM testbench (tools/gen_perf_project.py: 40 agents, 8 envs, 31 RTL blocks, ~120 units) on the UVM library DB: the whole project compiles before the opened file answers.",
+  "vars": {
+    "UVM_DB": {
+      "env": "SVLSP_UVM_DB",
+      "default": "/home/martin/src/verilator_test/uvm-core/src/uvm.db",
+      "mustExist": true
+    }
+  },
+  "generate": ["--library-db", "${UVM_DB}"],
+  "compileTimeout": 1800,
+  "open": "envs/env_3_pkg.sv",
+  "duringLoad": [
+    { "name": "hover: agent class from another unit", "method": "textDocument/hover",
+      "tier": "point", "at": { "find": "  agent_15_agent ag_15;", "sub": "agent_15_agent" } },
+    { "name": "completion: dot on an agent handle", "method": "textDocument/completion",
+      "tier": "keystroke", "at": { "find": "ag_15.mon.ap.connect", "sub": "mon", "offset": 0 } },
+    { "name": "documentSymbol", "method": "textDocument/documentSymbol", "tier": "point" }
+  ],
+  "ready": { "at": { "find": "ag_15.mon.ap.connect", "sub": "mon", "offset": 0 }, "label": "mon" },
+  "requests": [
+    { "name": "completion: dot on an agent handle", "method": "textDocument/completion",
+      "tier": "keystroke", "at": { "find": "ag_15.mon.ap.connect", "sub": "mon", "offset": 0 } },
+    { "name": "signatureHelp: type_id::create(", "method": "textDocument/signatureHelp",
+      "tier": "keystroke", "at": { "find": "agent_15_agent::type_id::create(\"ag_15\"", "offset": 32 } },
+    { "name": "hover: agent class from another unit", "method": "textDocument/hover",
+      "tier": "point", "at": { "find": "  agent_15_agent ag_15;", "sub": "agent_15_agent" } },
+    { "name": "definition: agent class from another unit", "method": "textDocument/definition",
+      "tier": "point", "at": { "find": "  agent_15_agent ag_15;", "sub": "agent_15_agent" } },
+    { "name": "documentSymbol", "method": "textDocument/documentSymbol", "tier": "point" },
+    { "name": "references: an item class (across units)", "method": "textDocument/references",
+      "tier": "navigation",
+      "at": { "find": "uvm_analysis_imp_env_3_15 #(agent_15_pkg::agent_15_item", "sub": "agent_15_item" },
+      "params": { "context": { "includeDeclaration": true } } },
+    { "name": "workspace/symbol: agent_1", "method": "workspace/symbol",
+      "tier": "navigation", "params": { "query": "agent_1" } }
+  ],
+  "edit": { "at": { "find": "    sb = env_3_scoreboard::type_id::create(\"sb\", this);", "offset": "end" }, "text": " " },
+  "typing": { "at": { "find": "    sb = env_3_scoreboard::type_id::create(\"sb\", this);", "offset": "end" },
+              "text": "\n    ag_15.mo" }
+}

@@ -83,6 +83,12 @@ def prepare_workspace(scenario, workdir):
                 shutil.copytree(str(entry), str(Path(workdir) / entry.name), ignore=ignore)
             else:
                 shutil.copy(str(entry), str(workdir))
+    if "generate" in scenario:
+        # A generated project (tools/gen_perf_project.py), written into the
+        # workspace before `files` / `write` are added.
+        subprocess.run([sys.executable, str(ROOT / "tools/gen_perf_project.py"), str(workdir)]
+                       + expand_vars(scenario["generate"], env), check=True,
+                       stdout=subprocess.DEVNULL)
     for dest, src in scenario.get("files", {}).items():
         shutil.copy(ROOT / src, Path(workdir) / dest)
     for dest, content in scenario.get("write", {}).items():
@@ -123,6 +129,7 @@ class Client:
         self.next_id = 1
         self.responses = {}
         self.diagnostics = []  # (time, params)
+        self.progress = []     # (time, token, kind) of $/progress begin / end
         self.cv = threading.Condition()
         self.write_lock = threading.Lock()
         self.eof = False
@@ -155,6 +162,11 @@ class Client:
                     self.responses[msg["id"]] = (t, msg, len(body))
                 elif msg.get("method") == "textDocument/publishDiagnostics":
                     self.diagnostics.append((t, msg["params"]))
+                elif msg.get("method") == "$/progress":
+                    p = msg["params"]
+                    kind = (p.get("value") or {}).get("kind")
+                    if kind in ("begin", "end"):
+                        self.progress.append((t, p.get("token"), kind))
                 self.cv.notify_all()
 
     def _send(self, obj):
@@ -168,10 +180,19 @@ class Client:
 
     def request(self, method, params, timeout=None):
         """(round-trip ms, response message, response bytes)."""
+        return self.wait_response(self.send_request(method, params), timeout)
+
+    def send_request(self, method, params):
+        """Send without waiting: a handle for wait_response."""
         rid = self.next_id
         self.next_id += 1
         t0 = time.perf_counter()
         self._send({"jsonrpc": "2.0", "id": rid, "method": method, "params": params})
+        return rid, t0, method
+
+    def wait_response(self, handle, timeout=None):
+        """(round-trip ms, response message, response bytes) of a sent request."""
+        rid, t0, method = handle
         with self.cv:
             timeout = timeout or self.timeout
             if not self.cv.wait_for(lambda: rid in self.responses or self.eof, timeout):
@@ -195,6 +216,21 @@ class Client:
             if not self.cv.wait_for(lambda: found() is not None or self.eof, timeout):
                 sys.exit(f"lsp_perf: no diagnostics for version {version} within {timeout} s")
             return found()
+
+    def wait_progress_done(self, since, timeout=None):
+        """Time the last $/progress begun after `since` ended, or None if
+        none began (a server that reports no progress)."""
+        def state():
+            begun = {tok for t, tok, k in self.progress if t >= since and k == "begin"}
+            ends = [t for t, tok, k in self.progress if t >= since and k == "end" and tok in begun]
+            ended = {tok for t, tok, k in self.progress if t >= since and k == "end"}
+            return begun, begun <= ended, max(ends, default=None)
+        with self.cv:
+            timeout = timeout or self.timeout
+            if not self.cv.wait_for(lambda: state()[1] or self.eof, timeout):
+                sys.exit(f"lsp_perf: progress did not end within {timeout} s")
+            begun, _, last = state()
+            return last if begun else None
 
 
 class Memory:
@@ -378,6 +414,8 @@ def print_table(rows, budgets):
           f" {'srv run':>8} {'srv wait':>8} {'results':>7} {'bytes':>9}  verdict")
     for r in rows:
         empty = "  (EMPTY RESULT)" if r["results"] == 0 else ""
+        if r.get("before_diagnostics") is False:
+            empty += "  (answered after the first compile)"
         print(f"{r['name'][:58]:58} {r['tier']:11} {r['n']:3} {fmt_ms(r['median'])}"
               f" {fmt_ms(r['p90'])} {fmt_ms(r['max'])} {fmt_ms(r['server_run_median'])}"
               f" {fmt_ms(r['server_wait_max'])} {r['results']:7} {r['bytes'] or '-':>9}"
@@ -414,6 +452,15 @@ def print_memory(memory, max_rss_mb=None):
 
 # ---------------------------------------------------------------- run
 
+def request_params(req, uri, text):
+    params = dict(req.get("params", {}))
+    if req["method"].startswith("textDocument/"):
+        params["textDocument"] = {"uri": uri}
+    if "at" in req:
+        params["position"] = position_of(text, req["at"])
+    return params
+
+
 def run(args):
     scenario = json.loads(Path(args.scenario).read_text())
     budgets = json.loads((ROOT / "tests/perf/budgets.json").read_text())
@@ -437,7 +484,8 @@ def run(args):
         "workspaceFolders": [{"uri": work.as_uri(), "name": work.name}],
         "capabilities": {"textDocument": {
             "completion": {"completionItem": {"snippetSupport": False}},
-            "hover": {"contentFormat": ["markdown", "plaintext"]}}},
+            "hover": {"contentFormat": ["markdown", "plaintext"]}},
+            "window": {"workDoneProgress": True}},
     })
     phases["initialize"] = ms
     memory.phase("initialize")
@@ -446,8 +494,27 @@ def run(args):
     t0 = time.perf_counter()
     client.notify("textDocument/didOpen", {"textDocument": {
         "uri": uri, "languageId": "systemverilog", "version": version, "text": text}})
+    # Requests sent right after the open, while the first compile runs
+    # (plan.md 6.34 S0): how long the user waits for an answer, and whether
+    # it has results yet. Today the open compiles on the message thread, so
+    # they are answered after it.
+    during = []
+    if not args.only:
+        for req in scenario.get("duringLoad", []):
+            during.append((req, client.send_request(req["method"],
+                                                    request_params(req, uri, text))))
     t = client.wait_diagnostics(uri, version, t0)
     phases["open -> first diagnostics"] = (t - t0) * 1000
+    done = client.wait_progress_done(t0)
+    phases["open -> indexed" + ("" if done else " (no progress: = first diagnostics)")] = \
+        ((done or t) - t0) * 1000
+    for req, handle in during:
+        ms, msg, size = client.wait_response(handle)
+        row = summarize("during load: " + req["name"], req["tier"], [ms], [], [],
+                        result_count(req["method"], msg.get("result")), size)
+        row["verdict"] = verdict(row, budgets)
+        row["before_diagnostics"] = handle[1] + ms / 1000 < t
+        rows.append(row)
     memory.phase("open -> first diagnostics")
 
     if "ready" in scenario:  # the library loads on the first request for the file
@@ -476,11 +543,7 @@ def run(args):
         if args.only and not re.search(args.only, req["name"]):
             continue
         method = req["method"]
-        params = dict(req.get("params", {}))
-        if method.startswith("textDocument/"):
-            params["textDocument"] = {"uri": uri}
-        if "at" in req:
-            params["position"] = position_of(text, req["at"])
+        params = request_params(req, uri, text)
         if "resolveFrom" in req:
             src = req["resolveFrom"]
             _, msg, _ = client.request("textDocument/completion", {

@@ -1,0 +1,261 @@
+{
+  "scenario": "gen_tb",
+  "server": "/home/martin/src/svlsp/build/release/svlsp",
+  "host": {
+    "host": "martin-XPS-13-7390",
+    "cpu": "Intel(R) Core(TM) i7-10510U CPU @ 1.80GHz",
+    "cpus": 8,
+    "server_version": "svlsp 0.1.0 (git a765053, Release build)"
+  },
+  "settings": {
+    "repeat": 10
+  },
+  "phases": {
+    "initialize": 1.5568750000056752,
+    "open -> first diagnostics": 8354.939215000059,
+    "open -> indexed (no progress: = first diagnostics)": 8354.939215000059,
+    "open -> library visible": 8368.94019600004
+  },
+  "rows": [
+    {
+      "name": "during load: hover: agent class from another unit",
+      "tier": "point",
+      "n": 1,
+      "min": 8359.66720600004,
+      "median": 8359.66720600004,
+      "p90": 8359.66720600004,
+      "max": 8359.66720600004,
+      "server_run_median": null,
+      "server_wait_max": null,
+      "results": 1,
+      "bytes": 215,
+      "verdict": "BREAKS FLOW",
+      "before_diagnostics": false
+    },
+    {
+      "name": "during load: completion: dot on an agent handle",
+      "tier": "keystroke",
+      "n": 1,
+      "min": 8363.275863000126,
+      "median": 8363.275863000126,
+      "p90": 8363.275863000126,
+      "max": 8363.275863000126,
+      "server_run_median": null,
+      "server_wait_max": null,
+      "results": 233,
+      "bytes": 47911,
+      "verdict": "BREAKS FLOW",
+      "before_diagnostics": false
+    },
+    {
+      "name": "during load: documentSymbol",
+      "tier": "point",
+      "n": 1,
+      "min": 8363.892498000041,
+      "median": 8363.892498000041,
+      "p90": 8363.892498000041,
+      "max": 8363.892498000041,
+      "server_run_median": null,
+      "server_wait_max": null,
+      "results": 130,
+      "bytes": 28219,
+      "verdict": "BREAKS FLOW",
+      "before_diagnostics": false
+    },
+    {
+      "name": "completion: dot on an agent handle",
+      "tier": "keystroke",
+      "n": 10,
+      "min": 3.670296999871425,
+      "median": 3.7454959998513004,
+      "p90": 3.794781999886254,
+      "max": 3.8032460001886648,
+      "server_run_median": 3.26,
+      "server_wait_max": 0.0,
+      "results": 233,
+      "bytes": 47912,
+      "verdict": "instant"
+    },
+    {
+      "name": "signatureHelp: type_id::create(",
+      "tier": "keystroke",
+      "n": 10,
+      "min": 5.781931999990775,
+      "median": 5.905169499897056,
+      "p90": 5.9887530001105915,
+      "max": 6.081966000010652,
+      "server_run_median": 5.804,
+      "server_wait_max": 0.0,
+      "results": 1,
+      "bytes": 272,
+      "verdict": "instant"
+    },
+    {
+      "name": "hover: agent class from another unit",
+      "tier": "point",
+      "n": 10,
+      "min": 3.6329879999357217,
+      "median": 3.6973689999513226,
+      "p90": 3.7774970001009933,
+      "max": 3.8323489998219884,
+      "server_run_median": 3.5650000000000004,
+      "server_wait_max": 0.0,
+      "results": 1,
+      "bytes": 216,
+      "verdict": "instant"
+    },
+    {
+      "name": "definition: agent class from another unit",
+      "tier": "point",
+      "n": 10,
+      "min": 3.6972370000967203,
+      "median": 3.818554499957827,
+      "p90": 3.9267920001293533,
+      "max": 3.96554400003879,
+      "server_run_median": 3.6065,
+      "server_wait_max": 0.0,
+      "results": 1,
+      "bytes": 193,
+      "verdict": "instant"
+    },
+    {
+      "name": "documentSymbol",
+      "tier": "point",
+      "n": 10,
+      "min": 0.7126200000584504,
+      "median": 0.7371309999371078,
+      "p90": 0.7744909999019001,
+      "max": 0.8325709998189268,
+      "server_run_median": 0.2075,
+      "server_wait_max": 0.0,
+      "results": 130,
+      "bytes": 28220,
+      "verdict": "instant"
+    },
+    {
+      "name": "references: an item class (across units)",
+      "tier": "navigation",
+      "n": 10,
+      "min": 39.45098799999869,
+      "median": 39.627193999990595,
+      "p90": 39.87768499996491,
+      "max": 39.96322899979532,
+      "server_run_median": 39.413,
+      "server_wait_max": 0.0,
+      "results": 23,
+      "bytes": 3701,
+      "verdict": "instant"
+    },
+    {
+      "name": "workspace/symbol: agent_1",
+      "tier": "navigation",
+      "n": 10,
+      "min": 2.9790280000270286,
+      "median": 3.025610500003495,
+      "p90": 3.15660499995829,
+      "max": 3.197712999963187,
+      "server_run_median": 2.495,
+      "server_wait_max": 0.0,
+      "results": 132,
+      "bytes": 30504,
+      "verdict": "instant"
+    },
+    {
+      "name": "edit -> diagnostics (incl. 300 ms debounce)",
+      "tier": "diagnostics",
+      "n": 10,
+      "min": 417.8861660000166,
+      "median": 426.8395575001023,
+      "p90": 429.77011600009973,
+      "max": 456.7143090000627,
+      "server_run_median": 125.84,
+      "server_wait_max": null,
+      "results": 1,
+      "bytes": 0,
+      "verdict": "ok"
+    },
+    {
+      "name": "typing: completion per keystroke (150 ms apart)",
+      "tier": "keystroke",
+      "n": 8,
+      "min": 13.715111000010438,
+      "median": 16.57617399996525,
+      "p90": 19.81057300008615,
+      "max": 20.084944000018368,
+      "server_run_median": 15.473,
+      "server_wait_max": 0.0,
+      "results": 34,
+      "bytes": 0,
+      "verdict": "instant"
+    }
+  ],
+  "memory": {
+    "exact_peak": true,
+    "phases": [
+      {
+        "name": "initialize",
+        "rss_kb": 6816,
+        "server_rss_kb": 6816,
+        "anon_kb": 672,
+        "worker_rss_kb": 0,
+        "workers": 0,
+        "peak_kb": 6816
+      },
+      {
+        "name": "open -> first diagnostics",
+        "rss_kb": 102584,
+        "server_rss_kb": 16504,
+        "anon_kb": 8784,
+        "worker_rss_kb": 86080,
+        "workers": 1,
+        "peak_kb": 105184
+      },
+      {
+        "name": "library load",
+        "rss_kb": 102584,
+        "server_rss_kb": 16504,
+        "anon_kb": 8784,
+        "worker_rss_kb": 86080,
+        "workers": 1,
+        "peak_kb": 102584
+      },
+      {
+        "name": "requests",
+        "rss_kb": 102584,
+        "server_rss_kb": 16504,
+        "anon_kb": 8784,
+        "worker_rss_kb": 86080,
+        "workers": 1,
+        "peak_kb": 102584
+      },
+      {
+        "name": "edits (recompiles)",
+        "rss_kb": 106076,
+        "server_rss_kb": 19996,
+        "anon_kb": 12276,
+        "worker_rss_kb": 86080,
+        "workers": 1,
+        "peak_kb": 108484
+      },
+      {
+        "name": "typing (completion + recompiles)",
+        "rss_kb": 106980,
+        "server_rss_kb": 20900,
+        "anon_kb": 13052,
+        "worker_rss_kb": 86080,
+        "workers": 1,
+        "peak_kb": 106980
+      },
+      {
+        "name": "idle 2 s after",
+        "rss_kb": 106980,
+        "server_rss_kb": 20900,
+        "anon_kb": 13052,
+        "worker_rss_kb": 86080,
+        "workers": 1,
+        "peak_kb": 106980
+      }
+    ],
+    "peak_kb": 108484
+  }
+}

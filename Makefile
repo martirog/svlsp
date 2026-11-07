@@ -62,7 +62,7 @@ build: configure
 # Tests
 # ---------------------------------------------------------------------------
 
-.PHONY: test test-unit test-integration test-integration-uvm perf-lsp perf-check perf-baseline perf-emacs
+.PHONY: test test-unit test-integration test-integration-uvm perf-lsp perf-check perf-baseline perf-emacs perf-refresh
 
 test: test-unit test-integration
 
@@ -104,6 +104,13 @@ perf-baseline:
 perf-emacs:
 	SVLSP_BIN=$(PERF_SVLSP) SVLSP_PERF_SCENARIO=$(SCENARIO) \
 		bash tools/emacs-test-daemon.sh tests/perf/emacs_perf.sh
+
+# How a project DB keeps up with edits and branch switches (`--build-db`
+# reruns, each checked against a fresh build; plan.md §6.34 S0).
+# WORKLOAD=gen (generated, ~2 min) or uvm (the UVM tags, ~10 min).
+WORKLOAD ?= gen
+perf-refresh:
+	python3 tools/refresh_perf.py $(WORKLOAD) --server $(PERF_SVLSP) $(PERF_ARGS)
 
 # ---------------------------------------------------------------------------
 # Housekeeping

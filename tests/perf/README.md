@@ -104,7 +104,41 @@ characters (default 1, inside the word) or just after it.
 - `uvm_src` -- the UVM source itself as the project, no library DB
   (`SVLSP_UVM_CORPUS_DIR`, copied without its `*.db` files): the server
   compiles `uvm_pkg` live for `base/uvm_component.svh`, the heaviest
-  single-user load.
+  single-user load. One compilation unit (`uvm.sv` includes everything).
+- `gen_tb` -- a generated testbench of ~120 units on the UVM library DB
+  (`tools/gen_perf_project.py`: 40 agent packages with their interfaces,
+  8 envs, a tests package, 31 RTL modules; every package includes
+  `uvm_macros.svh`, as real ones do). It opens `envs/env_3_pkg.sv`. Unlike
+  `uvm_src`, it can show the opened file's unit answering before the whole
+  project is compiled (plan.md §6.34).
+
+A scenario's `generate` (a list of arguments) runs
+`tools/gen_perf_project.py <workspace> <arguments>` before `files` and
+`write`. Its `duringLoad` requests are sent right after the `didOpen`,
+while the first compile runs. Each one is a `during load:` row with a
+single sample, marked "(answered after the first compile)" when its answer
+came after the opened file's first diagnostics. The client also advertises
+`window.workDoneProgress` and records `$/progress`. The `open -> indexed`
+phase ends when every progress the server began after the open has ended.
+A server that reports no progress gets the first diagnostics' time, and
+the phase name says so. The Emacs harness runs `generate` (through
+`--prepare-only`) but not `duringLoad`.
+
+## Refresh benchmark (branch switches)
+
+`tools/refresh_perf.py uvm|gen` (`make perf-refresh WORKLOAD=gen|uvm`) builds a project DB with `svlsp --build-db`
+on a git working tree, then changes the tree and reruns `--build-db` on
+the same DB:
+- no change;
+- an edit to one included file, then its revert;
+- `git checkout` to a second revision and back.
+
+Each rerun is timed, and its rows are compared with a fresh build of the
+same tree, so "fast" can't hide "stale". `uvm` clones the corpus checkout
+(`--shared`, which leaves the corpus untouched) and switches tags
+`2020.3.0` / `2020.3.1`; `gen` commits `gen_perf_project.py`'s variants A
+and B (10% of the agents changed, one agent removed and one added).
+`--json FILE` keeps the results. Takes ~2 min for `gen`, ~10 for `uvm`.
 
 ## Columns
 
