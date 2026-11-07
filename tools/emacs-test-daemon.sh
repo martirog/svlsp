@@ -16,6 +16,10 @@ export SVLSP_BIN="${SVLSP_BIN:-${SVLSP_ROOT}/build/debug/svlsp}"  # override to 
 
 DAEMON_NAME="svlsp-test-$$"   # unique per invocation; allows parallel runs
 export DAEMON_NAME
+# Project DBs without a "database" go to the XDG cache (plan.md §6.34 S3b):
+# this run's own, fresh, never the user's ~/.cache.
+XDG_CACHE_HOME="$(mktemp -d /tmp/svlsp-test-xdg.XXXXXX)"
+export XDG_CACHE_HOME
 
 INIT_FILE="${SCRIPT_DIR}/emacs-test-init.el"
 LIB_FILE="${SCRIPT_DIR}/emacs-test-lib.sh"
@@ -36,6 +40,7 @@ cleanup() {
         emacsclient -s "${DAEMON_NAME}" -e "(kill-emacs 0)" 2>/dev/null || true
         wait "${DAEMON_PID}" 2>/dev/null || true
     fi
+    rm -rf "${XDG_CACHE_HOME}"
 }
 trap cleanup EXIT
 

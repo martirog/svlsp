@@ -40,11 +40,15 @@ LanguageServer::LanguageServer(lsp::io::Stream& io, std::ostream* logStream,
     m_compiler.setCalleeResolver(resolveCallees);
     m_compiler.setTypeChecker(checkTypeRefs);
     // A newly discovered project loads in the background (plan.md §6.34 S4),
-    // into its own DB file when it names one (S3).
+    // into its DB file (S3): the one it names, else one in the XDG cache
+    // (S3b); "database": ":memory:" keeps it in memory.
     m_projects.deferLoading([this](const std::string& configPath) {
-        if (const ProjectConfig* c = m_projects.mutableConfig(configPath);
-            c && !c->database.empty() && c->database != ":memory:")
-            openProjectDb(c->database);
+        if (const ProjectConfig* c = m_projects.mutableConfig(configPath)) {
+            const std::string db = c->database.empty()
+                                       ? ProjectRegistry::defaultDatabasePath(configPath)
+                                       : c->database;
+            if (!db.empty() && db != ":memory:") openProjectDb(db);
+        }
         m_queue.push({.kind = CompileQueue::Job::Kind::LoadProject, .key = configPath},
                      CompileQueue::kProjectSetup);
     });

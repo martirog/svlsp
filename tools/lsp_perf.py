@@ -121,11 +121,17 @@ def offset_of(text, at):
 # ---------------------------------------------------------------- client
 
 class Client:
-    def __init__(self, cmd, stderr_path, timeout=900):
+    def __init__(self, cmd, stderr_path, timeout=900, cache_dir=None):
         self.timeout = timeout  # seconds for a response or a compile's diagnostics
         self.stderr = open(stderr_path, "wb")
+        # A project without a "database" gets one in the XDG cache (plan.md
+        # 6.34 S3b): the run's own, fresh, never the user's ~/.cache.
+        env = dict(os.environ)
+        if cache_dir:
+            os.makedirs(cache_dir, exist_ok=True)
+            env["XDG_CACHE_HOME"] = str(cache_dir)
         self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                     stderr=self.stderr)
+                                     stderr=self.stderr, env=env)
         self.next_id = 1
         self.responses = {}
         self.diagnostics = []  # (time, params)
@@ -474,7 +480,8 @@ def run(args):
     text = path.read_text()
     client = Client([args.server, "--log-requests", str(reqlog_path)] + args.server_arg,
                     work / "stderr.log",
-                    args.compile_timeout or scenario.get("compileTimeout", 900))
+                    args.compile_timeout or scenario.get("compileTimeout", 900),
+                    cache_dir=work / ".xdg-cache")
     memory = Memory(client.proc.pid)
     rows = []
     phases = {}

@@ -934,3 +934,43 @@ TEST_CASE("a stale library archive is reported once (plan.md §6.34 S7)", "[lsp]
     CHECK(warnings(client.recvUntilProgressEnd()) == 0); // once per session
     client.shutdownAndExit();
 }
+
+TEST_CASE("a project without a database gets one in the XDG cache; \":memory:\" opts out "
+          "(plan.md §6.34 S3b)",
+          "[lsp][server][s3b]")
+{
+    const std::string dir = "/tmp/svlsp_test_s3b";
+    std::filesystem::remove_all(dir);
+    const std::string use = "module s3b_m;\nendmodule\n";
+    writeFileAt(dir + "/a/use.sv", use);
+    writeFileAt(dir + "/a/.svlsp.json", R"({"files": ["use.sv"]})");
+    writeFileAt(dir + "/b/use.sv", use);
+    writeFileAt(dir + "/b/.svlsp.json", R"({"files": ["use.sv"], "database": ":memory:"})");
+
+    // Two configs, two paths, both under XDG_CACHE_HOME (the test run's own).
+    const std::string pa = ProjectRegistry::defaultDatabasePath(dir + "/a/.svlsp.json");
+    const std::string pb = ProjectRegistry::defaultDatabasePath(dir + "/b/.svlsp.json");
+    const char* xdg = std::getenv("XDG_CACHE_HOME");
+    REQUIRE(xdg);
+    CHECK(pa.rfind(std::string(xdg) + "/svlsp/", 0) == 0);
+    CHECK(pa != pb);
+    std::filesystem::remove(pa);
+    std::filesystem::remove(pb);
+
+    {
+        TestClient client;
+        client.initializeWithProgress();
+        client.didOpen("file://" + dir + "/a/use.sv", use, 1);
+        client.recvUntilProgressEnd();
+        client.shutdownAndExit();
+    }
+    CHECK(std::filesystem::exists(pa));
+    {
+        TestClient client;
+        client.initializeWithProgress();
+        client.didOpen("file://" + dir + "/b/use.sv", use, 1);
+        client.recvUntilProgressEnd();
+        client.shutdownAndExit();
+    }
+    CHECK_FALSE(std::filesystem::exists(pb));
+}

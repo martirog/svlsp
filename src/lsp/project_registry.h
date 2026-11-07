@@ -66,6 +66,12 @@ public:
     // does). Throws on a malformed one.
     static ProjectConfig parseConfig(const std::string& configPath);
 
+    // The DB a project gets when its config names none (plan.md §6.34 S3b,
+    // D1): $XDG_CACHE_HOME/svlsp/<SHA-256 of the config's absolute path,
+    // first 16 hex digits>.db, with ~/.cache when the variable is unset.
+    // Two checkouts of one repo get two DBs. "" when neither is set.
+    static std::string defaultDatabasePath(const std::string& configPath);
+
     // Every config loaded so far.
     std::vector<std::string> configPaths() const;
 

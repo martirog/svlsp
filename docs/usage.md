@@ -245,12 +245,17 @@ tests.
 
 ## A project database built ahead: `database`
 
-By default, the server compiles your project into memory and starts from
-scratch every session. To keep the project's database between sessions,
-name a file:
+A project's database is a file, so it lasts between sessions. By default
+it is `$XDG_CACHE_HOME/svlsp/<hash of the config's path>.db` (`~/.cache`
+when `XDG_CACHE_HOME` is unset), so nothing appears in your tree, and two
+checkouts of one repo get two databases. To choose the file yourself:
 - `"database": "project.db"` in `.svlsp.json`, relative to the config;
 - `-svlsp_db project.db` in a `.f` filelist;
 - `initializationOptions.svlsp.database`, which wins over the config.
+
+`"database": ":memory:"` (or `-svlsp_db :memory:`) keeps the project in
+memory, as before: it is compiled from scratch every session. A file
+opened outside any project is always compiled into memory.
 
 With a database file:
 - The next start reads it and compiles only the files whose contents

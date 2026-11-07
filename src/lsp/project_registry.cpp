@@ -3,6 +3,8 @@
 #include "lsp/library_db_builder.h"
 #include "compiler/filelist_parser.h"
 #include "db/project_compiler.h"
+#include "compiler/content_hash.h"
+#include <cstdlib>
 #include <filesystem>
 
 namespace fs = std::filesystem;
@@ -81,6 +83,15 @@ ProjectConfig ProjectRegistry::parseConfig(const std::string& configPath) {
     return endsWith(configPath, ".json")
         ? ProjectManifestParser::parse(configPath)
         : FilelistParser::parse(configPath, fs::path(configPath).parent_path().string());
+}
+
+std::string ProjectRegistry::defaultDatabasePath(const std::string& configPath) {
+    std::string base;
+    if (const char* xdg = std::getenv("XDG_CACHE_HOME"); xdg && *xdg) base = xdg;
+    else if (const char* home = std::getenv("HOME"); home && *home) base = std::string(home) + "/.cache";
+    else return "";
+    const std::string key = fs::absolute(configPath).lexically_normal().string();
+    return base + "/svlsp/" + contentHash(key).substr(0, 16) + ".db";
 }
 
 std::string ProjectRegistry::configPathFor(const std::string& filePath) const {
