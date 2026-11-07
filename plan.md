@@ -6923,8 +6923,8 @@ code reviews can show that a rewrite does not regress latency or memory.
 
 **Status:** planned 2026-11-07, at the user's request; decisions D1-D4
 taken the same day (see "Decisions" at the end). S0 (baselines), S1
-(file identity, schema v17) and S2 (refresh, schema v18) done 2026-11-07.
-The next step is S4.
+(file identity, schema v17), S2 (refresh, schema v18) and S4 (background
+loading) done 2026-11-07. The next step is S3.
 Grows handoff "next step 1" (after C9: the commit still holds the data
 mutex; didOpen / didSave compile on the message thread) into a whole
 plan, and closes §6.19's open staleness question with the same mechanism.
@@ -7269,7 +7269,7 @@ unit's compile as a queue job (S4).
     - a config file that is now only `include`d.
   - Emacs 329/329, corpus 1563 / 31.
 
-**S4 -- The initial load and compiles leave the message thread.**
+**S4 -- The initial load and compiles leave the message thread -- done 2026-11-07.**
 - `ProjectRegistry::configFor` stops compiling. It parses the config,
   attaches the library DBs and returns. The project's files go to a new
   **background compile queue**, one worker thread on top of
@@ -7310,6 +7310,61 @@ unit's compile as a queue job (S4).
   - no 'reference' warning is published before the load ends;
   - an Emacs test on a project with a slow fixture: hover answers before
     the progress ends.
+
+*Outcome -- done 2026-11-07.* Every compile runs on one background thread,
+`CompileQueue` (`src/lsp/compile_queue.h`). The jobs:
+- didOpen, the debounced didChange, didSave, and didSave's includers
+  (forced; the old second debouncer is gone);
+- a project's load: a `LoadProject` prologue, one `Unit` job per unit of
+  its refresh plan, and a `FinishProject`.
+
+A job pushed twice runs once: the better rank wins, and the flags merge.
+- `ProjectRegistry::deferLoading`: in the server, `configFor` only parses a
+  new config and queues its load.
+- *The prologue:*
+  - It builds missing `libraryDbSources` without the data mutex.
+    **Changed from the plan:** before the project's units, not beside them.
+    A unit compiled without its libraries' include dirs would need a
+    recompile, and its macros would be missing, giving false parse errors.
+  - It attaches the libraries, plans (S2), and does the removals.
+  - It ranks the units with a text pre-scan (`src/lsp/load_order.h`):
+    1. includers of an open document;
+    2. open documents;
+    3. declarers of a name an open document imports, extends or
+       qualifies;
+    4. the rest.
+- *Held back while indexing:* the 'reference', 'call' and 'library'
+  diagnostics. During a load, published diagnostics come from the DB with
+  those sources filtered out. `FinishProject` runs the rest of the refresh
+  (library resolution, the checks), then publishes every open document and
+  every changed file that was published before.
+  - A load's units publish only open files and files published before, so
+    a load doesn't flood the client.
+  - Completion answers `isIncomplete: true` while indexing.
+  - Work-done progress shows "k/N units". An end that comes before the
+    client has acknowledged the token is sent after the begin.
+- **Added:** a request on a document waits for that document's own compile
+  since didOpen or didSave. Without that, every Emacs test that opens a
+  file and asks at once got an empty answer (128 failures): the old
+  synchronous didOpen used to guarantee it. It waits for that one compile,
+  not the load, so `gen_tb`'s during-load requests are answered after the
+  opened unit, not after the project.
+- **Added:** `workspace/executeCommand svlsp.waitForIndexing`. It is
+  asynchronous, so it is not on the message thread, and it answers once no
+  load is queued or running. `svlsp-test/wait-for-lsp` (Emacs) calls it, so
+  the integration tests keep the old "whole project loaded" contract. Two
+  tests that need other units (`-y` resolution, a cross-file kind
+  tiebreak) depend on that. The early answers themselves are tested at
+  the unit level and in `lsp_perf`'s during-load rows.
+- Not done: library resolution (`-y` / `-v`) still runs under the data
+  mutex at the end of a load, as `loadProject` did.
+- Tests:
+  - the queue: order, and merging;
+  - the pre-scan;
+  - a server case with a gated walker: the open file is published first,
+    without the cross-file warning; hover answers while another unit is
+    still parsing; the warning arrives with the load's end; progress goes
+    begin ... end.
 
 **S3 -- A file-backed project DB.**
 - *Where:* a `"database"` key in `.svlsp.json`, a `-svlsp_db <path>`
