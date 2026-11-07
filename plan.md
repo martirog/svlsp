@@ -6922,8 +6922,8 @@ code reviews can show that a rewrite does not regress latency or memory.
 ### 6.34 Background Project Loading, a Persistent Project DB, and Incremental Refresh (branch switches)
 
 **Status:** planned 2026-11-07, at the user's request; decisions D1-D4
-taken the same day (see "Decisions" at the end). Nothing implemented.
-The next step is S0.
+taken the same day (see "Decisions" at the end). S0 (baselines) done
+2026-11-07. The next step is S1.
 Grows handoff "next step 1" (after C9: the commit still holds the data
 mutex; didOpen / didSave compile on the message thread) into a whole
 plan, and closes §6.19's open staleness question with the same mechanism.
@@ -6991,17 +6991,93 @@ already committed.
 
 #### Stages (each one can ship alone; the order is S0, S1, S2, S4, S3, S5, S6, S7, then S3b once S3 has been used for a while)
 
-**S0 -- Baselines first.** Add perf scenarios before changing anything:
-- `uvm_src` **open -> first diagnostics for the opened file** and **open ->
-  project indexed**. Today these two are the same number (100 s); S4
-  splits them.
-- Hover / completion latency *during* the initial load. Today it is
-  unanswerable: the message loop is blocked.
-- A branch-switch scenario on the UVM checkout
-  (`/home/martin/src/verilator_test/uvm-core`, tags `2020.3.0` /
-  `2020.3.1`): time a refresh after `git checkout` against a full
-  rebuild, and record how many units it recompiles. Use a worktree copy
-  so the corpus checkout stays put.
+**S0 -- Baselines first -- done 2026-11-07** (measured at a765053, release,
+on AC). Tooling:
+- `tools/gen_perf_project.py`: a generated multi-unit UVM testbench. The
+  UVM source is one compilation unit, so it can't show "the opened unit
+  first" or a partial refresh. The default size has ~120 units:
+  - 40 agent packages, each with its interface, one class per `.svh`, and
+    `` `include "uvm_macros.svh" ``;
+  - 8 envs, a tests package, 31 RTL modules and a top;
+  - 14.6k lines, 9439 symbol rows, 0 errors or warnings.
+
+  `--variant B` is a "branch": 10% of the agents changed, one removed and
+  one added, 29 files differ.
+- `tests/perf/gen_tb.json`: a new scenario on it. It opens
+  `envs/env_3_pkg.sv`, with the UVM library DB attached.
+- `tools/lsp_perf.py`:
+  - a scenario's `generate` runs the generator into the workspace;
+  - its `duringLoad` requests are sent right after the didOpen (`during
+    load:` rows, flagged when they are answered after the first compile);
+  - the client advertises `window.workDoneProgress` and records
+    `$/progress`, so the new `open -> indexed` phase ends when the server's
+    progress ends. Today there is none, so it equals the first diagnostics.
+
+  `uvm_src.json` gained three `duringLoad` requests.
+- `tools/refresh_perf.py uvm|gen` (`make perf-refresh`): build a project DB
+  with `--build-db` on a git tree, then rerun it on the same DB after:
+  - no change;
+  - an edit to one included file, and its revert;
+  - a switch A -> B and back.
+
+  Each rerun is timed and compared row by row with a fresh build of that
+  tree. `uvm` clones the corpus checkout `--shared` and switches the tags
+  `2020.3.0` / `2020.3.1` (49 files differ under `src/`). `gen` commits the
+  generator's variants.
+- Baselines committed: `tests/perf/baselines/gen_tb.json`,
+  `refresh_gen.json`, `refresh_uvm.json`, and `uvm_src.json` refreshed for
+  its during-load rows (it matches 2026-11-02's: open 99.5 s, references
+  375 ms, edit -> diagnostics 607 ms, peak 2956 MB). `make perf-check`
+  (`small` / `uvm`) shows no regression with the changed script.
+
+Numbers:
+
+| scenario | open -> first diagnostics | = open -> indexed | during load: hover / completion / documentSymbol answered after | peak |
+|---|---|---|---|---|
+| `uvm_src` (1 unit) | 99.5 s | yes | 99.5 / 99.5 / 99.5 s | 2956 MB |
+| `gen_tb` (~120 units) | 8.4 s | yes | 8.4 / 8.4 / 8.4 s | 106 MB |
+
+Every request sent during the load waits out the whole project compile,
+including documentSymbol, which needs nothing outside the file. Once the
+load is done, every `gen_tb` request is instant (p90 <= 39 ms).
+
+`--build-db` reruns (the `refresh_*.json` baselines):
+
+| step | `uvm` time | `uvm` result | `gen` time | `gen` result |
+|---|---|---|---|---|
+| full build (disk) | 104.1 s, 2899 MB | -- | 59.0 s, 89 MB | -- |
+| no change | 0.1 s | correct | 0.5 s | correct |
+| edit one included file | 0.0 s | **stale**: 237 symbol rows | 0.6 s | **stale**: 17 symbol rows |
+| revert it | 0.0 s | correct | 0.6 s | correct |
+| switch A -> B | 0.0 s | **stale**: ~900 symbol rows, 74 macros, 36 include sites | 7.0 s | **stale**: 96/263 symbol rows, the removed agent's 8 files kept |
+| switch B -> A | 0.0 s | correct (back where it was built) | 5.0 s | **stale**: the B-only agent's rows kept |
+
+Findings:
+- *F1, confirmed: a `--build-db` rerun misses changes to included files.*
+  The cache key is the primary file's hash. UVM's `uvm.sv` doesn't change
+  between the tags, so the rerun returns at once with the old DB. S1's
+  `inputs_fp` fixes it. Removed files keep their rows (S2).
+- *F2, new: on a multi-unit project, fsync is most of a file-backed build.*
+  `gen` builds in 59 s on ext4 and in 8.9 s on tmpfs. The server builds
+  the same project in its `:memory:` DB in 8.4 s. `Database` opens with
+  SQLite's defaults (rollback journal, `synchronous=FULL`), and a commit is
+  several transactions per file (9 `BEGIN`s in `symbol_database.cpp`).
+  UVM, one unit, loses only 104 vs 96 s. S3 must not inherit this: use
+  WAL + `synchronous=NORMAL`, and one transaction per commit (S5). It can
+  also be fixed for `--build-db` alone ahead of S3 (a small, separate
+  change).
+- *F3: on one-unit UVM, any change means a full 100 s recompile.* S1/S2
+  make a refresh *correct* there, but not fast: the one unit always changes.
+  For UVM as a library, the answer is a library DB (§6.19), and S7 for
+  keeping it fresh. S2 pays off on multi-unit projects (`gen`: the
+  changed units, about 10%).
+- *F4, side observation, not §6.34: every package's `` `include
+  "uvm_macros.svh" `` gives 18 Information diagnostics on the UVM macro
+  files* ("`include'd in 9 different scopes ... using 'agent_0_pkg'"). They
+  come from the include-context check. For a define-only header the scope
+  makes no difference, so these are noise on every real UVM testbench.
+  A candidate follow-up: skip the check for files that declare no
+  symbols.
 
 **S1 -- File identity (schema v17; S2's `project_info` and `unit_checks` tables are v18 if they land separately).**
 - A stable content hash: vendor XXH3-128 (single header, BSD-2) or use

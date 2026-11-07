@@ -171,7 +171,20 @@ Next steps:
    a second server copies the DB into memory and never writes it;
    cross-file checks re-run from stored type refs / call records after a
    refresh that changed declarations; branch switches arrive through
-   `didChangeWatchedFiles` + `svlsp.refresh`. Start with S0 (baselines).
+   `didChangeWatchedFiles` + `svlsp.refresh`. **S0 (baselines) is done**
+   (2026-11-07; plan.md §6.34 S0 has the tables):
+   - new `tools/gen_perf_project.py` (a ~120-unit UVM testbench) and its
+     `gen_tb` scenario;
+   - `lsp_perf.py` gained `duringLoad` requests and an `open -> indexed`
+     phase from `$/progress`;
+   - new `tools/refresh_perf.py` / `make perf-refresh`: reruns of
+     `--build-db` after an edit or a branch switch, checked against a fresh
+     build.
+
+   Findings: requests during the load wait out the whole compile (`gen_tb`
+   8.4 s, `uvm_src` 99.5 s). A `--build-db` rerun misses edits to included
+   files and branch switches (confirmed: stale rows, at once). File-backed
+   builds are mostly fsync (`gen`: 59 s on ext4, 8.9 s on tmpfs). Next: S1.
 2. Optional, LL cost on files with syntax errors (only they reach LL now):
    the remaining LL time is true ambiguity in `primary` (decision 1068)
    and `hierarchical_identifier` (1103): `a.b` is a name, a name + select
