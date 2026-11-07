@@ -13,11 +13,14 @@
 // Orchestrates the incremental compilation pipeline.
 //
 // On each compile(path, text) call:
-//   • Compute a content hash of `text`.
-//   • If the stored hash in the DB matches → return cached diagnostics (no
-//     re-parse).
+//   • Compute the unit's inputs: the content hash of `text`, the config and
+//     include context, and each file the last compile of `path` read
+//     (stat data first, the content hash when it changed).
+//   • If their fingerprint matches the one stored for `path` → return
+//     cached diagnostics (no re-parse; plan.md §6.34 S1).
 //   • Otherwise → run CompilerDirectiveStripper → SvPreprocessor →
-//     SvTreeWalker, persist symbols + diagnostics, update the file hash.
+//     SvTreeWalker, persist symbols + diagnostics, and record each file's
+//     identity and the new fingerprint.
 //
 // This replaces the in-memory ParseCache from Phase 4.6 with a DB-backed
 // equivalent that will survive server restarts once the Database is opened
@@ -80,6 +83,9 @@ public:
         SvPreprocessor preprocessor;                     // seeded with config + include context
         std::string initialScope{};
         bool checkTypes{false}; // compiled under a project config (plan.md §6.21 step 3)
+        // What the result depends on besides the files' contents: the
+        // config and include context (plan.md §6.34 S1).
+        std::string inputsKey{};
     };
     struct Parsed {
         std::string path;
@@ -88,6 +94,10 @@ public:
         PreprocessorResult preprocessed;
         WalkResult walked;
         bool checkTypes{false};
+        std::string inputsKey{};
+        // The primary file's identity: `hash`, plus stat data when the text
+        // was the file's own (size -1 for an unsaved buffer).
+        SymbolDatabase::StoredFile primary{};
     };
     Prepared prepare(const std::string& path, const std::string& text,
                      const ProjectConfig* config = nullptr, bool forceRecompile = false);

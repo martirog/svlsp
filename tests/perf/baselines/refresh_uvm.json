@@ -9,98 +9,69 @@
     {
       "step": "full build",
       "tree": "A",
-      "seconds": 104.11022120100006,
-      "max_rss_mb": 2898.8359375,
-      "fresh_seconds": 104.11022120100006,
-      "rows": 20687,
+      "seconds": 106.66843451400018,
+      "max_rss_mb": 2899.203125,
+      "fresh_seconds": 106.66843451400018,
+      "rows": 20856,
       "differs": {},
-      "summary": "svlsp: built '/tmp/svlsp-refresh-uvm.ilc6mehp/project.db' -- 1 files compiled, 0 diagnostics"
+      "summary": "svlsp: built '/tmp/svlsp-refresh-uvm.giullf64/project.db' -- 1 files compiled, 0 diagnostics"
     },
     {
       "step": "no change",
       "tree": "A",
-      "seconds": 0.050266455000155474,
-      "max_rss_mb": 20.36328125,
-      "fresh_seconds": 104.11022120100006,
-      "rows": 20687,
+      "seconds": 0.08473365500049113,
+      "max_rss_mb": 20.43359375,
+      "fresh_seconds": 106.66843451400018,
+      "rows": 20856,
       "differs": {},
-      "summary": "svlsp: built '/tmp/svlsp-refresh-uvm.ilc6mehp/project.db' -- 1 files compiled, 0 diagnostics"
+      "summary": "svlsp: built '/tmp/svlsp-refresh-uvm.giullf64/project.db' -- 1 files compiled, 0 diagnostics"
     },
     {
       "step": "edit one file",
       "tree": "A+edit",
-      "seconds": 0.0453545769998982,
-      "max_rss_mb": 22.98046875,
-      "fresh_seconds": 95.98890020499994,
-      "rows": 20687,
-      "differs": {
-        "symbol_docs": [
-          1,
-          1
-        ],
-        "symbols": [
-          237,
-          237
-        ]
-      },
-      "summary": "svlsp: built '/tmp/svlsp-refresh-uvm.ilc6mehp/project.db' -- 1 files compiled, 0 diagnostics"
+      "seconds": 105.78370708399962,
+      "max_rss_mb": 2899.1328125,
+      "fresh_seconds": 96.17880616099956,
+      "rows": 20856,
+      "differs": {},
+      "summary": "svlsp: built '/tmp/svlsp-refresh-uvm.giullf64/project.db' -- 1 files compiled, 0 diagnostics"
     },
     {
       "step": "revert the edit",
       "tree": "A",
-      "seconds": 0.04996633400014616,
-      "max_rss_mb": 34.14453125,
-      "fresh_seconds": 104.11022120100006,
-      "rows": 20687,
+      "seconds": 106.65432145900013,
+      "max_rss_mb": 2899.12109375,
+      "fresh_seconds": 106.66843451400018,
+      "rows": 20856,
       "differs": {},
-      "summary": "svlsp: built '/tmp/svlsp-refresh-uvm.ilc6mehp/project.db' -- 1 files compiled, 0 diagnostics"
+      "summary": "svlsp: built '/tmp/svlsp-refresh-uvm.giullf64/project.db' -- 1 files compiled, 0 diagnostics"
     },
     {
       "step": "switch A -> B",
       "tree": "B",
-      "seconds": 0.046333703000073,
-      "max_rss_mb": 34.875,
-      "fresh_seconds": 95.72593381599995,
-      "rows": 20748,
-      "differs": {
-        "file_includes": [
-          1,
-          0
-        ],
-        "files": [
-          1,
-          0
-        ],
-        "include_sites": [
-          36,
-          35
-        ],
-        "macros": [
-          74,
-          51
-        ],
-        "symbol_docs": [
-          65,
-          60
-        ],
-        "symbols": [
-          898,
-          868
-        ]
-      },
-      "summary": "svlsp: built '/tmp/svlsp-refresh-uvm.ilc6mehp/project.db' -- 1 files compiled, 0 diagnostics"
+      "seconds": 99.01640095200037,
+      "max_rss_mb": 2896.1953125,
+      "fresh_seconds": 95.72439243700046,
+      "rows": 20918,
+      "differs": {},
+      "summary": "svlsp: built '/tmp/svlsp-refresh-uvm.giullf64/project.db' -- 1 files compiled, 0 diagnostics"
     },
     {
       "step": "switch B -> A",
       "tree": "A",
-      "seconds": 0.049545498999805204,
-      "max_rss_mb": 45.92578125,
-      "fresh_seconds": 104.11022120100006,
-      "rows": 20687,
-      "differs": {},
-      "summary": "svlsp: built '/tmp/svlsp-refresh-uvm.ilc6mehp/project.db' -- 1 files compiled, 0 diagnostics"
+      "seconds": 101.68587676700008,
+      "max_rss_mb": 2898.94921875,
+      "fresh_seconds": 106.66843451400018,
+      "rows": 20856,
+      "differs": {
+        "files": [
+          0,
+          1
+        ]
+      },
+      "summary": "svlsp: built '/tmp/svlsp-refresh-uvm.giullf64/project.db' -- 1 files compiled, 0 diagnostics"
     }
   ],
   "host": "martin-XPS-13-7390",
-  "server_version": "svlsp 0.1.0 (git a765053, Release build)"
+  "server_version": "svlsp 0.1.0 (git b841fa6-dirty, Release build)"
 }

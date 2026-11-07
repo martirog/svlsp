@@ -9,55 +9,50 @@
     {
       "step": "full build",
       "tree": "A",
-      "seconds": 58.96121448300005,
-      "max_rss_mb": 89.41796875,
-      "fresh_seconds": 58.96121448300005,
-      "rows": 12794,
+      "seconds": 51.97949167000024,
+      "max_rss_mb": 89.37890625,
+      "fresh_seconds": 51.97949167000024,
+      "rows": 13934,
       "differs": {},
-      "summary": "svlsp: built '/tmp/svlsp-refresh-gen.zrzl4nfs/project.db' -- 122 files compiled, 18 diagnostics"
+      "summary": "svlsp: built '/tmp/svlsp-refresh-gen._avgwim_/project.db' -- 122 files compiled, 18 diagnostics"
     },
     {
       "step": "no change",
       "tree": "A",
-      "seconds": 0.5176959499999612,
-      "max_rss_mb": 14.6796875,
-      "fresh_seconds": 58.96121448300005,
-      "rows": 12794,
+      "seconds": 0.16817735600034212,
+      "max_rss_mb": 15.38671875,
+      "fresh_seconds": 51.97949167000024,
+      "rows": 13934,
       "differs": {},
-      "summary": "svlsp: built '/tmp/svlsp-refresh-gen.zrzl4nfs/project.db' -- 122 files compiled, 18 diagnostics"
+      "summary": "svlsp: built '/tmp/svlsp-refresh-gen._avgwim_/project.db' -- 122 files compiled, 18 diagnostics"
     },
     {
       "step": "edit one file",
       "tree": "A+edit",
-      "seconds": 0.5724017170000479,
-      "max_rss_mb": 17.21484375,
-      "fresh_seconds": 8.753861810999979,
-      "rows": 12794,
-      "differs": {
-        "symbols": [
-          17,
-          17
-        ]
-      },
-      "summary": "svlsp: built '/tmp/svlsp-refresh-gen.zrzl4nfs/project.db' -- 122 files compiled, 18 diagnostics"
+      "seconds": 2.3750580089999858,
+      "max_rss_mb": 54.16015625,
+      "fresh_seconds": 9.323981970000204,
+      "rows": 13934,
+      "differs": {},
+      "summary": "svlsp: built '/tmp/svlsp-refresh-gen._avgwim_/project.db' -- 122 files compiled, 18 diagnostics"
     },
     {
       "step": "revert the edit",
       "tree": "A",
-      "seconds": 0.6404363149999881,
-      "max_rss_mb": 23.7734375,
-      "fresh_seconds": 58.96121448300005,
-      "rows": 12794,
+      "seconds": 2.3454547480005203,
+      "max_rss_mb": 54.1015625,
+      "fresh_seconds": 51.97949167000024,
+      "rows": 13934,
       "differs": {},
-      "summary": "svlsp: built '/tmp/svlsp-refresh-gen.zrzl4nfs/project.db' -- 122 files compiled, 18 diagnostics"
+      "summary": "svlsp: built '/tmp/svlsp-refresh-gen._avgwim_/project.db' -- 122 files compiled, 18 diagnostics"
     },
     {
       "step": "switch A -> B",
       "tree": "B",
-      "seconds": 7.0024498079999375,
-      "max_rss_mb": 88.41015625,
-      "fresh_seconds": 8.852834755999993,
-      "rows": 12806,
+      "seconds": 5.33289325900023,
+      "max_rss_mb": 89.16015625,
+      "fresh_seconds": 9.465615343000536,
+      "rows": 13946,
       "differs": {
         "diagnostics": [
           18,
@@ -75,40 +70,9 @@
           0,
           1
         ],
-        "include_sites": [
+        "include_directives": [
           0,
           24
-        ],
-        "symbols": [
-          96,
-          263
-        ]
-      },
-      "summary": "svlsp: built '/tmp/svlsp-refresh-gen.zrzl4nfs/project.db' -- 122 files compiled, 18 diagnostics"
-    },
-    {
-      "step": "switch B -> A",
-      "tree": "A",
-      "seconds": 4.97881865699992,
-      "max_rss_mb": 78.1484375,
-      "fresh_seconds": 58.96121448300005,
-      "rows": 12794,
-      "differs": {
-        "diagnostics": [
-          18,
-          18
-        ],
-        "file_includes": [
-          0,
-          24
-        ],
-        "files": [
-          0,
-          8
-        ],
-        "imports": [
-          0,
-          1
         ],
         "include_sites": [
           0,
@@ -119,9 +83,48 @@
           179
         ]
       },
-      "summary": "svlsp: built '/tmp/svlsp-refresh-gen.zrzl4nfs/project.db' -- 122 files compiled, 18 diagnostics"
+      "summary": "svlsp: built '/tmp/svlsp-refresh-gen._avgwim_/project.db' -- 122 files compiled, 18 diagnostics"
+    },
+    {
+      "step": "switch B -> A",
+      "tree": "A",
+      "seconds": 6.614204589999645,
+      "max_rss_mb": 88.6015625,
+      "fresh_seconds": 51.97949167000024,
+      "rows": 13934,
+      "differs": {
+        "diagnostics": [
+          18,
+          18
+        ],
+        "file_includes": [
+          0,
+          24
+        ],
+        "files": [
+          0,
+          8
+        ],
+        "imports": [
+          0,
+          1
+        ],
+        "include_directives": [
+          0,
+          24
+        ],
+        "include_sites": [
+          0,
+          24
+        ],
+        "symbols": [
+          0,
+          179
+        ]
+      },
+      "summary": "svlsp: built '/tmp/svlsp-refresh-gen._avgwim_/project.db' -- 122 files compiled, 18 diagnostics"
     }
   ],
   "host": "martin-XPS-13-7390",
-  "server_version": "svlsp 0.1.0 (git a765053, Release build)"
+  "server_version": "svlsp 0.1.0 (git b841fa6-dirty, Release build)"
 }

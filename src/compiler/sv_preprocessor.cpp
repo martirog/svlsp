@@ -1,4 +1,6 @@
 #include "compiler/sv_preprocessor.h"
+#include "compiler/content_hash.h"
+#include "compiler/file_utils.h"
 #include "compiler/compiler_directive_stripper.h"
 #include "compiler/doc_comment.h"
 #include <algorithm>
@@ -45,6 +47,7 @@ struct Ctx {
     std::vector<MacroRecord> macroRecords{};
     std::vector<SourceLine> sourceMap{};
     std::vector<IncludeSite> includeSites{};
+    std::vector<IncludeDirective> includeDirectives{};
 
     bool isOutputting() const {
         for (const auto& e : condStack) if (!e.active) return false;
@@ -457,52 +460,64 @@ static bool hasUnterminatedInvocation(const std::string& line, const MacroMap& m
 static void processSource(const std::string& source, const std::string& filepath,
                            Ctx& ctx, int depth);
 
-// `includer`/`line`: where the directive is (IncludeSite).
-static void processInclude(const std::string& filename, const std::string& currentFile,
-                            const std::string& includer, int line, Ctx& ctx, int depth) {
-    if (depth > 16) {
-        ctx.errors.push_back("`include: depth limit exceeded (cycle?)");
-        return;
-    }
-
-    // Build search list: dir of current file, then explicit include paths
+std::string resolveInclude(const std::string& name, const std::string& currentFile,
+                           const std::vector<std::string>& includeDirs) {
+    // Search list: dir of the current file, then the include dirs.
     std::vector<std::string> search;
     if (!currentFile.empty()) {
         fs::path p(currentFile);
         if (p.has_parent_path()) search.push_back(p.parent_path().string());
     }
-    for (const auto& d : ctx.includePaths) search.push_back(d);
+    for (const auto& d : includeDirs) search.push_back(d);
 
     // An absolute name is taken as is. A relative one is never tried against
     // the working directory: the server's (or --build-db's) cwd is arbitrary,
     // and a hit there names the file relative to it, which providers later
     // absolutize against a different cwd. Normalized so `./` and `../` don't
     // give one file two names.
-    std::string found;
-    if (fs::path(filename).is_absolute()) {
-        if (fs::exists(filename)) found = fs::path(filename).lexically_normal().string();
-    } else {
-        for (const auto& dir : search) {
-            auto candidate = fs::path(dir) / filename;
-            if (fs::exists(candidate)) { found = candidate.lexically_normal().string(); break; }
-        }
+    if (fs::path(name).is_absolute())
+        return fs::exists(name) ? fs::path(name).lexically_normal().string() : std::string{};
+    for (const auto& dir : search) {
+        auto candidate = fs::path(dir) / name;
+        if (fs::exists(candidate)) return candidate.lexically_normal().string();
+    }
+    return {};
+}
+
+// `includer`/`line`: where the directive is (IncludeSite).
+static void processInclude(const std::string& filename, const std::string& currentFile,
+                            const std::string& includer, int line, Ctx& ctx, int depth) {
+    if (depth > 16) {
+        ctx.errors.push_back(std::string(kIncludeErrorPrefix) + "depth limit exceeded (cycle?)");
+        return;
     }
 
+    const std::string found = resolveInclude(filename, currentFile, ctx.includePaths);
+    if (std::none_of(ctx.includeDirectives.begin(), ctx.includeDirectives.end(),
+                     [&](const IncludeDirective& d) {
+                         return d.fromFile == currentFile && d.name == filename;
+                     }))
+        ctx.includeDirectives.push_back({filename, currentFile, found});
+
     if (found.empty()) {
-        ctx.errors.push_back("`include: cannot find \"" + filename + "\"");
+        ctx.errors.push_back(std::string(kIncludeNotFound) + "\"" + filename + "\"");
         return;
     }
 
     for (const auto& p : ctx.includeStack) {
         if (p == found) {
-            ctx.errors.push_back("`include: cycle detected for \"" + found + "\"");
+            ctx.errors.push_back(std::string(kIncludeErrorPrefix) + "cycle detected for \"" + found + "\"");
             return;
         }
     }
 
+    // Stat before reading: a change after this moves the mtime away from
+    // what is recorded (IncludeSite::statNs).
+    const int64_t statNs = nowNs();
+    const auto stat = statFile(found);
     std::ifstream f(found);
     if (!f.is_open()) {
-        ctx.errors.push_back("`include: cannot open \"" + found + "\"");
+        ctx.errors.push_back(std::string(kIncludeErrorPrefix) + "cannot open \"" + found + "\"");
         return;
     }
     std::ostringstream ss;
@@ -528,7 +543,12 @@ static void processInclude(const std::string& filename, const std::string& curre
         ctx.progressLog->flush();
     }
 
-    ctx.includeSites.push_back({found, includer, line});
+    // Once per file: a file read again (an include guard's second visit)
+    // was read from the same disk state as far as the result goes.
+    if (std::none_of(ctx.includeSites.begin(), ctx.includeSites.end(),
+                     [&](const IncludeSite& s) { return s.file == found; }))
+        ctx.includeSites.push_back({found, includer, line, contentHash(ss.str()),
+                                    stat ? stat->size : -1, stat ? stat->mtimeNs : 0, statNs});
     ctx.includeStack.push_back(found);
     processSource(stripped.source, found, ctx, depth + 1);
     ctx.includeStack.pop_back();
@@ -777,5 +797,6 @@ PreprocessorResult SvPreprocessor::process(const std::string& source,
         ctx.errors.push_back("unterminated `ifdef/`ifndef block");
 
     return {std::move(ctx.output), std::move(ctx.errors), std::move(ctx.macroRecords),
-            std::move(ctx.sourceMap), std::move(ctx.includeSites)};
+            std::move(ctx.sourceMap), std::move(ctx.includeSites),
+            std::move(ctx.includeDirectives)};
 }

@@ -4,8 +4,12 @@
 #include "db/symbol_database.h"
 #include "db/compilation_controller.h"
 #include "compiler/project_config.h"
+#include "compiler/content_hash.h"
+#include "compiler/file_utils.h"
 #include "lsp/symbol_resolution.h"
 #include <algorithm>
+#include <chrono>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 
@@ -1386,4 +1390,211 @@ TEST_CASE("an included file compiled on its own keeps its unit's declaration ord
     CHECK_FALSE(f.has(inA, "after_l"));
     CHECK_FALSE(f.has(inA, "dbu_b"));
     CHECK(f.has(inA, "dbu_late", "Class"));
+}
+
+// ---------------------------------------------------------------------------
+// plan.md §6.34 S1 -- file identity. A compile's result is reused only when
+// every input it was made from is unchanged: the primary text, every file
+// the preprocessor read (by content hash; stat data as a shortcut), the
+// config, and the include context. Before S1 only the primary text counted,
+// so an edit to an included file outside the editor was never seen (S0: a
+// `--build-db` rerun after a branch switch kept the old rows).
+// ---------------------------------------------------------------------------
+
+namespace {
+namespace fs = std::filesystem;
+
+// A controller that logs, so a test can tell a cache hit from a recompile,
+// over a fresh directory of real files.
+struct IdentityFixture {
+    Database              db{":memory:"};
+    SymbolDatabase        sdb{db};
+    std::ostringstream    log;
+    CompilationController ctrl{sdb, &log};
+    std::string           dir;
+
+    explicit IdentityFixture(const std::string& name)
+        : dir("/tmp/svlsp_test_identity/" + name)
+    {
+        db.initSchema();
+        fs::remove_all(dir);
+        fs::create_directories(dir);
+    }
+    std::string write(const std::string& rel, const std::string& text) {
+        const std::string p = dir + "/" + rel;
+        std::ofstream(p) << text;
+        return p;
+    }
+    // Compiles `path` with `text`; true when it was a cache hit.
+    bool compileHit(const std::string& path, const std::string& text,
+                    const ProjectConfig* config = nullptr) {
+        log.str("");
+        ctrl.compile(path, text, config);
+        return log.str().find("[parsed] " + path + " (cached)") != std::string::npos;
+    }
+    bool has(const std::string& name) { return !sdb.findSymbolsByName(name).empty(); }
+};
+
+// Sets `path`'s mtime to `secondsAgo` seconds before now.
+void ageFile(const std::string& path, int secondsAgo) {
+    fs::last_write_time(path, fs::file_time_type::clock::now() - std::chrono::seconds(secondsAgo));
+}
+} // namespace
+
+TEST_CASE("a unit whose files are all unchanged is a cache hit", "[db][ctrl][file-identity]") {
+    IdentityFixture f("unchanged");
+    f.write("a.svh", "class id_a; endclass\n");
+    const std::string top = "package id_p;\n`include \"a.svh\"\nendpackage\n";
+    const std::string topPath = f.write("top.sv", top);
+    CHECK_FALSE(f.compileHit(topPath, top));
+    CHECK(f.compileHit(topPath, top));
+}
+
+TEST_CASE("an edit to an included file misses the cache", "[db][ctrl][file-identity]") {
+    IdentityFixture f("edit-included");
+    const std::string a = f.write("a.svh", "class id_old; endclass\n");
+    const std::string top = "package id_p;\n`include \"a.svh\"\nendpackage\n";
+    const std::string topPath = f.write("top.sv", top);
+    f.compileHit(topPath, top);
+    f.write("a.svh", "class id_new_name; endclass\n");
+    CHECK_FALSE(f.compileHit(topPath, top));
+    CHECK(f.has("id_new_name"));
+    CHECK_FALSE(f.has("id_old"));
+    (void)a;
+}
+
+TEST_CASE("an edit to a file holding only `includes misses the cache",
+          "[db][ctrl][file-identity]") {
+    IdentityFixture f("edit-wrapper");
+    f.write("a.svh", "class id_wa; endclass\n");
+    f.write("b.svh", "class id_wb; endclass\n");
+    f.write("w.svh", "`include \"a.svh\"\n");
+    const std::string top = "package id_p;\n`include \"w.svh\"\nendpackage\n";
+    const std::string topPath = f.write("top.sv", top);
+    f.compileHit(topPath, top);
+    REQUIRE(f.has("id_wa"));
+    f.write("w.svh", "`include \"b.svh\"\n");
+    CHECK_FALSE(f.compileHit(topPath, top));
+    CHECK(f.has("id_wb"));
+    CHECK_FALSE(f.has("id_wa"));
+}
+
+TEST_CASE("a missing include is a cache hit until the file appears",
+          "[db][ctrl][file-identity]") {
+    IdentityFixture f("missing-include");
+    const std::string top = "package id_p;\n`include \"later.svh\"\nendpackage\n";
+    const std::string topPath = f.write("top.sv", top);
+    f.compileHit(topPath, top);
+    CHECK(f.compileHit(topPath, top)); // still missing: the same result
+    f.write("later.svh", "class id_later; endclass\n");
+    CHECK_FALSE(f.compileHit(topPath, top));
+    CHECK(f.has("id_later"));
+}
+
+TEST_CASE("an include-dir change that resolves every include the same keeps the cache",
+          "[db][ctrl][file-identity]") {
+    // A branch that adds an agent adds its include dir: the units that
+    // don't include from it are unchanged.
+    IdentityFixture f("dirs-unchanged");
+    fs::create_directories(f.dir + "/inc");
+    fs::create_directories(f.dir + "/other");
+    f.write("inc/a.svh", "class id_da; endclass\n");
+    const std::string top = "package id_p;\n`include \"a.svh\"\nendpackage\n";
+    const std::string topPath = f.write("top.sv", top);
+    ProjectConfig config;
+    config.includeDirs = {f.dir + "/inc"};
+    f.compileHit(topPath, top, &config);
+    config.includeDirs.push_back(f.dir + "/other");
+    CHECK(f.compileHit(topPath, top, &config));
+}
+
+TEST_CASE("an include dir that shadows an include misses the cache",
+          "[db][ctrl][file-identity]") {
+    IdentityFixture f("dirs-shadow");
+    fs::create_directories(f.dir + "/inc");
+    fs::create_directories(f.dir + "/first");
+    f.write("inc/a.svh", "class id_sa; endclass\n");
+    f.write("first/a.svh", "class id_sfirst; endclass\n");
+    const std::string top = "package id_p;\n`include \"a.svh\"\nendpackage\n";
+    const std::string topPath = f.write("top.sv", top);
+    ProjectConfig config;
+    config.includeDirs = {f.dir + "/inc"};
+    f.compileHit(topPath, top, &config);
+    config.includeDirs.insert(config.includeDirs.begin(), f.dir + "/first");
+    CHECK_FALSE(f.compileHit(topPath, top, &config));
+    CHECK(f.has("id_sfirst"));
+}
+
+TEST_CASE("a change of the config's defines misses the cache", "[db][ctrl][file-identity]") {
+    IdentityFixture f("defines");
+    const std::string top = "`ifdef ID_SIM\nmodule id_sim_only; endmodule\n`endif\n";
+    const std::string topPath = f.write("top.sv", top);
+    ProjectConfig config;
+    f.compileHit(topPath, top, &config);
+    CHECK(f.compileHit(topPath, top, &config));
+    config.defines["ID_SIM"] = "";
+    CHECK_FALSE(f.compileHit(topPath, top, &config));
+    CHECK(f.has("id_sim_only"));
+}
+
+TEST_CASE("the files table records every file's identity", "[db][ctrl][file-identity]") {
+    IdentityFixture f("records");
+    const std::string incText = "class id_rec; endclass\n";
+    const std::string inc = f.write("a.svh", incText);
+    const std::string top = "package id_p;\n`include \"a.svh\"\nendpackage\n";
+    const std::string topPath = f.write("top.sv", top);
+    f.compileHit(topPath, top);
+
+    const auto incRow = f.sdb.storedFile(inc);
+    REQUIRE(incRow);
+    CHECK(incRow->hash == contentHash(incText));
+    CHECK(incRow->size == static_cast<int64_t>(incText.size()));
+    CHECK(incRow->mtimeNs == statFile(inc)->mtimeNs);
+    CHECK(incRow->inputsFp.empty()); // not compiled on its own
+
+    const auto topRow = f.sdb.storedFile(topPath);
+    REQUIRE(topRow);
+    CHECK(topRow->hash == contentHash(top));
+    CHECK(topRow->size == static_cast<int64_t>(top.size())); // the text is the file's
+    CHECK(!topRow->inputsFp.empty());
+
+    // A buffer that differs from the file on disk has no stat data: the
+    // disk's says nothing about it.
+    f.compileHit(topPath, top + "// unsaved\n");
+    CHECK(f.sdb.storedFile(topPath)->size == -1);
+}
+
+TEST_CASE("an included file changed within its mtime granularity is re-hashed",
+          "[db][ctrl][file-identity]") {
+    // Same size, mtime put back: the stat matches. It was written just
+    // before the compile recorded it, so the stat can't be trusted (git's
+    // "racy" case) and the content is hashed again.
+    IdentityFixture f("racy");
+    const std::string inc = f.write("a.svh", "class id_r1; endclass\n");
+    const std::string top = "package id_p;\n`include \"a.svh\"\nendpackage\n";
+    const std::string topPath = f.write("top.sv", top);
+    f.compileHit(topPath, top);
+    const auto mtime = fs::last_write_time(inc);
+    f.write("a.svh", "class id_r2; endclass\n");
+    fs::last_write_time(inc, mtime);
+    CHECK_FALSE(f.compileHit(topPath, top));
+    CHECK(f.has("id_r2"));
+}
+
+TEST_CASE("an included file whose stat matches and isn't recent is trusted unread",
+          "[db][ctrl][file-identity]") {
+    // The stat shortcut, pinned: a file older than the granularity whose
+    // size and mtime match is not read. (A tool that rewrites content and
+    // restores the mtime defeats it, as it does git.)
+    IdentityFixture f("trusted");
+    const std::string inc = f.write("a.svh", "class id_t1; endclass\n");
+    ageFile(inc, 3600);
+    const std::string top = "package id_p;\n`include \"a.svh\"\nendpackage\n";
+    const std::string topPath = f.write("top.sv", top);
+    f.compileHit(topPath, top);
+    const auto mtime = fs::last_write_time(inc);
+    f.write("a.svh", "class id_t2; endclass\n");
+    fs::last_write_time(inc, mtime);
+    CHECK(f.compileHit(topPath, top));
+    CHECK(f.has("id_t1"));
 }

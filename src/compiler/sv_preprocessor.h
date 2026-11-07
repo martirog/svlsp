@@ -2,6 +2,7 @@
 #include "compiler/parse_record.h"
 #include <iosfwd>
 #include <optional>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -20,11 +21,46 @@ struct MacroRecord {
 
 // Where an `include pulled a file in: the directive's file (empty = the
 // compiled file) and 1-based line. One per `include resolved, in order.
+// One per file the preprocessor read, at its first `include.
 struct IncludeSite {
     std::string file;      // the included file, as ParseRecord::file names it
     std::string includer;  // the file holding the `include; empty = the compiled file
     int         line{0};
+    // The identity of the file as read (plan.md §6.34 S1): the content
+    // hash of the text read, and size / mtime from a stat taken before
+    // reading, at `statNs`. A change after the stat moves the mtime, so a
+    // later check that finds the same stat data saw the same content
+    // unless the change came within the mtime's granularity of `statNs`.
+    std::string hash{};
+    int64_t     size{-1};
+    int64_t     mtimeNs{0};
+    int64_t     statNs{0};
 };
+
+// One `include directive (plan.md §6.34 S1): the name as written, the file
+// it is written in (resolution starts beside it; the compiled file's own
+// path for its own directives), and the file it named -- "" when none was
+// found. A compile's result depends on each resolving the same way again,
+// which is what lets it ignore the include-dir list itself.
+struct IncludeDirective {
+    std::string name;
+    std::string fromFile;
+    std::string resolved;
+};
+
+// The file `include "name" names, written in `currentFile`: an absolute
+// name as is, else the first `currentFile`'s directory, then `includeDirs`
+// in order, holds -- normalized. Never the working directory. "" if none.
+std::string resolveInclude(const std::string& name, const std::string& currentFile,
+                           const std::vector<std::string>& includeDirs);
+
+// Every error about an `include the preprocessor couldn't follow (not
+// found, not readable, a cycle, too deep) starts with this. A name not
+// found is an IncludeDirective with no resolution; any other failure
+// means the result depends on something not recorded, so it is never
+// reused.
+inline constexpr const char* kIncludeErrorPrefix = "`include: ";
+inline constexpr const char* kIncludeNotFound = "`include: cannot find ";
 
 struct PreprocessorResult {
     std::string source;
@@ -32,6 +68,7 @@ struct PreprocessorResult {
     std::vector<MacroRecord> macros;     // all `define macros encountered in active branches
     std::vector<SourceLine>  sourceMap;  // one entry per output line; index = line - 1
     std::vector<IncludeSite> includeSites;
+    std::vector<IncludeDirective> includeDirectives; // distinct (fromFile, name), in order
 };
 
 // Pass 2 of the two-pass SV preprocessing pipeline.

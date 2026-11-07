@@ -1,5 +1,6 @@
 #include "db/compilation_controller.h"
 #include "compiler/compiler_directive_stripper.h"
+#include "compiler/content_hash.h"
 #include "compiler/file_utils.h"
 #include "compiler/sv_preprocessor.h"
 #include "compiler/sv_tree_walker.h"
@@ -86,6 +87,139 @@ std::vector<ParseError> contextDiagnostics(const SymbolDatabase& sdb, const std:
     return {{1, 0, msg, {}, 3}};
 }
 
+// --- File identity (plan.md §6.34 S1) ------------------------------------
+
+// A stat taken this close after a file's mtime can't tell a later write in
+// the same mtime tick from no write at all (git's "racy" case). The window
+// is wide enough for coarse clocks and filesystems with 2 s mtimes.
+constexpr int64_t kRacyWindowNs = 2'000'000'000;
+
+// `path`'s current content hash: the stored one when its stat data still
+// matches and wasn't taken racily close to its mtime, else the hash of its
+// text read now. nullopt if it can't be read (gone).
+std::optional<std::string> currentHash(const SymbolDatabase& sdb, const std::string& path)
+{
+    const auto stored = sdb.storedFile(path);
+    const auto st = statFile(path);
+    if (!st) return std::nullopt;
+    if (stored && stored->size >= 0 && stored->size == st->size &&
+        stored->mtimeNs == st->mtimeNs && stored->mtimeNs + kRacyWindowNs < stored->statNs)
+        return stored->hash;
+    auto text = readFile(path);
+    if (!text) return std::nullopt;
+    return contentHash(*text);
+}
+
+// Appends a length-prefixed field, so no two field lists hash alike.
+void addField(std::string& key, const std::string& field)
+{
+    key += std::to_string(field.size());
+    key += ':';
+    key += field;
+}
+
+// Everything a compile's result depends on besides its files' contents
+// and its includes' resolution: the config's parse-affecting settings and
+// the checks that run. A change of any of them makes every unit compiled
+// under it miss the cache. The include dirs are not part of it: they
+// matter only through what each `include resolves to, which is checked
+// directive by directive (inputsUnchanged), so a branch that adds an
+// include dir doesn't recompile the units that don't include from it.
+std::string configKey(const ProjectConfig* config, bool collectDocs, bool calleeCheck,
+                      bool typeCheck)
+{
+    std::string key = "svlsp-inputs-v1";
+    addField(key, config ? "config" : "no-config");
+    addField(key, collectDocs ? "docs" : "no-docs");
+    addField(key, calleeCheck ? "callees" : "no-callees");
+    addField(key, typeCheck && config ? "types" : "no-types");
+    if (!config) return key;
+    for (const auto& [name, value] : config->defines) {  // a std::map: sorted
+        addField(key, name);
+        addField(key, value);
+    }
+    addField(key, "|-y");
+    for (const auto& d : config->libraryDirs) addField(key, d);
+    addField(key, "|-v");
+    for (const auto& f : config->libraryFiles) addField(key, f);
+    addField(key, "|libext");
+    for (const auto& e : config->libExtensions) addField(key, e);
+    addField(key, config->mode == SvLanguageMode::Verilog95 ? "v95" : "sv");
+    return key;
+}
+
+// The include context a file compiled on its own starts from: the scope at
+// its `include and the includer's macros (prepare()).
+void addContext(std::string& key, const std::optional<IncludeSiteRow>& context,
+                const std::vector<MacroRow>& macros)
+{
+    addField(key, "|context");
+    if (!context) return;
+    addField(key, context->scope);
+    addField(key, context->includerPath);
+    addField(key, std::to_string(context->line));
+    for (const auto& m : macros) {
+        addField(key, m.name);
+        addField(key, m.isFunctionLike ? "f" : "o");
+        for (size_t i = 0; i < m.params.size(); ++i) {
+            addField(key, m.params[i]);
+            addField(key, i < m.defaults.size() && m.defaults[i] ? "=" + *m.defaults[i] : "");
+        }
+        addField(key, m.body);
+        addField(key, m.filePath);
+    }
+}
+
+// The fingerprint of a compile: its inputs key, the primary text's hash,
+// and each file it read with its hash, by path.
+std::string unitFingerprint(const std::string& inputsKey, const std::string& primaryHash,
+                            std::vector<std::pair<std::string, std::string>> files)
+{
+    std::sort(files.begin(), files.end());
+    std::string key = inputsKey;
+    addField(key, primaryHash);
+    for (const auto& [path, hash] : files) {
+        addField(key, path);
+        addField(key, hash);
+    }
+    return contentHash(key);
+}
+
+// Whether the stored fingerprint of `path` still describes its inputs, with
+// its primary text hashing to `primaryHash` under `inputsKey`: every
+// `include its last compile followed resolves to the same file with
+// `includeDirs` (a missing one is still missing), and every file it read
+// is unchanged.
+bool inputsUnchanged(const SymbolDatabase& sdb, const std::string& path,
+                     const std::string& primaryHash, const std::string& inputsKey,
+                     const std::vector<std::string>& includeDirs)
+{
+    const auto stored = sdb.storedFile(path);
+    if (!stored || stored->inputsFp.empty()) return false;
+    for (const auto& d : sdb.includeDirectivesOf(path))
+        if (resolveInclude(d.name, d.fromFile, includeDirs) != d.resolved) return false;
+    std::vector<std::pair<std::string, std::string>> files;
+    for (const auto& inc : sdb.includedFilesOf(path)) {
+        auto hash = currentHash(sdb, inc);
+        if (!hash) return false;
+        files.emplace_back(inc, std::move(*hash));
+    }
+    return unitFingerprint(inputsKey, primaryHash, std::move(files)) == stored->inputsFp;
+}
+
+// Whether a compile's preprocessing failed to follow an `include for a
+// reason other than a name not found (an IncludeDirective records that):
+// a cycle, the depth limit, an unreadable file. Its result depends on
+// something not recorded, so it is never reused.
+bool includeFailed(const PreprocessorResult& preprocessed)
+{
+    return std::any_of(preprocessed.errors.begin(), preprocessed.errors.end(),
+                       [](const std::string& e) {
+                           return e.rfind(kIncludeErrorPrefix, 0) == 0 &&
+                                  e.rfind(kIncludeNotFound, 0) != 0;
+                       });
+}
+
 } // namespace
 
 CompilationController::CompilationController(SymbolDatabase& sdb, std::ostream* logStream)
@@ -103,10 +237,7 @@ WalkResult CompilationController::walk(const std::string& source,
 
 std::string CompilationController::hashContent(const std::string& text)
 {
-    // std::hash gives a fast content fingerprint suitable for within-session
-    // change detection.  Phase 5.4 upgrade path: replace with SHA-256 for
-    // persistence across restarts.
-    return std::to_string(std::hash<std::string>{}(text));
+    return contentHash(text);
 }
 
 std::vector<ParseError> CompilationController::compile(const std::string& path,
@@ -132,12 +263,25 @@ CompilationController::Prepared CompilationController::prepare(const std::string
                  .preprocessor = config ? SvPreprocessor(config->includeDirs) : SvPreprocessor()};
     job.checkTypes = config != nullptr;
 
-    // Cache hit: return diagnostics from DB without re-parsing. Included
+    // An included file compiled on its own (opened or edited) starts where
+    // its includer left off: in the scope open at its `include, with the
+    // macros its includer's unit defines -- so its records are scoped as
+    // when the includer is compiled (`uvm_pkg::uvm_component`, not
+    // `uvm_component`).
+    const auto context = m_sdb.includeContextOf(path);
+    std::vector<MacroRow> contextMacros;
+    if (context) contextMacros = m_sdb.macrosOfUnit(*context, path);
+    job.inputsKey = configKey(config, m_collectDocs, bool(m_calleeResolver), bool(m_typeChecker));
+    addContext(job.inputsKey, context, contextMacros);
+
+    // Cache hit: return diagnostics from DB without re-parsing, when every
+    // input of the last compile is unchanged (plan.md §6.34 S1): this text,
+    // each file it read, the config and the include context. Included
     // files aren't reported here -- see compile()'s own doc comment.
-    // `forceRecompile` skips this shortcut unconditionally (plan.md §6.4) --
-    // needed when `path`'s own text is unchanged but something it
-    // `` `include ``s just did.
-    if (!forceRecompile && m_sdb.getFileHash(path) == job.hash) {
+    // `forceRecompile` skips this shortcut unconditionally (plan.md §6.4).
+    static const std::vector<std::string> kNoDirs;
+    if (!forceRecompile && inputsUnchanged(m_sdb, path, job.hash, job.inputsKey,
+                                           config ? config->includeDirs : kNoDirs)) {
         if (m_log) { *m_log << "[parsed] " << path << " (cached)\n"; m_log->flush(); }
         auto rows = m_sdb.diagnosticsForFile(path);
         std::vector<ParseError> errs;
@@ -154,15 +298,8 @@ CompilationController::Prepared CompilationController::prepare(const std::string
     if (config) {
         for (const auto& [name, value] : config->defines) job.preprocessor.define(name, value);
     }
-
-    // An included file compiled on its own (opened or edited) starts where
-    // its includer left off: in the scope open at its `include, with the
-    // macros its includer's unit defines -- so its records are scoped as
-    // when the includer is compiled (`uvm_pkg::uvm_component`, not
-    // `uvm_component`).
-    const auto context = m_sdb.includeContextOf(path);
     if (context) {
-        for (const auto& m : m_sdb.macrosOfUnit(*context, path))
+        for (const auto& m : contextMacros)
             job.preprocessor.define(MacroRecord{m.name, m.body, m.line, m.col, m.filePath,
                                                 m.isFunctionLike, m.params, m.defaults});
         if (m_log) {
@@ -177,6 +314,17 @@ CompilationController::Prepared CompilationController::prepare(const std::string
 
 CompilationController::Parsed CompilationController::parse(Prepared&& job) const
 {
+    // The primary file's stat data, when the text compiled is the file's
+    // (not an unsaved buffer): stat first, as the preprocessor does for the
+    // files it reads.
+    const int64_t statNs = nowNs();
+    SymbolDatabase::StoredFile primary{job.hash, -1, 0, 0, ""};
+    if (const auto st = statFile(job.path);
+        st && st->size == static_cast<int64_t>(job.text.size())) {
+        if (const auto disk = readFile(job.path); disk && *disk == job.text)
+            primary = {job.hash, st->size, st->mtimeNs, statNs, ""};
+    }
+
     auto stripped = CompilerDirectiveStripper::strip(job.text, job.path);
     auto preprocessed = job.preprocessor.process(stripped.source, job.path, m_log);
     auto walked = walk(preprocessed.source, preprocessed.sourceMap, m_collectDocs,
@@ -184,7 +332,8 @@ CompilationController::Parsed CompilationController::parse(Prepared&& job) const
     if (!m_collectDocs)
         for (auto& mac : preprocessed.macros) mac.doc.clear();
     return {std::move(job.path), std::move(job.text), std::move(job.hash),
-            std::move(preprocessed), std::move(walked), job.checkTypes};
+            std::move(preprocessed), std::move(walked), job.checkTypes,
+            std::move(job.inputsKey), std::move(primary)};
 }
 
 std::vector<ParseError> CompilationController::commit(Parsed&& parsed,
@@ -314,7 +463,24 @@ std::vector<ParseError> CompilationController::commit(Parsed&& parsed,
     // Always persisted (plan.md §6.4), independent of whether a caller asked
     // for `includedFiles` -- this is what lets a *different* file's own
     // didSave later find "who includes me" via SymbolDatabase::includersOf.
-    m_sdb.replaceFileIncludes(fid, allIncluded);
+    // Every file this compile read, also one with no rows of its own (a
+    // wrapper of `include's): an edit to it changes the unit too (plan.md
+    // §6.34 S1). A file the unit no longer reads, and no other unit does,
+    // loses the rows this unit's last compile wrote for it.
+    std::vector<std::string> readFiles;
+    for (const auto& s : preprocessed.includeSites) {
+        if (s.file == path) continue;
+        if (m_sdb.fileIdFor(s.file) < 0) m_sdb.upsertFile(s.file, "");
+        readFiles.push_back(s.file);
+    }
+    const auto previouslyRead = m_sdb.includedFilesOf(path);
+    m_sdb.replaceFileIncludes(fid, readFiles);
+    m_sdb.replaceIncludeDirectives(fid, preprocessed.includeDirectives);
+    for (const auto& old : previouslyRead) {
+        if (std::find(readFiles.begin(), readFiles.end(), old) != readFiles.end()) continue;
+        if (!m_sdb.includersOf(old).empty()) continue;
+        m_sdb.clearFileRows(m_sdb.fileIdFor(old));
+    }
 
     // Where this compile included each file (schema v16), the first
     // `include of it. The walker gives a file with no tokens of its own
@@ -347,6 +513,26 @@ std::vector<ParseError> CompilationController::commit(Parsed&& parsed,
     const std::vector<ParseError> primaryTypeDiags =
         parsed.checkTypes ? checkTypeRefs(parsed, fid, allIncluded) : std::vector<ParseError>{};
     refreshTypeRefDiagnostics(fid, allIncluded, refreshedFiles);
+
+    // Each file's identity as this compile read it (plan.md §6.34 S1), last:
+    // the steps above may add rows for these files. An included file's rows
+    // now come from this compile, so a fingerprint of its own is cleared --
+    // compiled on its own next, it misses the cache. The primary's
+    // fingerprint is what a later prepare() compares; none when an
+    // `include failed, as the result then depends on a file this compile
+    // couldn't name.
+    std::vector<std::pair<std::string, std::string>> readHashes;
+    for (const auto& s : preprocessed.includeSites) {
+        if (s.file == path) continue;
+        m_sdb.setFileIdentity(m_sdb.fileIdFor(s.file),
+                              {s.hash, s.size, s.mtimeNs, s.statNs, ""});
+        readHashes.emplace_back(s.file, s.hash);
+    }
+    auto primaryIdentity = parsed.primary;
+    primaryIdentity.inputsFp = includeFailed(preprocessed)
+        ? std::string{}
+        : unitFingerprint(parsed.inputsKey, hash, std::move(readHashes));
+    m_sdb.setFileIdentity(fid, primaryIdentity);
 
     if (includedFiles) *includedFiles = std::move(allIncluded);
 

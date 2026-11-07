@@ -168,7 +168,8 @@ int64_t SymbolDatabase::upsertFile(const std::string& path,
 {
     // Try to update first; if no row affected, insert.
     auto upd = m_db.prepare(
-        "UPDATE files SET content_hash = ?, parsed_at = ? WHERE path = ?");
+        "UPDATE files SET inputs_fp = CASE WHEN content_hash = ?1 THEN inputs_fp ELSE '' END, "
+        "content_hash = ?1, parsed_at = ?2 WHERE path = ?3");
     upd.bind(1, contentHash)
        .bind(2, static_cast<int64_t>(std::time(nullptr)))
        .bind(3, path);
@@ -192,6 +193,40 @@ std::string SymbolDatabase::getFileHash(const std::string& path) const
     stmt.bind(1, path);
     if (stmt.step()) return stmt.columnText(0);
     return {};
+}
+
+std::optional<SymbolDatabase::StoredFile> SymbolDatabase::storedFile(const std::string& path) const
+{
+    auto stmt = m_db.prepare(
+        "SELECT content_hash, size, mtime_ns, stat_ns, inputs_fp FROM files WHERE path = ?");
+    stmt.bind(1, path);
+    if (!stmt.step()) return std::nullopt;
+    return StoredFile{stmt.columnText(0), stmt.columnInt(1), stmt.columnInt(2),
+                      stmt.columnInt(3), stmt.columnText(4)};
+}
+
+void SymbolDatabase::clearFileRows(int64_t fileId)
+{
+    replaceSymbols(fileId, {});
+    replaceImports(fileId, {});
+    replaceInstantiations(fileId, {});
+    replaceMacros(fileId, {});
+    auto del = m_db.prepare("DELETE FROM diagnostics WHERE file_id = ?");
+    del.bind(1, fileId);
+    del.step();
+}
+
+void SymbolDatabase::setFileIdentity(int64_t fileId, const StoredFile& identity)
+{
+    auto stmt = m_db.prepare("UPDATE files SET content_hash = ?, size = ?, mtime_ns = ?, "
+                             "stat_ns = ?, inputs_fp = ? WHERE id = ?");
+    stmt.bind(1, identity.hash)
+        .bind(2, identity.size)
+        .bind(3, identity.mtimeNs)
+        .bind(4, identity.statNs)
+        .bind(5, identity.inputsFp)
+        .bind(6, fileId);
+    stmt.step();
 }
 
 std::vector<std::string> SymbolDatabase::replaceIncludeSites(
@@ -844,6 +879,48 @@ std::vector<std::string> SymbolDatabase::includersOf(const std::string& path) co
     std::vector<std::string> result;
     while (stmt.step())
         result.push_back(stmt.columnText(0));
+    return result;
+}
+
+std::vector<std::string> SymbolDatabase::includedFilesOf(const std::string& path) const
+{
+    auto stmt = m_db.prepare(
+        "SELECT f.path FROM file_includes fi "
+        "JOIN files f ON f.id = fi.included_file_id "
+        "JOIN files p ON p.id = fi.includer_file_id "
+        "WHERE p.path = ? ORDER BY f.path");
+    stmt.bind(1, path);
+    std::vector<std::string> result;
+    while (stmt.step()) result.push_back(stmt.columnText(0));
+    return result;
+}
+
+void SymbolDatabase::replaceIncludeDirectives(int64_t primaryFileId,
+                                              const std::vector<IncludeDirective>& directives)
+{
+    m_db.execute("BEGIN");
+    auto del = m_db.prepare("DELETE FROM include_directives WHERE primary_file_id = ?");
+    del.bind(1, primaryFileId);
+    del.step();
+    auto ins = m_db.prepare("INSERT INTO include_directives "
+                            "(primary_file_id, from_path, name, resolved) VALUES (?,?,?,?)");
+    for (const auto& d : directives) {
+        ins.reset();
+        ins.bind(1, primaryFileId).bind(2, d.fromFile).bind(3, d.name).bind(4, d.resolved);
+        ins.step();
+    }
+    m_db.execute("COMMIT");
+}
+
+std::vector<IncludeDirective> SymbolDatabase::includeDirectivesOf(const std::string& path) const
+{
+    auto stmt = m_db.prepare("SELECT d.name, d.from_path, d.resolved FROM include_directives d "
+                             "JOIN files p ON p.id = d.primary_file_id "
+                             "WHERE p.path = ? ORDER BY d.rowid");
+    stmt.bind(1, path);
+    std::vector<IncludeDirective> result;
+    while (stmt.step())
+        result.push_back({stmt.columnText(0), stmt.columnText(1), stmt.columnText(2)});
     return result;
 }
 

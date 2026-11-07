@@ -4,7 +4,7 @@ namespace db {
 
 // Current schema version.  Increment and add a migration in Database::initSchema
 // whenever the schema changes.
-inline constexpr int SCHEMA_VERSION = 16;
+inline constexpr int SCHEMA_VERSION = 17;
 
 // DDL executed on a fresh (version-0) database — always reflects the latest schema.
 inline constexpr const char* SCHEMA_DDL = R"sql(
@@ -12,11 +12,22 @@ CREATE TABLE schema_version (
     version INTEGER NOT NULL
 );
 
+-- A file's identity (schema v17, plan.md §6.34 S1): content_hash is the
+-- SHA-256 of the text last compiled for it (an included file: as read from
+-- disk). size and mtime_ns are its stat data taken at stat_ns just before
+-- that text was read (size -1: none -- the text was an unsaved buffer, or
+-- the row predates v17). inputs_fp is set on a file compiled on its own:
+-- the fingerprint of everything that compile's result depends on, cleared
+-- when another compile rewrites its rows.
 CREATE TABLE files (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     path         TEXT    NOT NULL UNIQUE,
     content_hash TEXT    NOT NULL,
-    parsed_at    INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+    parsed_at    INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+    size         INTEGER NOT NULL DEFAULT -1,
+    mtime_ns     INTEGER NOT NULL DEFAULT 0,
+    stat_ns      INTEGER NOT NULL DEFAULT 0,
+    inputs_fp    TEXT    NOT NULL DEFAULT ''
 );
 
 -- `access` is a class member's access qualifier: 'local', 'protected' or ''
@@ -128,6 +139,19 @@ CREATE TABLE library_build_info (
     svlsp_version TEXT    NOT NULL
 );
 
+-- Each `include directive a compile of primary_file_id followed (schema
+-- v17, plan.md §6.34 S1): the name as written, the file it is written in,
+-- and the file it resolved to ('' = not found). The compile's result is
+-- reused only while each still resolves the same way.
+CREATE TABLE include_directives (
+    primary_file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    from_path       TEXT    NOT NULL,
+    name            TEXT    NOT NULL,
+    resolved        TEXT    NOT NULL
+);
+
+CREATE INDEX idx_include_directives_primary ON include_directives(primary_file_id);
+
 -- One row per (includer, included) pair: `includer_file_id`'s own compiled
 -- unit transitively `` `include ``s `included_file_id`'s text (plan.md
 -- §6.4). Populated by CompilationController::compile on every real recompile
@@ -197,6 +221,24 @@ CREATE TABLE symbol_docs (
     doc     TEXT    NOT NULL,
     PRIMARY KEY (file_id, line, col)
 ) WITHOUT ROWID;
+)sql";
+
+// SQL applied when migrating an existing v16 database to v17: the files'
+// identity columns. Existing rows get none, so their next check re-reads
+// them and their next compile misses the cache.
+inline constexpr const char* MIGRATION_V16_TO_V17 = R"sql(
+ALTER TABLE files ADD COLUMN size      INTEGER NOT NULL DEFAULT -1;
+ALTER TABLE files ADD COLUMN mtime_ns  INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE files ADD COLUMN stat_ns   INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE files ADD COLUMN inputs_fp TEXT    NOT NULL DEFAULT '';
+CREATE TABLE IF NOT EXISTS include_directives (
+    primary_file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    from_path       TEXT    NOT NULL,
+    name            TEXT    NOT NULL,
+    resolved        TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_include_directives_primary ON include_directives(primary_file_id);
+UPDATE schema_version SET version = 17;
 )sql";
 
 // SQL applied when migrating an existing v15 database to v16 (with

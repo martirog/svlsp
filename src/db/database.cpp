@@ -1,4 +1,5 @@
 #include "db/database.h"
+#include <algorithm>
 #include "db/schema.h"
 #include <sqlite3.h>
 
@@ -110,6 +111,14 @@ void Database::initSchema()
                            "WHERE name = 'severity'");
         if (!col.step()) execute(db::MIGRATION_V16_SEVERITY);
         execute(db::MIGRATION_V15_TO_V16);
+    }
+    // The v16 repair above may have set the version back to 16.
+    v = std::min(v, schemaVersion());
+    if (v < 17) {
+        // Same guard as v12.
+        auto col = prepare("SELECT 1 FROM pragma_table_info('files') WHERE name = 'inputs_fp'");
+        execute(col.step() ? "UPDATE schema_version SET version = 17;"
+                           : db::MIGRATION_V16_TO_V17);
     }
 }
 

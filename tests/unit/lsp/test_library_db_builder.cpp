@@ -373,6 +373,28 @@ TEST_CASE("LibraryDbBuilder: re-building with the same currentVersion reuses the
     CHECK(sdb.findSymbolsByName("top_mod").size() == 0);
 }
 
+// plan.md §6.34 S0 found this: a rerun hit the cache on the unchanged
+// primary file and kept an edited included file's old rows.
+TEST_CASE("LibraryDbBuilder: re-building after an included file changed picks the change up",
+          "[lsp][library-db-builder][file-identity]")
+{
+    std::string root = kRoot + "/included-file-changed";
+    writeFile(root + "/top.sv", "package rb_p;\n`include \"a.svh\"\nendpackage\n");
+    writeFile(root + "/a.svh", "class rb_old; endclass\n");
+    writeFile(root + "/proj.f", "top.sv\n");
+    std::string dbPath = root + "/out.db";
+    fs::remove(dbPath);
+
+    REQUIRE(LibraryDbBuilder::build(root + "/proj.f", dbPath, nullptr, "v1").ok);
+    writeFile(root + "/a.svh", "class rb_new_name; endclass\n");
+    REQUIRE(LibraryDbBuilder::build(root + "/proj.f", dbPath, nullptr, "v1").ok);
+
+    Database db(dbPath);
+    SymbolDatabase sdb(db);
+    CHECK(sdb.findSymbolsByName("rb_new_name").size() == 1);
+    CHECK(sdb.findSymbolsByName("rb_old").empty());
+}
+
 TEST_CASE("LibraryDbBuilder: re-building with a different currentVersion discards the "
           "stale per-file content-hash cache",
           "[lsp][library-db-builder][built-by-version]")

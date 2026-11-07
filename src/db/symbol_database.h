@@ -184,11 +184,35 @@ public:
     void resetAllFiles();
 
     // Insert or update the file record for `path`, recording `contentHash`.
-    // Returns the file_id (stable across calls for the same path).
+    // Returns the file_id (stable across calls for the same path). A
+    // changed hash clears the row's inputs_fp: its rows no longer come from
+    // the compile that fingerprint describes.
     int64_t upsertFile(const std::string& path, const std::string& contentHash);
 
     // Return the stored content hash for `path`, or "" if the file is unknown.
     std::string getFileHash(const std::string& path) const;
+
+    // A file's recorded identity (schema v17, plan.md §6.34 S1).
+    struct StoredFile {
+        std::string hash;
+        int64_t     size{-1};    // -1: no stat data
+        int64_t     mtimeNs{0};
+        int64_t     statNs{0};   // when size / mtime were taken
+        std::string inputsFp;    // "" unless compiled on its own, unchanged since
+    };
+    std::optional<StoredFile> storedFile(const std::string& path) const;
+
+    // `path`'s file_id, or -1 if unknown.
+    int64_t fileIdFor(const std::string& path) const;
+
+    // Records file `fileId`'s identity and inputs fingerprint.
+    void setFileIdentity(int64_t fileId, const StoredFile& identity);
+
+    // Deletes the rows a compile wrote for file `fileId` -- symbols (and
+    // their docs), diagnostics of every source, imports, instantiations,
+    // macros -- keeping its `files` row. For a file a unit no longer
+    // includes and no other unit does (plan.md §6.34 S1).
+    void clearFileRows(int64_t fileId);
 
     // Replaces the include sites recorded by `primaryFileId`'s compile
     // (schema v16): one per included file, the first `include of it.
@@ -341,6 +365,17 @@ public:
     // recompile when `path` itself changes (plan.md §6.4). {} if nothing
     // includes `path`, or `path` is unknown.
     std::vector<std::string> includersOf(const std::string& path) const;
+
+    // The files `path`'s own compiled unit includes (replaceFileIncludes'
+    // list for it), sorted. {} if none, or `path` is unknown.
+    std::vector<std::string> includedFilesOf(const std::string& path) const;
+
+    // The `include directives the last compile of `primaryFileId` followed
+    // (schema v17, plan.md §6.34 S1), replacing the previous ones.
+    void replaceIncludeDirectives(int64_t primaryFileId,
+                                  const std::vector<IncludeDirective>& directives);
+    // Those of `path`'s last compile, in order. {} if none or unknown.
+    std::vector<IncludeDirective> includeDirectivesOf(const std::string& path) const;
 
     // LSP query helpers (used by Phase-6 feature providers).
     std::vector<SymbolRow>     symbolsForFile(const std::string& path) const;
@@ -495,7 +530,6 @@ private:
                                       const std::string& bindValue) const;
     static MacroRow macroRowFromStmt(Database::Statement& stmt);
 
-    int64_t fileIdFor(const std::string& path) const;
     std::vector<ImportRow> importsForFileId(int64_t fileId) const;
 
     // The file_id of the file that declares top-level package `pkgName`,
