@@ -31,6 +31,10 @@ public:
     ~TimedLock()
     {
         if (m_log) {
+            // Requests on the reader connection (plan.md §6.34 S5) log under
+            // another mutex than compiles: one line at a time.
+            static std::mutex logMutex;
+            std::lock_guard logLock{logMutex};
             const auto done = Clock::now();
             auto ms = [](Clock::duration d) {
                 return std::chrono::duration<double, std::milli>(d).count();

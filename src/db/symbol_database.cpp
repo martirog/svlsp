@@ -249,7 +249,7 @@ std::vector<std::string> SymbolDatabase::replaceIncludeSites(
         const int64_t id = fileIdFor(p);
         return id >= 0 ? id : upsertFile(p, "");
     };
-    m_db.execute("BEGIN");
+    m_db.execute("SAVEPOINT sdb");
     auto del = m_db.prepare("DELETE FROM include_sites WHERE primary_file_id = ?");
     del.bind(1, primaryFileId);
     del.step();
@@ -266,7 +266,7 @@ std::vector<std::string> SymbolDatabase::replaceIncludeSites(
            .bind(5, s.scope);
         ins.step();
     }
-    m_db.execute("COMMIT");
+    m_db.execute("RELEASE sdb");
     return previous;
 }
 
@@ -410,7 +410,7 @@ std::vector<std::string> SymbolDatabase::libraryFilePaths() const
 void SymbolDatabase::replaceSymbols(int64_t fileId,
                                     const std::vector<ParseRecord>& records)
 {
-    m_db.execute("BEGIN");
+    m_db.execute("SAVEPOINT sdb");
     auto del = m_db.prepare("DELETE FROM symbols WHERE file_id = ?");
     del.bind(1, fileId);
     del.step();
@@ -446,7 +446,7 @@ void SymbolDatabase::replaceSymbols(int64_t fileId,
         insDoc.bind(1, fileId).bind(2, r.line).bind(3, r.column).bind(4, r.doc);
         insDoc.step();
     }
-    m_db.execute("COMMIT");
+    m_db.execute("RELEASE sdb");
 }
 
 std::string SymbolDatabase::docFor(const SymbolRow& sym) const
@@ -490,7 +490,7 @@ void SymbolDatabase::replaceDiagnostics(int64_t fileId,
                                         const std::vector<ParseError>& errors,
                                         const std::string& source)
 {
-    m_db.execute("BEGIN");
+    m_db.execute("SAVEPOINT sdb");
     auto del = m_db.prepare("DELETE FROM diagnostics WHERE file_id = ? AND source = ?");
     del.bind(1, fileId).bind(2, source);
     del.step();
@@ -508,13 +508,13 @@ void SymbolDatabase::replaceDiagnostics(int64_t fileId,
            .bind(6, e.severity);
         ins.step();
     }
-    m_db.execute("COMMIT");
+    m_db.execute("RELEASE sdb");
 }
 
 void SymbolDatabase::replaceImports(int64_t fileId,
                                     const std::vector<ImportRecord>& imports)
 {
-    m_db.execute("BEGIN");
+    m_db.execute("SAVEPOINT sdb");
     auto del = m_db.prepare("DELETE FROM imports WHERE file_id = ?");
     del.bind(1, fileId);
     del.step();
@@ -530,7 +530,7 @@ void SymbolDatabase::replaceImports(int64_t fileId,
            .bind(5, imp.scope);
         ins.step();
     }
-    m_db.execute("COMMIT");
+    m_db.execute("RELEASE sdb");
 }
 
 namespace {
@@ -551,7 +551,7 @@ std::string likePrefixPattern(const std::string& prefix)
 
 void SymbolDatabase::replaceMacros(int64_t fileId, const std::vector<MacroRecord>& macros)
 {
-    m_db.execute("BEGIN");
+    m_db.execute("SAVEPOINT sdb");
     auto del = m_db.prepare("DELETE FROM macros WHERE file_id = ?");
     del.bind(1, fileId);
     del.step();
@@ -577,7 +577,7 @@ void SymbolDatabase::replaceMacros(int64_t fileId, const std::vector<MacroRecord
            .bind(8, m.doc);
         ins.step();
     }
-    m_db.execute("COMMIT");
+    m_db.execute("RELEASE sdb");
 }
 
 std::vector<MacroRow> SymbolDatabase::findMacros(const std::string& name) const
@@ -694,7 +694,7 @@ std::vector<ImportRow> SymbolDatabase::importsForFileId(int64_t fileId) const
 void SymbolDatabase::replaceInstantiations(int64_t fileId,
                                            const std::vector<InstantiationRecord>& insts)
 {
-    m_db.execute("BEGIN");
+    m_db.execute("SAVEPOINT sdb");
     auto del = m_db.prepare("DELETE FROM instantiations WHERE file_id = ?");
     del.bind(1, fileId);
     del.step();
@@ -709,7 +709,7 @@ void SymbolDatabase::replaceInstantiations(int64_t fileId,
            .bind(4, inst.line);
         ins.step();
     }
-    m_db.execute("COMMIT");
+    m_db.execute("RELEASE sdb");
 }
 
 std::vector<std::string> SymbolDatabase::unresolvedInstantiatedTypeNames() const
@@ -742,7 +742,7 @@ std::vector<InstantiationRow> SymbolDatabase::instantiationsOfType(
 void SymbolDatabase::appendDiagnostics(int64_t fileId, const std::vector<ParseError>& extra,
                                        const std::string& source, const std::string& subject)
 {
-    m_db.execute("BEGIN");
+    m_db.execute("SAVEPOINT sdb");
     auto ins = m_db.prepare("INSERT INTO diagnostics "
                             "(file_id,line,col,message,source,subject,severity) "
                             "VALUES (?,?,?,?,?,?,?)");
@@ -757,7 +757,7 @@ void SymbolDatabase::appendDiagnostics(int64_t fileId, const std::vector<ParseEr
            .bind(7, e.severity);
         ins.step();
     }
-    m_db.execute("COMMIT");
+    m_db.execute("RELEASE sdb");
 }
 
 void SymbolDatabase::clearDiagnostics(const std::string& source)
@@ -815,7 +815,7 @@ std::vector<ParseError> SymbolDatabase::refreshLibraryDiagnostics(int64_t fileId
     }
     if (tagged.empty()) return {};
 
-    m_db.execute("BEGIN");
+    m_db.execute("SAVEPOINT sdb");
     auto del = m_db.prepare("DELETE FROM diagnostics WHERE file_id = ? AND source = 'library'");
     del.bind(1, fileId);
     del.step();
@@ -841,14 +841,14 @@ std::vector<ParseError> SymbolDatabase::refreshLibraryDiagnostics(int64_t fileId
             kept.push_back({line, 0, message});
         }
     }
-    m_db.execute("COMMIT");
+    m_db.execute("RELEASE sdb");
     return kept;
 }
 
 void SymbolDatabase::replaceFileIncludes(int64_t fileId,
                                          const std::vector<std::string>& includedPaths)
 {
-    m_db.execute("BEGIN");
+    m_db.execute("SAVEPOINT sdb");
     auto del = m_db.prepare("DELETE FROM file_includes WHERE includer_file_id = ?");
     del.bind(1, fileId);
     del.step();
@@ -863,7 +863,7 @@ void SymbolDatabase::replaceFileIncludes(int64_t fileId,
            .bind(2, includedId);
         ins.step();
     }
-    m_db.execute("COMMIT");
+    m_db.execute("RELEASE sdb");
 }
 
 std::vector<std::string> SymbolDatabase::includersOf(const std::string& path) const
@@ -899,7 +899,7 @@ std::vector<std::string> SymbolDatabase::includedFilesOf(const std::string& path
 void SymbolDatabase::replaceIncludeDirectives(int64_t primaryFileId,
                                               const std::vector<IncludeDirective>& directives)
 {
-    m_db.execute("BEGIN");
+    m_db.execute("SAVEPOINT sdb");
     auto del = m_db.prepare("DELETE FROM include_directives WHERE primary_file_id = ?");
     del.bind(1, primaryFileId);
     del.step();
@@ -910,7 +910,7 @@ void SymbolDatabase::replaceIncludeDirectives(int64_t primaryFileId,
         ins.bind(1, primaryFileId).bind(2, d.fromFile).bind(3, d.name).bind(4, d.resolved);
         ins.step();
     }
-    m_db.execute("COMMIT");
+    m_db.execute("RELEASE sdb");
 }
 
 std::vector<IncludeDirective> SymbolDatabase::includeDirectivesOf(const std::string& path) const

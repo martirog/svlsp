@@ -135,6 +135,7 @@ std::optional<LanguageServer::CompileOutcome> LanguageServer::compileCurrent(
     auto primary = job->cached ? *job->cached
                                : m_compiler.commit(std::move(*parsed), &includedFiles,
                                                    &refreshedFiles);
+    if (!job->cached) ++m_commitGeneration;
     if (ProjectLoad* load = loadOf()) {
         ProjectRefresher::unitCompiled(load->progress, load->plan, path, declarationsBefore,
                                        m_symbolDb);
@@ -177,6 +178,29 @@ void LanguageServer::enqueueCompile(const std::string& path, int rank, bool forc
                  rank);
 }
 
+LanguageServer::Request::Request(LanguageServer& server, const char* what, std::string where)
+    : m_reader{server.m_readerReady.load()}
+    , m_lock{m_reader ? server.m_readMutex : server.m_dataMutex, server.m_requestLog, what,
+             std::move(where)}
+    , m_db{m_reader ? &server.m_readDb : &server.m_symbolDb}
+{
+    if (!m_reader) return;
+    server.syncReader();
+    try {
+        m_db->database().execute("BEGIN");
+    } catch (const std::exception&) {
+    }
+}
+
+LanguageServer::Request::~Request()
+{
+    if (!m_reader) return;
+    try {
+        m_db->database().execute("COMMIT");
+    } catch (const std::exception&) {
+    }
+}
+
 void LanguageServer::awaitCompile(const std::string& path)
 {
     std::lock_guard l{m_awaitMutex};
@@ -203,6 +227,36 @@ bool LanguageServer::awaiting(const lsp::DocumentUri& uri)
 {
     std::lock_guard l{m_awaitMutex};
     return m_awaiting.count(std::string{uri.path()}) > 0 && !m_dbWaiting.load();
+}
+
+void LanguageServer::syncReader()
+{
+    const uint64_t generation = m_commitGeneration.load();
+    if (generation == m_readGeneration) return;
+    std::vector<std::string> attached;
+    {
+        std::lock_guard l{m_readSyncMutex};
+        attached = m_readerAttached;
+    }
+    try {
+        m_readDb.attachLibraryDbs(attached);
+    } catch (const std::exception& e) {
+        std::cerr << "svlsp: reader: " << e.what() << '\n';
+    }
+    m_readDb.clearCaches();
+    m_readGeneration = generation;
+}
+
+void LanguageServer::noteAttached(const std::vector<std::string>& libraryDbs)
+{
+    {
+        std::lock_guard l{m_readSyncMutex};
+        for (const auto& db : libraryDbs)
+            if (std::find(m_readerAttached.begin(), m_readerAttached.end(), db) ==
+                m_readerAttached.end())
+                m_readerAttached.push_back(db);
+    }
+    ++m_commitGeneration;
 }
 
 void LanguageServer::openProjectDb(const std::string& path)
@@ -269,6 +323,23 @@ void LanguageServer::becomeWriter()
     m_symbolDb.connectionChanged();
     m_dbMode = DbMode::Writer;
     m_dbWaiting = false;
+    // The reader (plan.md §6.34 S5). Requests start using it at their next
+    // one; until then they use the writer under m_dataMutex, as here.
+    if (!m_readerReady) {
+        try {
+            m_readConn.reopen(m_dbPath, /*readOnly=*/true);
+            m_readDb.connectionChanged();
+            {
+                std::lock_guard l{m_readSyncMutex};
+                m_readerAttached.clear();
+            }
+            ++m_commitGeneration;
+            m_readerReady = true;
+        } catch (const std::exception& e) {
+            std::cerr << "svlsp: no reader connection on '" << m_dbPath << "': " << e.what()
+                      << '\n';
+        }
+    }
 }
 
 void LanguageServer::checkDbVersion()
@@ -373,10 +444,12 @@ void LanguageServer::loadProject(const std::string& configPath)
         if (!c) return;
         *c = std::move(config);
         ProjectCompiler::attachLibraries(*c, m_symbolDb);
+        noteAttached(c->libraryDbs);
         ProjectLoad load;
         load.plan = ProjectRefresher::plan(key, *c, m_compiler, m_symbolDb);
         load.plan.svlspVersion = m_buildVersion;
         load.progress = ProjectRefresher::begin(load.plan, m_symbolDb);
+        ++m_commitGeneration;
         load.pending.insert(load.plan.compile.begin(), load.plan.compile.end());
         load.total = load.pending.size();
         load.progressToken = token;
@@ -468,6 +541,7 @@ void LanguageServer::finishProject(const std::string& configPath)
                               : ProjectRefresher::Result{};
         m_loads.erase(it);
         m_indexing = !m_loads.empty();
+        ++m_commitGeneration;
         token = load.progressToken;
         units = load.total;
 
@@ -683,34 +757,34 @@ void LanguageServer::registerHandlers()
             [this](lsp::HoverParams&& params) {
                 const auto uri = params.textDocument.uri;
                 return answer<lsp::requests::TextDocument_Hover>(uri, [this, params]() {
-                    TimedLock lock{m_dataMutex, m_requestLog, "textDocument/hover",
+                    Request req{*this, "textDocument/hover",
                                 requestWhere(params.textDocument.uri, params.position)};
                     const auto doc = m_store.find(params.textDocument.uri);
                     if (!doc) return lsp::TextDocument_HoverResult{nullptr};
-                    return HoverProvider::getHover(params, m_symbolDb, doc->text);
+                    return HoverProvider::getHover(params, req.db(), doc->text);
                 });
             })
         .add<lsp::requests::TextDocument_Definition>(
             [this](lsp::DefinitionParams&& params) {
                 const auto uri = params.textDocument.uri;
                 return answer<lsp::requests::TextDocument_Definition>(uri, [this, params]() {
-                    TimedLock lock{m_dataMutex, m_requestLog, "textDocument/definition",
+                    Request req{*this, "textDocument/definition",
                                 requestWhere(params.textDocument.uri, params.position)};
                     const auto doc = m_store.find(params.textDocument.uri);
                     if (!doc) return lsp::TextDocument_DefinitionResult{nullptr};
-                    return DefinitionProvider::getDefinition(params, m_symbolDb, doc->text);
+                    return DefinitionProvider::getDefinition(params, req.db(), doc->text);
                 });
             })
         .add<lsp::requests::TextDocument_References>(
             [this](lsp::ReferenceParams&& params) {
                 const auto uri = params.textDocument.uri;
                 return answer<lsp::requests::TextDocument_References>(uri, [this, params]() {
-                    TimedLock lock{m_dataMutex, m_requestLog, "textDocument/references",
+                    Request req{*this, "textDocument/references",
                                 requestWhere(params.textDocument.uri, params.position)};
                     const auto doc = m_store.find(params.textDocument.uri);
                     if (!doc) return lsp::TextDocument_ReferencesResult{nullptr};
                     return ReferencesProvider::getReferences(
-                        params, m_symbolDb, doc->text,
+                        params, req.db(), doc->text,
                         [this](const std::string& path) { return currentTextFor(path); });
                 });
             })
@@ -718,15 +792,15 @@ void LanguageServer::registerHandlers()
             [this](lsp::CompletionParams&& params) {
                 const auto uri = params.textDocument.uri;
                 return answer<lsp::requests::TextDocument_Completion>(uri, [this, params]() {
-                    TimedLock lock{m_dataMutex, m_requestLog, "textDocument/completion",
+                    Request req{*this, "textDocument/completion",
                                 requestWhere(params.textDocument.uri, params.position)};
                     const auto doc = m_store.find(params.textDocument.uri);
                     if (!doc) return lsp::TextDocument_CompletionResult{nullptr};
                     auto result = CompletionProvider::getCompletion(
-                        params, m_symbolDb, doc->text, m_state.fuzzyCompletionEnabled());
+                        params, req.db(), doc->text, m_state.fuzzyCompletionEnabled());
                     // While indexing, the list is incomplete: the client asks
                     // again as the user types (plan.md §6.34 S4).
-                    if (!indexing()) return result;
+                    if (!m_indexing) return result;
                     lsp::CompletionList list{.isIncomplete = true, .items = {}};
                     if (!result.isNull()) {
                         if (result.holdsAlternative<lsp::Array<lsp::CompletionItem>>())
@@ -739,32 +813,32 @@ void LanguageServer::registerHandlers()
             })
         .add<lsp::requests::CompletionItem_Resolve>(
             [this](lsp::CompletionItem&& item) {
-                TimedLock lock{m_dataMutex, m_requestLog, "completionItem/resolve"};
-                return CompletionProvider::resolve(std::move(item), m_symbolDb);
+                Request req{*this, "completionItem/resolve"};
+                return CompletionProvider::resolve(std::move(item), req.db());
             })
         .add<lsp::requests::TextDocument_DocumentSymbol>(
             [this](lsp::DocumentSymbolParams&& params) {
                 const auto uri = params.textDocument.uri;
                 return answer<lsp::requests::TextDocument_DocumentSymbol>(uri, [this, params]() {
-                    TimedLock lock{m_dataMutex, m_requestLog, "textDocument/documentSymbol"};
-                    return DocumentSymbolsProvider::getDocumentSymbols(params, m_symbolDb);
+                    Request req{*this, "textDocument/documentSymbol"};
+                    return DocumentSymbolsProvider::getDocumentSymbols(params, req.db());
                 });
             })
         .add<lsp::requests::Workspace_Symbol>(
             [this](lsp::WorkspaceSymbolParams&& params) {
-                TimedLock lock{m_dataMutex, m_requestLog, "workspace/symbol"};
-                return WorkspaceSymbolsProvider::getWorkspaceSymbols(params, m_symbolDb);
+                Request req{*this, "workspace/symbol"};
+                return WorkspaceSymbolsProvider::getWorkspaceSymbols(params, req.db());
             })
         .add<lsp::requests::TextDocument_Rename>(
             [this](lsp::RenameParams&& params) {
                 const auto uri = params.textDocument.uri;
                 return answer<lsp::requests::TextDocument_Rename>(uri, [this, params]() {
-                    TimedLock lock{m_dataMutex, m_requestLog, "textDocument/rename",
+                    Request req{*this, "textDocument/rename",
                                 requestWhere(params.textDocument.uri, params.position)};
                     const auto doc = m_store.find(params.textDocument.uri);
                     if (!doc) return lsp::TextDocument_RenameResult{nullptr};
                     return RenameProvider::getRename(
-                        params, m_symbolDb, doc->text,
+                        params, req.db(), doc->text,
                         [this](const std::string& path) { return currentTextFor(path); });
                 });
             })
@@ -772,11 +846,11 @@ void LanguageServer::registerHandlers()
             [this](lsp::SignatureHelpParams&& params) {
                 const auto uri = params.textDocument.uri;
                 return answer<lsp::requests::TextDocument_SignatureHelp>(uri, [this, params]() {
-                    TimedLock lock{m_dataMutex, m_requestLog, "textDocument/signatureHelp",
+                    Request req{*this, "textDocument/signatureHelp",
                                 requestWhere(params.textDocument.uri, params.position)};
                     const auto doc = m_store.find(params.textDocument.uri);
                     if (!doc) return lsp::TextDocument_SignatureHelpResult{nullptr};
-                    return SignatureHelpProvider::getSignatureHelp(params, m_symbolDb, doc->text);
+                    return SignatureHelpProvider::getSignatureHelp(params, req.db(), doc->text);
                 });
             });
 }

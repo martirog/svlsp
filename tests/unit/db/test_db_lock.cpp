@@ -57,3 +57,40 @@ TEST_CASE("database: a copy of a file, WAL on a file, reopen read-only", "[db][l
     CHECK(count.columnInt(0) == 1);
     CHECK_THROWS(ro.execute("DELETE FROM files"));
 }
+
+TEST_CASE("database: a reader on another connection sees a transaction whole or not at all "
+          "(plan.md §6.34 S5)",
+          "[db][lock][s5]")
+{
+    const std::string path = "/tmp/svlsp_test_lock/txn.db";
+    fs::create_directories("/tmp/svlsp_test_lock");
+    fs::remove(path);
+    Database writer(path);
+    writer.useWal();
+    writer.initSchema();
+    Database reader(":memory:");
+    reader.reopen(path, /*readOnly=*/true);
+    auto count = [&] {
+        auto q = reader.prepare("SELECT COUNT(*) FROM files");
+        q.step();
+        return q.columnInt(0);
+    };
+    {
+        Database::Transaction txn(writer, "outer");
+        writer.execute("INSERT INTO files (path, content_hash) VALUES ('/a.sv', 'h')");
+        {
+            // A nested one (SymbolDatabase's own savepoints) commits into it.
+            Database::Transaction inner(writer, "inner");
+            writer.execute("INSERT INTO files (path, content_hash) VALUES ('/b.sv', 'h')");
+            inner.commit();
+        }
+        CHECK(count() == 0); // not committed yet
+        txn.commit();
+    }
+    CHECK(count() == 2);
+    {
+        Database::Transaction txn(writer, "dropped");
+        writer.execute("INSERT INTO files (path, content_hash) VALUES ('/c.sv', 'h')");
+    } // no commit: rolled back
+    CHECK(count() == 2);
+}

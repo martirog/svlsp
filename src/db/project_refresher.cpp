@@ -1,5 +1,6 @@
 #include "db/project_refresher.h"
 #include "db/compilation_controller.h"
+#include "db/database.h"
 #include "db/library_resolver.h"
 #include "db/symbol_database.h"
 #include "compiler/content_hash.h"
@@ -155,6 +156,7 @@ ProjectRefresher::Progress ProjectRefresher::begin(const Plan& plan, SymbolDatab
     Progress pr;
     pr.diagnosticsBefore = sdb.diagnosticsDigest();
     const std::string& key = plan.projectKey;
+    Database::Transaction txn(sdb.database(), "refresh_begin");
 
     // Removed files first, so what they declared no longer satisfies the
     // units compiled next. Files they included get their "included in N
@@ -169,6 +171,7 @@ ProjectRefresher::Progress ProjectRefresher::begin(const Plan& plan, SymbolDatab
         addChanged(pr.names, sdb.declarationsOfUnit(file));
         if (sdb.removeFile(file)) ++pr.result.removed;
     }
+    txn.commit();
     return pr;
 }
 
@@ -195,6 +198,7 @@ ProjectRefresher::Result ProjectRefresher::finish(Progress&& pr, const Plan& pla
 {
     const std::string& key = plan.projectKey;
     Result r = std::move(pr.result);
+    Database::Transaction txn(sdb.database(), "refresh_finish");
 
     // Library resolution, after the recompiles: a new -y file can resolve an
     // instantiation, a changed one can stop resolving one.
@@ -235,6 +239,7 @@ ProjectRefresher::Result ProjectRefresher::finish(Progress&& pr, const Plan& pla
     controller.refreshContextDiagnostics(pr.sited);
 
     sdb.setProjectInfo(key, {controller.configFingerprint(&config), plan.svlspVersion});
+    txn.commit();
 
     const auto after = sdb.diagnosticsDigest();
     for (const auto& [path, digest] : after) {

@@ -265,3 +265,31 @@ void Database::Statement::reset()
     sqlite3_reset(m_stmt);
     sqlite3_clear_bindings(m_stmt);
 }
+
+// ---------------------------------------------------------------------------
+// Database::Transaction
+// ---------------------------------------------------------------------------
+
+Database::Transaction::Transaction(Database& db, const char* name)
+    : m_db{db}
+    , m_name{name}
+{
+    m_db.execute("SAVEPOINT " + m_name);
+}
+
+Database::Transaction::~Transaction()
+{
+    if (!m_open) return;
+    try {
+        m_db.execute("ROLLBACK TO " + m_name);
+        m_db.execute("RELEASE " + m_name);
+    } catch (const std::exception&) {
+    }
+}
+
+void Database::Transaction::commit()
+{
+    if (!m_open) return;
+    m_db.execute("RELEASE " + m_name);
+    m_open = false;
+}

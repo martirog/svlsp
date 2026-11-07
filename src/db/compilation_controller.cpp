@@ -465,6 +465,9 @@ std::vector<ParseError> CompilationController::commit(Parsed&& parsed,
                                                       std::vector<std::string>* refreshedFiles)
 {
     if (refreshedFiles) refreshedFiles->clear();
+    // One transaction (plan.md §6.34 S5): a reader on another connection
+    // never sees half a unit.
+    Database::Transaction txn(m_sdb.database(), "unit_commit");
     const std::string& path = parsed.path;
     const std::string& text = parsed.text;
     const std::string& hash = parsed.hash;
@@ -649,6 +652,7 @@ std::vector<ParseError> CompilationController::commit(Parsed&& parsed,
         : unitFingerprint(parsed.inputsKey, hash, std::move(readHashes));
     m_sdb.setFileIdentity(fid, primaryIdentity);
 
+    txn.commit();
     if (includedFiles) *includedFiles = std::move(allIncluded);
 
     auto result = errsByFile[""];

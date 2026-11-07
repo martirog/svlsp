@@ -379,6 +379,14 @@ public:
     // Those of `path`'s last compile, in order. {} if none or unknown.
     std::vector<IncludeDirective> includeDirectivesOf(const std::string& path) const;
 
+    // The connection this works on (a Database::Transaction around several
+    // writes, plan.md §6.34 S5).
+    Database& database() const { return m_db; }
+
+    // Forgets every cached query result: another connection committed
+    // (a reader's, plan.md §6.34 S5).
+    void clearCaches() const { clearIncludeCaches(); }
+
     // After the Database was reopened on another file (plan.md §6.34 S3):
     // forgets the attached library DBs and every cached query result.
     void connectionChanged()

@@ -93,6 +93,42 @@ private:
     std::string m_version;      // setVersion()
     std::string m_buildVersion; // m_version and the doc-comment setting
 
+    // Requests read through a second, read-only connection when the DB is
+    // a file this server writes (plan.md §6.34 S5): WAL gives it the last
+    // committed state, so a request never waits for a compile's commit.
+    // Only the message thread uses it (requests), under m_readMutex for the
+    // request log; it syncs (attachments, caches) when m_commitGeneration
+    // moved. m_readerAttached is what the writer attached, under
+    // m_readSyncMutex.
+    Database              m_readConn{":memory:"};
+    SymbolDatabase        m_readDb{m_readConn};
+    std::atomic<bool>     m_readerReady{false};
+    std::atomic<uint64_t> m_commitGeneration{0};
+    uint64_t              m_readGeneration{0};
+    std::mutex            m_readMutex;
+    std::mutex            m_readSyncMutex;
+    std::vector<std::string> m_readerAttached;
+    std::atomic<bool>     m_indexing{false}; // !m_loads.empty(), for requests
+    void syncReader();
+    void noteAttached(const std::vector<std::string>& libraryDbs);
+
+    // A request's access to the DB: m_dataMutex and the writer's
+    // connection, or (reader ready) the reader in one read transaction --
+    // all of a request's queries see the same commit.
+    class Request {
+    public:
+        Request(LanguageServer& server, const char* what, std::string where = {});
+        ~Request();
+        SymbolDatabase& db() { return *m_db; }
+        Request(const Request&)            = delete;
+        Request& operator=(const Request&) = delete;
+
+    private:
+        bool            m_reader;
+        TimedLock       m_lock;
+        SymbolDatabase* m_db;
+    };
+
     // Documents whose compile since didOpen / didSave hasn't run yet, by
     // path: a request on one waits for it (plan.md §6.34 S4) -- the
     // document's own answers need its own compile, not the project load's.
@@ -154,7 +190,6 @@ private:
         std::string progressToken; // "" = no progress reported
     };
     std::map<std::string, ProjectLoad> m_loads; // by config path
-    std::atomic<bool> m_indexing{false}; // !m_loads.empty(), for svlsp.waitForIndexing
 
     // Every path published so far (guarded by m_publishMutex). A load's
     // units publish only these and the open documents: a project load must

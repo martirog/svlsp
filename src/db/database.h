@@ -78,6 +78,25 @@ public:
 
     Statement prepare(const std::string& sql) const;
 
+    // A transaction over a scope (plan.md §6.34 S5): a SAVEPOINT, so it
+    // nests inside another one (and the savepoints SymbolDatabase's own
+    // writes use nest inside it). commit() releases it; leaving the scope
+    // without commit() rolls it back. A reader on another connection sees
+    // all of it or none of it.
+    class Transaction {
+    public:
+        explicit Transaction(Database& db, const char* name = "txn");
+        ~Transaction();
+        void commit();
+        Transaction(const Transaction&)            = delete;
+        Transaction& operator=(const Transaction&) = delete;
+
+    private:
+        Database&   m_db;
+        std::string m_name;
+        bool        m_open{true};
+    };
+
     // Row id of the last successful INSERT on this connection.
     int64_t lastInsertRowId() const;
 
