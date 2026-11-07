@@ -2732,7 +2732,7 @@ moniker-key merge machinery. This is entirely the "keep DBs separate,
 `UNION` at query time" shape, modeled on clangd's `MergedIndex` — not LSIF/
 SCIP's moniker-linked physical merge.
 
-**Open question, deliberately unresolved (per explicit direction):** how —
+**Open question, deliberately unresolved (per explicit direction)** — planned 2026-11-07 in §6.34 S7 (per-file fingerprints; rebuild owned caches, warn on archived ones): how —
 or whether — to detect that a prebuilt/cached library DB has gone stale
 relative to its own source files (the library upgraded in place without
 rebuilding the DB; a `cachePath` populated once and never revisited even
@@ -6916,6 +6916,364 @@ code reviews can show that a rewrite does not regress latency or memory.
     `test_50_library_rename.sh` (builds a small library DB with
     `--build-db`, opens a project attaching it in its own workspace).
     Unit 1070/1070, Emacs 321/321.
+
+---
+
+### 6.34 Background Project Loading, a Persistent Project DB, and Incremental Refresh (branch switches)
+
+**Status:** planned 2026-11-07, at the user's request; decisions D1-D4
+taken the same day (see "Decisions" at the end). Nothing implemented.
+The next step is S0.
+Grows handoff "next step 1" (after C9: the commit still holds the data
+mutex; didOpen / didSave compile on the message thread) into a whole
+plan, and closes §6.19's open staleness question with the same mechanism.
+It also covers §6.5's open question about a file-backed DB, and the
+prerequisite in §6.20 item 1.
+
+**Why.** svlsp is meant for codebases that take longer to compile than a
+user wants to wait. Measured on `uvm_src`, open -> diagnostics takes 100 s.
+The user wants three things:
+1. **Answers before the compile finishes.** The compile runs in the
+   background. Answers are incomplete at first, but never wrong in a way the
+   user would act on: no false diagnostics.
+2. **Compiling before the editor starts.** The project's own DB (not only
+   library DBs) can be built outside the editor, with `--build-db` or a
+   git hook. The server then starts from that DB.
+3. **Branch switches are normal.** Every file carries an identity that says
+   whether it changed. A `git checkout` then recompiles only the units whose
+   inputs changed, not the whole DB. The same identity tells whether an
+   attached library DB is stale (§6.19).
+
+**What the code does today (read 2026-11-07, at a765053):**
+- **The first `didOpen` compiles the whole project inside `prepare`, on the
+  message thread, holding both mutexes.** `compileCurrent` calls
+  `m_projects.configFor(path)` under `m_dataMutex`. `ProjectRegistry::
+  loadAndCache` then runs `resolveLibraryDbSources`, which can build a whole
+  library DB, and then `ProjectCompiler::loadProject`, which compiles every
+  file. No message is handled until all of that finishes. This, more than
+  the commit's lock time, is what makes a big project unusable at start.
+- didOpen and didSave call `compileAndPublish` on the message thread.
+  `commit` holds `m_dataMutex` for up to about 300 ms on `uvm_src`, and is
+  several SQLite transactions (`BEGIN`/`COMMIT` in each `replace*`), not
+  one.
+- The DB is `:memory:`, so every restart pays the full compile again.
+- `hashContent` is `std::hash<std::string>`, described as "within-session".
+  An included file's row gets hash `""` (`upsertFile(filePath, "")`).
+- A compile hits the cache when **the primary file's** hash matches. A
+  change to an included file is noticed only through didSave's
+  `includersOf`, so it goes unnoticed when it happens outside the editor.
+  **This is probably a live `--build-db` bug too:** rerunning it after only
+  an included `.svh` changed (with `uvm.sv` / `uvm_pkg.sv` unchanged) hits
+  the cache and keeps stale rows. Confirm it with a failing unit test first.
+- Rows of a file removed from the project, or deleted on disk, are never
+  deleted. There is no `deleteFile`.
+- A project config is loaded once per session (`m_loaded`). An edited or
+  checked-out `.f` / `.svlsp.json` is not reread.
+- The cross-file diagnostics come in two kinds:
+  - Declared-type 'reference' warnings: `refreshTypeRefDiagnostics` only
+    re-checks warnings that already exist. Removing a declaration never
+    adds a warning (the §6.4 name-index gap, §6.21 "Open").
+  - Missing-argument diagnostics: the call records aren't stored, so these
+    are only redone when their own unit recompiles.
+
+**The idea in one paragraph.** Each file gets a stable fingerprint: stat
+data (mtime, size) as a cheap first check, and a content hash as the
+truth. Each compiled unit gets an *inputs fingerprint* made from its
+primary file, its whole include closure, the config and its include
+context. A **refresh** compares what is on disk with what the DB recorded,
+and recompiles only the units whose inputs changed. It also deletes what
+is gone and compiles what is new. `--build-db`, server startup, a
+branch-switch event and an explicit command all run that same refresh,
+against a file-backed project DB. The server runs refreshes and the
+initial load on a background compile queue, never on the message thread
+or under the data mutex. Requests are answered meanwhile from whatever is
+already committed.
+
+#### Stages (each one can ship alone; the order is S0, S1, S2, S4, S3, S5, S6, S7, then S3b once S3 has been used for a while)
+
+**S0 -- Baselines first.** Add perf scenarios before changing anything:
+- `uvm_src` **open -> first diagnostics for the opened file** and **open ->
+  project indexed**. Today these two are the same number (100 s); S4
+  splits them.
+- Hover / completion latency *during* the initial load. Today it is
+  unanswerable: the message loop is blocked.
+- A branch-switch scenario on the UVM checkout
+  (`/home/martin/src/verilator_test/uvm-core`, tags `2020.3.0` /
+  `2020.3.1`): time a refresh after `git checkout` against a full
+  rebuild, and record how many units it recompiles. Use a worktree copy
+  so the corpus checkout stays put.
+
+**S1 -- File identity (schema v17; S2's `project_info` and `unit_checks` tables are v18 if they land separately).**
+- A stable content hash: vendor XXH3-128 (single header, BSD-2) or use
+  SHA-256. `std::hash` is not guaranteed stable across builds. Changing
+  the hash changes every stored hash, which is fine because a schema or
+  version change forces a rebuild anyway.
+- `files` gains `size` and `mtime_ns`, and **every** file row gets its
+  real hash, included files too, from the text the preprocessor read.
+- A primary file's row gains `inputs_fp`, a hash of:
+  - its own hash;
+  - the ordered (resolved path, hash) list of its transitive includes;
+  - a config fingerprint: defines, ordered include dirs, the `-v`/`-y`
+    settings, `collectDocs`;
+  - its include context: initial scope and the includer's macros, from
+    `include_sites`.
+
+  The cache hit in `prepare` becomes "inputs_fp matches" instead of
+  "primary hash matches". That also fixes the `--build-db` bug above.
+- The racy-mtime rule (git's "racy git" fix): when the recorded mtime is
+  within the filesystem's granularity (about 2 s) of when the row was
+  written, the stat check can't be trusted. That file is hashed on the
+  next refresh even when its stat data matches.
+- Disclosed gap: a new file that would *shadow* an include, by appearing
+  earlier in the include path, isn't seen until the config fingerprint
+  changes or a `--rehash` refresh runs. A removed included file is seen
+  (its stat fails).
+- Tests: the hash is stable across two processes; an included-file-only
+  change misses the cache (fails on the old code); the racy-mtime case;
+  a `--build-db` rerun after an `.svh` change (fails on the old code).
+
+**S2 -- The refresh primitive (`ProjectRefresher`, `svlsp_db`).**
+`plan(config, sdb) -> RefreshPlan`, then `apply(plan, controller)`.
+- *File set:* the config's files, the library-resolved files and every
+  include on record. Stat each one; hash only those whose stat changed
+  (plus the racy ones). The result is the sets `changed`, `added` and
+  `removed`.
+- *Affected units:* units whose primary file is changed or added, and units
+  whose include closure (`file_includes`) touches anything changed or
+  removed.
+- *Removed files:* a new `SymbolDatabase::removeFile` (cascades through
+  `ON DELETE CASCADE`; checks `macros`, `include_sites` and `symbol_docs`).
+  Their includers recompile.
+- *Config change:* the config is reparsed and its fingerprint compared with
+  the stored one (a new `project_info` table: config path, config
+  fingerprint, svlsp version). A changed fingerprint makes every unit
+  affected. A changed file list only adds and removes files.
+  `LibraryResolver::resolve` runs again after the recompiles, because a new
+  `-y` file can resolve an instantiation.
+- *Cross-file diagnostics (D3):* `commit` also stores the unit's type refs
+  and call records in `unit_checks`. `apply` compares each recompiled
+  unit's declared (scope, name, kind) set before and after. When any set
+  changed, or a file was removed, it re-runs the declared-type and
+  missing-argument checks over every unit from `unit_checks`, and the
+  server republishes the files whose diagnostics changed.
+  - Tests: removing a class from one file flags its uses in an unchanged
+    file (fails on the old code); restoring the class clears the flag; a
+    callee that gains a required argument flags an unchanged caller; a
+    refresh that changes no declaration runs no checks.
+- `--build-db` becomes plan + apply, so the version check and per-file
+  reuse go through the same code the server uses.
+- Tests:
+  - the plan on fixtures: touch one `.svh`, then exactly its includers are
+    affected;
+  - a removed file's rows are gone and its includers have an include
+    error;
+  - a define change makes every unit affected;
+  - a stat-only touch with the same content recompiles nothing.
+
+**S4 -- The initial load and compiles leave the message thread.**
+- `ProjectRegistry::configFor` stops compiling. It parses the config,
+  attaches the library DBs and returns. The project's files go to a new
+  **background compile queue**, one worker thread on top of
+  `compileCurrent`'s prepare / parse / commit, so each commit is a short
+  lock.
+- *Priorities:*
+  1. the opened file's unit;
+  2. files of open buffers;
+  3. the units that declare what the open unit imports or extends;
+  4. the rest, in config order.
+
+  Rank 3 needs a name-to-file map before anything is parsed. A cheap text
+  pre-scan of `package` / `class` / `module` / `interface` headers can
+  supply it (it only orders the queue, so being wrong costs time, not
+  correctness).
+- didOpen stores the text and enqueues at the top rank. didSave enqueues
+  too (its `includersOf` cascade already goes to the second debouncer).
+  `ChangeDebouncer` stays for didChange and feeds the same queue.
+- A library DB that `libraryDbSources` still has to build is built as a
+  queue job, before the project's files. The project's own units can start
+  meanwhile, with those library symbols missing for now.
+- *Progress:* `window/workDoneProgress/create` + `$/progress` ("svlsp:
+  indexing 340/1200"); lsp-mode shows these in the mode line.
+- *No false diagnostics while indexing.* Until the initial load (or a
+  refresh) finishes, the server holds back diagnostics that depend on other
+  units:
+  - declared-type 'reference' warnings;
+  - missing-argument diagnostics;
+  - unresolved instantiations.
+
+  When the load finishes it runs those checks once and publishes them.
+  Parse errors are published immediately. While indexing, completion
+  answers `isIncomplete: true`, so the client asks again.
+- Tests:
+  - a unit case with a gated walker: hover on the opened file answers while
+    the rest of the project is still parsing;
+  - the queue order;
+  - no 'reference' warning is published before the load ends;
+  - an Emacs test on a project with a slow fixture: hover answers before
+    the progress ends.
+
+**S3 -- A file-backed project DB.**
+- *Where:* a `"database"` key in `.svlsp.json`, a `-svlsp_db <path>`
+  switch in `.f`, and `initializationOptions.svlsp.database` (it wins over
+  the config). With no setting, the server keeps today's `:memory:` (D1).
+  S3b, later, makes the XDG cache path the default.
+- **One DB per server, not per project.** `m_db` is a single connection
+  today. The first project's configured DB becomes the server's DB. A
+  second project with a different DB setting falls back to sharing it
+  (logged), until per-project DBs are needed.
+- WAL journal mode (§6.20 item 2), `synchronous=NORMAL`.
+- *One writer at a time:* `flock` on `<db>.lock`, held for the writer's
+  whole life (a server or a `--build-db`).
+  - The server finds a `--build-db` running: it opens the DB read-only and
+    serves from it. When the lock is released, it takes the lock and runs a
+    refresh. That is how "start the compile before the editor" gets early
+    answers even mid-build.
+  - `--build-db` finds a server holding the lock: it exits 0 with
+    "svlsp pid N has it open; it refreshes itself", or waits with
+    `--wait`.
+  - A second server that finds another server holding the lock copies
+    the DB into its own `:memory:` DB (online backup API), refreshes
+    against disk and never writes the file (D2). Test: two servers on one
+    DB; the second answers hover before its refresh ends, and the file's
+    content is unchanged afterwards.
+- *Startup:* open the DB. On a schema or version mismatch, or a mismatch in
+  `project_info`, reset it. Then refresh (S2) in the background (S4) and
+  serve meanwhile. With a fresh prebuilt DB, the refresh is a stat pass and
+  the answers are complete at once.
+- Unsaved buffer text is committed as today. Its hash differs from the
+  file on disk, so the next start's refresh recompiles that unit.
+  §6.20 readers see the buffer's state; document that.
+- `--build-db <project config> --output <db>` already compiles a project.
+  The new part is that the server opens that file as its own DB, instead of
+  attaching it as a library.
+- Tests:
+  - the server restarts on a built DB and compiles nothing (counted with
+    the controller's log stream);
+  - the lock hand-over: a server sees the DB read-only during a build, then
+    becomes the writer;
+  - a version mismatch resets the DB;
+  - an Emacs test: `--build-db` a fixture project, start, get a hover with
+    no compile.
+
+**S3b -- The XDG cache becomes the default DB (D1), later.** A project with
+no DB setting gets `$XDG_CACHE_HOME/svlsp/<hash of the config's absolute
+path>.db`; `"database": ":memory:"` opts out. Tests: a project without the
+key gets that path; two configs get two DBs; the opt-out keeps
+`:memory:`.
+
+**S5 -- The commit stops blocking requests.** This is what remains of
+handoff "next step 1".
+- One transaction per `commit`. The inner `BEGIN`/`COMMIT` pairs become
+  `SAVEPOINT`s. Then a reader never sees half a unit.
+- With a file-backed DB, requests use a **second, read-only connection**
+  (with the same library DBs attached). WAL gives it the last committed
+  snapshot, so `m_dataMutex` no longer guards DB reads, only the store and
+  the registry. The commit can then take as long as it takes without
+  stalling anything. Caveat: a request's queries must run in one read
+  transaction, or two of its queries can see different commits.
+- `:memory:` can't have a second connection that sees the same data, short
+  of shared-cache mode with its table locks. There, split a commit into a
+  few lock-released chunks only if S0 shows the 300 ms still matters.
+- Measure with C9's 350 ms/char typing scenario: the max completion round
+  trip (302 ms, a keystroke landing in a commit) should drop to the
+  median.
+
+**S6 -- Noticing branch switches.**
+- *`workspace/didChangeWatchedFiles`:* register it dynamically at
+  `initialized` for `**/*.{sv,svh,v,vh,svi,f}` and the config file names.
+  The many events of one checkout are coalesced (debounce about 500 ms)
+  into **one** refresh. lsp-mode supports it through file-notify; large
+  trees hit `lsp-file-watch-threshold` / inotify limits, which belongs in
+  `docs/usage.md`.
+- *`workspace/executeCommand svlsp.refresh`,* plus a `--rehash` variant
+  that ignores stat data. It is also the manual fallback.
+- Not built (D4): the server watching `.git/HEAD` itself. It is added only
+  if a client lacks file watchers. `docs/usage.md` documents a
+  `post-checkout` hook that runs `svlsp --build-db` for refreshing with no
+  editor open (it defers to a running server, S3).
+- Events for files the editor has open are ignored: the buffer is the
+  truth. lsp-mode reverts the buffer on a checkout, which sends didChange.
+- Tests: an Emacs test that swaps a fixture file on disk, sends the
+  notification, and checks that definition moved and diagnostics changed;
+  a unit case where 50 events give one refresh.
+
+**S7 -- Stale library DBs (closes §6.19's open question).**
+- `--build-db` records S1's per-file stat data and hashes in the library
+  DB too.
+- On attach and on every refresh, stat the library's files (UVM: 166, a few
+  ms) and compare.
+- *A `libraryDbSources` entry* (svlsp owns the cache): rebuild it in the
+  background into `<cache>.tmp`, rename it into place, and re-attach under
+  the writer. The rebuild is incremental, reusing the old file's rows
+  through S2.
+- *A `libraryDbs` entry* (someone else's archive): never rebuilt. Warn
+  once, with `window/showMessage` and the log ("uvm.db is stale: 3 of 166
+  files changed since it was built"), and add `svlsp --build-db --check`
+  for CI.
+- This is §6.19's "combination" shape: automatic where svlsp owns the
+  cache, explicit where it doesn't.
+- Tests: touch a library source, then the warning or rebuild happens; an
+  attach-time check on an unchanged library reads no file contents.
+
+**S8 -- Later, if S0's numbers ask for it.**
+- *Several parse workers for the initial load.* Commits stay one at a time;
+  parses run in parallel. Memory is the limit: about 3 GB peak for a
+  UVM-sized unit, which matters on the shared server with a memory cap per
+  user (§6.33).
+- *A content-addressed unit cache* keyed by `inputs_fp`, so switching
+  A -> B -> A recompiles nothing the second time. The rows live in shared
+  tables, so this needs per-unit row sets that can be swapped in.
+  Considerably larger.
+
+#### Decisions (made 2026-11-07, the user took the recommendations)
+
+- **D1 -- The default DB location: opt-in first, the XDG cache later.**
+  In S3 a file-backed DB exists only when a project configures one
+  (`"database"`, `-svlsp_db`, `initializationOptions.svlsp.database`);
+  with none, the server keeps `:memory:`. Once S3 has been used for a
+  while, a follow-up (S3b) makes the default
+  `$XDG_CACHE_HOME/svlsp/<hash of the config's absolute path>.db`
+  (`~/.cache` when the variable is unset). Nothing appears in the user's
+  tree, and two checkouts of one repo get two DBs because their paths
+  differ. `.svlsp/` beside the config was rejected because it puts a file
+  in the tree that users would have to gitignore.
+- **D2 -- Two servers on one DB: the second one copies it and never writes
+  it.** The server that can't get the writer lock copies the file into its
+  own `:memory:` DB with SQLite's online backup API
+  (`sqlite3_backup_*`; WAL lets that run beside the writer). It then
+  refreshes against disk (S2) and works exactly as today's in-memory
+  server does. That gives it a warm start without two writers. This
+  states the recommendation exactly: attaching the file read-only next to
+  a `:memory:` DB the second server writes into would give every file
+  both servers compile two sets of rows. A shared daemon (§6.5) stays out
+  of scope.
+- **D3 -- Cross-file diagnostics after a refresh: store the inputs and
+  re-run the checks; the name index comes later.** Each unit's type refs
+  (`TypeRefRecord`) and call records (`CallRecord`) go into a new table
+  (`unit_checks`, file_id + kind + the record's fields, cascade-deleted
+  with the file). After any refresh that changed declarations, the
+  declared-type check and the missing-argument check run over **every**
+  unit, from those stored records, without re-parsing anything. A refresh
+  "changed declarations" when the (scope, name, kind) set of a recompiled
+  unit differs before and after. The declared-type check costs 294 ms on
+  all of UVM; S0 measures both checks on `uvm_src`. Targeting only the
+  units that name a changed declaration (the §6.4 name index, §6.21
+  "Open") is a later step. Leaving unchanged units' diagnostics stale was
+  rejected: a branch switch changes far more than an edit, and the
+  staleness would show. The same stored records serve S4's "run the held
+  back checks once the load ends".
+- **D4 -- The branch-switch signal: `workspace/didChangeWatchedFiles` plus
+  `svlsp.refresh`.** The server's own `.git/HEAD` watch is not built. It
+  is added only if a client turns out to lack file watchers. A
+  `post-checkout` hook running `svlsp --build-db` stays a documented
+  option for users who want the DB refreshed with no editor open (it
+  defers to a running server, S3).
+
+#### What other work must know (once implemented)
+
+To be written when the stages land: the cache key becomes `inputs_fp`; the
+background queue becomes the only path into a compile; diagnostics are held
+back while indexing; and a second connection reads the DB.
 
 ---
 

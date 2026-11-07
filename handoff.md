@@ -159,9 +159,19 @@ build is warning-free with g++-13. ANTLR's shared runtime is no longer
 built. Debug builds now use `-Werror` (decided 2026-11-03).
 
 Next steps:
-1. Optional, after C9: a commit still holds the data mutex (up to ~300 ms
-   on `uvm_src`), and didOpen / didSave still compile on the message
-   thread.
+1. **Planned as plan.md §6.34** (2026-11-07, not started): background
+   project loading, a file-backed project DB that `--build-db` can build
+   before the editor starts, and an incremental refresh from per-file
+   fingerprints (branch switches; also closes §6.19's staleness question).
+   It covers C9's leftovers: the commit holds the data mutex (up to
+   ~300 ms on `uvm_src`), and didOpen / didSave compile on the message
+   thread. Worse: the first didOpen compiles the whole project inside
+   `prepare` (`configFor` -> `loadProject`). Decisions D1-D4 are taken
+   (2026-11-07): the DB is opt-in, with the XDG cache as the later default;
+   a second server copies the DB into memory and never writes it;
+   cross-file checks re-run from stored type refs / call records after a
+   refresh that changed declarations; branch switches arrive through
+   `didChangeWatchedFiles` + `svlsp.refresh`. Start with S0 (baselines).
 2. Optional, LL cost on files with syntax errors (only they reach LL now):
    the remaining LL time is true ambiguity in `primary` (decision 1068)
    and `hierarchical_identifier` (1103): `a.b` is a name, a name + select
@@ -664,7 +674,7 @@ What §6.29 changed that other work must know about:
 5. **§6.22 follow-up**: UVM-corpus coverage for rename (references has
    it since §6.30 step B, `tests/uvm_corpus/test_references_uvm.cpp`).
 6. **§6.19** library-DB staleness detection (source changed since build) —
-   open question, no shape chosen.
+   planned in §6.34 S7.
 7. **§6.5** performance — open; see "Known gaps" for the concrete costs.
 8. Done 2026-11-03: the `pathToUri()` comment (`symbol_utils.h`), the
    symlinked-path bug it turned up (fixed: plan.md §6.33 C8 "Follow-up,
