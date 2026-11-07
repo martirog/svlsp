@@ -6922,8 +6922,9 @@ code reviews can show that a rewrite does not regress latency or memory.
 ### 6.34 Background Project Loading, a Persistent Project DB, and Incremental Refresh (branch switches)
 
 **Status:** planned 2026-11-07, at the user's request; decisions D1-D4
-taken the same day (see "Decisions" at the end). S0 (baselines) and S1
-(file identity, schema v17) done 2026-11-07. The next step is S2.
+taken the same day (see "Decisions" at the end). S0 (baselines), S1
+(file identity, schema v17) and S2 (refresh, schema v18) done 2026-11-07.
+The next step is S4.
 Grows handoff "next step 1" (after C9: the commit still holds the data
 mutex; didOpen / didSave compile on the message thread) into a whole
 plan, and closes §6.19's open staleness question with the same mechanism.
@@ -7160,7 +7161,7 @@ Before, only the primary text counted (S0 F1).
   takes 5.3 s against a 52 s full build, much of it still fsync
   (S0 F2).
 
-**S2 -- The refresh primitive (`ProjectRefresher`, `svlsp_db`).**
+**S2 -- The refresh primitive (`ProjectRefresher`, `svlsp_db`) -- done 2026-11-07 (schema v18).**
 `plan(config, sdb) -> RefreshPlan`, then `apply(plan, controller)`.
 - *File set:* the config's files, the library-resolved files and every
   include on record. Stat each one; hash only those whose stat changed
@@ -7197,6 +7198,76 @@ Before, only the primary text counted (S0 F1).
     error;
   - a define change makes every unit affected;
   - a stat-only touch with the same content recompiles nothing.
+
+*Outcome -- done 2026-11-07 (schema v18).* `ProjectRefresher`
+(`src/db/project_refresher.h`) has `plan` and `apply`. `apply` also comes
+in steps (`begin`, `unitCompiled`, `finish`), so the server can run each
+unit's compile as a queue job (S4).
+- New tables:
+  - `project_info`: by config path, the config fingerprint and the svlsp
+    build;
+  - `project_units`: the units of the last refresh, `config` or `library`;
+  - `unit_checks`: per unit, its `TypeRefRecord`s and `CallRecord`s,
+    serialized one per line, each call with whether its callee resolved.
+- *The plan:*
+  - Every file of the project's units is stat'ed. A file whose stat changed,
+    or was racy, is read. When the content is the same, only the new stat
+    data is recorded; that is the plan's only write.
+  - A unit is compiled when it is new, or when
+    `CompilationController::isUpToDate` says it would miss the cache. That
+    is prepare's own check, so "affected" means exactly "would recompile".
+  - **Changed from the plan:** the config fingerprint is S1's inputs key
+    (`configFingerprint`). A change in it marks every unit. The file list
+    and include dirs don't count: they count per unit, as in S1.
+- *Removed* (gone from the config, or from disk):
+  - `SymbolDatabase::removeFile` deletes the `files` row; `ON DELETE
+    CASCADE` takes every table along (`macros`, `include_sites`,
+    `symbol_docs` included).
+  - Whoever included a removed file recompiles, forced.
+  - A file one unit stopped including, that no other unit includes and that
+    has no compile of its own, is removed by that unit's commit. That fixes
+    S1's leftover bare `files` rows.
+- *Library units:*
+  - Library resolution reruns after the compiles.
+  - A library unit whose files changed is recompiled.
+  - A library unit nothing instantiates any more is removed, the way a
+    fresh build wouldn't have it.
+- *Cross-file checks (D3):* **narrower than the plan** -- re-running both
+  checks over every unit cost 4.9 s on `gen` (calls 3.1 s, types 0.9 s,
+  more than half the build). `apply` instead records the declared names a
+  refresh *added* and *changed*:
+  - *changed* means a removed declaration's name and its scope's last
+    segment, and the function of a port added or removed;
+  - a new unit only adds names.
+
+  `recheckUnits` then re-runs, from the stored records:
+  - a call whose name changed, or which was unresolved and whose name was
+    added;
+  - a declared-type reference whose name changed. Added names clear
+    warnings at their own commit already (`refreshTypeRefDiagnostics`).
+
+  The re-run rows are replaced one by one; the other checks' rows stay. On
+  a first load nothing changed, so only the unresolved calls to new names
+  re-run: 6 ms on `gen`. The missing-argument diagnostics have their own
+  source now, `call`.
+- `--build-db` is `loadProject`, which is a refresh. Its summary line says
+  how many files it removed, and how long the checks took when they re-ran.
+- Include errors are not diagnostics (they never were). An includer of a
+  removed file recompiles, and its unresolved `include is recorded, so it
+  recompiles again once the file is back.
+- Tests:
+  - unit 1118 -> 1133: 10 `[refresh]` cases and the v18 migration. The
+    cases cover:
+    - a first load, then an unchanged one, with nothing read;
+    - one `.svh` touched: exactly its includers;
+    - a stat-only touch: nothing recompiled, the stat recorded;
+    - a define change: all units;
+    - a file dropped from the config;
+    - a deleted include, and its return;
+    - D3: a class removed and restored; a callee that gains a required
+      argument; no checks when no declaration changed;
+    - a config file that is now only `include`d.
+  - Emacs 329/329, corpus 1563 / 31.
 
 **S4 -- The initial load and compiles leave the message thread.**
 - `ProjectRegistry::configFor` stops compiling. It parses the config,
