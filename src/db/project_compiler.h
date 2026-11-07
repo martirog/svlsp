@@ -32,5 +32,5 @@ public:
     static int loadProject(ProjectConfig& config, CompilationController& controller,
                            SymbolDatabase& sdb, const std::string& projectKey = "",
                            const std::string& svlspVersion = "",
-                           ProjectRefresher::Result* result = nullptr);
+                           ProjectRefresher::Result* result = nullptr, int jobs = 1);
 };

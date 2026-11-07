@@ -121,7 +121,7 @@ int explicitFileCount(const std::string& configPath)
 // factored out so it's unit-testable; this is just the CLI-facing wrapper.
 // Returns the process exit code.
 int buildDb(const std::string& configPath, const std::string& outputPath, bool collectDocs,
-            bool wait)
+            bool wait, int jobs)
 {
     // One writer at a time (plan.md §6.34 S3). A server that has the DB
     // open refreshes it itself; another --build-db is waited for with
@@ -163,7 +163,7 @@ int buildDb(const std::string& configPath, const std::string& outputPath, bool c
     // has no version to offer and passes "" (build()'s default), skipping
     // the check exactly as before this feature existed.
     auto result = LibraryDbBuilder::build(configPath, outputPath, &progressStream,
-                                          SVLSP_GIT_VERSION, collectDocs);
+                                          SVLSP_GIT_VERSION, collectDocs, {}, jobs);
     progressBuf.finish();
     if (!result.ok) {
         std::cerr << "svlsp: error parsing '" << configPath << "': " << result.error << '\n';
@@ -210,7 +210,8 @@ int buildDb(const std::string& configPath, const std::string& outputPath, bool c
 // (plan.md §6.34 S3) makes --build-db exit 0 at once (the server refreshes
 // it); --wait waits for the holder instead. --check builds nothing: it exits
 // 0 when <db-path> is up to date with <config-path>'s files, 1 when it is
-// stale (plan.md §6.34 S7).
+// stale (plan.md §6.34 S7). --jobs N parses N units at once (default 1;
+// plan.md §6.34 S8).
 int main(int argc, char** argv)
 {
     // Checked in its own pass, ahead of everything else: --version must
@@ -243,6 +244,10 @@ int main(int argc, char** argv)
     bool collectDocs = true;
     bool waitForLock = false;
     bool checkOnly = false;
+    // --build-db parses this many units at once (plan.md §6.34 S8). One by
+    // default: the commits (their cross-file checks) are the bottleneck, so
+    // more gains ~10% on the generated project for twice the memory.
+    int buildJobs = 1;
     bool inProcessParse = false;
     std::size_t parseWorkerMaxRssMb = ParseWorker::Options{}.maxRssMb;
     unsigned parseWorkerIdleSeconds = ParseWorker::Options{}.idleSeconds;
@@ -305,6 +310,16 @@ int main(int argc, char** argv)
             waitForLock = true;
         } else if (std::strcmp(argv[i], "--check") == 0) {
             checkOnly = true;
+        } else if (std::strcmp(argv[i], "--jobs") == 0) {
+            char* end = nullptr;
+            const char* value = nextIsMissingOrFlag ? "" : argv[i + 1];
+            const long n = std::strtol(value, &end, 10);
+            if (nextIsMissingOrFlag || *value == '\0' || *end != '\0' || n < 1) {
+                std::cerr << "svlsp: --jobs requires a number >= 1 immediately after it\n";
+                return 1;
+            }
+            buildJobs = static_cast<int>(n);
+            ++i;
         } else if (std::strcmp(argv[i], "--in-process-parse") == 0) {
             inProcessParse = true;
         } else if (std::strcmp(argv[i], "--parse-worker-idle") == 0) {
@@ -353,7 +368,7 @@ int main(int argc, char** argv)
             std::cerr << "svlsp: '" << buildDbOutputPath << "' is up to date\n";
             return 0;
         }
-        return buildDb(buildDbConfigPath, buildDbOutputPath, collectDocs, waitForLock);
+        return buildDb(buildDbConfigPath, buildDbOutputPath, collectDocs, waitForLock, buildJobs);
     }
 
     // The server parses in a worker process unless told not to; --build-db

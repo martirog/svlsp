@@ -6,6 +6,9 @@
 #include "compiler/content_hash.h"
 #include "compiler/file_utils.h"
 #include <algorithm>
+#include <deque>
+#include <future>
+#include <optional>
 #include <iterator>
 #include <chrono>
 #include <set>
@@ -259,16 +262,57 @@ ProjectRefresher::Result ProjectRefresher::finish(Progress&& pr, const Plan& pla
 
 ProjectRefresher::Result ProjectRefresher::apply(const Plan& plan, const ProjectConfig& config,
                                                  CompilationController& controller,
-                                                 SymbolDatabase& sdb)
+                                                 SymbolDatabase& sdb, int jobs)
 {
     auto pr = begin(plan, sdb);
-    for (size_t i = 0; i < plan.compile.size(); ++i) {
-        const std::string& unit = plan.compile[i];
-        const auto text = readFile(unit);
-        if (!text) continue;
-        const auto before = sdb.declarationsOfUnit(unit);
-        controller.compile(unit, *text, &config, nullptr, contains(plan.force, unit));
-        unitCompiled(pr, plan, unit, before, sdb);
+
+    // Up to `jobs` units in flight: prepared here, in plan order, and
+    // parsed on another thread; committed here, in the same order.
+    struct InFlight {
+        std::string unit;
+        std::string text;
+        std::optional<std::future<CompilationController::Parsed>> parse; // none: cached
+    };
+    std::deque<InFlight> window;
+    size_t next = 0;
+    const size_t width = static_cast<size_t>(std::max(1, jobs));
+    auto fill = [&] {
+        while (window.size() < width && next < plan.compile.size()) {
+            const std::string& unit = plan.compile[next++];
+            auto text = readFile(unit);
+            if (!text) continue;
+            InFlight f{unit, std::move(*text), std::nullopt};
+            auto job = controller.prepare(f.unit, f.text, &config, contains(plan.force, f.unit));
+            if (!job.cached) {
+                if (width == 1) {
+                    std::promise<CompilationController::Parsed> done;
+                    done.set_value(controller.parse(std::move(job)));
+                    f.parse = done.get_future();
+                } else {
+                    f.parse = std::async(std::launch::async, [&controller, j = std::move(job)]() mutable {
+                        return controller.parseBuffered(std::move(j));
+                    });
+                }
+            }
+            window.push_back(std::move(f));
+        }
+    };
+    fill();
+    while (!window.empty()) {
+        InFlight f = std::move(window.front());
+        window.pop_front();
+        const auto before = sdb.declarationsOfUnit(f.unit);
+        if (f.parse) {
+            auto parsed = f.parse->get();
+            if (controller.parseStillValid(parsed, &config)) {
+                controller.commit(std::move(parsed));
+            } else {
+                auto job = controller.prepare(f.unit, f.text, &config, contains(plan.force, f.unit));
+                if (!job.cached) controller.commit(controller.parse(std::move(job)));
+            }
+        }
+        unitCompiled(pr, plan, f.unit, before, sdb);
+        fill();
     }
     return finish(std::move(pr), plan, config, controller, sdb);
 }

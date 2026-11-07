@@ -60,8 +60,14 @@ public:
     // added or removed -- re-runs the cross-file checks those can change, in
     // every unit, from their stored inputs (D3). Records the units and the
     // config fingerprint.
+    //
+    // `jobs` > 1 parses up to that many units at once on other threads
+    // (plan.md §6.34 S8); the walker must be thread-safe (the in-process
+    // one is). Commits stay one at a time, in plan order. A unit whose
+    // inputs key changed while it was parsing (an earlier commit gave it
+    // an include context) is prepared and parsed again.
     static Result apply(const Plan& plan, const ProjectConfig& config,
-                        CompilationController& controller, SymbolDatabase& sdb);
+                        CompilationController& controller, SymbolDatabase& sdb, int jobs = 1);
 
     // apply() in steps, for a caller that runs each unit's compile itself
     // (the server's background queue, plan.md §6.34 S4): begin() snapshots
@@ -84,10 +90,10 @@ public:
 
     static Result refresh(const std::string& projectKey, const ProjectConfig& config,
                           CompilationController& controller, SymbolDatabase& sdb,
-                          const std::string& svlspVersion = "")
+                          const std::string& svlspVersion = "", int jobs = 1)
     {
         auto p = plan(projectKey, config, controller, sdb);
         p.svlspVersion = svlspVersion;
-        return apply(p, config, controller, sdb);
+        return apply(p, config, controller, sdb, jobs);
     }
 };

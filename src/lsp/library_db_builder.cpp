@@ -17,7 +17,7 @@
 LibraryDbBuilder::Result LibraryDbBuilder::build(
     const std::string& configPath, const std::string& outputPath, std::ostream* progressLog,
     const std::string& currentVersion, bool collectDocs,
-    const CompilationController::Walker& walker)
+    const CompilationController::Walker& walker, int jobs)
 {
     Result result;
     const std::string buildVersion =
@@ -80,7 +80,7 @@ LibraryDbBuilder::Result LibraryDbBuilder::build(
         result.fileCount = ProjectCompiler::loadProject(
             config, controller, sdb,
             std::filesystem::absolute(configPath).lexically_normal().string(), buildVersion,
-            &result.refresh);
+            &result.refresh, walker ? 1 : jobs);
 
         // Bake this build's own resolved includeDirs into the DB file
         // itself (plan.md §6.19 piece 4) -- by this point config.includeDirs

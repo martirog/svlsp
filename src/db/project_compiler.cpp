@@ -45,9 +45,10 @@ void ProjectCompiler::attachLibraries(ProjectConfig& config, SymbolDatabase& sdb
 
 int ProjectCompiler::loadProject(ProjectConfig& config, CompilationController& controller,
                                  SymbolDatabase& sdb, const std::string& projectKey,
-                                 const std::string& svlspVersion, ProjectRefresher::Result* result) {
+                                 const std::string& svlspVersion, ProjectRefresher::Result* result,
+                                 int jobs) {
     attachLibraries(config, sdb);
-    auto r = ProjectRefresher::refresh(projectKey, config, controller, sdb, svlspVersion);
+    auto r = ProjectRefresher::refresh(projectKey, config, controller, sdb, svlspVersion, jobs);
     const int compiled = r.compiled;
     if (result) *result = std::move(r);
     return compiled;

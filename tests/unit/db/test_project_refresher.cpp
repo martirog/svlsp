@@ -271,3 +271,46 @@ TEST_CASE("refresh: a config file that is now only `include'd is recompiled thro
     REQUIRE(rows.size() == 1);
     CHECK(rows[0].scope == "ri_p"); // from p.sv's compile, not its own
 }
+
+TEST_CASE("refresh: parsing in parallel commits the same rows as one by one (plan.md §6.34 S8)",
+          "[db][refresh][s8]")
+{
+    auto build = [](RF& f) {
+        f.write("inc.svh", "class rp_inc; function void m(); endfunction endclass\n");
+        for (int i = 0; i < 8; ++i)
+            f.write("p" + std::to_string(i) + ".sv",
+                    "package rp" + std::to_string(i) + ";\n`include \"inc.svh\"\n  class c" +
+                        std::to_string(i) + " extends rp_inc; endclass\nendpackage\n");
+        f.write("use.sv", "module rp_m;\n  import rp3::*;\n  c3 o;\n  rp_missing x;\nendmodule\n");
+        f.config.files.clear();
+        for (int i = 0; i < 8; ++i) f.config.files.push_back(f.file("p" + std::to_string(i) + ".sv"));
+        f.config.files.push_back(f.file("use.sv"));
+    };
+    auto rows = [](RF& f) {
+        std::vector<std::string> out;
+        for (const auto& path : f.sdb.allFilePaths()) {
+            for (const auto& s : f.sdb.symbolsForFile(path))
+                out.push_back(path + " " + s.kind + " " + s.scope + "::" + s.name + " " +
+                              std::to_string(s.line));
+            for (const auto& d : f.sdb.diagnosticsForFile(path))
+                out.push_back(path + " diag " + d.source + " " + d.message);
+        }
+        std::sort(out.begin(), out.end());
+        return out;
+    };
+    RF serial("parallel-serial"), parallel("parallel-jobs");
+    build(serial);
+    build(parallel);
+    ProjectRefresher::refresh(serial.key, serial.config, serial.ctrl, serial.sdb, "", 1);
+    ProjectRefresher::refresh(parallel.key, parallel.config, parallel.ctrl, parallel.sdb, "", 4);
+    auto a = rows(serial), b = rows(parallel);
+    // The fixtures differ only by their directory.
+    for (auto& r : b)
+        for (size_t at; (at = r.find("parallel-jobs")) != std::string::npos;)
+            r.replace(at, 13, "parallel-serial");
+    std::sort(b.begin(), b.end());
+    CHECK(a == b);
+    CHECK(std::any_of(a.begin(), a.end(), [](const std::string& r) {
+        return r.find("unknown type 'rp_missing'") != std::string::npos;
+    }));
+}

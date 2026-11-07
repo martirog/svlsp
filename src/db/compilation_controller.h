@@ -99,10 +99,21 @@ public:
         // The primary file's identity: `hash`, plus stat data when the text
         // was the file's own (size -1 for an unsaved buffer).
         SymbolDatabase::StoredFile primary{};
+        // What the parse logged, when it was asked to buffer it (a parse on
+        // another thread, plan.md §6.34 S8); commit() writes it.
+        std::string bufferedLog{};
     };
     Prepared prepare(const std::string& path, const std::string& text,
                      const ProjectConfig* config = nullptr, bool forceRecompile = false);
     Parsed parse(Prepared&& job) const;
+    // parse() for another thread (plan.md §6.34 S8): thread-safe when the
+    // walker is; its log lines go to Parsed::bufferedLog, not the log.
+    Parsed parseBuffered(Prepared&& job) const;
+    // Whether `parsed`, prepared before other units were committed, is
+    // still what a prepare() now would parse: the same inputs key (config,
+    // include context and its macros). Its files' contents are the disk's
+    // either way.
+    bool parseStillValid(const Parsed& parsed, const ProjectConfig* config) const;
     // Persists `parsed` and returns compile()'s result; `includedFiles` as
     // in compile(). `refreshedFiles`: the files outside this compile whose
     // 'reference' diagnostics this compile cleared (it declared what they
@@ -210,6 +221,7 @@ private:
                                          const std::vector<std::string>& unitFiles,
                                          std::vector<bool>& resolved,
                                          const std::vector<size_t>* only);
+    Parsed parseTo(Prepared&& job, std::ostream* log) const;
     std::string inputsKeyFor(const std::string& path, const ProjectConfig* config,
                              std::optional<IncludeSiteRow>* context,
                              std::vector<MacroRow>* contextMacros) const;

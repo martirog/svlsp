@@ -61,11 +61,15 @@ public:
     // (CompilationController::setWalker): the live server passes its parse
     // worker's, so a lazily built library's parse memory stays out of the
     // server too (plan.md §6.33 C1). Unset, the parse runs in-process.
+    //
+    // `jobs` > 1 parses that many units at once (plan.md §6.34 S8,
+    // `--build-db --jobs`); only with the in-process walker.
     static Result build(const std::string& configPath, const std::string& outputPath,
                         std::ostream* progressLog = nullptr,
                         const std::string& currentVersion = "",
                         bool collectDocs = true,
-                        const CompilationController::Walker& walker = {});
+                        const CompilationController::Walker& walker = {},
+                        int jobs = 1);
 
     // For each `config.libraryDbSources` entry (plan.md §6.19 piece 3):
     // if its cachePath already exists on disk, leave it alone; otherwise

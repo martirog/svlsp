@@ -376,6 +376,11 @@ The setting is recorded in the database with the building binary's version,
 so rebuilding into the same `<db-path>` with the flag added or removed
 recompiles every file rather than keeping the cached ones as they were.
 
+`--jobs N` parses N files at once (default 1). Commits stay one at a time,
+and they take about half the time on a multi-unit project, so the gain is
+small: about 10% on a 120-unit testbench with 4 jobs, for 2.5 times the
+memory.
+
 `--build-db` requires `--output`; the reverse (`--output` with no
 `--build-db`) is ignored and the server starts normally. A bad or
 unreadable `<config-path>` exits with status 1 and an error on stderr,

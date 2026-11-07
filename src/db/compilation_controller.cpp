@@ -9,6 +9,7 @@
 #include <functional>
 #include <optional>
 #include <ostream>
+#include <sstream>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -436,7 +437,27 @@ CompilationController::Prepared CompilationController::prepare(const std::string
     return job;
 }
 
+CompilationController::Parsed CompilationController::parseBuffered(Prepared&& job) const
+{
+    std::ostringstream log;
+    Parsed parsed = parseTo(std::move(job), m_log ? &log : nullptr);
+    parsed.bufferedLog = log.str();
+    return parsed;
+}
+
+bool CompilationController::parseStillValid(const Parsed& parsed,
+                                            const ProjectConfig* config) const
+{
+    return inputsKeyFor(parsed.path, config, nullptr, nullptr) == parsed.inputsKey;
+}
+
 CompilationController::Parsed CompilationController::parse(Prepared&& job) const
+{
+    return parseTo(std::move(job), m_log);
+}
+
+CompilationController::Parsed CompilationController::parseTo(Prepared&& job,
+                                                             std::ostream* log) const
 {
     // The primary file's stat data, when the text compiled is the file's
     // (not an unsaved buffer): stat first, as the preprocessor does for the
@@ -450,7 +471,7 @@ CompilationController::Parsed CompilationController::parse(Prepared&& job) const
     }
 
     auto stripped = CompilerDirectiveStripper::strip(job.text, job.path);
-    auto preprocessed = job.preprocessor.process(stripped.source, job.path, m_log);
+    auto preprocessed = job.preprocessor.process(stripped.source, job.path, log);
     auto walked = walk(preprocessed.source, preprocessed.sourceMap, m_collectDocs,
                        job.initialScope);
     if (!m_collectDocs)
@@ -465,6 +486,10 @@ std::vector<ParseError> CompilationController::commit(Parsed&& parsed,
                                                       std::vector<std::string>* refreshedFiles)
 {
     if (refreshedFiles) refreshedFiles->clear();
+    if (m_log && !parsed.bufferedLog.empty()) {
+        *m_log << parsed.bufferedLog;
+        m_log->flush();
+    }
     // One transaction (plan.md §6.34 S5): a reader on another connection
     // never sees half a unit.
     Database::Transaction txn(m_sdb.database(), "unit_commit");
