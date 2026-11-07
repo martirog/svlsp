@@ -6922,8 +6922,8 @@ code reviews can show that a rewrite does not regress latency or memory.
 ### 6.34 Background Project Loading, a Persistent Project DB, and Incremental Refresh (branch switches)
 
 **Status:** planned 2026-11-07, at the user's request; decisions D1-D4
-taken the same day (see "Decisions" at the end). S0 (baselines) done
-2026-11-07. The next step is S1.
+taken the same day (see "Decisions" at the end). S0 (baselines) and S1
+(file identity, schema v17) done 2026-11-07. The next step is S2.
 Grows handoff "next step 1" (after C9: the commit still holds the data
 mutex; didOpen / didSave compile on the message thread) into a whole
 plan, and closes §6.19's open staleness question with the same mechanism.
@@ -7079,34 +7079,86 @@ Findings:
   A candidate follow-up: skip the check for files that declare no
   symbols.
 
-**S1 -- File identity (schema v17; S2's `project_info` and `unit_checks` tables are v18 if they land separately).**
-- A stable content hash: vendor XXH3-128 (single header, BSD-2) or use
-  SHA-256. `std::hash` is not guaranteed stable across builds. Changing
-  the hash changes every stored hash, which is fine because a schema or
-  version change forces a rebuild anyway.
-- `files` gains `size` and `mtime_ns`, and **every** file row gets its
-  real hash, included files too, from the text the preprocessor read.
-- A primary file's row gains `inputs_fp`, a hash of:
-  - its own hash;
-  - the ordered (resolved path, hash) list of its transitive includes;
-  - a config fingerprint: defines, ordered include dirs, the `-v`/`-y`
-    settings, `collectDocs`;
-  - its include context: initial scope and the includer's macros, from
-    `include_sites`.
+**S1 -- File identity -- done 2026-11-07 (schema v17).** A compile's
+result is reused only while everything it was made from is unchanged.
+Before, only the primary text counted (S0 F1).
+- `contentHash` (`src/compiler/content_hash.h`): SHA-256, written out
+  (about 80 lines) instead of vendoring XXH3, since no copy was available
+  offline and SHA-256 has test vectors to pin it. `hashContent` uses it.
+  `statFile` / `nowNs` are in `file_utils.h`.
+- The preprocessor reports each file it read once, as an `IncludeSite`
+  carrying the file's identity: the hash of the text read, and size /
+  mtime from a stat taken before reading, at `statNs`. The new
+  `PreprocessorResult::includeDirectives` lists each distinct `include`
+  (the name as written, the file it is written in, and what it resolved
+  to, `""` when not found). `resolveInclude()` is the preprocessor's own
+  search, exposed.
+- `files` gained `size`, `mtime_ns`, `stat_ns` and `inputs_fp`; the new
+  table `include_directives` holds each unit's directives.
+  - Every included file's row now gets its real hash, not `""`.
+  - A primary file gets stat data only when the compiled text is the
+    file's own; an unsaved buffer gets `size = -1`.
+  - `inputs_fp` (primary files only) is the SHA-256 of:
+    - the inputs key: the config's defines, `-y` / `-v` / `+libext+`, the
+      mode, `collectDocs`, and which checks run;
+    - the include context: scope, includer and line, and the includer's
+      macros;
+    - the primary text's hash;
+    - each file read with its hash, by path.
+  - `upsertFile` with a changed hash clears `inputs_fp`, and so does an
+    includer's compile rewriting the file's rows (as the hash reset to
+    `""` did before).
+- `prepare`'s cache check (`inputsUnchanged`): every recorded directive
+  still resolves to the same file, and the fingerprint recomputed from
+  each read file's *current* hash matches. The current hash is the stored
+  one when size and mtime match and the stat was not "racy" (taken within
+  2 s of the mtime); otherwise the file is read and hashed.
+- **Changed from the plan:** the include-dir list is *not* part of the key.
+  Each directive is re-resolved instead. With the dirs in the key, the
+  `gen` A -> B switch recompiled nearly every unit (43.8 s), because
+  variant B adds one agent include dir and drops another, as real
+  branches do. Re-resolving costs a few stats per directive, and it
+  closes the "shadowing" gap the plan disclosed: a new file earlier in
+  the path now misses the cache. A missing include is reused while the
+  file is still missing. Other include failures (a cycle, the depth
+  limit, an unreadable file) are never reused.
+- Found by a test and fixed: a file the unit no longer includes, and no
+  other unit does, kept the rows the unit's last compile wrote
+  (`clearFileRows`). Its `files` row stays; deleting rows of files that
+  are gone is S2's.
+- `file_includes` now lists every file the compile read, including a file
+  holding only `include`s (UVM's `uvm_tlm.svh`). Before, it listed only
+  files with records, errors or macros, so an edit to such a wrapper never
+  reached `includersOf`.
+- Tests:
+  - unit 1100 -> **1118**: SHA-256 vectors and the block edges;
+    `statFile`; the identity carried by each site; directives;
+    `resolveInclude`;
+  - 10 controller cases `[file-identity]`: unchanged; an edited included
+    file; an edited wrapper; a missing include appearing; a define
+    change; include dirs added with the same resolution (still a hit);
+    a shadowing dir; identities recorded; racy re-hash; the trusted stat
+    shortcut;
+  - the v17 migration, and a `--build-db` rerun after an `.svh` edit.
 
-  The cache hit in `prepare` becomes "inputs_fp matches" instead of
-  "primary hash matches". That also fixes the `--build-db` bug above.
-- The racy-mtime rule (git's "racy git" fix): when the recorded mtime is
-  within the filesystem's granularity (about 2 s) of when the row was
-  written, the stat check can't be trusted. That file is hashed on the
-  next refresh even when its stat data matches.
-- Disclosed gap: a new file that would *shadow* an include, by appearing
-  earlier in the include path, isn't seen until the config fingerprint
-  changes or a `--rehash` refresh runs. A removed included file is seen
-  (its stat fails).
-- Tests: the hash is stable across two processes; an included-file-only
-  change misses the cache (fails on the old code); the racy-mtime case;
-  a `--build-db` rerun after an `.svh` change (fails on the old code).
+  With the old cache key put back, 7 of the new cases fail. Emacs
+  329/329, corpus 1563 / 31, `make test-integration-uvm` 15/15 (release),
+  `make perf-check` on `small` / `uvm` / `gen_tb` / `uvm_src`: no
+  regression.
+- `refresh_perf` after S1 (baselines refreshed):
+
+  | step | `uvm` before -> after | `gen` before -> after |
+  |---|---|---|
+  | no change | 0.1 s -> 0.1 s, correct | 0.5 -> 0.2 s, correct |
+  | edit one included file | 0.0 s **stale** -> 105.8 s, correct | 0.6 s **stale** -> 2.4 s, correct |
+  | revert it | 0.0 -> 106.7 s, correct | 0.6 -> 2.3 s, correct |
+  | switch A -> B | 0.0 s **stale** -> 99.0 s, correct | 7.0 s **stale** -> 5.3 s, stale: only the removed agent's leftover rows (S2) |
+  | switch B -> A | 0.0 s -> 101.7 s, correct except one bare `files` row of a B-only file | 5.0 s **stale** -> 6.6 s, the same leftovers (S2) |
+
+  UVM is one unit, so a correct refresh there is a full recompile
+  (S0 F3). `gen` recompiles only the changed units: a 29-file switch
+  takes 5.3 s against a 52 s full build, much of it still fsync
+  (S0 F2).
 
 **S2 -- The refresh primitive (`ProjectRefresher`, `svlsp_db`).**
 `plan(config, sdb) -> RefreshPlan`, then `apply(plan, controller)`.
@@ -7345,11 +7397,27 @@ handoff "next step 1".
   option for users who want the DB refreshed with no editor open (it
   defers to a running server, S3).
 
-#### What other work must know (once implemented)
+#### What other work must know
 
-To be written when the stages land: the cache key becomes `inputs_fp`; the
-background queue becomes the only path into a compile; diagnostics are held
-back while indexing; and a second connection reads the DB.
+After S1:
+- A compile's cache key is `files.inputs_fp`, not the primary's
+  `content_hash`. Anything that rewrites a file's rows outside a compile
+  of it must clear that file's `inputs_fp` (`upsertFile` with another
+  hash does), or its next compile reuses a result that no longer matches
+  the DB.
+- Something new that a compile's result depends on must go into the
+  inputs key (`configKey` / `addContext` in `compilation_controller.cpp`).
+  The include dirs are deliberately not in it: they count through
+  `include_directives`.
+- `file_includes` holds every file a unit read, not only those with rows.
+- `IncludeSite` is once per file now (the first `include of it), carrying
+  its identity. `PreprocessorResult` has a sixth member,
+  `includeDirectives`; the tests' structured bindings name it `dirs_`.
+- Store a content hash only through `contentHash` (SHA-256 hex).
+
+To be written as the later stages land: the background queue becomes the
+only path into a compile (S4); diagnostics are held back while indexing
+(S4); a second connection reads the DB (S5).
 
 ---
 

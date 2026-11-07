@@ -184,7 +184,20 @@ Next steps:
    Findings: requests during the load wait out the whole compile (`gen_tb`
    8.4 s, `uvm_src` 99.5 s). A `--build-db` rerun misses edits to included
    files and branch switches (confirmed: stale rows, at once). File-backed
-   builds are mostly fsync (`gen`: 59 s on ext4, 8.9 s on tmpfs). Next: S1.
+   builds are mostly fsync (`gen`: 59 s on ext4, 8.9 s on tmpfs).
+
+   **S1 (file identity, schema v17) is done** (2026-11-07; plan.md §6.34
+   S1). A compile is reused only when its fingerprint matches (`inputs_fp`:
+   the config's defines and settings, the include context, the primary
+   text, each file it read). Every `include` must also still resolve the
+   same way (`include_directives`); the include-dir list is not in the
+   key. A content hash is SHA-256 now. `--build-db` reruns are correct
+   after edits and switches, apart from the rows of files the config no
+   longer lists (S2). On `gen`, a 29-file switch takes 5.3 s against a
+   52 s full build. Unit 1118/1118, Emacs 329/329, corpus 1563 / 31,
+   `test-integration-uvm` 15/15, `perf-check` (small / uvm / gen_tb /
+   uvm_src) no regression. Next: S2 (the refresh primitive: deleted files,
+   config changes, re-run cross-file checks).
 2. Optional, LL cost on files with syntax errors (only they reach LL now):
    the remaining LL time is true ambiguity in `primary` (decision 1068)
    and `hierarchical_identifier` (1103): `a.b` is a name, a name + select
@@ -492,7 +505,7 @@ by name instead of from the typedef's scope, and merged duplicated helpers
   in workspace symbols, no completion inside comments/strings, and doc
   comments (§6.31) in hover, signature help and completion resolve.
 - Test baselines:
-  - unit: **1100 cases**, all passing (2026-11-03, symlinked paths; 1098 with the fail-closed callee check; 1096 on 2026-10-31, §6.21 step 3; 1083 with step 2; 1077 with step 1; 1070 on 2026-10-27, library rename fails closed; 1067 with the §6.30 leftovers; 1059 with C10; 1053 with C9; 1051 with C8; 1048 on 2026-10-25, C4; 1047 with the C2 gap fixes; 1046 with C2; 1041 on 2026-10-24, C1; 1040 before the idle policy; 1031 with C7; 1029 on the receivers tree;
+  - unit: **1118 cases**, all passing (2026-11-07, §6.34 S1 file identity; 1100 on 2026-11-03, symlinked paths; 1098 with the fail-closed callee check; 1096 on 2026-10-31, §6.21 step 3; 1083 with step 2; 1077 with step 1; 1070 on 2026-10-27, library rename fails closed; 1067 with the §6.30 leftovers; 1059 with C10; 1053 with C9; 1051 with C8; 1048 on 2026-10-25, C4; 1047 with the C2 gap fixes; 1046 with C2; 1041 on 2026-10-24, C1; 1040 before the idle policy; 1031 with C7; 1029 on the receivers tree;
     1016 at 4e8a10d) (no `[!shouldfail]` known gaps left
     -- the `` `define `` references case passes since the macro follow-up)
   - Emacs functional: **329/329** (2026-11-03, test_53 new; 328 on 2026-10-31, test_52 new; 326 on 2026-10-30, test_51 new; 321 on 2026-10-27, test_50 new; 318 with test_49 new and 2 test_47 cases; 309 on 2026-10-23, test_48 new; 305 with test_47)
@@ -794,7 +807,7 @@ ASan+UBSan (10-100x slower) — use release for anything corpus-sized.
 | LSP framework | lsp-framework v1.3.1 (submodule) |
 | Unit tests | Catch2 v3.8.1 (FetchContent) |
 | Parser | ANTLR4 v4.13.2 (FetchContent) |
-| Database | SQLite3 amalgamation, schema v16 |
+| Database | SQLite3 amalgamation, schema v17 |
 | Preprocessor | in-house C++ (not slang) |
 | Transport | stdio |
 
@@ -857,9 +870,9 @@ uses `SymbolDatabase::pickSameFilePreferred` (the simpler half of
 - `""` as a *scope* means top level — `findSymbolsInScope("")` returns every
   top-level symbol, so guard against an empty resolved type.
 
-### Database (`src/db/`, schema v14)
+### Database (`src/db/`, schema v17)
 
-Tables: `files`, `symbols (kind, name, line, col, parent, detail, end_line,
+Tables: `files` (identity since v17: `content_hash` SHA-256, `size`, `mtime_ns`, `stat_ns`, `inputs_fp`), `include_directives`, `symbols (kind, name, line, col, parent, detail, end_line,
 scope, access)`, `diagnostics (… source, subject)`, `symbol_docs`, `imports (pkg_name, item, is_export, scope)`,
 `instantiations`, `library_include_dirs`, `library_build_info`,
 `file_includes`, `macros`. Migrations run automatically in `database.cpp`.
