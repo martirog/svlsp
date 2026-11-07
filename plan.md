@@ -6922,9 +6922,10 @@ code reviews can show that a rewrite does not regress latency or memory.
 ### 6.34 Background Project Loading, a Persistent Project DB, and Incremental Refresh (branch switches)
 
 **Status:** planned 2026-11-07, at the user's request; decisions D1-D4
-taken the same day (see "Decisions" at the end). S0-S7 done 2026-11-07
-(in the order S0, S1, S2, S4, S3, S5, S6, S7; schema v18). Next: S3b,
-then S8.
+taken the same day (see "Decisions" at the end). S0-S7 and S3b done
+2026-11-07 (in the order S0, S1, S2, S4, S3, S5, S6, S7, S3b; schema v18).
+D1's "later" for S3b was brought forward at the user's request (all S
+points). Next: S8.
 Grows handoff "next step 1" (after C9: the commit still holds the data
 mutex; didOpen / didSave compile on the message thread) into a whole
 plan, and closes §6.19's open staleness question with the same mechanism.
@@ -7446,11 +7447,31 @@ A job pushed twice runs once: the better rank wins, and the flags merge.
   - Emacs `test_54_project_db.sh`: a `--build-db`, a fresh workspace, a
     hover, and no compile.
 
-**S3b -- The XDG cache becomes the default DB (D1), later.** A project with
+**S3b -- The XDG cache becomes the default DB (D1) -- done 2026-11-07.** A project with
 no DB setting gets `$XDG_CACHE_HOME/svlsp/<hash of the config's absolute
 path>.db`; `"database": ":memory:"` opts out. Tests: a project without the
 key gets that path; two configs get two DBs; the opt-out keeps
 `:memory:`.
+
+*Outcome -- done 2026-11-07.*
+- `ProjectRegistry::defaultDatabasePath`:
+  `$XDG_CACHE_HOME/svlsp/<first 16 hex digits of the SHA-256 of the
+  config's absolute path>.db`. It uses `~/.cache` when the variable is
+  unset, and gives no path when `HOME` isn't set either.
+- The server uses it for a project whose config names no `database`.
+  `":memory:"` opts out. `initializationOptions.svlsp.database` still wins.
+- Test runs never touch the user's cache:
+  - the unit tests set `XDG_CACHE_HOME` to a directory of the run's own (a
+    Catch2 listener in `tests/unit/main_test.cpp`);
+  - so do `emacs-test-daemon.sh` (removed on exit) and `lsp_perf.py` (the
+    workspace's `.xdg-cache`).
+- The shared Emacs server now runs on a file DB, with requests going
+  through the S5 reader, for the whole suite.
+- Tests: two configs give two paths under the cache; a project without the
+  key gets its file; `":memory:"` writes none. Unit 1146/1146, Emacs
+  335/335. `perf-check` (small / uvm / gen_tb / uvm_src, now on file DBs
+  by default): no regression. `gen_tb` gives 1.8 s to first diagnostics
+  and 10.3 s to indexed; `uvm_src` 100.4 s.
 
 **S5 -- The commit stops blocking requests -- done 2026-11-07.** This is what remains of
 handoff "next step 1".
