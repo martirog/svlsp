@@ -6922,10 +6922,9 @@ code reviews can show that a rewrite does not regress latency or memory.
 ### 6.34 Background Project Loading, a Persistent Project DB, and Incremental Refresh (branch switches)
 
 **Status:** planned 2026-11-07, at the user's request; decisions D1-D4
-taken the same day (see "Decisions" at the end). S0 (baselines), S1
-(file identity, schema v17), S2 (refresh, schema v18), S4 (background
-loading), S3 (file-backed DB) and S5 (a reader connection) done
-2026-11-07. The next step is S6.
+taken the same day (see "Decisions" at the end). S0-S6 done 2026-11-07
+(in the order S0, S1, S2, S4, S3, S5, S6; schema v18). The next step is
+S7.
 Grows handoff "next step 1" (after C9: the commit still holds the data
 mutex; didOpen / didSave compile on the message thread) into a whole
 plan, and closes §6.19's open staleness question with the same mechanism.
@@ -7498,7 +7497,7 @@ handoff "next step 1".
   savepoints included) or not at all. The S3 server cases already run
   their requests through the reader.
 
-**S6 -- Noticing branch switches.**
+**S6 -- Noticing branch switches -- done 2026-11-07.**
 - *`workspace/didChangeWatchedFiles`:* register it dynamically at
   `initialized` for `**/*.{sv,svh,v,vh,svi,f}` and the config file names.
   The many events of one checkout are coalesced (debounce about 500 ms)
@@ -7516,6 +7515,49 @@ handoff "next step 1".
 - Tests: an Emacs test that swaps a fixture file on disk, sends the
   notification, and checks that definition moved and diagnostics changed;
   a unit case where 50 events give one refresh.
+
+*Outcome -- done 2026-11-07.*
+- At `initialized`, when the client supports dynamic registration, the
+  server registers `workspace/didChangeWatchedFiles` for
+  `**/*.{sv,svh,v,vh,svi,f}`, `**/.svlsp.json` and `**/svlsp.json`.
+- Events on open documents are ignored. The others restart a 500 ms
+  debouncer, which queues one `Refresh` per loaded project.
+- A `Refresh` job:
+  - rereads the config;
+  - then runs the load's own steps (prologue, units, finish);
+  - is pushed again after a load or refresh still in progress.
+- `svlsp.refresh` refreshes every loaded project. With `"--rehash"`, the
+  plan reads every file. A file whose content changed behind unchanged stat
+  data loses its stat data, so the cache check reads it too.
+- `docs/usage.md` covers background indexing, the project DB, file
+  watching, lsp-mode's watch threshold and inotify, `svlsp.refresh`, and a
+  `post-checkout` hook.
+- Tests:
+  - a server case: 50 events give one refresh that compiles only the
+    changed file; an event on the open document gives none; `svlsp.refresh`
+    refreshes and compiles nothing;
+  - Emacs `test_55_watched_files.sh`: a file changed on disk and the
+    notification; definition follows the moved declaration; the removed
+    declaration's use gets its warning.
+- Numbers after S2-S6 (release, AC; baselines refreshed: `gen_tb`,
+  `uvm_src_db` new, `refresh_gen`, `refresh_uvm`):
+
+  | | before (S0 / S1) | after |
+  |---|---|---|
+  | `gen_tb` open -> first diagnostics | 8.4 s | **1.8 s** |
+  | `gen_tb` during-load documentSymbol | 8.4 s | 1.7 s (hover / completion on other units: answered, empty) |
+  | `gen_tb` open -> indexed | 8.4 s | 10.9 s (see below) |
+  | `uvm_src` open -> first diagnostics | 99.5 s | 99.2 s (one unit: the opened file's unit is all of it, F3) |
+  | `gen` `--build-db` full build, disk | 59.0 s | **8.4 s** (WAL, one transaction per commit) |
+  | `gen` switch A -> B | 7.0 s, stale | 5.0 s, same as a fresh build |
+  | `gen` edit one included file | 0.6 s, stale | 1.9 s, same as a fresh build |
+  | `uvm` every step | stale or 100 s | correct; 96-98 s (one unit) |
+
+  `make perf-check` on `small` / `uvm` / `gen_tb` / `uvm_src`: no
+  regression. **Open:** the whole `gen_tb` load takes 10.9 s against 8.4 s
+  before S4: the queue's per-unit work (two `declarationsOfUnit` per unit,
+  the pre-scan, held-back republishing) costs about 20 %. It is a candidate
+  for S8.
 
 **S7 -- Stale library DBs (closes §6.19's open question).**
 - `--build-db` records S1's per-file stat data and hashes in the library
@@ -7607,9 +7649,24 @@ After S1:
   `includeDirectives`; the tests' structured bindings name it `dirs_`.
 - Store a content hash only through `contentHash` (SHA-256 hex).
 
-To be written as the later stages land: the background queue becomes the
-only path into a compile (S4); diagnostics are held back while indexing
-(S4); a second connection reads the DB (S5).
+After S2-S6:
+- **Every compile in the server goes through `CompileQueue`**
+  (`enqueueCompile`). Nothing may compile on the message thread. A job
+  that needs the data mutex takes it only for prepare and commit.
+- A project load or refresh is a `ProjectRefresher` plan whose units are
+  queue jobs. Something new that a unit's compile changes must be
+  recorded through `ProjectRefresher::unitCompiled`.
+- **While indexing (`indexing()`), diagnostics with source 'reference',
+  'call' or 'library' are not published.** A new cross-file diagnostic
+  must use a source of its own and be added to that list. Missing-argument
+  diagnostics are 'call' now, no longer 'compile'.
+- A check that reads other units must store its inputs in `unit_checks`
+  and re-run from them in `recheckUnits`, or a refresh leaves it stale.
+- With a file DB, requests read `m_readDb` (another connection), not
+  `m_symbolDb`. Use `Request` in a handler; never `m_symbolDb` directly.
+  `DocumentStore` locks itself and returns copies.
+- A write outside `commit` that a reader must see whole goes in a
+  `Database::Transaction`. `ATTACH` can't run inside one.
 
 ---
 
