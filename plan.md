@@ -6924,7 +6924,8 @@ code reviews can show that a rewrite does not regress latency or memory.
 **Status:** planned 2026-11-07, at the user's request; decisions D1-D4
 taken the same day (see "Decisions" at the end). S0 (baselines), S1
 (file identity, schema v17), S2 (refresh, schema v18), S4 (background
-loading) and S3 (file-backed DB) done 2026-11-07. The next step is S5.
+loading), S3 (file-backed DB) and S5 (a reader connection) done
+2026-11-07. The next step is S6.
 Grows handoff "next step 1" (after C9: the commit still holds the data
 mutex; didOpen / didSave compile on the message thread) into a whole
 plan, and closes §6.19's open staleness question with the same mechanism.
@@ -7452,7 +7453,7 @@ path>.db`; `"database": ":memory:"` opts out. Tests: a project without the
 key gets that path; two configs get two DBs; the opt-out keeps
 `:memory:`.
 
-**S5 -- The commit stops blocking requests.** This is what remains of
+**S5 -- The commit stops blocking requests -- done 2026-11-07.** This is what remains of
 handoff "next step 1".
 - One transaction per `commit`. The inner `BEGIN`/`COMMIT` pairs become
   `SAVEPOINT`s. Then a reader never sees half a unit.
@@ -7468,6 +7469,34 @@ handoff "next step 1".
 - Measure with C9's 350 ms/char typing scenario: the max completion round
   trip (302 ms, a keystroke landing in a commit) should drop to the
   median.
+
+*Outcome -- done 2026-11-07.*
+- `Database::Transaction` (a named `SAVEPOINT`) wraps each `commit`, a
+  refresh's removals (`begin`) and its `finish`. `SymbolDatabase`'s own
+  `BEGIN` / `COMMIT` pairs became savepoints, so they nest inside.
+- With the server as **Writer** of a DB file, requests go through a second,
+  read-only connection (`m_readDb`). `LanguageServer::Request` picks
+  the connection:
+  - with the reader, it takes the request log's mutex (`m_readMutex`) and
+    runs the request in one read transaction, so all of its queries see one
+    commit;
+  - otherwise, `m_dataMutex` and the writer, as before.
+- The reader syncs itself when `m_commitGeneration` moved: it attaches what
+  the writer attached, then clears its caches. Every commit and every
+  removal step bumps the generation.
+- Requests read `m_store` without a lock in reader mode: only the message
+  thread writes it.
+- `TimedLock` writes its log line under a mutex of its own.
+- `:memory:` (the default) keeps `m_dataMutex`: a chunked commit was not
+  needed (see the numbers).
+- Measured with the new `tests/perf/uvm_src_db.json` (`uvm_src` with
+  `"database"`): typing max 14.2 ms, against 13.8 ms in memory. At this
+  scenario's typing pace no keystroke lands in a commit, so C9's 302 ms
+  max doesn't show up in either case. The gain is in the design (a request
+  never takes the writer's mutex); this scenario can't show it.
+- Test: a reader on another connection sees a commit whole (nested
+  savepoints included) or not at all. The S3 server cases already run
+  their requests through the reader.
 
 **S6 -- Noticing branch switches.**
 - *`workspace/didChangeWatchedFiles`:* register it dynamically at
