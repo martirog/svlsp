@@ -7,6 +7,7 @@
 #include <lsp/messagehandler.h>
 #include <lsp/io/standardio.h>
 #include "change_debouncer.h"
+#include "compile_queue.h"
 #include "completion.h"
 #include "definition.h"
 #include "diagnostics.h"
@@ -23,6 +24,13 @@
 #include "db/database.h"
 #include "db/symbol_database.h"
 #include "db/compilation_controller.h"
+#include "db/project_refresher.h"
+#include <atomic>
+#include <condition_variable>
+#include <future>
+#include <map>
+#include <set>
+#include <unordered_set>
 
 // LanguageServer wires the lsp-framework transport and dispatch layer to the
 // ServerState business logic.  All I/O happens here; ServerState stays pure.
@@ -54,14 +62,11 @@ private:
     lsp::MessageHandler   m_messageHandler;
     DiagnosticsPublisher  m_diagnostics; // must follow m_messageHandler
 
-    // Guards every access to m_store, m_db, m_symbolDb, m_compiler, and
-    // m_projects. Needed because compileAndPublish() can now run on
-    // m_debouncer's background thread concurrently with the message-read
-    // thread handling a request (hover/definition/completion/documentSymbol/
-    // workspace-symbol) or another notification (didOpen/didClose) — see
-    // plan.md §6.8. A single coarse mutex is the documented "minimum fix";
-    // a compile holds it only to read and to write the DB, not across its
-    // parse (compileCurrent).
+    // Guards every access to m_store, m_db, m_symbolDb, m_compiler,
+    // m_projects and m_loads: compiles run on m_queue's thread while the
+    // message-read thread handles requests and notifications (plan.md §6.8,
+    // §6.34 S4). A compile holds it only to read and to write the DB, not
+    // across its parse (compileCurrent).
     std::mutex m_dataMutex;
     // Runs compiles one at a time: one's prepare and commit must not
     // interleave with another's (CompilationController::prepare). Taken
@@ -69,29 +74,82 @@ private:
     std::mutex m_compileMutex;
     std::ostream* m_requestLog; // `--log-requests`; null = off
 
+    // Documents whose compile since didOpen / didSave hasn't run yet, by
+    // path: a request on one waits for it (plan.md §6.34 S4) -- the
+    // document's own answers need its own compile, not the project load's.
+    std::mutex              m_awaitMutex;
+    std::condition_variable m_awaitCv;
+    std::set<std::string>   m_awaiting;
+    void awaitCompile(const std::string& path);
+    void compiled(const std::string& path);
+    void waitForDocument(const lsp::DocumentUri& uri);
+    bool awaiting(const lsp::DocumentUri& uri);
+
+    // Answers request M with `body`: at once, or -- when `uri` still waits
+    // for its compile -- from another thread once it has run, so the
+    // message thread keeps handling messages (the client's answers to the
+    // server's own requests among them).
+    template <typename M, typename F>
+    lsp::AsyncRequestResult<M> answer(const lsp::DocumentUri& uri, F body)
+    {
+        if (!awaiting(uri)) {
+            std::promise<typename M::Result> done;
+            try {
+                done.set_value(body());
+            } catch (...) {
+                done.set_exception(std::current_exception());
+            }
+            return done.get_future();
+        }
+        return std::async(std::launch::async, [this, uri, body = std::move(body)]() {
+            waitForDocument(uri);
+            return body();
+        });
+    }
+
+
     // "<path>:<line>:<character>" for a request's log line ("" with no log).
     std::string requestWhere(const lsp::DocumentUri& uri, const lsp::Position& pos) const;
 
+    // A project being loaded or refreshed in the background (plan.md §6.34
+    // S4): its refresh plan, the refresh's progress, and the units of the
+    // plan not compiled yet. Guarded by m_dataMutex; touched by the queue's
+    // thread, read by requests (indexing()).
+    struct ProjectLoad {
+        ProjectRefresher::Plan     plan;
+        ProjectRefresher::Progress progress;
+        std::unordered_set<std::string> pending;
+        size_t total{0};
+        std::string progressToken; // "" = no progress reported
+    };
+    std::map<std::string, ProjectLoad> m_loads; // by config path
+    std::atomic<bool> m_indexing{false}; // !m_loads.empty(), for svlsp.waitForIndexing
+
+    // Every path published so far (guarded by m_publishMutex). A load's
+    // units publish only these and the open documents: a project load must
+    // not flood the client with every file's diagnostics.
+    std::mutex m_publishMutex;
+    std::unordered_set<std::string> m_published;
+
+    // `window/workDoneProgress/create` tokens the client acknowledged.
+    std::mutex m_progressMutex;
+    std::set<std::string> m_progressReady;
+    std::map<std::string, std::string> m_progressEndedEarly; // token -> end message
+    int m_nextProgressToken{0};
+
+    // Every compile runs here (plan.md §6.34 S4): didOpen, debounced
+    // didChange, didSave and its includers (plan.md §6.4), and a project's
+    // load, unit by unit. Declared after everything a job uses, so it is
+    // destroyed (its thread joined) first -- after m_debouncer, which pushes
+    // into it.
+    CompileQueue m_queue;
+
     // Debounces textDocument/didChange: coalesces a burst of edits into one
-    // compileAndPublish() call, fired on its own thread once typing pauses —
-    // see plan.md §6.8 and change_debouncer.h. Declared last so it is
-    // destroyed (and its worker thread joined) before any member it calls
-    // back into.
+    // compile, queued from its own thread once typing pauses -- see plan.md
+    // §6.8 and change_debouncer.h. Declared last so it is destroyed (and its
+    // thread joined) before the queue it pushes into.
     ChangeDebouncer m_debouncer;
 
-    // Cross-file invalidation (plan.md §6.4): on didSave, every file whose
-    // own compiled unit `` `include ``s the saved file (SymbolDatabase::
-    // includersOf) is scheduled here instead of recompiled inline — its own
-    // background thread drains them one at a time, each independently
-    // mutex-scoped (see forceRecompileAndPublish), so a large fan-out from a
-    // widely-`` `include ``d file never holds m_dataMutex for longer than one
-    // file's compile time and never blocks the message-read thread. Reuses
-    // ChangeDebouncer rather than a bespoke queue -- its per-key coalescing
-    // is exactly right here too (a file already pending from the user's own
-    // typing that also gets flagged as a dependent should still fire once,
-    // not twice). Declared last for the same destruction-order reason as
-    // m_debouncer above.
-    ChangeDebouncer m_dependencyRechecker;
 
     void registerHandlers();
 
@@ -112,8 +170,13 @@ private:
     // prepare and commit, so requests and notifications are handled during
     // the parse. Logs one `what` line over the whole compile. Do not call
     // while holding either mutex.
+    // `project`, when set, is the config path the unit compiles under (a
+    // load's unit), instead of the one discovered for it. While a project
+    // is indexing, the diagnostics that depend on other units are held back
+    // (heldBack()).
     std::optional<CompileOutcome> compileCurrent(const lsp::DocumentUri& uri, bool openOnly,
-                                                 bool forceRecompile, const char* what);
+                                                 bool forceRecompile, const char* what,
+                                                 const std::string& project = "");
     void publish(const lsp::DocumentUri& uri, CompileOutcome&& out);
 
     // Converts already-computed ParseErrors to LSP Diagnostics.
@@ -124,7 +187,27 @@ private:
     // m_dataMutex. Caller must hold m_dataMutex while calling this. Shared
     // by compileAndPublish and forceRecompileAndPublish.
     std::vector<std::pair<lsp::DocumentUri, lsp::Array<lsp::Diagnostic>>>
-    collectIncludedDiagnostics(const std::vector<std::string>& paths);
+    collectIncludedDiagnostics(const std::vector<std::string>& paths, bool holdBack = false);
+
+    // `path`'s diagnostics from the DB, without the ones that depend on
+    // other units when `holdBack` (declared-type warnings, missing
+    // arguments, unresolved instantiations). Caller holds m_dataMutex.
+    lsp::Array<lsp::Diagnostic> storedDiagnostics(const std::string& path, bool holdBack);
+
+    // Whether a project is loading or refreshing. Caller holds m_dataMutex.
+    bool indexing() const { return !m_loads.empty(); }
+
+    // The queue's jobs.
+    void runJob(const CompileQueue::Job& job);
+    void loadProject(const std::string& configPath);
+    void compileUnit(const CompileQueue::Job& job);
+    void finishProject(const std::string& configPath);
+
+    // Work-done progress for a load (plan.md §6.34 S4); no-ops when the
+    // client doesn't support it.
+    std::string beginProgress(const std::string& title, const std::string& message);
+    void reportProgress(const std::string& token, const std::string& message, unsigned percent);
+    void endProgress(const std::string& token, const std::string& message);
 
     // Returns `path`'s current text: m_store's live copy if open, else a
     // fresh disk read. std::nullopt if neither is available (e.g. a file
@@ -134,24 +217,8 @@ private:
     // arbitrary file the DB knows about," not just the requesting document.
     std::optional<std::string> currentTextFor(const std::string& path);
 
-    // Compiles the given (already-open) document's current text and
-    // publishes its diagnostics, plus diagnostics for every `` `include ``d
-    // file touched by this compile (read back from the DB — those files were
-    // never `didOpen`ed, so they're published with no client-tracked
-    // version). Locks m_dataMutex itself — do not call while already holding
-    // it. If the document was closed in the meantime (e.g. a debounced fire
-    // racing a didClose), this is a harmless no-op.
-    void compileAndPublish(const lsp::DocumentUri& uri);
+    // Queues a compile of `path` (a Unit job) at `rank`.
+    void enqueueCompile(const std::string& path, int rank, bool force = false,
+                        bool openOnly = true, bool publishAll = true);
 
-    // Cross-file invalidation (plan.md §6.4): force-recompiles `path`
-    // (bypassing CompilationController's content-hash cache — `path`'s own
-    // text may be unchanged, only something it `` `include ``s changed) and
-    // publishes its diagnostics, plus every included file's own. Reads
-    // current text from m_store if `path` is open (attaching its real
-    // client-tracked version), else from disk (no version — never
-    // `didOpen`ed). A disk read failure (e.g. the file was deleted since
-    // being scheduled) is silently skipped. Locks m_dataMutex itself; called
-    // from m_dependencyRechecker's own background thread, never inline from
-    // a request/notification handler.
-    void forceRecompileAndPublish(const std::string& path);
 };

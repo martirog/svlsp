@@ -51,9 +51,15 @@ const ProjectConfig* ProjectRegistry::loadAndCache(const std::string& configPath
     // project file's location -- pass its own directory explicitly.
     // ProjectManifestParser already resolves against the manifest's own
     // directory internally, so it needs no such override.
-    ProjectConfig config = endsWith(configPath, ".json")
-        ? ProjectManifestParser::parse(configPath)
-        : FilelistParser::parse(configPath, fs::path(configPath).parent_path().string());
+    ProjectConfig config = parseConfig(configPath);
+
+    if (m_onNew) {
+        auto owned = std::make_unique<ProjectConfig>(std::move(config));
+        const ProjectConfig* raw = owned.get();
+        m_loaded[configPath] = std::move(owned);
+        m_onNew(configPath);
+        return raw;
+    }
 
     // Build-and-cache any lazily-referenced library DBs (plan.md §6.19
     // piece 3) before compiling -- turns each libraryDbSources entry into
@@ -62,7 +68,8 @@ const ProjectConfig* ProjectRegistry::loadAndCache(const std::string& configPath
     // The server's parse (its worker, plan.md §6.33 C1) builds them too.
     LibraryDbBuilder::resolveLibraryDbSources(config, nullptr, "", m_controller.walker());
 
-    ProjectCompiler::loadProject(config, m_controller, m_sdb);
+    ProjectCompiler::loadProject(config, m_controller, m_sdb,
+                                 fs::absolute(configPath).lexically_normal().string());
 
     auto owned = std::make_unique<ProjectConfig>(std::move(config));
     const ProjectConfig* raw = owned.get();
@@ -70,11 +77,30 @@ const ProjectConfig* ProjectRegistry::loadAndCache(const std::string& configPath
     return raw;
 }
 
+ProjectConfig ProjectRegistry::parseConfig(const std::string& configPath) {
+    return endsWith(configPath, ".json")
+        ? ProjectManifestParser::parse(configPath)
+        : FilelistParser::parse(configPath, fs::path(configPath).parent_path().string());
+}
+
+std::string ProjectRegistry::configPathFor(const std::string& filePath) const {
+    if (!m_explicitConfigPath.empty()) return m_explicitConfigPath;
+    return discoverConfigPath(fs::path(filePath).parent_path().string());
+}
+
 const ProjectConfig* ProjectRegistry::configFor(const std::string& filePath) {
-    std::string configPath = m_explicitConfigPath;
-    if (configPath.empty()) {
-        configPath = discoverConfigPath(fs::path(filePath).parent_path().string());
-    }
+    const std::string configPath = configPathFor(filePath);
     if (configPath.empty()) return nullptr;
     return loadAndCache(configPath);
+}
+
+ProjectConfig* ProjectRegistry::mutableConfig(const std::string& configPath) {
+    const auto it = m_loaded.find(configPath);
+    return it == m_loaded.end() ? nullptr : it->second.get();
+}
+
+std::vector<std::string> ProjectRegistry::configPaths() const {
+    std::vector<std::string> paths;
+    for (const auto& [path, config] : m_loaded) paths.push_back(path);
+    return paths;
 }

@@ -13,6 +13,8 @@ auto ServerState::handleInitialize(lsp::InitializeParams params)
     m_explicitProjectConfigPath = extractProjectConfigPath(params);
     m_fuzzyCompletionEnabled = extractBoolOption(params, "fuzzyCompletion");
     m_docCommentsEnabled     = extractBoolOption(params, "docComments");
+    m_workDoneProgress = params.capabilities.window && params.capabilities.window->workDoneProgress &&
+                         *params.capabilities.window->workDoneProgress;
     m_phase.store(Phase::Active);
 
     return {
@@ -39,6 +41,10 @@ auto ServerState::handleInitialize(lsp::InitializeParams params)
             .documentSymbolProvider  = lsp::OneOf<bool, lsp::DocumentSymbolOptions>(true),
             .workspaceSymbolProvider = lsp::OneOf<bool, lsp::WorkspaceSymbolOptions>(true),
             .renameProvider          = lsp::OneOf<bool, lsp::RenameOptions>(true),
+            // svlsp.waitForIndexing: answers once no project load is
+            // queued or running (scripts, tests; plan.md §6.34 S4).
+            .executeCommandProvider  = lsp::ExecuteCommandOptions{
+                .commands = lsp::Array<lsp::String>{"svlsp.waitForIndexing"}},
         },
         .serverInfo = lsp::InitializeResultServerInfo{
             .name    = "svlsp",

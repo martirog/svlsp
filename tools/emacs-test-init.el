@@ -99,9 +99,20 @@ Returns t on success, nil on timeout."
                             (eq (lsp--workspace-status ws) 'initialized))
                           (lsp-workspaces))))
           (sit-for 0.5))))
-    (cl-some (lambda (ws)
-               (eq (lsp--workspace-status ws) 'initialized))
-             (lsp-workspaces))))
+    (let ((ready (cl-some (lambda (ws)
+                            (eq (lsp--workspace-status ws) 'initialized))
+                          (lsp-workspaces))))
+      ;; svlsp loads a project in the background (plan.md §6.34 S4); the
+      ;; tests expect the whole project, as before: wait for it.
+      (when (and ready
+                 (cl-some (lambda (ws)
+                            (eq (lsp--client-server-id (lsp--workspace-client ws)) 'svlsp))
+                          (lsp-workspaces)))
+        (ignore-errors
+          (let ((lsp-response-timeout (or timeout-secs 30)))
+            (lsp-request "workspace/executeCommand"
+                         (list :command "svlsp.waitForIndexing")))))
+      ready)))
 
 (defun svlsp-test/close-file (buf)
   "Kill buffer BUF without saving."

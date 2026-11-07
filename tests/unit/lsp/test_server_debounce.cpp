@@ -12,10 +12,15 @@
 #include <catch2/catch_test_macros.hpp>
 #include "lsp/server.h"
 #include "compiler/sv_tree_walker.h"
+#include <algorithm>
+#include <sstream>
 #include <lsp/io/stream.h>
 #include <lsp/json/json.h>
 
 #include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
 #include <condition_variable>
 #include <memory>
 #include <mutex>
@@ -134,13 +139,13 @@ std::string readLine(int fd)
 class TestClient {
 public:
     // `walker`, when set, replaces the server's parse (LanguageServer::setWalker).
-    explicit TestClient(CompilationController::Walker walker = {})
+    explicit TestClient(CompilationController::Walker walker = {}, std::ostream* log = nullptr)
     {
         if (::pipe(m_toServer) != 0 || ::pipe(m_fromServer) != 0)
             throw std::runtime_error("test: pipe() failed");
 
         m_serverIo = std::make_unique<PipeStream>(m_toServer[0], m_fromServer[1]);
-        m_server   = std::make_unique<LanguageServer>(*m_serverIo);
+        m_server   = std::make_unique<LanguageServer>(*m_serverIo, log);
         if (walker) m_server->setWalker(std::move(walker));
         m_serverThread = std::thread{[this] { m_server->run(); }};
     }
@@ -201,6 +206,93 @@ public:
         REQUIRE(response.object().find("result") != nullptr);
 
         sendRaw(R"({"jsonrpc":"2.0","method":"initialized","params":{}})");
+    }
+
+    // initialize() for a client that supports work-done progress, with
+    // `svlspOptions` (a JSON object's members) as initializationOptions.svlsp.
+    void initializeWithProgress(const std::string& svlspOptions = "")
+    {
+        sendRaw(R"({"jsonrpc":"2.0","id":1,"method":"initialize",)"
+                R"("params":{"processId":null,"rootUri":null,)"
+                R"("initializationOptions":{"svlsp":{)" + svlspOptions + "}},"
+                R"("capabilities":{"window":{"workDoneProgress":true}}}})");
+        auto response = recvMessage();
+        REQUIRE(response.isObject());
+        REQUIRE(response.object().find("result") != nullptr);
+        sendRaw(R"({"jsonrpc":"2.0","method":"initialized","params":{}})");
+    }
+
+    void didChangeWatchedFile(const std::string& uri)
+    {
+        sendRaw(R"({"jsonrpc":"2.0","method":"workspace/didChangeWatchedFiles",)"
+                R"("params":{"changes":[{"uri":")" + uri + R"(","type":2}]}})");
+    }
+
+    void executeCommand(int id, const std::string& command)
+    {
+        sendRaw(R"({"jsonrpc":"2.0","id":)" + std::to_string(id) +
+                R"(,"method":"workspace/executeCommand","params":{"command":")" + command +
+                R"("}})");
+    }
+
+    void hover(int id, const std::string& uri, int line, int character)
+    {
+        sendRaw(R"({"jsonrpc":"2.0","id":)" + std::to_string(id) +
+                R"(,"method":"textDocument/hover","params":{"textDocument":{"uri":")" + uri +
+                R"("},"position":{"line":)" + std::to_string(line) + R"(,"character":)" +
+                std::to_string(character) + "}}}");
+    }
+
+    // The next message that isn't about progress: answers
+    // window/workDoneProgress/create and records each $/progress kind.
+    lsp::json::Value recvSkippingProgress(bool* timedOut = nullptr, int timeoutMs = -1)
+    {
+        while (true) {
+            if (timedOut && !hasPendingMessage(timeoutMs)) {
+                *timedOut = true;
+                return {};
+            }
+            auto msg = recvMessage();
+            const auto* method = msg.object().find("method");
+            if (method && method->string() == "window/workDoneProgress/create") {
+                const auto& id = msg.object().get("id");
+                sendRaw(R"({"jsonrpc":"2.0","id":)" +
+                        (id.isString() ? "\"" + id.string() + "\"" : lsp::json::stringify(id)) +
+                        R"(,"result":null})");
+                continue;
+            }
+            if (method && method->string() == "$/progress") {
+                progressKinds.push_back(
+                    msg.object().get("params").object().get("value").object().get("kind").string());
+                continue;
+            }
+            return msg;
+        }
+    }
+    std::vector<std::string> progressKinds;
+
+    // Reads messages until a progress has ended; the others are returned.
+    std::vector<lsp::json::Value> recvUntilProgressEnd()
+    {
+        std::vector<lsp::json::Value> others;
+        const auto ends = std::count(progressKinds.begin(), progressKinds.end(), "end");
+        while (std::count(progressKinds.begin(), progressKinds.end(), "end") == ends) {
+            if (!hasPendingMessage(20000)) throw std::runtime_error("test: no progress end");
+            auto msg = recvMessage();
+            const auto* method = msg.object().find("method");
+            if (method && method->string() == "window/workDoneProgress/create") {
+                const auto& id = msg.object().get("id");
+                sendRaw(R"({"jsonrpc":"2.0","id":)" +
+                        (id.isString() ? "\"" + id.string() + "\"" : lsp::json::stringify(id)) +
+                        R"(,"result":null})");
+            } else if (method && method->string() == "$/progress") {
+                progressKinds.push_back(
+                    msg.object().get("params").object().get("value").object().get("kind").string());
+            } else {
+                others.push_back(std::move(msg));
+            }
+        }
+        return others;
     }
 
     void didOpen(const std::string& uri, const std::string& text, int version)
@@ -341,6 +433,56 @@ private:
     std::condition_variable m_cv;
     bool m_armed{false}, m_entered{false}, m_released{false};
 };
+
+// Blocks every parse whose source contains `marker` until released.
+class SourceGate {
+public:
+    explicit SourceGate(std::string marker) : m_marker(std::move(marker)) {}
+    bool waitEntered(std::chrono::milliseconds timeout)
+    {
+        std::unique_lock l{m_mutex};
+        return m_cv.wait_for(l, timeout, [this] { return m_entered; });
+    }
+    void release() { std::lock_guard l{m_mutex}; m_released = true; m_cv.notify_all(); }
+    CompilationController::Walker walker()
+    {
+        return [this](const std::string& source, const std::vector<SourceLine>& sourceMap,
+                      bool collectDocs, const std::string& initialScope) {
+            if (source.find(m_marker) != std::string::npos) {
+                std::unique_lock l{m_mutex};
+                m_entered = true;
+                m_cv.notify_all();
+                m_cv.wait(l, [this] { return m_released; });
+            }
+            return SvTreeWalker::walk(source, sourceMap, collectDocs, initialScope);
+        };
+    }
+
+private:
+    std::string             m_marker;
+    std::mutex              m_mutex;
+    std::condition_variable m_cv;
+    bool m_entered{false}, m_released{false};
+};
+
+std::string publishedUri(const lsp::json::Value& msg)
+{
+    return msg.object().get("params").object().get("uri").string();
+}
+
+std::vector<std::string> publishedMessages(const lsp::json::Value& msg)
+{
+    std::vector<std::string> out;
+    for (const auto& d : msg.object().get("params").object().get("diagnostics").array())
+        out.push_back(d.object().get("message").string());
+    return out;
+}
+
+void writeFileAt(const std::string& path, const std::string& text)
+{
+    std::filesystem::create_directories(std::filesystem::path(path).parent_path());
+    std::ofstream(path) << text;
+}
 
 } // namespace
 
@@ -501,3 +643,66 @@ TEST_CASE("didChange and requests are handled while a compile is parsing",
     client.didClose(uri);
     client.shutdownAndExit();
 }
+
+TEST_CASE("a project loads in the background: the open file answers first, cross-file "
+          "diagnostics wait for the load (plan.md §6.34 S4)",
+          "[lsp][server][s4]")
+{
+    const std::string dir = "/tmp/svlsp_test_bgload";
+    std::filesystem::remove_all(dir);
+    writeFileAt(dir + "/pkg.sv", "package bg_p;\n  class bg_c; endclass\nendpackage\n");
+    writeFileAt(dir + "/slow.sv", "module bg_slow_marker; endmodule\n");
+    const std::string use = "module bg_use;\n  import bg_p::*;\n  bg_c obj;\n  bg_missing_t m;\nendmodule\n";
+    writeFileAt(dir + "/use.sv", use);
+    writeFileAt(dir + "/.svlsp.json",
+                R"({"files": ["slow.sv", "pkg.sv", "use.sv"]})");
+
+    SourceGate gate{"bg_slow_marker"};
+    TestClient client{gate.walker()};
+    struct ReleaseOnExit { SourceGate& g; ~ReleaseOnExit() { g.release(); } } releaseOnExit{gate};
+    client.initializeWithProgress();
+
+    const std::string uri = "file://" + dir + "/use.sv";
+    client.didOpen(uri, use, 1);
+
+    // use.sv first (open), pkg.sv next (declares bg_p, which use.sv names),
+    // slow.sv last -- it is still parsing while the open file is answered.
+    const auto first = client.recvSkippingProgress();
+    REQUIRE(publishedUri(first) == uri);
+    for (const auto& m : publishedMessages(first))
+        CHECK(m.find("unknown type") == std::string::npos); // held back while indexing
+    REQUIRE(gate.waitEntered(10s));
+
+    client.hover(5, uri, 2, 3); // on bg_c: pkg.sv is compiled already
+    lsp::json::Value response;
+    for (int i = 0; i < 10; ++i) {
+        response = client.recvSkippingProgress();
+        if (response.object().find("id")) break;
+        // Anything published meanwhile holds back the cross-file warnings.
+        for (const auto& m : publishedMessages(response))
+            CHECK(m.find("unknown type") == std::string::npos);
+    }
+    REQUIRE(response.object().find("id") != nullptr);
+    CHECK(response.object().get("id").number() == 5);
+    CHECK_FALSE(response.object().get("result").isNull());
+
+    // The load ends: the held-back warning is published, and the progress
+    // ends.
+    gate.release();
+    bool warned = false;
+    for (int i = 0; i < 5 && !warned; ++i) {
+        const auto msg = client.recvSkippingProgress();
+        if (!msg.object().find("method") || publishedUri(msg) != uri) continue;
+        for (const auto& m : publishedMessages(msg))
+            if (m == "unknown type 'bg_missing_t'") warned = true;
+    }
+    CHECK(warned);
+    for (bool done = false; !done;) client.recvSkippingProgress(&done, 300);
+    REQUIRE_FALSE(client.progressKinds.empty());
+    CHECK(client.progressKinds.front() == "begin");
+    CHECK(client.progressKinds.back() == "end");
+
+    client.didClose(uri);
+    client.shutdownAndExit();
+}
+

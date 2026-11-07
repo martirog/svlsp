@@ -62,6 +62,11 @@ public:
     // signature help and completion show none.
     bool docCommentsEnabled() const { return m_docCommentsEnabled; }
 
+    // The client's `window.workDoneProgress` capability: it accepts
+    // `window/workDoneProgress/create` and `$/progress` (plan.md §6.34 S4).
+    bool workDoneProgressSupported() const { return m_workDoneProgress; }
+
+
 private:
     std::atomic<Phase> m_phase{Phase::Uninitialized};
     lsp::NullOr<int>   m_parentProcessId;  // for parent-process exit monitoring
@@ -69,6 +74,7 @@ private:
     std::string        m_explicitProjectConfigPath;
     bool               m_fuzzyCompletionEnabled{true};
     bool               m_docCommentsEnabled{true};
+    bool               m_workDoneProgress{false};
 
     // Throws lsp::RequestError if the server is not in Active state.
     void requireActive(const char* method) const;

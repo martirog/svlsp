@@ -245,6 +245,8 @@ target_link_libraries(svlsp_db PUBLIC svlsp_sqlite3 svlsp_compiler svlsp_options
 # ---------------------------------------------------------------------------
 add_library(svlsp_lib STATIC
     src/lsp/change_debouncer.cpp
+    src/lsp/compile_queue.cpp
+    src/lsp/load_order.cpp
     src/lsp/completion.cpp
     src/lsp/definition.cpp
     src/lsp/document_symbols.cpp
@@ -288,6 +290,7 @@ add_executable(unit_tests
     tests/unit/lsp/test_server_state.cpp
     tests/unit/lsp/test_document_store.cpp
     tests/unit/lsp/test_change_debouncer.cpp
+    tests/unit/lsp/test_compile_queue.cpp
     tests/unit/lsp/test_server_debounce.cpp
     tests/unit/lsp/test_server_diagnostics_visibility.cpp
     tests/unit/lsp/test_server_cross_file_invalidation.cpp

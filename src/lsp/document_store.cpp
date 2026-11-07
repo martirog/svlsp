@@ -1,9 +1,11 @@
 #include "document_store.h"
 #include <variant>
+#include <lsp/uri.h>
 
 void DocumentStore::open(lsp::DidOpenTextDocumentParams params)
 {
     const std::string key = params.textDocument.uri.toString();
+    std::lock_guard l{m_mutex};
     m_docs[key] = Document{
         .text    = std::move(params.textDocument.text),
         .version = params.textDocument.version,
@@ -13,6 +15,7 @@ void DocumentStore::open(lsp::DidOpenTextDocumentParams params)
 void DocumentStore::update(lsp::DidChangeTextDocumentParams params)
 {
     const std::string key = params.textDocument.uri.toString();
+    std::lock_guard l{m_mutex};
     auto it = m_docs.find(key);
     if (it == m_docs.end())
         return;  // unknown document — silently ignore per LSP convention
@@ -35,18 +38,38 @@ void DocumentStore::update(lsp::DidChangeTextDocumentParams params)
 
 void DocumentStore::close(lsp::DidCloseTextDocumentParams params)
 {
+    std::lock_guard l{m_mutex};
     m_docs.erase(params.textDocument.uri.toString());
 }
 
 bool DocumentStore::contains(const lsp::DocumentUri& uri) const
 {
+    std::lock_guard l{m_mutex};
     return m_docs.count(uri.toString()) > 0;
 }
 
-const DocumentStore::Document& DocumentStore::get(const lsp::DocumentUri& uri) const
+DocumentStore::Document DocumentStore::get(const lsp::DocumentUri& uri) const
 {
+    std::lock_guard l{m_mutex};
     const auto it = m_docs.find(uri.toString());
     if (it == m_docs.end())
         throw std::out_of_range("DocumentStore::get: URI not found: " + uri.toString());
+    return it->second;
+}
+
+std::vector<lsp::DocumentUri> DocumentStore::uris() const
+{
+    std::lock_guard l{m_mutex};
+    std::vector<lsp::DocumentUri> out;
+    out.reserve(m_docs.size());
+    for (const auto& [uri, doc] : m_docs) out.push_back(lsp::DocumentUri{lsp::Uri::parse(uri)});
+    return out;
+}
+
+std::optional<DocumentStore::Document> DocumentStore::find(const lsp::DocumentUri& uri) const
+{
+    std::lock_guard l{m_mutex};
+    const auto it = m_docs.find(uri.toString());
+    if (it == m_docs.end()) return std::nullopt;
     return it->second;
 }
