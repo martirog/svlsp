@@ -7255,7 +7255,7 @@ unit's compile as a queue job (S4).
   source now, `call`.
 - `--build-db` is `loadProject`, which is a refresh. Its summary line says
   how many files it removed, and how long the checks took when they re-ran.
-- Include errors are not diagnostics (they never were). An includer of a
+- Include errors are not diagnostics (they never were; planned in §6.35). An includer of a
   removed file recompiles, and its unresolved `include is recorded, so it
   recompiles again once the file is back.
 - Tests:
@@ -7780,6 +7780,204 @@ After S2-S6:
   `DocumentStore` locks itself and returns copies.
 - A write outside `commit` that a reader must see whole goes in a
   `Database::Transaction`. `ATTACH` can't run inside one.
+
+### 6.35 Include Errors as Diagnostics
+
+**Status:** planned 2026-11-08, at the user's request. Not started.
+Decisions I1-I4 taken 2026-11-08: the user took the recommendations. The
+`` `include `MACRO `` form is a separate item, §6.36. Found in §6.34 S2: a file
+that `include`s a removed or misspelled file shows nothing wrong. Only
+the symbols the include would have given are missing.
+
+**What the code does today (read 2026-11-08, at b24503c):**
+- `SvPreprocessor` puts every problem into `PreprocessorResult::errors`.
+  These are plain strings, with no file, line or column. Nothing turns them
+  into diagnostics; the only reader is S1's `includeFailed`, which uses
+  them to skip caching a unit whose include failed.
+- The include errors (`processInclude` and the `include branch of
+  `processSource`, `src/compiler/sv_preprocessor.cpp`):
+  - not found: `` `include: cannot find "x.svh" `` (`kIncludeNotFound`);
+  - a cycle: `` `include: cycle detected for "..." ``;
+  - nesting deeper than 16: `` `include: depth limit exceeded (cycle?) ``;
+  - an unreadable file: `` `include: cannot open "..." ``;
+  - a malformed directive, `` `include: missing or malformed filename ``.
+    This covers `` `include `MACRO ``, which is not supported.
+- `processInclude` already knows where the directive is: `currentFile`,
+  `includer` and `line`, the same data `IncludeSite` records.
+  `IncludeDirective` (S1) records the name, the file it is written in and
+  the resolution, but not the line.
+- The other preprocessor errors (undefined macro, wrong argument count,
+  `` `else `` without `` `ifdef ``, ...) are dropped the same way. They are
+  out of scope here; see I3.
+- S1 / S2 handle a missing include correctly. The unit is reused while the
+  file stays missing. When it appears, the directive re-resolves and the
+  unit recompiles. A refresh that removes a file recompiles its includers.
+  So once the error is a stored diagnostic, it appears and disappears at
+  the right times without new invalidation logic.
+
+**Decisions (taken 2026-11-08, the recommendations):**
+- **I1 -- Severity:** Error for not found, cycle, depth and unreadable
+  (recommended). The unit really is compiled without that text, as
+  simulators treat it (VCS, Xcelium and Verilator all stop). The
+  alternative, Warning, understates a compile that is missing code.
+  Malformed directives: Warning. Until §6.36 lands that includes
+  `` `include `MACRO ``, which svlsp doesn't support yet; the code itself
+  isn't wrong.
+- **I2 -- Files outside any project:** not reported (recommended). Such a
+  file has no include dirs, so every `` `include "uvm_macros.svh" `` would be
+  an error, on every UVM file opened on its own. Only units compiled under
+  a project config (`Prepared::checkTypes`, the same condition as the
+  declared-type check) report them. The alternative is a Hint ("svlsp
+  can't find x.svh; add it to a project's includeDirs"); it is noisier, but
+  it tells a user without a config why symbols are missing.
+- **I3 -- The other preprocessor errors:** later, as a stage of their own
+  (P4), after P0 has counted them on the corpus (recommended). "Undefined
+  macro" in particular depends on defines the config may not list, and on
+  macros from library DBs, so it needs its own noise check.
+- **I4 -- Where it sits:** on the `include line of the file that holds
+  the directive. That may be an included file, not the unit's primary. The
+  range runs from the backtick to the end of the file name (recommended),
+  so the squiggle covers the directive, not the whole line.
+
+**Stages:**
+
+**P0 -- Count first.** Before changing anything, log every preprocessor
+error with its kind:
+- the UVM corpus, as a project (`uvm.sv`, `includeDirs .`);
+- the generated `gen` project (variants A and B);
+- the Emacs fixtures under a config (`full_project`, `multifile_project`,
+  `kind_tiebreak`, ...);
+- the UVM fixture of `test-integration-uvm`.
+
+The expectation is zero include errors on UVM and `gen`. Anything else is
+either a real finding or a resolution bug, to fix before P2. Record the
+numbers here.
+
+**P1 -- Positions for preprocessor errors.**
+- A new `struct PreprocessorError { std::string message; std::string file;
+  int line; int column; int endColumn; Kind kind; }`. `file` is "" for the
+  compiled file, as `ParseRecord::file`. `Kind` is IncludeNotFound,
+  IncludeCycle, IncludeDepth, IncludeUnreadable, IncludeMalformed, or Other.
+- `PreprocessorResult::errors` becomes a vector of these. Its 33 uses in
+  `test_sv_preprocessor.cpp` and `includeFailed` change with it: the kind
+  replaces the string-prefix tests, and `kIncludeErrorPrefix` /
+  `kIncludeNotFound` go.
+- Each include error gets the directive's file and line (`mapFile`,
+  `lineNo`, as `IncludeSite`). The columns come from the line's text: the
+  backtick, and the closing quote or `>`. The cycle and depth errors point
+  at the directive that would have recursed, in the file that holds it.
+- The other errors get the position of the line they are found on where
+  `processSource` has it, else line 1. P1 only records them.
+- Tests: each include error kind with its file, line and range, also from
+  inside an included file. The S1 `[file-identity]` cases still pass (the
+  cache still never reuses a failed include other than not-found).
+
+**P2 -- Include errors are diagnostics.**
+- `commit` writes them with a new source, `'include'`, on the file each
+  belongs to (I4). Only under a project config (I2), and with the I1
+  severities. The primary's rows join `commit`'s return value, as the
+  'call' rows do.
+- They are not held back while indexing (§6.34 S4): they depend only on
+  the unit's own files and the include dirs, and the library DBs' include
+  dirs are merged in before any unit compiles (the S4 prologue). Not in
+  the held-back list.
+- A cache hit returns them from the DB like any other row. Every case of
+  "the include appears / disappears" is already a recompile (S1 / S2), and
+  a recompile replaces them.
+- An included file whose rows another unit's compile wrote gets that
+  unit's include errors. That is the same rule as every other row of an
+  included file (the last compile wins).
+- Tests (unit, through `CompilationController` and `ProjectRefresher`):
+  - a missing include under a config is an Error at its line and range;
+    without a config, nothing;
+  - creating the file and refreshing (S2) clears it; deleting it and
+    refreshing brings it back. This is the §6.34 S2 case that motivated
+    the plan;
+  - a missing include in an included `.svh` lands on the `.svh`;
+  - a cycle, and the depth limit;
+  - a malformed directive is a Warning;
+  - a cache hit still reports it.
+
+**P3 -- Editor round trip.** An Emacs test in its own workspace, like
+`test_55`:
+- a project whose file includes `missing.svh`: the diagnostic shows at the
+  directive;
+- write `missing.svh` and send the watched-file event: the diagnostic goes,
+  and its symbols resolve;
+- delete it again: the diagnostic is back.
+
+Also `docs/usage.md`: what the diagnostics say, and that files outside a
+project don't get them (I2).
+
+**P4 -- The other preprocessor errors (I3), only if P0's numbers allow
+it.** They would use the same positions and a source of their own,
+`'preprocess'`: undefined macro, argument errors, unbalanced `` `ifdef ``
+/ `` `else `` / `` `endif ``. "Undefined macro" needs a noise check on UVM
+first: some macros are defined only for certain tools, and the corpus
+config defines `UVM_NO_DPI`. A Warning may fit better than an Error. To
+be decided with P0's counts.
+
+**What other work must know (once P2 lands):**
+- Diagnostics have one more source, `'include'`. It is not cross-file, so
+  it is not held back while indexing.
+- A new preprocessor error needs a `Kind` and a position, or it is never
+  shown.
+
+### 6.36 `` `include `` Through a Macro (`` `include `FILE ``)
+
+**Status:** planned 2026-11-08, at the user's request, as an item separate
+from §6.35. Not started.
+
+**Why.** IEEE 1800-2017 22.4 allows the file name of an `` `include `` to
+come from a macro: `` `define HDR "agent_cfg.svh" `` then
+`` `include `HDR ``. Testbenches use it to pick a configuration header per
+build. Today `processSource` only takes a name that starts with `"` or
+`<`. Anything else is `` `include: missing or malformed filename ``, the
+file is skipped, and its symbols are missing.
+
+**What the code does today (read 2026-11-08):** the `include branch of
+`processSource` (`src/compiler/sv_preprocessor.cpp`) trims the rest of
+the line and reads a quoted or angle-bracketed name. Macro expansion
+(`expandStr`) runs only on code lines, never on a directive's argument.
+
+**Plan:**
+- *Expansion:* when the argument starts with a backtick, expand it with
+  the macros defined at that point. That is `ctx.macros`, so the result
+  depends on the order of `` `define `` and `` `include ``, as it does for
+  a simulator. The result must be one quoted or angle-bracketed name;
+  anything else is malformed. Function-like macros with arguments
+  (`` `include `PATH(agent) ``) work the same way, through `expandStr`.
+- *Errors* (§6.35's kinds and positions):
+  - an undefined macro is an Error, "`include: macro `HDR is not defined";
+  - an expansion that is not a file name is a malformed directive, Error.
+    §6.35 I1's Warning applies only to forms svlsp doesn't support, and
+    this one will be supported.
+  - The range covers the macro reference.
+- *File identity (§6.34 S1):* `IncludeDirective::name` records the
+  expanded name, so the cache check re-resolves what was actually
+  included. A macro that changes is covered by the inputs already:
+  - defined in the config, it is in the inputs key;
+  - in the primary or an included file, it is in that file's hash;
+  - in an includer's unit (an include context), it is in `addContext`'s
+    macros.
+- *Load order (§6.34 S4):* the text pre-scan doesn't expand macros, so an
+  include through a macro is not seen there. That only costs ordering, not
+  correctness. Note it in `load_order.h`.
+- *Navigation, optional:* definition on `` `HDR `` in the directive already
+  goes to the macro (§6.29). Definition on the directive itself, opening
+  the resolved file, would be new for both forms; it is left for later.
+- *Tests:*
+  - `` `include `HDR `` with `HDR` defined in the file, in an included
+    header, and in the config's defines;
+  - a function-like macro;
+  - `HDR` redefined between two includes;
+  - undefined, and expanding to something that is not a file name;
+  - the S1 cache: changing the define recompiles, an unchanged one is a
+    hit;
+  - an Emacs fixture: a symbol from the macro-included header resolves.
+
+**Order:** after §6.35 P1, which gives the errors their positions and
+kinds; it is independent of P2-P4.
 
 ---
 

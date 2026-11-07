@@ -251,7 +251,27 @@ Next steps:
      several readers;
    - profile the server load's per-unit overhead (10.3-10.9 s against
      8.4 s on `gen_tb`).
-2. Optional, LL cost on files with syntax errors (only they reach LL now):
+2. **Planned as plan.md §6.35** (2026-11-08, not started): include errors
+   as diagnostics. Today a missing, cyclic or unreadable `` `include `` is
+   silent. The preprocessor's errors are position-less strings that nothing
+   publishes. Decisions I1-I4 were taken 2026-11-08 as recommended:
+   - Error for not found, a cycle, the depth limit or an unreadable file;
+     Warning for a malformed directive;
+   - nothing reported for files outside a project;
+   - other preprocessor errors later;
+   - the range covers the directive.
+
+   Stages: P0 counts the errors on the corpus first, P1 gives them
+   positions, P2 makes them diagnostics with source `'include'`, P3 is an
+   Emacs round trip, and P4 (optional) covers the other preprocessor
+   errors.
+3. **Planned as plan.md §6.36** (2026-11-08, not started): `` `include
+   `MACRO `` support, which today is a malformed directive and is skipped.
+   The argument is expanded with the macros defined at that point; an
+   undefined macro or a result that is not a file name is an Error; and
+   `IncludeDirective` records the expanded name for the S1 cache. It comes
+   after §6.35 P1.
+4. Optional, LL cost on files with syntax errors (only they reach LL now):
    the remaining LL time is true ambiguity in `primary` (decision 1068)
    and `hierarchical_identifier` (1103): `a.b` is a name, a name + select
    `.b`, or a name + the method loop. Profile with `tools/grammar_profile.sh
