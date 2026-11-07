@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <iosfwd>
 #include <string>
+#include <vector>
 #include "db/compilation_controller.h"
 #include "db/project_refresher.h"
 
@@ -81,8 +82,28 @@ public:
     // A's libraryDbSources building B, whose own libraryDbSources builds
     // A) -- disclosed, not fixed, in this first cut.
     // `walker` as for build().
+    //
+    // A cache that exists is checked against its sources (checkLibraryDb,
+    // plan.md §6.34 S7): when stale, it is rebuilt -- incrementally, from a
+    // copy of it, into `<cache>.tmp` -- and renamed into place, under the
+    // cache's writer lock. `rebuilt`, when non-null, receives those paths
+    // (an attached copy must be re-attached to see the new file).
     static void resolveLibraryDbSources(ProjectConfig& config,
                                         std::ostream* progressLog = nullptr,
                                         const std::string& currentVersion = "",
-                                        const CompilationController::Walker& walker = {});
+                                        const CompilationController::Walker& walker = {},
+                                        std::vector<std::string>* rebuilt = nullptr);
+
+    // `svlsp --build-db <config> --output <db> --check` (plan.md §6.34 S7):
+    // whether `outputPath` is up to date with `configPath`'s files, without
+    // changing it. Stale when the DB is missing, of another schema or svlsp
+    // build, or a refresh would compile or remove anything. `why` says
+    // what, when stale.
+    struct CheckResult {
+        bool ok{false};    // the check ran (false: `why` is the error)
+        bool stale{false};
+        std::string why;
+    };
+    static CheckResult check(const std::string& configPath, const std::string& outputPath,
+                             const std::string& currentVersion = "", bool collectDocs = true);
 };

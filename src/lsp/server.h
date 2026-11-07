@@ -110,7 +110,11 @@ private:
     std::vector<std::string> m_readerAttached;
     std::atomic<bool>     m_indexing{false}; // !m_loads.empty(), for requests
     void syncReader();
-    void noteAttached(const std::vector<std::string>& libraryDbs);
+    std::vector<std::string> m_readerReattach; // rebuilt libraries to re-attach (S7)
+    void noteAttached(const std::vector<std::string>& libraryDbs,
+                      const std::vector<std::string>& reattach = {});
+    // Library archives already reported stale (plan.md §6.34 S7): once each.
+    std::set<std::string> m_staleWarned;
 
     // A request's access to the DB: m_dataMutex and the writer's
     // connection, or (reader ready) the reader in one read transaction --

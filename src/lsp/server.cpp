@@ -4,6 +4,7 @@
 #include "lsp/library_db_builder.h"
 #include "lsp/load_order.h"
 #include "db/project_compiler.h"
+#include "db/library_check.h"
 #include "compiler/file_utils.h"
 #include "compiler/sv_preprocessor.h"
 #include <unordered_map>
@@ -235,13 +236,15 @@ void LanguageServer::syncReader()
 {
     const uint64_t generation = m_commitGeneration.load();
     if (generation == m_readGeneration) return;
-    std::vector<std::string> attached;
+    std::vector<std::string> attached, reattach;
     {
         std::lock_guard l{m_readSyncMutex};
         attached = m_readerAttached;
+        reattach.swap(m_readerReattach);
     }
     try {
         m_readDb.attachLibraryDbs(attached);
+        for (const auto& db : reattach) m_readDb.reattachLibraryDb(db);
     } catch (const std::exception& e) {
         std::cerr << "svlsp: reader: " << e.what() << '\n';
     }
@@ -249,10 +252,12 @@ void LanguageServer::syncReader()
     m_readGeneration = generation;
 }
 
-void LanguageServer::noteAttached(const std::vector<std::string>& libraryDbs)
+void LanguageServer::noteAttached(const std::vector<std::string>& libraryDbs,
+                                  const std::vector<std::string>& reattach)
 {
     {
         std::lock_guard l{m_readSyncMutex};
+        for (const auto& db : reattach) m_readerReattach.push_back(db);
         for (const auto& db : libraryDbs)
             if (std::find(m_readerAttached.begin(), m_readerAttached.end(), db) ==
                 m_readerAttached.end())
@@ -471,10 +476,29 @@ void LanguageServer::loadProject(const std::string& configPath, bool rehash)
 
     // Library DBs still to build, without the data mutex: requests are
     // answered meanwhile (their symbols are missing until this is done).
+    // A cache svlsp owns that went stale is rebuilt here; someone else's
+    // archive is only reported, once (plan.md §6.34 S7).
+    std::vector<std::string> rebuilt;
     try {
-        LibraryDbBuilder::resolveLibraryDbSources(config, nullptr, "", m_compiler.walker());
+        LibraryDbBuilder::resolveLibraryDbSources(config, nullptr, "", m_compiler.walker(),
+                                                  &rebuilt);
     } catch (const std::exception& e) {
         std::cerr << "svlsp: " << e.what() << '\n';
+    }
+    {
+        std::set<std::string> owned;
+        for (const auto& src : config.libraryDbSources) owned.insert(src.cachePath);
+        for (const auto& lib : config.libraryDbs) {
+            if (owned.count(lib) || m_staleWarned.count(lib)) continue;
+            const LibraryStatus status = checkLibraryDb(lib);
+            if (!status.stale()) continue;
+            m_staleWarned.insert(lib);
+            const std::string msg = "svlsp: " + lib + " is stale: " + status.describe() +
+                                    " (rebuild it with svlsp --build-db)";
+            std::cerr << msg << '\n';
+            m_messageHandler.sendNotification<lsp::notifications::Window_ShowMessage>(
+                lsp::ShowMessageParams{.type = lsp::MessageType::Warning, .message = msg});
+        }
     }
 
     const std::string key = std::filesystem::absolute(configPath).lexically_normal().string();
@@ -487,7 +511,8 @@ void LanguageServer::loadProject(const std::string& configPath, bool rehash)
         if (!c) return;
         *c = std::move(config);
         ProjectCompiler::attachLibraries(*c, m_symbolDb);
-        noteAttached(c->libraryDbs);
+        for (const auto& lib : rebuilt) m_symbolDb.reattachLibraryDb(lib);
+        noteAttached(c->libraryDbs, rebuilt);
         ProjectLoad load;
         load.plan = ProjectRefresher::plan(key, *c, m_compiler, m_symbolDb, rehash);
         load.plan.svlspVersion = m_buildVersion;
@@ -745,7 +770,11 @@ void LanguageServer::registerHandlers()
                 if (params.command == "svlsp.waitForIndexing")
                     // Off the message thread: requests keep being answered.
                     return std::async(std::launch::async, [this] {
-                        while (m_queue.projectWork() || m_indexing)
+                        auto documentsPending = [this] {
+                            std::lock_guard l{m_awaitMutex};
+                            return !m_awaiting.empty() && !m_dbWaiting.load();
+                        };
+                        while (m_queue.projectWork() || m_indexing || documentsPending())
                             std::this_thread::sleep_for(std::chrono::milliseconds{20});
                         return lsp::Workspace_ExecuteCommandResult{nullptr};
                     });

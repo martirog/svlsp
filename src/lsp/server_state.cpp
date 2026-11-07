@@ -51,7 +51,8 @@ auto ServerState::handleInitialize(lsp::InitializeParams params)
             // svlsp.refresh: bring the project DB up to date with the files
             // on disk (plan.md §6.34 S6); ["--rehash"] ignores stat data.
             // svlsp.waitForIndexing: answers once no project load or
-            // refresh is queued or running (scripts, tests).
+            // refresh is queued or running, and every opened or saved
+            // document has been compiled (scripts, tests).
             .executeCommandProvider  = lsp::ExecuteCommandOptions{
                 .commands = lsp::Array<lsp::String>{"svlsp.refresh", "svlsp.waitForIndexing"}},
         },

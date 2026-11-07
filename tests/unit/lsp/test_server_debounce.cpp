@@ -903,3 +903,34 @@ TEST_CASE("a checkout's file events refresh the project once; svlsp.refresh refr
     CHECK(parsedFiles(log.str()).empty());
     client.shutdownAndExit();
 }
+
+TEST_CASE("a stale library archive is reported once (plan.md §6.34 S7)", "[lsp][server][s7]")
+{
+    const std::string dir = "/tmp/svlsp_test_s7";
+    std::filesystem::remove_all(dir);
+    writeFileAt(dir + "/lib/lib_pkg.sv", "package s7_lib;\n  class s7_c; endclass\nendpackage\n");
+    writeFileAt(dir + "/lib/lib.json", R"({"files": ["lib_pkg.sv"]})");
+    std::filesystem::last_write_time(dir + "/lib/lib_pkg.sv",
+                                     std::filesystem::file_time_type::clock::now() - 120s);
+    REQUIRE(LibraryDbBuilder::build(dir + "/lib/lib.json", dir + "/lib/lib.db").ok);
+    writeFileAt(dir + "/lib/lib_pkg.sv", "package s7_lib;\n  class s7_c2; endclass\nendpackage\n");
+    const std::string use = "module s7_m;\n  import s7_lib::*;\nendmodule\n";
+    writeFileAt(dir + "/use.sv", use);
+    writeFileAt(dir + "/.svlsp.json", R"({"files": ["use.sv"], "libraryDbs": ["lib/lib.db"]})");
+
+    auto warnings = [](const std::vector<lsp::json::Value>& msgs) {
+        return std::count_if(msgs.begin(), msgs.end(), [](const lsp::json::Value& m) {
+            const auto* method = m.object().find("method");
+            return method && method->string() == "window/showMessage" &&
+                   m.object().get("params").object().get("message").string().find("is stale") !=
+                       std::string::npos;
+        });
+    };
+    TestClient client;
+    client.initializeWithProgress();
+    client.didOpen("file://" + dir + "/use.sv", use, 1);
+    CHECK(warnings(client.recvUntilProgressEnd()) == 1);
+    client.executeCommand(7, "svlsp.refresh");
+    CHECK(warnings(client.recvUntilProgressEnd()) == 0); // once per session
+    client.shutdownAndExit();
+}

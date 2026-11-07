@@ -145,6 +145,12 @@ public:
     // disclosed limitations for this first cut, not oversights.
     void attachLibraryDbs(const std::vector<std::string>& paths);
 
+    // Detaches and attaches `path` again under its alias, so this
+    // connection sees the file now at `path` (a library DB rebuilt and
+    // renamed into place, plan.md §6.34 S7). A no-op if it isn't attached.
+    // Not inside a transaction.
+    void reattachLibraryDb(const std::string& path);
+
     // Persists `dirs` (in order) into *this connection's own main schema's*
     // library_include_dirs table -- overwriting whatever was stored there
     // before. Called once by LibraryDbBuilder::build, right after building

@@ -74,6 +74,16 @@ void SymbolDatabase::attachLibraryDbs(const std::vector<std::string>& paths)
     }
 }
 
+void SymbolDatabase::reattachLibraryDb(const std::string& path)
+{
+    const auto it = std::find(m_attachedLibraryPaths.begin(), m_attachedLibraryPaths.end(), path);
+    if (it == m_attachedLibraryPaths.end()) return;
+    const std::string alias = "lib" + std::to_string(it - m_attachedLibraryPaths.begin());
+    m_db.execute("DETACH DATABASE " + alias);
+    m_db.prepare("ATTACH DATABASE ? AS " + alias).bind(1, path).step();
+    clearIncludeCaches();
+}
+
 void SymbolDatabase::setLibraryIncludeDirs(const std::vector<std::string>& dirs)
 {
     m_db.execute("DELETE FROM library_include_dirs");

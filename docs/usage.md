@@ -418,10 +418,26 @@ resolve if you *instantiate* it directly (library content reused this way
 is expected to be `import`'d, not instantiated) — this is a workflow for
 sharing packages/classes (UVM-style verification code), not RTL modules.
 Opening a library file directly (e.g. by following a definition link into
-one) also won't show its own outline or diagnostics yet. `svlsp` never
-checks whether an attached database is stale relative to whatever built
-it — see `plan.md` §6.19's own open question on this; for now, rebuild with
-`--build-db` and overwrite the file yourself when the library changes.
+one) also won't show its own outline or diagnostics yet.
+
+**Stale library databases.** A database built with `--build-db` records
+each source file's size, mtime and content hash. Each time the project
+loads or refreshes, the server checks an attached `libraryDbs` database
+against its files. Only files whose size or mtime changed are read, so
+UVM's 166 files take a few milliseconds. svlsp doesn't own this file, so
+it never rebuilds it. Instead it warns once per session, with a
+`window/showMessage` and on stderr:
+
+```
+svlsp: /path/to/uvm.db is stale: 3 of 166 files changed since it was built, e.g. ... (rebuild it with svlsp --build-db)
+```
+
+A database built before schema v17 recorded no stat data, so it is
+never reported. For CI, `--check` tells without writing anything:
+
+```sh
+svlsp --build-db uvm.f --output uvm.db --check   # exit 0 up to date, 1 stale, 2 error
+```
 
 ## Lazily building and caching a library database: `libraryDbSources`
 
@@ -454,10 +470,10 @@ the library's compile cost once, and every later load (this project or any
 other pointing at the same `cache` path) reuses it for free. From this
 point on it behaves exactly like a `libraryDbs` entry pointing at `cache`.
 
-**Additional limitation on top of `libraryDbs`'s own above:** `svlsp` never
-checks whether `cache` has gone stale relative to `config`'s own files —
-if the library is upgraded in place without also changing (or deleting)
-`cache`, the old, cached DB keeps being used. Delete the cache file
-yourself to force a rebuild. There's also no cycle detection between
+**A stale `cache` is rebuilt.** svlsp owns this file, so when the check
+above finds it stale, svlsp rebuilds it in the background before the
+project's files compile. The rebuild works on a copy and is incremental:
+only the changed files are recompiled. The copy is then renamed into place
+and attached again. There's no cycle detection between
 `libraryDbSources` chains (library A's source depending on library B, whose
 own source points back at A) — keep dependency configs acyclic.

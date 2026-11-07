@@ -208,7 +208,9 @@ int buildDb(const std::string& configPath, const std::string& outputPath, bool c
 // plan.md §6.19 and docs/usage.md. Adding --no-doc-comments stores no doc
 // comments (plan.md §6.31), for a smaller DB. A server holding the DB open
 // (plan.md §6.34 S3) makes --build-db exit 0 at once (the server refreshes
-// it); --wait waits for the holder instead.
+// it); --wait waits for the holder instead. --check builds nothing: it exits
+// 0 when <db-path> is up to date with <config-path>'s files, 1 when it is
+// stale (plan.md §6.34 S7).
 int main(int argc, char** argv)
 {
     // Checked in its own pass, ahead of everything else: --version must
@@ -240,6 +242,7 @@ int main(int argc, char** argv)
     std::string buildDbOutputPath;
     bool collectDocs = true;
     bool waitForLock = false;
+    bool checkOnly = false;
     bool inProcessParse = false;
     std::size_t parseWorkerMaxRssMb = ParseWorker::Options{}.maxRssMb;
     unsigned parseWorkerIdleSeconds = ParseWorker::Options{}.idleSeconds;
@@ -300,6 +303,8 @@ int main(int argc, char** argv)
             collectDocs = false;
         } else if (std::strcmp(argv[i], "--wait") == 0) {
             waitForLock = true;
+        } else if (std::strcmp(argv[i], "--check") == 0) {
+            checkOnly = true;
         } else if (std::strcmp(argv[i], "--in-process-parse") == 0) {
             inProcessParse = true;
         } else if (std::strcmp(argv[i], "--parse-worker-idle") == 0) {
@@ -331,6 +336,22 @@ int main(int argc, char** argv)
         if (buildDbOutputPath.empty()) {
             std::cerr << "svlsp: --build-db requires --output <db-path>\n";
             return 1;
+        }
+        if (checkOnly) {
+            // --check (plan.md §6.34 S7): exit 0 when the DB is up to date, 1
+            // when it is stale, 2 when the check itself failed. For CI.
+            const auto r = LibraryDbBuilder::check(buildDbConfigPath, buildDbOutputPath,
+                                                   SVLSP_GIT_VERSION, collectDocs);
+            if (!r.ok) {
+                std::cerr << "svlsp: can't check '" << buildDbOutputPath << "': " << r.why << '\n';
+                return 2;
+            }
+            if (r.stale) {
+                std::cerr << "svlsp: '" << buildDbOutputPath << "' is stale: " << r.why << '\n';
+                return 1;
+            }
+            std::cerr << "svlsp: '" << buildDbOutputPath << "' is up to date\n";
+            return 0;
         }
         return buildDb(buildDbConfigPath, buildDbOutputPath, collectDocs, waitForLock);
     }

@@ -4,6 +4,7 @@
 #include "compiler/parse_record.h"
 #include "db/database.h"
 #include "db/symbol_database.h"
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 
@@ -215,13 +216,13 @@ TEST_CASE("resolveLibraryDbSources reuses an already-existing cache without rebu
     writeFile(root + "/lib.f", "lib.sv\n");
     std::string cachePath = root + "/cache.db";
     fs::remove(cachePath);
-    {
-        Database db(cachePath);
-        db.initSchema();
-        SymbolDatabase sdb(db);
-        sdb.replaceSymbols(sdb.upsertFile(root + "/prebuilt.sv", "h"),
-            {{ParseRecordKind::Class, "old_class", 1, 6, "", "", 1, ""}});
-    }
+    // The cache was built from other, unchanged sources: it is up to date
+    // with what it records (plan.md §6.34 S7 rebuilds only a stale one).
+    writeFile(root + "/prebuilt.sv", "class old_class; endclass\n");
+    writeFile(root + "/prebuilt.f", "prebuilt.sv\n");
+    fs::last_write_time(root + "/prebuilt.sv",
+                        fs::file_time_type::clock::now() - std::chrono::seconds(120));
+    REQUIRE(LibraryDbBuilder::build(root + "/prebuilt.f", cachePath).ok);
 
     ProjectConfig config;
     config.libraryDbSources = {{root + "/lib.f", cachePath}};
