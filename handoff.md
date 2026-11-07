@@ -159,7 +159,7 @@ build is warning-free with g++-13. ANTLR's shared runtime is no longer
 built. Debug builds now use `-Werror` (decided 2026-11-03).
 
 Next steps:
-1. **plan.md §6.34, S0-S6 done** (2026-11-07; S7, S3b and S8 remain): background
+1. **plan.md §6.34, S0-S7 done** (2026-11-07; S3b and S8 remain): background
    project loading, a file-backed project DB that `--build-db` can build
    before the editor starts, and an incremental refresh from per-file
    fingerprints (branch switches; also closes §6.19's staleness question).
@@ -224,7 +224,13 @@ Next steps:
    matches a fresh build. Open: the whole `gen_tb` load is 10.9 s against
    8.4 s (queue overhead, S8 candidate). Unit 1141/1141, Emacs 335/335
    (test_54, test_55 new), corpus 1563 / 31, `test-integration-uvm`
-   15/15, `perf-check` no regression. Next: S7 (stale library DBs).
+   15/15, `perf-check` no regression.
+
+   **S7 is done** (2026-11-07): `checkLibraryDb` (stat first, hash only
+   what changed). A stale `libraryDbSources` cache is rebuilt from a copy
+   and re-attached. A stale `libraryDbs` archive is warned about once.
+   `svlsp --build-db ... --check` is for CI. Unit 1145/1145, Emacs
+   335/335. Next: S3b (the XDG cache as the default DB), then S8.
 2. Optional, LL cost on files with syntax errors (only they reach LL now):
    the remaining LL time is true ambiguity in `primary` (decision 1068)
    and `hierarchical_identifier` (1103): `a.b` is a name, a name + select
@@ -532,7 +538,7 @@ by name instead of from the typedef's scope, and merged duplicated helpers
   in workspace symbols, no completion inside comments/strings, and doc
   comments (§6.31) in hover, signature help and completion resolve.
 - Test baselines:
-  - unit: **1141 cases**, all passing (2026-11-07, §6.34 S2-S6; 1118 with S1 file identity; 1100 on 2026-11-03, symlinked paths; 1098 with the fail-closed callee check; 1096 on 2026-10-31, §6.21 step 3; 1083 with step 2; 1077 with step 1; 1070 on 2026-10-27, library rename fails closed; 1067 with the §6.30 leftovers; 1059 with C10; 1053 with C9; 1051 with C8; 1048 on 2026-10-25, C4; 1047 with the C2 gap fixes; 1046 with C2; 1041 on 2026-10-24, C1; 1040 before the idle policy; 1031 with C7; 1029 on the receivers tree;
+  - unit: **1145 cases**, all passing (2026-11-07, §6.34 S7; 1141 with S2-S6; 1118 with S1 file identity; 1100 on 2026-11-03, symlinked paths; 1098 with the fail-closed callee check; 1096 on 2026-10-31, §6.21 step 3; 1083 with step 2; 1077 with step 1; 1070 on 2026-10-27, library rename fails closed; 1067 with the §6.30 leftovers; 1059 with C10; 1053 with C9; 1051 with C8; 1048 on 2026-10-25, C4; 1047 with the C2 gap fixes; 1046 with C2; 1041 on 2026-10-24, C1; 1040 before the idle policy; 1031 with C7; 1029 on the receivers tree;
     1016 at 4e8a10d) (no `[!shouldfail]` known gaps left
     -- the `` `define `` references case passes since the macro follow-up)
   - Emacs functional: **335/335** (2026-11-07, test_54 / test_55 new and 3 §6.34 cases; 329 on 2026-11-03, test_53 new; 328 on 2026-10-31, test_52 new; 326 on 2026-10-30, test_51 new; 321 on 2026-10-27, test_50 new; 318 with test_49 new and 2 test_47 cases; 309 on 2026-10-23, test_48 new; 305 with test_47)

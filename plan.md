@@ -2732,7 +2732,7 @@ moniker-key merge machinery. This is entirely the "keep DBs separate,
 `UNION` at query time" shape, modeled on clangd's `MergedIndex` — not LSIF/
 SCIP's moniker-linked physical merge.
 
-**Open question, deliberately unresolved (per explicit direction)** — planned 2026-11-07 in §6.34 S7 (per-file fingerprints; rebuild owned caches, warn on archived ones): how —
+**Open question, resolved 2026-11-07 by §6.34 S7** (stale caches svlsp owns are rebuilt, archives are warned about, `--build-db --check` for CI) -- originally planned 2026-11-07 in §6.34 S7 (per-file fingerprints; rebuild owned caches, warn on archived ones): how —
 or whether — to detect that a prebuilt/cached library DB has gone stale
 relative to its own source files (the library upgraded in place without
 rebuilding the DB; a `cachePath` populated once and never revisited even
@@ -6922,9 +6922,9 @@ code reviews can show that a rewrite does not regress latency or memory.
 ### 6.34 Background Project Loading, a Persistent Project DB, and Incremental Refresh (branch switches)
 
 **Status:** planned 2026-11-07, at the user's request; decisions D1-D4
-taken the same day (see "Decisions" at the end). S0-S6 done 2026-11-07
-(in the order S0, S1, S2, S4, S3, S5, S6; schema v18). The next step is
-S7.
+taken the same day (see "Decisions" at the end). S0-S7 done 2026-11-07
+(in the order S0, S1, S2, S4, S3, S5, S6, S7; schema v18). Next: S3b,
+then S8.
 Grows handoff "next step 1" (after C9: the commit still holds the data
 mutex; didOpen / didSave compile on the message thread) into a whole
 plan, and closes §6.19's open staleness question with the same mechanism.
@@ -7559,7 +7559,7 @@ handoff "next step 1".
   the pre-scan, held-back republishing) costs about 20 %. It is a candidate
   for S8.
 
-**S7 -- Stale library DBs (closes §6.19's open question).**
+**S7 -- Stale library DBs (closes §6.19's open question) -- done 2026-11-07.**
 - `--build-db` records S1's per-file stat data and hashes in the library
   DB too.
 - On attach and on every refresh, stat the library's files (UVM: 166, a few
@@ -7576,6 +7576,50 @@ handoff "next step 1".
   cache, explicit where it doesn't.
 - Tests: touch a library source, then the warning or rebuild happens; an
   attach-time check on an unchanged library reads no file contents.
+
+*Outcome -- done 2026-11-07.*
+- `checkLibraryDb` (`src/db/library_check.h`) checks a library DB against
+  its sources:
+  - Every file the DB recorded is stat'ed, read-only. A file is read and
+    hashed only when its stat data changed or was racy.
+  - It reports changed and missing files, and `describe()` gives "3 of
+    166 files changed since it was built, e.g. ...".
+  - A DB older than v17 has no stat data: its files are `unknown`, never
+    stale.
+- `--build-db` already recorded what it needs: since S1 its `files` rows
+  carry the stat data and hashes.
+- *A `libraryDbSources` cache* (owned by svlsp) is checked whenever it is
+  resolved, which means every load and refresh, and every `--build-db`
+  that depends on it. A stale cache is rebuilt:
+  - under the cache's `DbLock`;
+  - from a copy, `<cache>.tmp`, so it is incremental through S2;
+  - then renamed into place.
+
+  The server then re-attaches it (`SymbolDatabase::reattachLibraryDb`), on
+  the writer and on the reader (S5).
+- *A `libraryDbs` archive* is never rebuilt. A stale one gets one
+  `window/showMessage` warning per session, and a stderr line.
+- `svlsp --build-db <config> --output <db> --check`: exit 0 when up to
+  date, 1 when stale, 2 on an error. It counts as stale when:
+  - the DB is missing, of another schema or of another svlsp build;
+  - a library it uses is stale;
+  - a refresh would compile or remove anything.
+
+  The refresh plan runs in a transaction that is rolled back, so nothing is
+  written.
+- `svlsp.waitForIndexing` now also waits for documents opened or saved and
+  not yet compiled. A file outside any project has no load to wait for,
+  which left a race in Emacs `test_10`.
+- Tests:
+  - an unchanged library reads no file; an edit, a same-text touch and a
+    deletion each behave right;
+  - a stale owned cache is rebuilt in place;
+  - `--check`: up to date, another build, an edit, no writes, a missing DB;
+  - a server case: a stale archive is reported once.
+
+  The "existing cache is reused" case now builds its cache for real, since
+  a fake one records a file that doesn't exist. Unit 1145/1145, Emacs
+  335/335, corpus 1563 / 31, `test-integration-uvm` 15/15.
 
 **S8 -- Later, if S0's numbers ask for it.**
 - *Several parse workers for the initial load.* Commits stay one at a time;
