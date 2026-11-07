@@ -10,6 +10,7 @@
 #include <optional>
 #include <ostream>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace {
 
@@ -88,11 +89,6 @@ std::vector<ParseError> contextDiagnostics(const SymbolDatabase& sdb, const std:
 }
 
 // --- File identity (plan.md §6.34 S1) ------------------------------------
-
-// A stat taken this close after a file's mtime can't tell a later write in
-// the same mtime tick from no write at all (git's "racy" case). The window
-// is wide enough for coarse clocks and filesystems with 2 s mtimes.
-constexpr int64_t kRacyWindowNs = 2'000'000'000;
 
 // `path`'s current content hash: the stored one when its stat data still
 // matches and wasn't taken racily close to its mtime, else the hash of its
@@ -220,6 +216,107 @@ bool includeFailed(const PreprocessorResult& preprocessed)
                        });
 }
 
+// `path`'s file id, adding a row only for a file not known yet: a recheck
+// must not reset the identity of the files it writes diagnostics on.
+int64_t knownFileId(SymbolDatabase& sdb, const std::string& path)
+{
+    const int64_t fid = sdb.fileIdFor(path);
+    return fid >= 0 ? fid : sdb.upsertFile(path, "");
+}
+
+// --- Stored check inputs (plan.md §6.34 D3) --------------------------------
+// One record per line, fields separated by U+001F; a call's argument slots
+// by U+001E ("P", "E", or "N" + the name). Names never hold these.
+
+std::vector<std::string> splitOn(const std::string& s, char sep)
+{
+    std::vector<std::string> out;
+    size_t begin = 0;
+    for (size_t i = 0; i <= s.size(); ++i)
+        if (i == s.size() || s[i] == sep) {
+            out.push_back(s.substr(begin, i - begin));
+            begin = i + 1;
+        }
+    return out;
+}
+
+int toInt(const std::string& s) { return s.empty() ? 0 : std::stoi(s); }
+
+std::string serializeTypeRefs(const std::vector<TypeRefRecord>& refs)
+{
+    std::string out;
+    for (const auto& r : refs)
+        out += r.name + '\x1f' + r.qualifier + '\x1f' + std::to_string(r.line) + '\x1f' +
+               std::to_string(r.column) + '\x1f' + r.file + '\n';
+    return out;
+}
+
+std::vector<TypeRefRecord> parseTypeRefs(const std::string& data)
+{
+    std::vector<TypeRefRecord> refs;
+    for (const auto& line : splitOn(data, '\n')) {
+        const auto f = splitOn(line, '\x1f');
+        if (f.size() < 5) continue;
+        refs.push_back({f[0], f[1], toInt(f[2]), toInt(f[3]), f[4]});
+    }
+    return refs;
+}
+
+// `resolved[i]`: whether calls[i]'s callee resolved when it was last
+// checked (a 10th field, "1" or "0").
+std::string serializeCalls(const std::vector<CallRecord>& calls, const std::vector<bool>& resolved)
+{
+    std::string out;
+    for (size_t n = 0; n < calls.size(); ++n) {
+        const auto& c = calls[n];
+        std::string args;
+        for (size_t i = 0; i < c.args.size(); ++i) {
+            if (i) args += '\x1e';
+            const auto& a = c.args[i];
+            args += a.kind == CallArgSlot::Kind::Positional ? "P"
+                  : a.kind == CallArgSlot::Kind::Elided     ? "E"
+                                                           : "N" + a.name;
+        }
+        out += c.calleeName + '\x1f' + c.calleeScope + '\x1f' + std::to_string(c.line) + '\x1f' +
+               std::to_string(c.column) + '\x1f' + c.file + '\x1f' + std::to_string(c.nameLine) +
+               '\x1f' + std::to_string(c.nameColumn) + '\x1f' + std::to_string(c.args.size()) +
+               '\x1f' + args + '\x1f' + (n < resolved.size() && resolved[n] ? "1" : "0") + '\n';
+    }
+    return out;
+}
+
+std::vector<CallRecord> parseCalls(const std::string& data, std::vector<bool>& resolved)
+{
+    std::vector<CallRecord> calls;
+    resolved.clear();
+    for (const auto& line : splitOn(data, '\n')) {
+        const auto f = splitOn(line, '\x1f');
+        if (f.size() < 9) continue;
+        CallRecord c;
+        c.calleeName = f[0];
+        c.calleeScope = f[1];
+        c.line = toInt(f[2]);
+        c.column = toInt(f[3]);
+        c.file = f[4];
+        c.nameLine = toInt(f[5]);
+        c.nameColumn = toInt(f[6]);
+        if (toInt(f[7]) > 0)
+            for (const auto& a : splitOn(f[8], '\x1e')) {
+                if (a == "P") c.args.push_back({CallArgSlot::Kind::Positional});
+                else if (a == "E") c.args.push_back({CallArgSlot::Kind::Elided});
+                else c.args.push_back({CallArgSlot::Kind::Named, a.substr(1)});
+            }
+        calls.push_back(std::move(c));
+        resolved.push_back(f.size() > 9 && f[9] == "1");
+    }
+    return calls;
+}
+
+bool namesOneOf(const std::unordered_set<std::string>& names, const std::string& name)
+{
+    return names.count(name) > 0;
+}
+
 } // namespace
 
 CompilationController::CompilationController(SymbolDatabase& sdb, std::ostream* logStream)
@@ -238,6 +335,35 @@ WalkResult CompilationController::walk(const std::string& source,
 std::string CompilationController::hashContent(const std::string& text)
 {
     return contentHash(text);
+}
+
+std::string CompilationController::configFingerprint(const ProjectConfig* config) const
+{
+    return contentHash(configKey(config, m_collectDocs, bool(m_calleeResolver), bool(m_typeChecker)));
+}
+
+std::string CompilationController::inputsKeyFor(const std::string& path,
+                                                const ProjectConfig* config,
+                                                std::optional<IncludeSiteRow>* context,
+                                                std::vector<MacroRow>* contextMacros) const
+{
+    auto ctx = m_sdb.includeContextOf(path);
+    std::vector<MacroRow> macros;
+    if (ctx) macros = m_sdb.macrosOfUnit(*ctx, path);
+    std::string key = configKey(config, m_collectDocs, bool(m_calleeResolver), bool(m_typeChecker));
+    addContext(key, ctx, macros);
+    if (context) *context = std::move(ctx);
+    if (contextMacros) *contextMacros = std::move(macros);
+    return key;
+}
+
+bool CompilationController::isUpToDate(const std::string& path, const ProjectConfig* config) const
+{
+    const auto hash = currentHash(m_sdb, path);
+    if (!hash) return false;
+    static const std::vector<std::string> kNoDirs;
+    return inputsUnchanged(m_sdb, path, *hash, inputsKeyFor(path, config, nullptr, nullptr),
+                           config ? config->includeDirs : kNoDirs);
 }
 
 std::vector<ParseError> CompilationController::compile(const std::string& path,
@@ -268,11 +394,9 @@ CompilationController::Prepared CompilationController::prepare(const std::string
     // macros its includer's unit defines -- so its records are scoped as
     // when the includer is compiled (`uvm_pkg::uvm_component`, not
     // `uvm_component`).
-    const auto context = m_sdb.includeContextOf(path);
+    std::optional<IncludeSiteRow> context;
     std::vector<MacroRow> contextMacros;
-    if (context) contextMacros = m_sdb.macrosOfUnit(*context, path);
-    job.inputsKey = configKey(config, m_collectDocs, bool(m_calleeResolver), bool(m_typeChecker));
-    addContext(job.inputsKey, context, contextMacros);
+    job.inputsKey = inputsKeyFor(path, config, &context, &contextMacros);
 
     // Cache hit: return diagnostics from DB without re-parsing, when every
     // input of the last compile is unchanged (plan.md §6.34 S1): this text,
@@ -429,36 +553,22 @@ std::vector<ParseError> CompilationController::commit(Parsed&& parsed,
     // appending on top is never stale, since this whole pipeline reruns
     // from scratch on every real recompile (a cache hit never reaches this
     // code at all, see the early return above).
-    std::unordered_map<std::string, std::vector<CallRecord>> callsByFile;
-    for (const auto& call : walked.calls) callsByFile[call.file].push_back(call);
-
-    // The primary file's own call diagnostics must also be merged into this
-    // function's *return* value, not just persisted -- callers publish the
-    // primary URI's diagnostics straight from that return value
-    // (LanguageServer::parseDiagnostics), never by re-querying the DB the
-    // way included files' diagnostics are (LanguageServer::
-    // collectIncludedDiagnostics, which runs after this call returns and so
-    // sees appendDiagnostics' effect regardless).
     // The callee is resolved against each file's own source text: `text`
     // for the primary, the file on disk for an included one (what the
-    // preprocessor read it from).
-    std::vector<ParseError> primaryCallDiags;
-    for (const auto& [filePath, calls] : callsByFile) {
-        if (calls.empty() || !m_calleeResolver) continue;
-        std::optional<std::string> incText;
-        if (!filePath.empty() && !(incText = readFile(filePath))) continue;
-        const auto callees = m_calleeResolver(m_sdb, filePath.empty() ? path : filePath,
-                                              filePath.empty() ? text : *incText, calls);
-        auto diags = checkMissingArguments(m_sdb, calls, callees);
-        if (diags.empty()) continue;
-        if (filePath.empty()) {
-            m_sdb.appendDiagnostics(fid, diags);
-            primaryCallDiags = std::move(diags);
-        } else {
-            int64_t incFid = m_sdb.upsertFile(filePath, "");
-            m_sdb.appendDiagnostics(incFid, diags);
-        }
-    }
+    // preprocessor read it from). The primary's rows are also part of the
+    // return value: callers publish the primary's diagnostics from it.
+    std::vector<std::string> unitFiles{path};
+    for (const auto& s : preprocessed.includeSites)
+        if (s.file != path) unitFiles.push_back(s.file);
+    for (const auto& f : allIncluded)
+        if (std::find(unitFiles.begin(), unitFiles.end(), f) == unitFiles.end())
+            unitFiles.push_back(f);
+    std::vector<bool> resolvedCalls;
+    const std::vector<ParseError> primaryCallDiags =
+        runCallCheck(path, fid, text, walked.calls, unitFiles, resolvedCalls, nullptr);
+    m_sdb.replaceUnitChecks(fid, "calls", serializeCalls(walked.calls, resolvedCalls));
+    m_sdb.replaceUnitChecks(fid, "types",
+                            parsed.checkTypes ? serializeTypeRefs(walked.typeRefs) : "");
 
     // Always persisted (plan.md §6.4), independent of whether a caller asked
     // for `includedFiles` -- this is what lets a *different* file's own
@@ -476,10 +586,14 @@ std::vector<ParseError> CompilationController::commit(Parsed&& parsed,
     const auto previouslyRead = m_sdb.includedFilesOf(path);
     m_sdb.replaceFileIncludes(fid, readFiles);
     m_sdb.replaceIncludeDirectives(fid, preprocessed.includeDirectives);
+    // Such a file goes altogether (plan.md §6.34 S2) unless it was last
+    // compiled on its own (an inputs fingerprint): then its rows are its own.
     for (const auto& old : previouslyRead) {
         if (std::find(readFiles.begin(), readFiles.end(), old) != readFiles.end()) continue;
         if (!m_sdb.includersOf(old).empty()) continue;
-        m_sdb.clearFileRows(m_sdb.fileIdFor(old));
+        const auto stored = m_sdb.storedFile(old);
+        if (stored && !stored->inputsFp.empty()) continue;
+        m_sdb.removeFile(old);
     }
 
     // Where this compile included each file (schema v16), the first
@@ -511,7 +625,8 @@ std::vector<ParseError> CompilationController::commit(Parsed&& parsed,
     // are persisted: an included file's package-level positions are in the
     // scope it is `include'd in only through them.
     const std::vector<ParseError> primaryTypeDiags =
-        parsed.checkTypes ? checkTypeRefs(parsed, fid, allIncluded) : std::vector<ParseError>{};
+        parsed.checkTypes ? runTypeCheck(path, fid, text, walked.typeRefs, unitFiles)
+                          : std::vector<ParseError>{};
     refreshTypeRefDiagnostics(fid, allIncluded, refreshedFiles);
 
     // Each file's identity as this compile read it (plan.md §6.34 S1), last:
@@ -544,25 +659,26 @@ std::vector<ParseError> CompilationController::commit(Parsed&& parsed,
     return result;
 }
 
-// The declared-type check (plan.md §6.21 step 3): each type name `parsed`'s
-// unit writes at a declaration, in the primary file (`fid`) and each of
-// `included`, checked once the whole unit is persisted, as 'reference'
-// Warnings with the written name as subject. Every file of the unit has its
-// old rows replaced, even with no references left. Returns the primary's.
-std::vector<ParseError> CompilationController::checkTypeRefs(
-    const Parsed& parsed, int64_t fid, const std::vector<std::string>& included)
+// The declared-type check (plan.md §6.21 step 3): each type name of the unit
+// whose primary is `path` (file `fid`, compiled from `text`) writes at a
+// declaration, checked once the whole unit is persisted, as 'reference'
+// Warnings with the written name as subject. Every file in `unitFiles` has
+// its old rows replaced, even with no references left. Returns the
+// primary's.
+std::vector<ParseError> CompilationController::runTypeCheck(
+    const std::string& path, int64_t fid, const std::string& text,
+    const std::vector<TypeRefRecord>& refs, const std::vector<std::string>& unitFiles)
 {
     if (!m_typeChecker) return {};
     const auto start = std::chrono::steady_clock::now();
-    const auto& refs = parsed.walked.typeRefs;
 
     // The unit's files' texts: the primary's, and each included file with
     // references, as the preprocessor read it.
-    std::unordered_map<std::string, std::string> texts{{parsed.path, parsed.text}};
+    std::unordered_map<std::string, std::string> texts{{path, text}};
     for (const auto& ref : refs)
         if (!ref.file.empty() && !texts.count(ref.file))
-            if (auto text = readFile(ref.file)) texts.emplace(ref.file, std::move(*text));
-    const auto problems = m_typeChecker(m_sdb, parsed.path, texts, refs);
+            if (auto t = readFile(ref.file)) texts.emplace(ref.file, std::move(*t));
+    const auto problems = m_typeChecker(m_sdb, path, texts, refs);
 
     std::unordered_map<std::string, std::vector<ParseError>> warningsByFile;
     std::unordered_map<std::string, std::vector<std::string>> subjectsByFile;
@@ -575,13 +691,10 @@ std::vector<ParseError> CompilationController::checkTypeRefs(
             refs[i].qualifier.empty() ? refs[i].name : refs[i].qualifier + "::" + refs[i].name);
     }
 
-    // Every file of the unit has its old rows replaced, even with none left.
-    std::vector<std::string> files{parsed.path};
-    files.insert(files.end(), included.begin(), included.end());
-    m_sdb.clearDiagnostics("reference", files);
+    m_sdb.clearDiagnostics("reference", unitFiles);
     size_t warnings = 0;
     for (const auto& [filePath, diags] : warningsByFile) {
-        const int64_t fileId = filePath.empty() ? fid : m_sdb.upsertFile(filePath, "");
+        const int64_t fileId = filePath.empty() ? fid : knownFileId(m_sdb, filePath);
         const auto& subjects = subjectsByFile[filePath];
         for (size_t i = 0; i < diags.size(); ++i)
             m_sdb.appendDiagnostics(fileId, {diags[i]}, "reference", subjects[i]);
@@ -590,11 +703,129 @@ std::vector<ParseError> CompilationController::checkTypeRefs(
     if (m_log) {
         const auto ms = std::chrono::duration<double, std::milli>(
                             std::chrono::steady_clock::now() - start).count();
-        *m_log << "[types]    " << parsed.path << ": " << refs.size() << " refs, " << warnings
+        *m_log << "[types]    " << path << ": " << refs.size() << " refs, " << warnings
                << " warnings, " << static_cast<int>(ms) << " ms\n";
         m_log->flush();
     }
     return warningsByFile[""];
+}
+
+// The missing-required-argument check (plan.md §6.23), run once every
+// symbol of the unit is persisted, so a callee declared later in the same
+// file, or in one of its `include's, resolves. Each call's callee is
+// resolved against its file's text: `text` for the primary, the file on
+// disk for an included one. `only`, when non-null, selects the calls to
+// check (by index): their 'call' rows are replaced, the others' kept;
+// otherwise every file in `unitFiles` has its 'call' rows replaced.
+// `resolved[i]` is set to whether calls[i]'s callee resolved (when
+// checked). Returns the primary's new rows.
+std::vector<ParseError> CompilationController::runCallCheck(
+    const std::string& path, int64_t fid, const std::string& text,
+    const std::vector<CallRecord>& calls, const std::vector<std::string>& unitFiles,
+    std::vector<bool>& resolved, const std::vector<size_t>* only)
+{
+    resolved.resize(calls.size(), false);
+    if (!only) m_sdb.clearDiagnostics("call", unitFiles);
+    if (!m_calleeResolver) return {};
+    std::unordered_map<std::string, std::vector<size_t>> byFile;
+    if (only)
+        for (size_t i : *only) byFile[calls[i].file].push_back(i);
+    else
+        for (size_t i = 0; i < calls.size(); ++i) byFile[calls[i].file].push_back(i);
+    std::vector<ParseError> primaryDiags;
+    for (const auto& [filePath, indices] : byFile) {
+        std::optional<std::string> incText;
+        if (!filePath.empty() && !(incText = readFile(filePath))) continue;
+        const int64_t fileId = filePath.empty() ? fid : knownFileId(m_sdb, filePath);
+        std::vector<CallRecord> fileCalls;
+        for (size_t i : indices) {
+            fileCalls.push_back(calls[i]);
+            if (only) m_sdb.deleteDiagnostic(fileId, calls[i].line, calls[i].column, "call");
+        }
+        const auto callees = m_calleeResolver(m_sdb, filePath.empty() ? path : filePath,
+                                              filePath.empty() ? text : *incText, fileCalls);
+        for (size_t k = 0; k < indices.size() && k < callees.size(); ++k)
+            resolved[indices[k]] = callees[k].has_value();
+        auto diags = checkMissingArguments(m_sdb, fileCalls, callees);
+        if (diags.empty()) continue;
+        m_sdb.appendDiagnostics(fileId, diags, "call");
+        if (filePath.empty()) primaryDiags = std::move(diags);
+    }
+    return primaryDiags;
+}
+
+void CompilationController::recheckUnits(const std::vector<std::string>& units,
+                                         const RecheckNames& names)
+{
+    const auto start = std::chrono::steady_clock::now();
+    size_t calls = 0, refs = 0;
+    for (const auto& unit : units) {
+        const int64_t fid = m_sdb.fileIdFor(unit);
+        if (fid < 0) continue;
+
+        // Calls: an unresolved one whose name was declared, and any whose
+        // name changed (a removed declaration, a port added or removed).
+        std::vector<bool> resolved;
+        const auto unitCalls = parseCalls(m_sdb.unitChecks(fid, "calls"), resolved);
+        std::vector<size_t> callIdx;
+        for (size_t i = 0; i < unitCalls.size(); ++i) {
+            const auto& name = unitCalls[i].calleeName;
+            if (namesOneOf(names.changed, name) || (!resolved[i] && namesOneOf(names.added, name)))
+                callIdx.push_back(i);
+        }
+        // Type references: one whose name changed. A declaration added
+        // clears warnings at the commit that adds it
+        // (refreshTypeRefDiagnostics).
+        std::vector<TypeRefRecord> unitRefs;
+        if (const std::string types = m_sdb.unitChecks(fid, "types"); !types.empty())
+            for (auto& r : parseTypeRefs(types))
+                if (namesOneOf(names.changed, r.name)) unitRefs.push_back(std::move(r));
+        if (callIdx.empty() && unitRefs.empty()) continue;
+
+        const auto text = readFile(unit);
+        if (!text) continue;
+        std::vector<std::string> unitFiles{unit};
+        for (auto& f : m_sdb.includedFilesOf(unit)) unitFiles.push_back(std::move(f));
+        if (!callIdx.empty()) {
+            runCallCheck(unit, fid, *text, unitCalls, unitFiles, resolved, &callIdx);
+            m_sdb.replaceUnitChecks(fid, "calls", serializeCalls(unitCalls, resolved));
+            calls += callIdx.size();
+        }
+        if (!unitRefs.empty() && m_typeChecker) {
+            std::unordered_map<std::string, std::string> texts{{unit, *text}};
+            for (const auto& ref : unitRefs)
+                if (!ref.file.empty() && !texts.count(ref.file))
+                    if (auto t = readFile(ref.file)) texts.emplace(ref.file, std::move(*t));
+            const auto problems = m_typeChecker(m_sdb, unit, texts, unitRefs);
+            for (size_t i = 0; i < unitRefs.size() && i < problems.size(); ++i) {
+                const auto& ref = unitRefs[i];
+                const int64_t fileId = ref.file.empty() ? fid : knownFileId(m_sdb, ref.file);
+                m_sdb.deleteDiagnostic(fileId, ref.line, ref.column, "reference");
+                if (!problems[i]) continue;
+                ParseError diag{ref.line, ref.column, *problems[i]};
+                diag.severity = 2;
+                m_sdb.appendDiagnostics(fileId, {diag}, "reference",
+                                        ref.qualifier.empty() ? ref.name
+                                                              : ref.qualifier + "::" + ref.name);
+            }
+            refs += unitRefs.size();
+        }
+    }
+    if (m_log) {
+        const auto ms = std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - start).count();
+        *m_log << "[recheck]  " << units.size() << " units, " << calls << " calls, " << refs
+               << " type refs, " << static_cast<int>(ms) << " ms\n";
+        m_log->flush();
+    }
+}
+
+void CompilationController::refreshContextDiagnostics(const std::vector<std::string>& files)
+{
+    for (const auto& file : files) {
+        const int64_t fid = m_sdb.fileIdFor(file);
+        if (fid >= 0) m_sdb.replaceDiagnostics(fid, contextDiagnostics(m_sdb, file), "context");
+    }
 }
 
 // Re-checks the 'reference' rows of files outside the unit just committed

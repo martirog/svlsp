@@ -4,7 +4,7 @@ namespace db {
 
 // Current schema version.  Increment and add a migration in Database::initSchema
 // whenever the schema changes.
-inline constexpr int SCHEMA_VERSION = 17;
+inline constexpr int SCHEMA_VERSION = 18;
 
 // DDL executed on a fresh (version-0) database — always reflects the latest schema.
 inline constexpr const char* SCHEMA_DDL = R"sql(
@@ -152,6 +152,36 @@ CREATE TABLE include_directives (
 
 CREATE INDEX idx_include_directives_primary ON include_directives(primary_file_id);
 
+-- Projects refreshed into this DB (schema v18, plan.md §6.34 S2), by the
+-- config file's absolute path: the fingerprint of the config's
+-- parse-affecting settings (CompilationController::configFingerprint) and
+-- the svlsp build that last refreshed it ('' = unknown).
+CREATE TABLE project_info (
+    config_path   TEXT PRIMARY KEY,
+    config_fp     TEXT NOT NULL DEFAULT '',
+    svlsp_version TEXT NOT NULL DEFAULT ''
+);
+
+-- The compilation units a project's last refresh compiled: its config's
+-- files ('config') and those LibraryResolver pulled in ('library').
+CREATE TABLE project_units (
+    config_path TEXT    NOT NULL,
+    file_id     INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    origin      TEXT    NOT NULL,
+    PRIMARY KEY (config_path, file_id)
+);
+
+-- What the cross-file checks of a unit read (plan.md §6.34 D3), so they can
+-- be re-run without parsing: kind 'types' (the declared-type check's
+-- TypeRefRecords) or 'calls' (the missing-argument check's CallRecords),
+-- serialized one record per line by CompilationController.
+CREATE TABLE unit_checks (
+    file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    kind    TEXT    NOT NULL,
+    data    TEXT    NOT NULL,
+    PRIMARY KEY (file_id, kind)
+);
+
 -- One row per (includer, included) pair: `includer_file_id`'s own compiled
 -- unit transitively `` `include ``s `included_file_id`'s text (plan.md
 -- §6.4). Populated by CompilationController::compile on every real recompile
@@ -221,6 +251,29 @@ CREATE TABLE symbol_docs (
     doc     TEXT    NOT NULL,
     PRIMARY KEY (file_id, line, col)
 ) WITHOUT ROWID;
+)sql";
+
+// SQL applied when migrating an existing v17 database to v18: projects,
+// their units, and the units' stored check inputs (plan.md §6.34 S2).
+inline constexpr const char* MIGRATION_V17_TO_V18 = R"sql(
+CREATE TABLE IF NOT EXISTS project_info (
+    config_path   TEXT PRIMARY KEY,
+    config_fp     TEXT NOT NULL DEFAULT '',
+    svlsp_version TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS project_units (
+    config_path TEXT    NOT NULL,
+    file_id     INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    origin      TEXT    NOT NULL,
+    PRIMARY KEY (config_path, file_id)
+);
+CREATE TABLE IF NOT EXISTS unit_checks (
+    file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    kind    TEXT    NOT NULL,
+    data    TEXT    NOT NULL,
+    PRIMARY KEY (file_id, kind)
+);
+UPDATE schema_version SET version = 18;
 )sql";
 
 // SQL applied when migrating an existing v16 database to v17: the files'

@@ -1,6 +1,7 @@
 #include <tuple>
 #include "db/symbol_database.h"
 #include "compiler/parse_record.h"
+#include "compiler/content_hash.h"
 #include <algorithm>
 #include <limits>
 #include <map>
@@ -1004,7 +1005,7 @@ std::vector<DiagnosticRow> SymbolDatabase::diagnosticsForFile(
     if (fid < 0) return {};
 
     auto stmt = m_db.prepare(
-        "SELECT line,col,message,severity FROM diagnostics WHERE file_id = ? ORDER BY line");
+        "SELECT line,col,message,severity,source FROM diagnostics WHERE file_id = ? ORDER BY line");
     stmt.bind(1, fid);
 
     std::vector<DiagnosticRow> rows;
@@ -1013,7 +1014,8 @@ std::vector<DiagnosticRow> SymbolDatabase::diagnosticsForFile(
                         static_cast<int>(stmt.columnInt(1)),
                         stmt.columnText(2),
                         path,
-                        static_cast<int>(stmt.columnInt(3))});
+                        static_cast<int>(stmt.columnInt(3)),
+                        stmt.columnText(4)});
     return rows;
 }
 
@@ -1640,4 +1642,149 @@ std::vector<std::string> SymbolDatabase::baseClassChain(
         current = best.detail; // single recorded parent name, "" if none
     }
     return chain;
+}
+
+// ---------------------------------------------------------------------------
+// Projects and refresh (schema v18, plan.md §6.34 S2)
+// ---------------------------------------------------------------------------
+
+bool SymbolDatabase::removeFile(const std::string& path)
+{
+    const int64_t fid = fileIdFor(path);
+    if (fid < 0) return false;
+    auto del = m_db.prepare("DELETE FROM files WHERE id = ?");
+    del.bind(1, fid);
+    del.step();
+    clearIncludeCaches();
+    return true;
+}
+
+std::optional<SymbolDatabase::ProjectInfo> SymbolDatabase::projectInfo(
+    const std::string& configPath) const
+{
+    auto stmt = m_db.prepare(
+        "SELECT config_fp, svlsp_version FROM project_info WHERE config_path = ?");
+    stmt.bind(1, configPath);
+    if (!stmt.step()) return std::nullopt;
+    return ProjectInfo{stmt.columnText(0), stmt.columnText(1)};
+}
+
+void SymbolDatabase::setProjectInfo(const std::string& configPath, const ProjectInfo& info)
+{
+    auto stmt = m_db.prepare("INSERT INTO project_info (config_path, config_fp, svlsp_version) "
+                             "VALUES (?1, ?2, ?3) ON CONFLICT(config_path) DO UPDATE SET "
+                             "config_fp = ?2, svlsp_version = ?3");
+    stmt.bind(1, configPath).bind(2, info.configFp).bind(3, info.svlspVersion);
+    stmt.step();
+}
+
+std::vector<std::pair<std::string, std::string>> SymbolDatabase::projectUnits(
+    const std::string& configPath) const
+{
+    auto stmt = m_db.prepare("SELECT f.path, u.origin FROM project_units u "
+                             "JOIN files f ON f.id = u.file_id WHERE u.config_path = ? "
+                             "ORDER BY f.path");
+    stmt.bind(1, configPath);
+    std::vector<std::pair<std::string, std::string>> result;
+    while (stmt.step()) result.emplace_back(stmt.columnText(0), stmt.columnText(1));
+    return result;
+}
+
+void SymbolDatabase::addProjectUnit(const std::string& configPath, int64_t fileId,
+                                    const std::string& origin)
+{
+    auto stmt = m_db.prepare("INSERT INTO project_units (config_path, file_id, origin) "
+                             "VALUES (?1, ?2, ?3) ON CONFLICT(config_path, file_id) "
+                             "DO UPDATE SET origin = ?3");
+    stmt.bind(1, configPath).bind(2, fileId).bind(3, origin);
+    stmt.step();
+}
+
+void SymbolDatabase::removeProjectUnit(const std::string& configPath, int64_t fileId)
+{
+    auto stmt = m_db.prepare("DELETE FROM project_units WHERE config_path = ? AND file_id = ?");
+    stmt.bind(1, configPath).bind(2, fileId);
+    stmt.step();
+}
+
+bool SymbolDatabase::isUnitOfOtherProject(const std::string& configPath, int64_t fileId) const
+{
+    auto stmt = m_db.prepare(
+        "SELECT 1 FROM project_units WHERE file_id = ? AND config_path <> ? LIMIT 1");
+    stmt.bind(1, fileId).bind(2, configPath);
+    return stmt.step();
+}
+
+void SymbolDatabase::replaceUnitChecks(int64_t fileId, const std::string& kind,
+                                       const std::string& data)
+{
+    auto del = m_db.prepare("DELETE FROM unit_checks WHERE file_id = ? AND kind = ?");
+    del.bind(1, fileId).bind(2, kind);
+    del.step();
+    if (data.empty()) return;
+    auto ins = m_db.prepare("INSERT INTO unit_checks (file_id, kind, data) VALUES (?, ?, ?)");
+    ins.bind(1, fileId).bind(2, kind).bind(3, data);
+    ins.step();
+}
+
+std::vector<std::string> SymbolDatabase::unitsWithChecks() const
+{
+    auto stmt = m_db.prepare("SELECT DISTINCT f.path FROM unit_checks c "
+                             "JOIN files f ON f.id = c.file_id ORDER BY f.path");
+    std::vector<std::string> result;
+    while (stmt.step()) result.push_back(stmt.columnText(0));
+    return result;
+}
+
+std::string SymbolDatabase::unitChecks(int64_t fileId, const std::string& kind) const
+{
+    auto stmt = m_db.prepare("SELECT data FROM unit_checks WHERE file_id = ? AND kind = ?");
+    stmt.bind(1, fileId).bind(2, kind);
+    return stmt.step() ? stmt.columnText(0) : std::string{};
+}
+
+std::vector<SymbolDatabase::Declaration> SymbolDatabase::declarationsOfUnit(
+    const std::string& primaryPath) const
+{
+    const int64_t fid = fileIdFor(primaryPath);
+    if (fid < 0) return {};
+    auto stmt = m_db.prepare(
+        "SELECT s.scope, s.name, s.kind, CASE WHEN s.kind = 'Port' THEN s.detail ELSE '' END "
+        "FROM symbols s WHERE s.file_id = ?1 OR s.file_id IN "
+        "(SELECT included_file_id FROM file_includes WHERE includer_file_id = ?1)");
+    stmt.bind(1, fid);
+    std::vector<Declaration> out;
+    while (stmt.step())
+        out.push_back({stmt.columnText(0), stmt.columnText(1), stmt.columnText(2),
+                       stmt.columnText(3)});
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+std::unordered_map<std::string, std::string> SymbolDatabase::diagnosticsDigest() const
+{
+    auto stmt = m_db.prepare(
+        "SELECT f.path, d.line, d.col, d.severity, d.source, d.message FROM diagnostics d "
+        "JOIN files f ON f.id = d.file_id ORDER BY f.path, d.line, d.col, d.message");
+    std::unordered_map<std::string, std::string> all;
+    while (stmt.step()) {
+        std::string& acc = all[stmt.columnText(0)];
+        for (int i = 1; i < 6; ++i) {
+            acc += stmt.columnText(i);
+            acc += '\x1f';
+        }
+        acc += '\n';
+    }
+    for (auto& [path, acc] : all) acc = contentHash(acc);
+    return all;
+}
+
+bool SymbolDatabase::declaresInstantiatedDesign(int64_t fileId) const
+{
+    auto stmt = m_db.prepare(
+        "SELECT 1 FROM symbols s JOIN instantiations i ON i.type_name = s.name "
+        "WHERE s.file_id = ?1 AND s.kind IN ('Module', 'Interface', 'Program') "
+        "AND i.file_id <> ?1 LIMIT 1");
+    stmt.bind(1, fileId);
+    return stmt.step();
 }

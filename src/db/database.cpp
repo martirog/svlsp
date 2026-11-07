@@ -120,6 +120,7 @@ void Database::initSchema()
         execute(col.step() ? "UPDATE schema_version SET version = 17;"
                            : db::MIGRATION_V16_TO_V17);
     }
+    if (v < 18) execute(db::MIGRATION_V17_TO_V18);
 }
 
 void Database::execute(const std::string& sql)

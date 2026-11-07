@@ -7,6 +7,7 @@
 #include <functional>
 #include <iosfwd>
 #include <optional>
+#include <unordered_set>
 #include <string>
 #include <vector>
 
@@ -157,6 +158,41 @@ public:
     WalkResult walk(const std::string& source, const std::vector<SourceLine>& sourceMap,
                     bool collectDocs, const std::string& initialScope) const;
 
+    // --- Refresh support (plan.md §6.34 S2) ---------------------------------
+
+    // Whether compiling `path` from its file on disk under `config` would hit
+    // the cache: prepare()'s check, with the primary's hash taken from its
+    // stat data when that still matches.
+    bool isUpToDate(const std::string& path, const ProjectConfig* config) const;
+
+    // The fingerprint of what every unit compiled under `config` depends on
+    // besides its files: defines, -y / -v / +libext+, the mode, and the
+    // settings and checks of this controller. Not the file list or the
+    // include dirs (those count per unit).
+    std::string configFingerprint(const ProjectConfig* config) const;
+
+    // The declared names a refresh changed: `added`, names newly declared;
+    // `changed`, names whose declaration went away or changed -- a removed
+    // symbol's name and its scope's last segment, and the function of a
+    // port that was added or removed.
+    struct RecheckNames {
+        std::unordered_set<std::string> added, changed;
+        bool empty() const { return added.empty() && changed.empty(); }
+    };
+
+    // Re-runs, from each of `units`' stored inputs (unit_checks) and its
+    // files' texts on disk, the checks whose result `names` can change
+    // (plan.md §6.34 D3): a call whose callee was unresolved and is now
+    // declared, or whose callee's name changed; a declared-type reference
+    // whose name changed. What a refresh does for the
+    // units it didn't recompile. Their rows are replaced one by one; the
+    // other checks' rows stay.
+    void recheckUnits(const std::vector<std::string>& units, const RecheckNames& names);
+
+    // Recomputes the "`include'd in N scopes" Information row of each of
+    // `files`, whose include sites changed outside a compile of them.
+    void refreshContextDiagnostics(const std::vector<std::string>& files);
+
 private:
     SymbolDatabase& m_sdb;
     std::ostream*   m_log;
@@ -164,8 +200,19 @@ private:
     CalleeResolver  m_calleeResolver;
     TypeChecker     m_typeChecker;
 
-    std::vector<ParseError> checkTypeRefs(const Parsed& parsed, int64_t fid,
-                                          const std::vector<std::string>& included);
+    std::vector<ParseError> runTypeCheck(const std::string& path, int64_t fid,
+                                         const std::string& text,
+                                         const std::vector<TypeRefRecord>& refs,
+                                         const std::vector<std::string>& unitFiles);
+    std::vector<ParseError> runCallCheck(const std::string& path, int64_t fid,
+                                         const std::string& text,
+                                         const std::vector<CallRecord>& calls,
+                                         const std::vector<std::string>& unitFiles,
+                                         std::vector<bool>& resolved,
+                                         const std::vector<size_t>* only);
+    std::string inputsKeyFor(const std::string& path, const ProjectConfig* config,
+                             std::optional<IncludeSiteRow>* context,
+                             std::vector<MacroRow>* contextMacros) const;
     void refreshTypeRefDiagnostics(int64_t fid, const std::vector<std::string>& included,
                                    std::vector<std::string>* refreshedFiles);
     Walker          m_walker;

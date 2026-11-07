@@ -13,14 +13,14 @@ TEST_CASE("open in-memory database succeeds", "[db][database]") {
 TEST_CASE("initSchema creates tables and sets current version", "[db][database]") {
     Database db(":memory:");
     db.initSchema();
-    CHECK(db.schemaVersion() == 17);
+    CHECK(db.schemaVersion() == 18);
 }
 
 TEST_CASE("initSchema is idempotent", "[db][database]") {
     Database db(":memory:");
     db.initSchema();
     CHECK_NOTHROW(db.initSchema());
-    CHECK(db.schemaVersion() == 17);
+    CHECK(db.schemaVersion() == 18);
 }
 
 TEST_CASE("schemaVersion returns 0 on fresh database", "[db][database]") {
@@ -156,7 +156,7 @@ TEST_CASE("migration to v9 adds the macros table (plan.md §6.29 part A)", "[db]
     // Reshape into a v8 database: no macros table.
     db.execute("DROP TABLE macros; UPDATE schema_version SET version = 8;");
     db.initSchema();
-    CHECK(db.schemaVersion() == 17);
+    CHECK(db.schemaVersion() == 18);
     auto chk = db.prepare("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='macros'");
     REQUIRE(chk.step());
     CHECK(chk.columnInt(0) == 1);
@@ -172,7 +172,7 @@ TEST_CASE("migration to v10 adds macros.body", "[db][database]") {
                " is_function_like INTEGER NOT NULL DEFAULT 0, params TEXT NOT NULL DEFAULT '');"
                "UPDATE schema_version SET version = 9;");
     db.initSchema();
-    CHECK(db.schemaVersion() == 17);
+    CHECK(db.schemaVersion() == 18);
     CHECK_NOTHROW(db.prepare("SELECT body FROM macros"));
 }
 
@@ -187,7 +187,7 @@ TEST_CASE("migration to v11 adds symbol_docs and macros.doc (plan.md §6.31)", "
                " body TEXT NOT NULL DEFAULT '');"
                "UPDATE schema_version SET version = 10;");
     db.initSchema();
-    CHECK(db.schemaVersion() == 17);
+    CHECK(db.schemaVersion() == 18);
     CHECK_NOTHROW(db.prepare("SELECT doc FROM macros"));
     CHECK_NOTHROW(db.prepare("SELECT file_id, line, col, doc FROM symbol_docs"));
 }
@@ -202,7 +202,7 @@ TEST_CASE("migration to v12 adds diagnostics.source and .subject", "[db][databas
                " message TEXT NOT NULL);"
                "UPDATE schema_version SET version = 11;");
     db.initSchema();
-    CHECK(db.schemaVersion() == 17);
+    CHECK(db.schemaVersion() == 18);
     CHECK_NOTHROW(db.prepare("SELECT source, subject FROM diagnostics"));
 }
 
@@ -213,7 +213,7 @@ TEST_CASE("migration to v13 adds symbols.access", "[db][database]") {
     db.execute("ALTER TABLE symbols DROP COLUMN access;"
                "UPDATE schema_version SET version = 12;");
     db.initSchema();
-    CHECK(db.schemaVersion() == 17);
+    CHECK(db.schemaVersion() == 18);
     CHECK_NOTHROW(db.prepare("SELECT access FROM symbols"));
 }
 
@@ -224,7 +224,7 @@ TEST_CASE("migration to v14 adds imports.scope", "[db][database]") {
     db.execute("ALTER TABLE imports DROP COLUMN scope;"
                "UPDATE schema_version SET version = 13;");
     db.initSchema();
-    CHECK(db.schemaVersion() == 17);
+    CHECK(db.schemaVersion() == 18);
     CHECK_NOTHROW(db.prepare("SELECT scope FROM imports"));
 }
 
@@ -235,7 +235,7 @@ TEST_CASE("migration to v15 adds symbols.end_col", "[db][database]") {
     db.execute("ALTER TABLE symbols DROP COLUMN end_col;"
                "UPDATE schema_version SET version = 14;");
     db.initSchema();
-    CHECK(db.schemaVersion() == 17);
+    CHECK(db.schemaVersion() == 18);
     CHECK_NOTHROW(db.prepare("SELECT end_col FROM symbols"));
 }
 
@@ -247,7 +247,7 @@ TEST_CASE("migration to v16 adds include_sites and diagnostics.severity", "[db][
                "ALTER TABLE diagnostics DROP COLUMN severity;"
                "UPDATE schema_version SET version = 15;");
     db.initSchema();
-    CHECK(db.schemaVersion() == 17);
+    CHECK(db.schemaVersion() == 18);
     CHECK_NOTHROW(db.prepare("SELECT primary_file_id, included_file_id, includer_file_id, "
                              "line, scope FROM include_sites"));
     CHECK_NOTHROW(db.prepare("SELECT severity FROM diagnostics"));
@@ -266,7 +266,7 @@ TEST_CASE("migration to v17 adds the files' identity columns (plan.md §6.34 S1)
                "DROP TABLE include_directives;"
                "UPDATE schema_version SET version = 16;");
     db.initSchema();
-    CHECK(db.schemaVersion() == 17);
+    CHECK(db.schemaVersion() == 18);
     auto row = db.prepare("SELECT size, mtime_ns, stat_ns, inputs_fp FROM files");
     REQUIRE(row.step());
     CHECK(row.columnInt(0) == -1); // unknown: the next check reads the file
@@ -282,6 +282,19 @@ TEST_CASE("a development v16 database without include_sites gets it", "[db][data
     db.initSchema();
     db.execute("DROP TABLE include_sites;");
     db.initSchema();
-    CHECK(db.schemaVersion() == 17);
+    CHECK(db.schemaVersion() == 18);
     CHECK_NOTHROW(db.prepare("SELECT scope FROM include_sites"));
+}
+
+TEST_CASE("migration to v18 adds projects, units and stored checks (plan.md §6.34 S2)",
+          "[db][database]") {
+    Database db(":memory:");
+    db.initSchema();
+    db.execute("DROP TABLE project_info; DROP TABLE project_units; DROP TABLE unit_checks;"
+               "UPDATE schema_version SET version = 17;");
+    db.initSchema();
+    CHECK(db.schemaVersion() == 18);
+    CHECK_NOTHROW(db.prepare("SELECT config_path, config_fp, svlsp_version FROM project_info"));
+    CHECK_NOTHROW(db.prepare("SELECT config_path, file_id, origin FROM project_units"));
+    CHECK_NOTHROW(db.prepare("SELECT file_id, kind, data FROM unit_checks"));
 }

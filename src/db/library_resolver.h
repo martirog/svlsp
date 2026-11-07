@@ -1,5 +1,7 @@
 #pragma once
 #include "compiler/project_config.h"
+#include <string>
+#include <vector>
 
 class CompilationController;
 class SymbolDatabase;
@@ -24,7 +26,8 @@ public:
     // that references it; a later recompile of that file keeps and
     // re-anchors it (SymbolDatabase::refreshLibraryDiagnostics).
     //
-    // Returns the number of additional files compiled.
+    // Returns the number of additional files compiled; `compiledPaths`,
+    // when non-null, receives their paths.
     static int resolve(const ProjectConfig& config, CompilationController& controller,
-                        SymbolDatabase& sdb);
+                        SymbolDatabase& sdb, std::vector<std::string>* compiledPaths = nullptr);
 };

@@ -3,6 +3,7 @@
 #include <iosfwd>
 #include <string>
 #include "db/compilation_controller.h"
+#include "db/project_refresher.h"
 
 struct ProjectConfig;
 
@@ -19,6 +20,7 @@ public:
         int         fileCount{0};
         int64_t     diagnosticCount{0};
         std::string error; // set only when !ok
+        ProjectRefresher::Result refresh{}; // what the refresh did (plan.md §6.34 S2)
     };
 
     // Dispatches `configPath` to ProjectManifestParser or FilelistParser by

@@ -71,7 +71,10 @@ LibraryDbBuilder::Result LibraryDbBuilder::build(
         controller.setTypeChecker(checkTypeRefs);
         if (walker) controller.setWalker(walker);
 
-        result.fileCount = ProjectCompiler::loadProject(config, controller, sdb);
+        result.fileCount = ProjectCompiler::loadProject(
+            config, controller, sdb,
+            std::filesystem::absolute(configPath).lexically_normal().string(), buildVersion,
+            &result.refresh);
 
         // Bake this build's own resolved includeDirs into the DB file
         // itself (plan.md §6.19 piece 4) -- by this point config.includeDirs

@@ -145,7 +145,12 @@ int buildDb(const std::string& configPath, const std::string& outputPath, bool c
     }
 
     std::cerr << "svlsp: built '" << outputPath << "' -- " << result.fileCount
-               << " files compiled, " << result.diagnosticCount << " diagnostics\n";
+               << " files compiled, " << result.refresh.removed << " removed, "
+               << result.diagnosticCount << " diagnostics";
+    if (result.refresh.rechecked)
+        std::cerr << "; cross-file checks re-run in "
+                  << static_cast<long>(result.refresh.recheckMs) << " ms";
+    std::cerr << '\n';
     return 0;
 }
 

@@ -235,6 +235,7 @@ add_library(svlsp_db STATIC
     src/db/compilation_controller.cpp
     src/db/library_resolver.cpp
     src/db/project_compiler.cpp
+    src/db/project_refresher.cpp
 )
 target_include_directories(svlsp_db PUBLIC src)
 target_link_libraries(svlsp_db PUBLIC svlsp_sqlite3 svlsp_compiler svlsp_options)
@@ -334,6 +335,7 @@ add_executable(unit_tests
     tests/unit/db/test_compilation_controller.cpp
     tests/unit/db/test_library_resolver.cpp
     tests/unit/db/test_project_compiler.cpp
+    tests/unit/db/test_project_refresher.cpp
 )
 target_compile_definitions(unit_tests PRIVATE
     SV_EXAMPLES_DIR="${CMAKE_SOURCE_DIR}/examples"

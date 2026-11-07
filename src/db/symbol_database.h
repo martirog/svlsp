@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -45,6 +46,7 @@ struct DiagnosticRow {
     std::string message;
     std::string filePath;
     int         severity{1}; // as ParseError::severity
+    std::string source{};    // diagnostics.source: 'compile', 'reference', 'call', ...
 };
 
 // A scope row of one file as scopeAtPosition sees it: its qualified name,
@@ -376,6 +378,63 @@ public:
                                   const std::vector<IncludeDirective>& directives);
     // Those of `path`'s last compile, in order. {} if none or unknown.
     std::vector<IncludeDirective> includeDirectivesOf(const std::string& path) const;
+
+    // --- Projects and refresh (schema v18, plan.md §6.34 S2) ---------------
+
+    // Deletes `path`'s `files` row and, through ON DELETE CASCADE, every row
+    // that names it: its symbols, docs, diagnostics, imports,
+    // instantiations, macros, include sites and directives, file_includes
+    // on both sides, project_units and unit_checks. False if unknown.
+    bool removeFile(const std::string& path);
+
+    struct ProjectInfo {
+        std::string configFp;
+        std::string svlspVersion;
+    };
+    std::optional<ProjectInfo> projectInfo(const std::string& configPath) const;
+    void setProjectInfo(const std::string& configPath, const ProjectInfo& info);
+
+    // The units project `configPath`'s last refresh compiled, with their
+    // origin ('config' or 'library'), by path.
+    std::vector<std::pair<std::string, std::string>> projectUnits(
+        const std::string& configPath) const;
+    void addProjectUnit(const std::string& configPath, int64_t fileId, const std::string& origin);
+    void removeProjectUnit(const std::string& configPath, int64_t fileId);
+    // Whether a project other than `configPath` has `fileId` as a unit.
+    bool isUnitOfOtherProject(const std::string& configPath, int64_t fileId) const;
+
+    // A unit's stored check inputs (unit_checks): replaced per kind; "" data
+    // deletes the row.
+    void replaceUnitChecks(int64_t fileId, const std::string& kind, const std::string& data);
+    // Every unit with stored check inputs, by primary path, sorted by path.
+    std::vector<std::string> unitsWithChecks() const;
+    // `fileId`'s stored `kind` data, "" if none.
+    std::string unitChecks(int64_t fileId, const std::string& kind) const;
+
+    // One declaration of a unit, as a refresh compares them (plan.md §6.34
+    // D3): its scope, name and kind, and a port's detail (which says
+    // whether it has a default).
+    struct Declaration {
+        std::string scope, name, kind, detail;
+        bool operator<(const Declaration& o) const
+        {
+            return std::tie(scope, name, kind, detail) < std::tie(o.scope, o.name, o.kind, o.detail);
+        }
+        bool operator==(const Declaration& o) const
+        {
+            return std::tie(scope, name, kind, detail) == std::tie(o.scope, o.name, o.kind, o.detail);
+        }
+    };
+    // The declarations of the files of `primaryPath`'s unit (the primary and
+    // every file it includes), sorted. {} for an unknown file.
+    std::vector<Declaration> declarationsOfUnit(const std::string& primaryPath) const;
+
+    // Each file with diagnostics (this DB) and a digest of them, by path.
+    std::unordered_map<std::string, std::string> diagnosticsDigest() const;
+
+    // Whether `fileId` declares a Module/Interface/Program that something in
+    // this DB outside `fileId` instantiates.
+    bool declaresInstantiatedDesign(int64_t fileId) const;
 
     // LSP query helpers (used by Phase-6 feature providers).
     std::vector<SymbolRow>     symbolsForFile(const std::string& path) const;

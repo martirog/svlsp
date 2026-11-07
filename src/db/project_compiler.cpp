@@ -1,9 +1,7 @@
 #include "db/project_compiler.h"
 #include "db/compilation_controller.h"
 #include "db/database.h"
-#include "db/library_resolver.h"
 #include "db/symbol_database.h"
-#include "compiler/file_utils.h"
 #include <algorithm>
 #include <filesystem>
 
@@ -40,18 +38,17 @@ void mergeIncludeDirsFromLibraryDbs(ProjectConfig& config) {
 
 } // namespace
 
-int ProjectCompiler::loadProject(ProjectConfig& config, CompilationController& controller,
-                                 SymbolDatabase& sdb) {
+void ProjectCompiler::attachLibraries(ProjectConfig& config, SymbolDatabase& sdb) {
     sdb.attachLibraryDbs(config.libraryDbs);
     mergeIncludeDirsFromLibraryDbs(config);
+}
 
-    int compiledCount = 0;
-    for (const auto& path : config.files) {
-        if (auto text = readFile(path)) {
-            controller.compile(path, *text, &config);
-            ++compiledCount;
-        }
-    }
-    compiledCount += LibraryResolver::resolve(config, controller, sdb);
-    return compiledCount;
+int ProjectCompiler::loadProject(ProjectConfig& config, CompilationController& controller,
+                                 SymbolDatabase& sdb, const std::string& projectKey,
+                                 const std::string& svlspVersion, ProjectRefresher::Result* result) {
+    attachLibraries(config, sdb);
+    auto r = ProjectRefresher::refresh(projectKey, config, controller, sdb, svlspVersion);
+    const int compiled = r.compiled;
+    if (result) *result = std::move(r);
+    return compiled;
 }

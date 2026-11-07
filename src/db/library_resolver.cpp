@@ -52,7 +52,7 @@ std::optional<std::pair<std::string, std::string>> searchLibraryDirs(
 } // namespace
 
 int LibraryResolver::resolve(const ProjectConfig& config, CompilationController& controller,
-                              SymbolDatabase& sdb) {
+                              SymbolDatabase& sdb, std::vector<std::string>* compiledPaths) {
     // Pre-index -v files' declared names. Not compiled/persisted unless a
     // name is actually resolved against them below.
     std::unordered_map<std::string, std::string> vIndex;    // type name -> path
@@ -67,7 +67,7 @@ int LibraryResolver::resolve(const ProjectConfig& config, CompilationController&
     }
 
     std::unordered_set<std::string> failedNames;
-    std::unordered_set<std::string> compiledPaths;
+    std::unordered_set<std::string> compiledSet;
     int compiledCount = 0;
 
     while (true) {
@@ -87,7 +87,7 @@ int LibraryResolver::resolve(const ProjectConfig& config, CompilationController&
             resolvedText = found->second;
         }
 
-        if (resolvedPath.empty() || compiledPaths.count(resolvedPath)) {
+        if (resolvedPath.empty() || compiledSet.count(resolvedPath)) {
             // Either nowhere to find it, or we already compiled the one file
             // that could have declared it and the name is still unresolved
             // (declared under a different name, or not there at all) --
@@ -97,7 +97,8 @@ int LibraryResolver::resolve(const ProjectConfig& config, CompilationController&
         }
 
         controller.compile(resolvedPath, resolvedText, &config);
-        compiledPaths.insert(resolvedPath);
+        compiledSet.insert(resolvedPath);
+        if (compiledPaths) compiledPaths->push_back(resolvedPath);
         ++compiledCount;
     }
 
