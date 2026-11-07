@@ -6923,8 +6923,8 @@ code reviews can show that a rewrite does not regress latency or memory.
 
 **Status:** planned 2026-11-07, at the user's request; decisions D1-D4
 taken the same day (see "Decisions" at the end). S0 (baselines), S1
-(file identity, schema v17), S2 (refresh, schema v18) and S4 (background
-loading) done 2026-11-07. The next step is S3.
+(file identity, schema v17), S2 (refresh, schema v18), S4 (background
+loading) and S3 (file-backed DB) done 2026-11-07. The next step is S5.
 Grows handoff "next step 1" (after C9: the commit still holds the data
 mutex; didOpen / didSave compile on the message thread) into a whole
 plan, and closes §6.19's open staleness question with the same mechanism.
@@ -7366,7 +7366,7 @@ A job pushed twice runs once: the better rank wins, and the flags merge.
     still parsing; the warning arrives with the load's end; progress goes
     begin ... end.
 
-**S3 -- A file-backed project DB.**
+**S3 -- A file-backed project DB -- done 2026-11-07.**
 - *Where:* a `"database"` key in `.svlsp.json`, a `-svlsp_db <path>`
   switch in `.f`, and `initializationOptions.svlsp.database` (it wins over
   the config). With no setting, the server keeps today's `:memory:` (D1).
@@ -7408,6 +7408,43 @@ A job pushed twice runs once: the better rank wins, and the flags merge.
   - a version mismatch resets the DB;
   - an Emacs test: `--build-db` a fixture project, start, get a hover with
     no compile.
+
+*Outcome -- done 2026-11-07.*
+- *The setting:* `"database"` (`.svlsp.json`), `-svlsp_db` (`.f`) and
+  `initializationOptions.svlsp.database`. Relative paths are resolved
+  against the config, and `":memory:"` opts out.
+- *The server's DB:* the first one chosen, while nothing has been compiled
+  into memory yet. Otherwise it keeps memory and logs why.
+- *Modes:*
+  - **Writer:** holds `DbLock` (`src/db/db_lock.h`: `flock` on
+    `<db>.lock`, which says "server <pid>" or "build-db <pid>").
+  - **Waiting:** a `--build-db` holds the lock. The file is opened
+    read-only and served. Before its next job, the queue waits for the lock
+    and then reopens the file as the writer.
+  - **Copy (D2):** another server holds the lock. The file is copied into
+    `:memory:` with `sqlite3_backup` and never written.
+  - A DB that can't be used falls back to memory.
+- WAL and `synchronous=NORMAL` for file DBs, in the server and in
+  `--build-db`. A `--build-db` switches back to `journal_mode=DELETE` at
+  its end, so the file is self-contained for attaching, copying and
+  archiving.
+- *Version:* `LanguageServer::setVersion(SVLSP_GIT_VERSION)`. The string is
+  the same one `--build-db` records ("(no doc comments)" appended without
+  docs). A mismatch resets the DB.
+- `--build-db` takes the lock. When a server holds it, it exits 0 ("svlsp
+  pid N has it open; it refreshes it itself"). When another build holds it,
+  it exits 1. `--wait` waits in both cases.
+- Tests:
+  - `DbLock`; `Database` copy, WAL and read-only;
+  - four server cases:
+    - a restart on a built DB compiles nothing;
+    - another build's DB is reset;
+    - the lock hand-over: hover served read-only while a build holds the
+      lock, then a refresh as the writer that is written to the file;
+    - D2: a second server refreshes in memory and leaves the file's rows
+      alone.
+  - Emacs `test_54_project_db.sh`: a `--build-db`, a fresh workspace, a
+    hover, and no compile.
 
 **S3b -- The XDG cache becomes the default DB (D1), later.** A project with
 no DB setting gets `$XDG_CACHE_HOME/svlsp/<hash of the config's absolute
