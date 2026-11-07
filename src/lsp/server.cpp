@@ -32,6 +32,8 @@ LanguageServer::LanguageServer(lsp::io::Stream& io, std::ostream* logStream,
           const lsp::DocumentUri uri{lsp::Uri::parse(uriStr)};
           enqueueCompile(std::string{uri.path()}, CompileQueue::kOpenDocument);
       }}
+    , m_refreshDebouncer{[this](const std::string&) { refreshAll(false); },
+                         std::chrono::milliseconds{500}}
 {
     m_db.initSchema();
     m_compiler.setCalleeResolver(resolveCallees);
@@ -373,7 +375,7 @@ void LanguageServer::runJob(const CompileQueue::Job& job)
     case CompileQueue::Job::Kind::Unit:          compileUnit(job); break;
     case CompileQueue::Job::Kind::LoadProject:   loadProject(job.key); break;
     case CompileQueue::Job::Kind::FinishProject: finishProject(job.key); break;
-    case CompileQueue::Job::Kind::Refresh:       break;
+    case CompileQueue::Job::Kind::Refresh:       refreshProject(job.key, job.force); break;
     }
 }
 
@@ -415,7 +417,48 @@ void LanguageServer::compileUnit(const CompileQueue::Job& job)
     publish(uri, std::move(*out));
 }
 
-void LanguageServer::loadProject(const std::string& configPath)
+void LanguageServer::refreshAll(bool rehash)
+{
+    std::vector<std::string> configs;
+    {
+        std::lock_guard lock{m_dataMutex};
+        configs = m_projects.configPaths();
+    }
+    for (const auto& c : configs)
+        m_queue.push({.kind = CompileQueue::Job::Kind::Refresh, .key = c, .force = rehash},
+                     CompileQueue::kProjectSetup);
+}
+
+void LanguageServer::refreshProject(const std::string& configPath, bool rehash)
+{
+    {
+        std::lock_guard lock{m_dataMutex};
+        if (m_loads.count(configPath)) {
+            // Its load (or last refresh) is still running: after it.
+            m_queue.push({.kind = CompileQueue::Job::Kind::Refresh, .key = configPath,
+                          .force = rehash},
+                         CompileQueue::kAfterLoad);
+            return;
+        }
+    }
+    // The config may have changed too (a checkout): reread it.
+    ProjectConfig fresh;
+    try {
+        fresh = ProjectRegistry::parseConfig(configPath);
+    } catch (const std::exception& e) {
+        std::cerr << "svlsp: can't reread '" << configPath << "': " << e.what() << '\n';
+        return;
+    }
+    {
+        std::lock_guard lock{m_dataMutex};
+        ProjectConfig* c = m_projects.mutableConfig(configPath);
+        if (!c) return;
+        *c = std::move(fresh);
+    }
+    loadProject(configPath, rehash);
+}
+
+void LanguageServer::loadProject(const std::string& configPath, bool rehash)
 {
     ProjectConfig config;
     {
@@ -446,7 +489,7 @@ void LanguageServer::loadProject(const std::string& configPath)
         ProjectCompiler::attachLibraries(*c, m_symbolDb);
         noteAttached(c->libraryDbs);
         ProjectLoad load;
-        load.plan = ProjectRefresher::plan(key, *c, m_compiler, m_symbolDb);
+        load.plan = ProjectRefresher::plan(key, *c, m_compiler, m_symbolDb, rehash);
         load.plan.svlspVersion = m_buildVersion;
         load.progress = ProjectRefresher::begin(load.plan, m_symbolDb);
         ++m_commitGeneration;
@@ -670,6 +713,31 @@ void LanguageServer::registerHandlers()
         .add<lsp::notifications::Initialized>(
             [this](lsp::notifications::Initialized::Params&&) {
                 m_state.handleInitialized();
+                // Watch the sources and configs, so a checkout outside the
+                // editor refreshes the project (plan.md §6.34 S6).
+                if (!m_state.watchedFilesSupported()) return;
+                lsp::DidChangeWatchedFilesRegistrationOptions watch;
+                for (const char* glob : {"**/*.{sv,svh,v,vh,svi,f}", "**/.svlsp.json",
+                                         "**/svlsp.json"})
+                    watch.watchers.push_back(lsp::FileSystemWatcher{.globPattern = glob});
+                m_messageHandler.sendRequest<lsp::requests::Client_RegisterCapability>(
+                    lsp::RegistrationParams{.registrations = {lsp::Registration{
+                        .id = "svlsp-watched-files",
+                        .method = "workspace/didChangeWatchedFiles",
+                        .registerOptions = lsp::toJson(std::move(watch))}}},
+                    [](lsp::Client_RegisterCapabilityResult&&) {});
+            })
+        .add<lsp::notifications::Workspace_DidChangeWatchedFiles>(
+            [this](lsp::DidChangeWatchedFilesParams&& params) {
+                // An open document's buffer is the truth: its events don't
+                // count (lsp-mode sends didChange when it reverts one).
+                bool relevant = false;
+                {
+                    std::lock_guard lock{m_dataMutex};
+                    for (const auto& change : params.changes)
+                        if (!m_store.contains(change.uri)) relevant = true;
+                }
+                if (relevant) m_refreshDebouncer.schedule("refresh");
             })
         .add<lsp::requests::Workspace_ExecuteCommand>(
             [this](lsp::ExecuteCommandParams&& params)
@@ -681,8 +749,17 @@ void LanguageServer::registerHandlers()
                             std::this_thread::sleep_for(std::chrono::milliseconds{20});
                         return lsp::Workspace_ExecuteCommandResult{nullptr};
                     });
-                throw lsp::RequestError(lsp::MessageError::InvalidParams,
-                                        "unknown command '" + params.command + "'");
+                if (params.command != "svlsp.refresh")
+                    throw lsp::RequestError(lsp::MessageError::InvalidParams,
+                                            "unknown command '" + params.command + "'");
+                bool rehash = false;
+                if (params.arguments)
+                    for (const auto& a : *params.arguments)
+                        if (a.isString() && a.string() == "--rehash") rehash = true;
+                refreshAll(rehash);
+                std::promise<lsp::Workspace_ExecuteCommandResult> done;
+                done.set_value(nullptr);
+                return done.get_future();
             })
         .add<lsp::requests::Shutdown>(
             [this]() {

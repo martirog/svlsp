@@ -216,6 +216,10 @@ private:
     // thread joined) before the queue it pushes into.
     ChangeDebouncer m_debouncer;
 
+    // Coalesces the file events of a checkout (workspace/didChangeWatchedFiles,
+    // plan.md §6.34 S6) into one refresh of every loaded project, once they
+    // stop for 500 ms. Declared after m_queue, which it pushes into.
+    ChangeDebouncer m_refreshDebouncer;
 
     void registerHandlers();
 
@@ -265,7 +269,12 @@ private:
 
     // The queue's jobs.
     void runJob(const CompileQueue::Job& job);
-    void loadProject(const std::string& configPath);
+    // A project's load, and every refresh after it (plan.md §6.34 S4, S6):
+    // a refresh rereads the config first; `rehash` reads every file.
+    void loadProject(const std::string& configPath, bool rehash = false);
+    void refreshProject(const std::string& configPath, bool rehash);
+    // Queues a refresh of every loaded project.
+    void refreshAll(bool rehash);
     void compileUnit(const CompileQueue::Job& job);
     void finishProject(const std::string& configPath);
 

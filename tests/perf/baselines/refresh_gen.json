@@ -9,122 +9,64 @@
     {
       "step": "full build",
       "tree": "A",
-      "seconds": 51.97949167000024,
-      "max_rss_mb": 89.37890625,
-      "fresh_seconds": 51.97949167000024,
-      "rows": 13934,
+      "seconds": 8.386537668000528,
+      "max_rss_mb": 89.734375,
+      "fresh_seconds": 8.386537668000528,
+      "rows": 14158,
       "differs": {},
-      "summary": "svlsp: built '/tmp/svlsp-refresh-gen._avgwim_/project.db' -- 122 files compiled, 18 diagnostics"
+      "summary": "svlsp: built '/tmp/svlsp-refresh-gen.lz3nranb/project.db' -- 122 files compiled, 0 removed, 18 diagnostics; cross-file checks re-run in 5 ms"
     },
     {
       "step": "no change",
       "tree": "A",
-      "seconds": 0.16817735600034212,
-      "max_rss_mb": 15.38671875,
-      "fresh_seconds": 51.97949167000024,
-      "rows": 13934,
+      "seconds": 0.05392059899895685,
+      "max_rss_mb": 16.5859375,
+      "fresh_seconds": 8.386537668000528,
+      "rows": 14158,
       "differs": {},
-      "summary": "svlsp: built '/tmp/svlsp-refresh-gen._avgwim_/project.db' -- 122 files compiled, 18 diagnostics"
+      "summary": "svlsp: built '/tmp/svlsp-refresh-gen.lz3nranb/project.db' -- 0 files compiled, 0 removed, 18 diagnostics"
     },
     {
       "step": "edit one file",
       "tree": "A+edit",
-      "seconds": 2.3750580089999858,
-      "max_rss_mb": 54.16015625,
-      "fresh_seconds": 9.323981970000204,
-      "rows": 13934,
+      "seconds": 1.9270674510007666,
+      "max_rss_mb": 55.01953125,
+      "fresh_seconds": 8.30144703300175,
+      "rows": 14158,
       "differs": {},
-      "summary": "svlsp: built '/tmp/svlsp-refresh-gen._avgwim_/project.db' -- 122 files compiled, 18 diagnostics"
+      "summary": "svlsp: built '/tmp/svlsp-refresh-gen.lz3nranb/project.db' -- 1 files compiled, 0 removed, 18 diagnostics; cross-file checks re-run in 8 ms"
     },
     {
       "step": "revert the edit",
       "tree": "A",
-      "seconds": 2.3454547480005203,
-      "max_rss_mb": 54.1015625,
-      "fresh_seconds": 51.97949167000024,
-      "rows": 13934,
+      "seconds": 1.901390884002467,
+      "max_rss_mb": 54.49609375,
+      "fresh_seconds": 8.386537668000528,
+      "rows": 14158,
       "differs": {},
-      "summary": "svlsp: built '/tmp/svlsp-refresh-gen._avgwim_/project.db' -- 122 files compiled, 18 diagnostics"
+      "summary": "svlsp: built '/tmp/svlsp-refresh-gen.lz3nranb/project.db' -- 1 files compiled, 0 removed, 18 diagnostics; cross-file checks re-run in 7 ms"
     },
     {
       "step": "switch A -> B",
       "tree": "B",
-      "seconds": 5.33289325900023,
-      "max_rss_mb": 89.16015625,
-      "fresh_seconds": 9.465615343000536,
-      "rows": 13946,
-      "differs": {
-        "diagnostics": [
-          18,
-          18
-        ],
-        "file_includes": [
-          0,
-          24
-        ],
-        "files": [
-          0,
-          8
-        ],
-        "imports": [
-          0,
-          1
-        ],
-        "include_directives": [
-          0,
-          24
-        ],
-        "include_sites": [
-          0,
-          24
-        ],
-        "symbols": [
-          0,
-          179
-        ]
-      },
-      "summary": "svlsp: built '/tmp/svlsp-refresh-gen._avgwim_/project.db' -- 122 files compiled, 18 diagnostics"
+      "seconds": 4.980344350999076,
+      "max_rss_mb": 89.45703125,
+      "fresh_seconds": 8.8796818899973,
+      "rows": 14170,
+      "differs": {},
+      "summary": "svlsp: built '/tmp/svlsp-refresh-gen.lz3nranb/project.db' -- 8 files compiled, 8 removed, 18 diagnostics; cross-file checks re-run in 1709 ms"
     },
     {
       "step": "switch B -> A",
       "tree": "A",
-      "seconds": 6.614204589999645,
-      "max_rss_mb": 88.6015625,
-      "fresh_seconds": 51.97949167000024,
-      "rows": 13934,
-      "differs": {
-        "diagnostics": [
-          18,
-          18
-        ],
-        "file_includes": [
-          0,
-          24
-        ],
-        "files": [
-          0,
-          8
-        ],
-        "imports": [
-          0,
-          1
-        ],
-        "include_directives": [
-          0,
-          24
-        ],
-        "include_sites": [
-          0,
-          24
-        ],
-        "symbols": [
-          0,
-          179
-        ]
-      },
-      "summary": "svlsp: built '/tmp/svlsp-refresh-gen._avgwim_/project.db' -- 122 files compiled, 18 diagnostics"
+      "seconds": 5.242889539000316,
+      "max_rss_mb": 88.98828125,
+      "fresh_seconds": 8.386537668000528,
+      "rows": 14158,
+      "differs": {},
+      "summary": "svlsp: built '/tmp/svlsp-refresh-gen.lz3nranb/project.db' -- 8 files compiled, 8 removed, 18 diagnostics; cross-file checks re-run in 1910 ms"
     }
   ],
   "host": "martin-XPS-13-7390",
-  "server_version": "svlsp 0.1.0 (git b841fa6-dirty, Release build)"
+  "server_version": "svlsp 0.1.0 (git c4dea67-dirty, Release build)"
 }

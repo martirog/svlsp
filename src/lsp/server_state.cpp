@@ -12,6 +12,12 @@ auto ServerState::handleInitialize(lsp::InitializeParams params)
     m_rootUri = params.rootUri;
     m_explicitProjectConfigPath = extractProjectConfigPath(params);
     m_databasePath = extractStringOption(params, "database");
+    {
+        const auto& ws = params.capabilities.workspace;
+        m_watchedFiles = ws && ws->didChangeWatchedFiles &&
+                         ws->didChangeWatchedFiles->dynamicRegistration &&
+                         *ws->didChangeWatchedFiles->dynamicRegistration;
+    }
     m_fuzzyCompletionEnabled = extractBoolOption(params, "fuzzyCompletion");
     m_docCommentsEnabled     = extractBoolOption(params, "docComments");
     m_workDoneProgress = params.capabilities.window && params.capabilities.window->workDoneProgress &&
@@ -42,10 +48,12 @@ auto ServerState::handleInitialize(lsp::InitializeParams params)
             .documentSymbolProvider  = lsp::OneOf<bool, lsp::DocumentSymbolOptions>(true),
             .workspaceSymbolProvider = lsp::OneOf<bool, lsp::WorkspaceSymbolOptions>(true),
             .renameProvider          = lsp::OneOf<bool, lsp::RenameOptions>(true),
-            // svlsp.waitForIndexing: answers once no project load is
-            // queued or running (scripts, tests; plan.md §6.34 S4).
+            // svlsp.refresh: bring the project DB up to date with the files
+            // on disk (plan.md §6.34 S6); ["--rehash"] ignores stat data.
+            // svlsp.waitForIndexing: answers once no project load or
+            // refresh is queued or running (scripts, tests).
             .executeCommandProvider  = lsp::ExecuteCommandOptions{
-                .commands = lsp::Array<lsp::String>{"svlsp.waitForIndexing"}},
+                .commands = lsp::Array<lsp::String>{"svlsp.refresh", "svlsp.waitForIndexing"}},
         },
         .serverInfo = lsp::InitializeResultServerInfo{
             .name    = "svlsp",

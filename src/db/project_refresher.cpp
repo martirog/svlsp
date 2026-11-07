@@ -65,7 +65,7 @@ void diffNames(CompilationController::RecheckNames& names, const Declarations& b
 ProjectRefresher::Plan ProjectRefresher::plan(const std::string& projectKey,
                                               const ProjectConfig& config,
                                               CompilationController& controller,
-                                              SymbolDatabase& sdb)
+                                              SymbolDatabase& sdb, bool rehash)
 {
     Plan p;
     p.projectKey = projectKey;
@@ -95,7 +95,7 @@ ProjectRefresher::Plan ProjectRefresher::plan(const std::string& projectKey,
             continue;
         }
         const bool statSame = known->size == st->size && known->mtimeNs == st->mtimeNs;
-        if (statSame && known->mtimeNs + kRacyWindowNs < known->statNs) continue;
+        if (!rehash && statSame && known->mtimeNs + kRacyWindowNs < known->statNs) continue;
         ++p.rehashedFiles;
         const auto text = readFile(file);
         if (!text) {
@@ -105,6 +105,10 @@ ProjectRefresher::Plan ProjectRefresher::plan(const std::string& projectKey,
         if (contentHash(*text) == known->hash)
             sdb.setFileIdentity(sdb.fileIdFor(file),
                                 {known->hash, st->size, st->mtimeNs, statNs, known->inputsFp});
+        else if (statSame)
+            // Changed behind unchanged stat data (what --rehash is for): drop
+            // the stat data, so the cache check reads the file too.
+            sdb.setFileIdentity(sdb.fileIdFor(file), {known->hash, -1, 0, 0, known->inputsFp});
     }
 
     auto schedule = [&](const std::string& path, const std::string& origin) {

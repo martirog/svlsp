@@ -1,0 +1,275 @@
+{
+  "scenario": "uvm_src_db",
+  "server": "/home/martin/src/svlsp/build/release/svlsp",
+  "host": {
+    "host": "martin-XPS-13-7390",
+    "cpu": "Intel(R) Core(TM) i7-10510U CPU @ 1.80GHz",
+    "cpus": 8,
+    "server_version": "svlsp 0.1.0 (git 43832fa-dirty, Release build)"
+  },
+  "settings": {
+    "repeat": 10
+  },
+  "phases": {
+    "initialize": 2.137825998943299,
+    "open -> first diagnostics": 100367.39290399782,
+    "open -> indexed": 100416.84771699875,
+    "open -> library visible": 100426.83668399695
+  },
+  "rows": [
+    {
+      "name": "during load: hover: own method",
+      "tier": "point",
+      "n": 1,
+      "min": 100370.79217800056,
+      "median": 100370.79217800056,
+      "p90": 100370.79217800056,
+      "max": 100370.79217800056,
+      "server_run_median": null,
+      "server_wait_max": null,
+      "results": 1,
+      "bytes": 229,
+      "verdict": "BREAKS FLOW",
+      "before_diagnostics": false
+    },
+    {
+      "name": "during load: completion: dot on an argument (child.get_name)",
+      "tier": "keystroke",
+      "n": 1,
+      "min": 100378.59223100168,
+      "median": 100378.59223100168,
+      "p90": 100378.59223100168,
+      "max": 100378.59223100168,
+      "server_run_median": null,
+      "server_wait_max": null,
+      "results": 3,
+      "bytes": 716,
+      "verdict": "BREAKS FLOW",
+      "before_diagnostics": false
+    },
+    {
+      "name": "during load: documentSymbol",
+      "tier": "point",
+      "n": 1,
+      "min": 100373.92128600186,
+      "median": 100373.92128600186,
+      "p90": 100373.92128600186,
+      "max": 100373.92128600186,
+      "server_run_median": null,
+      "server_wait_max": null,
+      "results": 761,
+      "bytes": 169266,
+      "verdict": "BREAKS FLOW",
+      "before_diagnostics": false
+    },
+    {
+      "name": "completion: empty prefix in a method (blank line)",
+      "tier": "keystroke",
+      "n": 10,
+      "min": 5.8656830005929805,
+      "median": 5.967307501123287,
+      "p90": 6.008001997543033,
+      "max": 6.076432000554632,
+      "server_run_median": 4.7325,
+      "server_wait_max": 0.0,
+      "results": 743,
+      "bytes": 125508,
+      "verdict": "instant"
+    },
+    {
+      "name": "completion: dot on an argument (child.get_name)",
+      "tier": "keystroke",
+      "n": 10,
+      "min": 3.160431999276625,
+      "median": 3.169195999362273,
+      "p90": 3.2011260009312537,
+      "max": 3.214726002624957,
+      "server_run_median": 3.031,
+      "server_wait_max": 0.0,
+      "results": 3,
+      "bytes": 687,
+      "verdict": "instant"
+    },
+    {
+      "name": "signatureHelp: set_name(",
+      "tier": "keystroke",
+      "n": 10,
+      "min": 4.154477999691153,
+      "median": 4.1759784999158,
+      "p90": 4.183920998912072,
+      "max": 4.219820999423973,
+      "server_run_median": 4.04,
+      "server_wait_max": 0.0,
+      "results": 1,
+      "bytes": 164,
+      "verdict": "instant"
+    },
+    {
+      "name": "hover: own method",
+      "tier": "point",
+      "n": 10,
+      "min": 2.1050249997642823,
+      "median": 2.1203814994805725,
+      "p90": 2.1229439989838284,
+      "max": 2.1297620005498175,
+      "server_run_median": 1.985,
+      "server_wait_max": 0.0,
+      "results": 1,
+      "bytes": 230,
+      "verdict": "instant"
+    },
+    {
+      "name": "definition: own method",
+      "tier": "point",
+      "n": 10,
+      "min": 1.748139999108389,
+      "median": 1.7821185010689078,
+      "p90": 1.812310998502653,
+      "max": 1.8166680019930936,
+      "server_run_median": 1.65,
+      "server_wait_max": 0.0,
+      "results": 1,
+      "bytes": 190,
+      "verdict": "instant"
+    },
+    {
+      "name": "documentSymbol",
+      "tier": "point",
+      "n": 10,
+      "min": 3.4810159995686263,
+      "median": 4.353771499154391,
+      "p90": 4.72288099990692,
+      "max": 4.764952002005884,
+      "server_run_median": 0.738,
+      "server_wait_max": 0.0,
+      "results": 761,
+      "bytes": 169267,
+      "verdict": "instant"
+    },
+    {
+      "name": "references: get_name (whole library)",
+      "tier": "navigation",
+      "n": 10,
+      "min": 380.2565779988072,
+      "median": 381.2304650000442,
+      "p90": 381.89320899982704,
+      "max": 383.9692459987418,
+      "server_run_median": 380.227,
+      "server_wait_max": 0.0,
+      "results": 324,
+      "bytes": 50868,
+      "verdict": "ok"
+    },
+    {
+      "name": "workspace/symbol: uvm_comp",
+      "tier": "navigation",
+      "n": 10,
+      "min": 1.8488670029910281,
+      "median": 1.8911570005002432,
+      "p90": 1.9708500003616791,
+      "max": 2.0535769981506746,
+      "server_run_median": 1.5795,
+      "server_wait_max": 0.0,
+      "results": 60,
+      "bytes": 14803,
+      "verdict": "instant"
+    },
+    {
+      "name": "edit -> diagnostics (incl. 300 ms debounce)",
+      "tier": "diagnostics",
+      "n": 10,
+      "min": 600.6451020002714,
+      "median": 613.5584404983092,
+      "p90": 621.6995139984647,
+      "max": 634.4287660031114,
+      "server_run_median": 311.3835,
+      "server_wait_max": null,
+      "results": 1,
+      "bytes": 0,
+      "verdict": "ok"
+    },
+    {
+      "name": "typing: completion per keystroke (150 ms apart)",
+      "tier": "keystroke",
+      "n": 12,
+      "min": 7.948818998556817,
+      "median": 12.858692500230973,
+      "p90": 15.782992999447742,
+      "max": 19.545918999938294,
+      "server_run_median": 11.2205,
+      "server_wait_max": 0.0,
+      "results": 1,
+      "bytes": 0,
+      "verdict": "instant"
+    }
+  ],
+  "memory": {
+    "exact_peak": true,
+    "phases": [
+      {
+        "name": "initialize",
+        "rss_kb": 7056,
+        "server_rss_kb": 7056,
+        "anon_kb": 680,
+        "worker_rss_kb": 0,
+        "workers": 0,
+        "peak_kb": 7056
+      },
+      {
+        "name": "open -> first diagnostics",
+        "rss_kb": 3004608,
+        "server_rss_kb": 51344,
+        "anon_kb": 42992,
+        "worker_rss_kb": 2953264,
+        "workers": 1,
+        "peak_kb": 3026508
+      },
+      {
+        "name": "library load",
+        "rss_kb": 3008532,
+        "server_rss_kb": 55268,
+        "anon_kb": 46884,
+        "worker_rss_kb": 2953264,
+        "workers": 1,
+        "peak_kb": 3008532
+      },
+      {
+        "name": "requests",
+        "rss_kb": 3011168,
+        "server_rss_kb": 57904,
+        "anon_kb": 49520,
+        "worker_rss_kb": 2953264,
+        "workers": 1,
+        "peak_kb": 3011168
+      },
+      {
+        "name": "edits (recompiles)",
+        "rss_kb": 3011960,
+        "server_rss_kb": 57904,
+        "anon_kb": 49520,
+        "worker_rss_kb": 2954056,
+        "workers": 1,
+        "peak_kb": 3011960
+      },
+      {
+        "name": "typing (completion + recompiles)",
+        "rss_kb": 3011960,
+        "server_rss_kb": 57904,
+        "anon_kb": 49520,
+        "worker_rss_kb": 2954056,
+        "workers": 1,
+        "peak_kb": 3011960
+      },
+      {
+        "name": "idle 75 s after",
+        "rss_kb": 57904,
+        "server_rss_kb": 57904,
+        "anon_kb": 49520,
+        "worker_rss_kb": 0,
+        "workers": 0,
+        "peak_kb": 3011960
+      }
+    ],
+    "peak_kb": 3026508
+  }
+}

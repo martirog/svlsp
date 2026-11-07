@@ -20,7 +20,7 @@ public:
         enum class Kind { Unit, LoadProject, FinishProject, Refresh };
         Kind        kind{Kind::Unit};
         std::string key;            // the unit's path, or the project's config path
-        bool        force{false};   // Unit: bypass the cache (merged: either)
+        bool        force{false};   // Unit: bypass the cache; Refresh: rehash (merged: either)
         bool        openOnly{true}; // Unit: only an open document's text (merged: both)
         bool        publishAll{true}; // Unit: publish files never published (merged: either)
         std::string project{};      // Unit: the config path it compiles under ("" = discover)
@@ -33,6 +33,7 @@ public:
     static constexpr int kDeclarers      = 3; // units declaring what open documents name
     static constexpr int kRest           = 4; // the rest of a load, and save cascades
     static constexpr int kProjectFinish  = 5; // a load's or refresh's last step
+    static constexpr int kAfterLoad      = 6; // a refresh asked for while one runs
 
     explicit CompileQueue(std::function<void(const Job&)> run);
     ~CompileQueue(); // drops what is still queued, waits for the running job

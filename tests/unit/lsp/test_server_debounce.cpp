@@ -858,3 +858,48 @@ TEST_CASE("a second server on the same DB works on a copy and never writes the f
     first.shutdownAndExit();
 }
 
+TEST_CASE("a checkout's file events refresh the project once; svlsp.refresh refreshes too "
+          "(plan.md §6.34 S6)",
+          "[lsp][server][s6]")
+{
+    const std::string dir = "/tmp/svlsp_test_s6";
+    std::filesystem::remove_all(dir);
+    writeFileAt(dir + "/a.sv", "package s6_p;\n  class s6_c; endclass\nendpackage\n");
+    const std::string use = "module s6_m;\n  import s6_p::*;\n  s6_c o;\nendmodule\n";
+    writeFileAt(dir + "/b.sv", use);
+    writeFileAt(dir + "/.svlsp.json", R"({"files": ["a.sv", "b.sv"]})");
+    const std::string uri = "file://" + dir + "/b.sv";
+
+    std::ostringstream log;
+    TestClient client{{}, &log};
+    client.initializeWithProgress();
+    client.didOpen(uri, use, 1);
+    client.recvUntilProgressEnd();
+
+    // A checkout: a.sv changes, and the client reports it many times over.
+    writeFileAt(dir + "/a.sv",
+                "package s6_p;\n  class s6_c; endclass\n  class s6_new; endclass\nendpackage\n");
+    log.str("");
+    for (int i = 0; i < 50; ++i) client.didChangeWatchedFile("file://" + dir + "/a.sv");
+    client.recvUntilProgressEnd();
+    CHECK(std::count(client.progressKinds.begin(), client.progressKinds.end(), "begin") == 2);
+    auto parsed = parsedFiles(log.str());
+    CHECK(std::count(parsed.begin(), parsed.end(), dir + "/a.sv") == 1);
+    CHECK(std::count(parsed.begin(), parsed.end(), dir + "/b.sv") == 0);
+    // No second refresh follows.
+    CHECK_FALSE(client.hasPendingMessage(1500));
+
+    // An event for the open document is ignored: its buffer is the truth.
+    client.didChangeWatchedFile(uri);
+    CHECK_FALSE(client.hasPendingMessage(1500));
+
+    // The command refreshes too (nothing changed: nothing compiled).
+    log.str("");
+    client.executeCommand(7, "svlsp.refresh");
+    const auto others = client.recvUntilProgressEnd();
+    CHECK(std::any_of(others.begin(), others.end(), [](const lsp::json::Value& m) {
+        return m.object().find("id") && m.object().get("id").number() == 7;
+    }));
+    CHECK(parsedFiles(log.str()).empty());
+    client.shutdownAndExit();
+}

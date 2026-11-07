@@ -21,7 +21,8 @@ implemented.
     "svlsp": {
       "fuzzyCompletion": false,
       "docComments": false,
-      "projectConfig": "/path/to/.svlsp.json"
+      "projectConfig": "/path/to/.svlsp.json",
+      "database": "/path/to/project.db"
     }
   }
 }
@@ -215,6 +216,103 @@ worker start, each parse's time and size, and each replacement:
 [worker] pid 41203 at 6666 MB > 1024 MB, recycled once idle 60 s
 [worker] pid 41203 idle 60 s, recycled
 ```
+
+## Background indexing
+
+A project loads in the background. Opening a file starts its project's load
+and returns at once. The load goes in this order:
+1. the files that `` `include `` the opened file (its package);
+2. the opened file itself;
+3. the files declaring what it imports or extends;
+4. the rest, in config order.
+
+A request on an open file waits only for that file's own compile, not for
+the whole project.
+
+While the project indexes:
+- Answers that need other files may be incomplete. Completion says so
+  (`isIncomplete`), so the client asks again as you type.
+- Diagnostics that depend on other files are held back until the load ends,
+  so no false warnings appear. These are unknown declared types, missing
+  call arguments and unresolved instantiations. Parse errors are published
+  at once.
+- Clients that support work-done progress (lsp-mode does) show
+  "svlsp: indexing 12/120 units" in the mode line.
+
+The `svlsp.waitForIndexing` command (`workspace/executeCommand`) answers
+once no load or refresh is queued or running. It is meant for scripts and
+tests.
+
+## A project database built ahead: `database`
+
+By default, the server compiles your project into memory and starts from
+scratch every session. To keep the project's database between sessions,
+name a file:
+- `"database": "project.db"` in `.svlsp.json`, relative to the config;
+- `-svlsp_db project.db` in a `.f` filelist;
+- `initializationOptions.svlsp.database`, which wins over the config.
+
+With a database file:
+- The next start reads it and compiles only the files whose contents
+  changed. Each file is checked by size and mtime, and its hash only when
+  those differ.
+- It can be built outside the editor, before you start one, with the same
+  command as a library database:
+
+  ```sh
+  svlsp --build-db .svlsp.json --output project.db
+  ```
+
+  Rerunning it updates the file in place, and only what changed is
+  recompiled.
+
+One process writes a database at a time. A lock file, `project.db.lock`,
+sits beside it:
+- **A `--build-db` is still writing it when the server starts.** The server
+  answers from what the build has committed so far. Once the build is done,
+  the server takes the file over and refreshes it.
+- **Another server has it open.** The second server copies it into memory
+  and never writes the file.
+- **`--build-db` while a server has it open.** It exits at once ("svlsp pid
+  N has it open; it refreshes it itself"). `--wait` makes it wait instead.
+
+Other notes:
+- Text you haven't saved is compiled into the database as it is. The next
+  start recompiles that file from disk.
+- A database written by another svlsp build is reset and rebuilt.
+- A server uses one database. A second project with a different
+  `database` setting shares the first one, and a message is logged.
+
+## Branch switches: file watching and `svlsp.refresh`
+
+When files change outside the editor, as on a `git checkout`, the server
+refreshes the project: it rereads the config and recompiles only the files
+whose inputs changed. Files gone from the config or from disk lose their
+rows, and the cross-file checks re-run where declarations changed.
+
+The server learns about the change in one of three ways:
+- **File watching.** The server asks the client to watch `*.sv`, `*.svh`,
+  `*.v`, `*.vh`, `*.svi` and `*.f` files and the config files. The events of
+  one checkout are coalesced into one refresh, half a second after they
+  stop. Events for files you have open are ignored, because the buffer is
+  the truth. lsp-mode watches with file-notify. On a large tree it may ask
+  before watching more than `lsp-file-watch-threshold` directories, and
+  Linux's `fs.inotify.max_user_watches` may need raising.
+- **The `svlsp.refresh` command** (`workspace/executeCommand`) refreshes
+  every loaded project. With the argument `"--rehash"` it reads every file
+  instead of trusting size and mtime. In Emacs:
+  `(lsp-request "workspace/executeCommand" '(:command "svlsp.refresh"))`.
+- **A `post-checkout` git hook** keeps a project database fresh with no
+  editor open:
+
+  ```sh
+  #!/bin/sh
+  # .git/hooks/post-checkout
+  svlsp --build-db .svlsp.json --output project.db >/dev/null 2>&1 &
+  ```
+
+  When a server has the database open, the hook's `--build-db` leaves it to
+  the server.
 
 ## Pre-building a library database: `--build-db`
 

@@ -111,6 +111,9 @@ characters (default 1, inside the word) or just after it.
   `uvm_macros.svh`, as real ones do). It opens `envs/env_3_pkg.sv`. Unlike
   `uvm_src`, it can show the opened file's unit answering before the whole
   project is compiled (plan.md §6.34).
+- `uvm_src_db` -- `uvm_src` with a project DB file (`"database"`, plan.md
+  §6.34 S3): requests go through the server's second, read-only connection
+  (S5).
 
 A scenario's `generate` (a list of arguments) runs
 `tools/gen_perf_project.py <workspace> <arguments>` before `files` and

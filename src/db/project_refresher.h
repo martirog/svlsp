@@ -48,8 +48,11 @@ public:
     // removed; whoever included it recompiles. Stat data of files whose
     // content turned out unchanged is updated here (the only write), so the
     // next plan needn't read them again.
+    // `rehash` (svlsp.refresh --rehash, plan.md §6.34 S6) reads every file
+    // instead of trusting stat data.
     static Plan plan(const std::string& projectKey, const ProjectConfig& config,
-                     CompilationController& controller, SymbolDatabase& sdb);
+                     CompilationController& controller, SymbolDatabase& sdb,
+                     bool rehash = false);
 
     // Carries out `plan`: removes, compiles in order, re-runs library
     // resolution (a new -y file can resolve an instantiation), drops library
