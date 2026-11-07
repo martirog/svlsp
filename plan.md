@@ -6922,10 +6922,12 @@ code reviews can show that a rewrite does not regress latency or memory.
 ### 6.34 Background Project Loading, a Persistent Project DB, and Incremental Refresh (branch switches)
 
 **Status:** planned 2026-11-07, at the user's request; decisions D1-D4
-taken the same day (see "Decisions" at the end). S0-S7 and S3b done
-2026-11-07 (in the order S0, S1, S2, S4, S3, S5, S6, S7, S3b; schema v18).
-D1's "later" for S3b was brought forward at the user's request (all S
-points). Next: S8.
+taken the same day (see "Decisions" at the end). All stages done or
+decided 2026-11-07 (in the order S0, S1, S2, S4, S3, S5, S6, S7, S3b, S8;
+schema v18). S8 built parallel parsing as an opt-in (the commits are the
+bottleneck) and left out the content-addressed cache. Open: the commit's
+cross-file checks on a first load, and the server load's per-unit
+overhead (S8).
 Grows handoff "next step 1" (after C9: the commit still holds the data
 mutex; didOpen / didSave compile on the message thread) into a whole
 plan, and closes §6.19's open staleness question with the same mechanism.
@@ -7642,7 +7644,7 @@ handoff "next step 1".
   a fake one records a file that doesn't exist. Unit 1145/1145, Emacs
   335/335, corpus 1563 / 31, `test-integration-uvm` 15/15.
 
-**S8 -- Later, if S0's numbers ask for it.**
+**S8 -- Later, if S0's numbers ask for it -- measured 2026-11-07.**
 - *Several parse workers for the initial load.* Commits stay one at a time;
   parses run in parallel. Memory is the limit: about 3 GB peak for a
   UVM-sized unit, which matters on the shared server with a memory cap per
@@ -7651,6 +7653,52 @@ handoff "next step 1".
   A -> B -> A recompiles nothing the second time. The rows live in shared
   tables, so this needs per-unit row sets that can be swapped in.
   Considerably larger.
+
+*Outcome -- 2026-11-07: measured. Parallel parsing is built, opt-in; the
+content-addressed cache is not built.*
+- **Parallel parsing** (`ProjectRefresher::apply(..., jobs)`, `--build-db
+  --jobs N`):
+  - Up to N units are prepared in plan order and parsed on other threads
+    (`CompilationController::parseBuffered`, with its log lines buffered
+    and written at commit).
+  - They are committed one at a time, in plan order.
+  - Before each commit, `parseStillValid` compares the unit's inputs key
+    now with the one it was parsed with. When an earlier commit gave the
+    unit an include context, it is prepared and parsed again, so the
+    result never depends on the overlap.
+  - A test checks that 4 jobs commit exactly the rows of 1. On `gen` the
+    two DBs are row-for-row identical.
+- **The numbers ask for less than expected.** `gen` (122 units, release,
+  tmpfs) spends 4.2 s parsing and **4.8 s committing**. The commit is
+  mostly the per-unit cross-file checks; S2 measured them at 3.1 s for
+  calls and 0.9 s for types. Results:
+
+  | `--jobs` | wall | user | peak |
+  |---|---|---|---|
+  | 1 | 8.4 s | 8.3 s | 92 MB |
+  | 2 | 8.5 s | 9.7 s | 142 MB |
+  | 3 | 7.7 s | 13.2 s | 198 MB |
+  | 4 | 7.4 s | 13.8 s | 239 MB |
+  | 8 | 9.8 s | -- | 296 MB |
+
+  The parses slow each other down: user time grows faster than the
+  overlap pays. So the default stays 1, and `--jobs` is there for
+  experiments. The server's load still parses one unit at a time, in its
+  parse worker.
+- **The real lever is the commit's checks.** In a first load they run
+  against a partial DB anyway, and S2's selective recheck catches what
+  they missed. Deferring them to the load's end, and running them on
+  several read-only connections (S5's reader shape), would take the 4 s
+  off the serial path. That is the next step if load time matters again.
+- **The content-addressed unit cache is not built.** It would let A -> B
+  -> A recompile nothing the second time. On `gen` a switch costs 5.0 s;
+  on UVM, a single unit, it would save the 97 s, but there the answer is a
+  library DB (S0 F3, S7). It needs per-unit row sets that can be swapped
+  in and out of shared tables, which is far larger than the gain.
+- **Still open from S4:** the server's whole `gen_tb` load is about 20 %
+  slower than before S4 (10.3-10.9 s against 8.4 s). Each unit also runs
+  two `declarationsOfUnit` queries, the pre-scan, and the held-back
+  republishing. Profile it before changing it.
 
 #### Decisions (made 2026-11-07, the user took the recommendations)
 
