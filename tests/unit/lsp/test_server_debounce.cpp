@@ -12,6 +12,10 @@
 #include <catch2/catch_test_macros.hpp>
 #include "lsp/server.h"
 #include "compiler/sv_tree_walker.h"
+#include "db/database.h"
+#include "db/db_lock.h"
+#include "db/symbol_database.h"
+#include "lsp/library_db_builder.h"
 #include <algorithm>
 #include <sstream>
 #include <lsp/io/stream.h>
@@ -139,7 +143,8 @@ std::string readLine(int fd)
 class TestClient {
 public:
     // `walker`, when set, replaces the server's parse (LanguageServer::setWalker).
-    explicit TestClient(CompilationController::Walker walker = {}, std::ostream* log = nullptr)
+    explicit TestClient(CompilationController::Walker walker = {}, std::ostream* log = nullptr,
+                        const std::string& version = "")
     {
         if (::pipe(m_toServer) != 0 || ::pipe(m_fromServer) != 0)
             throw std::runtime_error("test: pipe() failed");
@@ -147,6 +152,7 @@ public:
         m_serverIo = std::make_unique<PipeStream>(m_toServer[0], m_fromServer[1]);
         m_server   = std::make_unique<LanguageServer>(*m_serverIo, log);
         if (walker) m_server->setWalker(std::move(walker));
+        if (!version.empty()) m_server->setVersion(version);
         m_serverThread = std::thread{[this] { m_server->run(); }};
     }
 
@@ -704,5 +710,151 @@ TEST_CASE("a project loads in the background: the open file answers first, cross
 
     client.didClose(uri);
     client.shutdownAndExit();
+}
+
+namespace {
+
+// A project with its DB file named in its config (plan.md §6.34 S3).
+struct DbProject {
+    std::string dir;
+    std::string uri;
+    std::string db;
+    explicit DbProject(const std::string& name) : dir("/tmp/svlsp_test_s3/" + name)
+    {
+        std::filesystem::remove_all(dir);
+        writeFileAt(dir + "/a.sv", "package s3_p;\n  class s3_c; endclass\nendpackage\n");
+        writeFileAt(dir + "/b.sv", use());
+        writeFileAt(dir + "/.svlsp.json",
+                    R"({"files": ["a.sv", "b.sv"], "database": "proj.db"})");
+        uri = "file://" + dir + "/b.sv";
+        db = dir + "/proj.db";
+    }
+    static std::string use() { return "module s3_m;\n  import s3_p::*;\n  s3_c o;\nendmodule\n"; }
+    void build(const std::string& version)
+    {
+        REQUIRE(LibraryDbBuilder::build(dir + "/.svlsp.json", db, nullptr, version).ok);
+    }
+    std::string storedHash(const std::string& rel)
+    {
+        Database d(":memory:");
+        d.reopen(db, /*readOnly=*/true);
+        SymbolDatabase sdb(d);
+        return sdb.getFileHash(dir + "/" + rel);
+    }
+};
+
+// The files a server's log says it parsed (not cache hits).
+std::vector<std::string> parsedFiles(const std::string& log)
+{
+    std::vector<std::string> out;
+    std::istringstream in(log);
+    for (std::string line; std::getline(in, line);)
+        if (line.rfind("[parsed] ", 0) == 0 && line.find("(cached)") == std::string::npos &&
+            line.find("included:") == std::string::npos)
+            out.push_back(line.substr(9));
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("a server started on a built project DB compiles nothing (plan.md §6.34 S3)",
+          "[lsp][server][s3]")
+{
+    DbProject p("restart");
+    p.build("vtest");
+    std::ostringstream log;
+    {
+        TestClient client{{}, &log, "vtest"};
+        client.initializeWithProgress();
+        client.didOpen(p.uri, DbProject::use(), 1);
+        client.recvUntilProgressEnd();
+        client.hover(5, p.uri, 2, 3);
+        auto response = client.recvSkippingProgress();
+        while (!response.object().find("id")) response = client.recvSkippingProgress();
+        CHECK_FALSE(response.object().get("result").isNull());
+        client.shutdownAndExit();
+    }
+    CHECK(parsedFiles(log.str()).empty());
+}
+
+TEST_CASE("a project DB recorded by another svlsp build is reset (plan.md §6.34 S3)",
+          "[lsp][server][s3]")
+{
+    DbProject p("version");
+    p.build("vold");
+    std::ostringstream log;
+    {
+        TestClient client{{}, &log, "vnew"};
+        client.initializeWithProgress();
+        client.didOpen(p.uri, DbProject::use(), 1);
+        client.recvUntilProgressEnd();
+        client.shutdownAndExit();
+    }
+    const auto parsed = parsedFiles(log.str());
+    CHECK(std::count(parsed.begin(), parsed.end(), p.dir + "/a.sv") == 1);
+}
+
+TEST_CASE("while a --build-db holds the lock, a server serves the DB read-only, then takes "
+          "over and refreshes (plan.md §6.34 S3)",
+          "[lsp][server][s3]")
+{
+    DbProject p("handover");
+    p.build("vtest");
+    const std::string oldHash = p.storedHash("a.sv");
+    writeFileAt(p.dir + "/a.sv",
+                "package s3_p;\n  class s3_c; endclass\n  class s3_new; endclass\nendpackage\n");
+    DbLock builder;
+    REQUIRE(builder.acquire(p.db, "build-db"));
+
+    std::ostringstream log;
+    TestClient client{{}, &log, "vtest"};
+    client.initializeWithProgress();
+    client.didOpen(p.uri, DbProject::use(), 1);
+    client.hover(5, p.uri, 2, 3); // answered from what the build committed
+    auto response = client.recvSkippingProgress();
+    while (!response.object().find("id")) response = client.recvSkippingProgress();
+    CHECK_FALSE(response.object().get("result").isNull());
+    CHECK(parsedFiles(log.str()).empty()); // nothing compiled while waiting
+
+    builder.release();
+    client.recvUntilProgressEnd();
+    const auto parsed = parsedFiles(log.str());
+    CHECK(std::count(parsed.begin(), parsed.end(), p.dir + "/a.sv") == 1);
+    CHECK(p.storedHash("a.sv") != oldHash); // written to the file
+    CHECK(DbLock::holder(p.db) == DbLock::Holder::Server);
+    client.shutdownAndExit();
+}
+
+TEST_CASE("a second server on the same DB works on a copy and never writes the file "
+          "(plan.md §6.34 D2)",
+          "[lsp][server][s3]")
+{
+    DbProject p("copy");
+    p.build("vtest");
+    TestClient first{{}, nullptr, "vtest"};
+    first.initializeWithProgress();
+    first.didOpen(p.uri, DbProject::use(), 1);
+    first.recvUntilProgressEnd();
+    REQUIRE(DbLock::holder(p.db) == DbLock::Holder::Server);
+
+    const std::string oldHash = p.storedHash("a.sv");
+    writeFileAt(p.dir + "/a.sv",
+                "package s3_p;\n  class s3_c; endclass\n  class s3_copy; endclass\nendpackage\n");
+    std::ostringstream log;
+    {
+        TestClient second{{}, &log, "vtest"};
+        second.initializeWithProgress();
+        second.didOpen(p.uri, DbProject::use(), 1);
+        second.recvUntilProgressEnd();
+        second.hover(5, p.uri, 2, 3);
+        auto response = second.recvSkippingProgress();
+        while (!response.object().find("id")) response = second.recvSkippingProgress();
+        CHECK_FALSE(response.object().get("result").isNull());
+        second.shutdownAndExit();
+    }
+    const auto parsed = parsedFiles(log.str());
+    CHECK(std::count(parsed.begin(), parsed.end(), p.dir + "/a.sv") == 1); // refreshed in memory
+    CHECK(p.storedHash("a.sv") == oldHash);                              // the file untouched
+    first.shutdownAndExit();
 }
 

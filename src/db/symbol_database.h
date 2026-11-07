@@ -379,6 +379,14 @@ public:
     // Those of `path`'s last compile, in order. {} if none or unknown.
     std::vector<IncludeDirective> includeDirectivesOf(const std::string& path) const;
 
+    // After the Database was reopened on another file (plan.md §6.34 S3):
+    // forgets the attached library DBs and every cached query result.
+    void connectionChanged()
+    {
+        m_attachedLibraryPaths.clear();
+        clearIncludeCaches();
+    }
+
     // --- Projects and refresh (schema v18, plan.md §6.34 S2) ---------------
 
     // Deletes `path`'s `files` row and, through ON DELETE CASCADE, every row

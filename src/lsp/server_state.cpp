@@ -11,6 +11,7 @@ auto ServerState::handleInitialize(lsp::InitializeParams params)
     m_parentProcessId = params.processId;
     m_rootUri = params.rootUri;
     m_explicitProjectConfigPath = extractProjectConfigPath(params);
+    m_databasePath = extractStringOption(params, "database");
     m_fuzzyCompletionEnabled = extractBoolOption(params, "fuzzyCompletion");
     m_docCommentsEnabled     = extractBoolOption(params, "docComments");
     m_workDoneProgress = params.capabilities.window && params.capabilities.window->workDoneProgress &&
@@ -87,6 +88,16 @@ std::string ServerState::extractProjectConfigPath(const lsp::InitializeParams& p
     if (!projectConfig || !projectConfig->isString()) return "";
 
     return projectConfig->string();
+}
+
+std::string ServerState::extractStringOption(const lsp::InitializeParams& params,
+                                            std::string_view key)
+{
+    if (!params.initializationOptions || !params.initializationOptions->isObject()) return "";
+    const lsp::json::Value* svlsp = params.initializationOptions->object().find("svlsp");
+    if (!svlsp || !svlsp->isObject()) return "";
+    const lsp::json::Value* value = svlsp->object().find(key);
+    return value && value->isString() ? value->string() : "";
 }
 
 bool ServerState::extractBoolOption(const lsp::InitializeParams& params, std::string_view key)

@@ -9,16 +9,67 @@
 
 Database::Database(const std::string& path)
 {
-    int rc = sqlite3_open(path.c_str(), &m_db);
+    open(path, false);
+}
+
+void Database::open(const std::string& path, bool readOnly)
+{
+    sqlite3* db = nullptr;
+    const int flags = readOnly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE;
+    int rc = sqlite3_open_v2(path.c_str(), &db, flags, nullptr);
     if (rc != SQLITE_OK) {
         std::string msg = "sqlite3_open: ";
-        if (m_db) msg += sqlite3_errmsg(m_db);
-        sqlite3_close(m_db);
-        m_db = nullptr;
+        if (db) msg += sqlite3_errmsg(db);
+        sqlite3_close(db);
         throw std::runtime_error(msg);
     }
+    sqlite3_close(m_db);
+    m_db = db;
+    m_path = path;
+    m_readOnly = readOnly;
     // Enable foreign key constraints for this connection.
     sqlite3_exec(m_db, "PRAGMA foreign_keys = ON", nullptr, nullptr, nullptr);
+    // A writer (a --build-db, a server) may hold the file briefly: wait
+    // rather than fail.
+    sqlite3_busy_timeout(m_db, 5000);
+}
+
+void Database::reopen(const std::string& path, bool readOnly)
+{
+    open(path, readOnly);
+}
+
+void Database::copyFrom(const std::string& path)
+{
+    sqlite3* src = nullptr;
+    if (sqlite3_open_v2(path.c_str(), &src, SQLITE_OPEN_READONLY, nullptr) != SQLITE_OK) {
+        std::string msg = "sqlite3_open: ";
+        if (src) msg += sqlite3_errmsg(src);
+        sqlite3_close(src);
+        throw std::runtime_error(msg);
+    }
+    sqlite3_busy_timeout(src, 5000);
+    sqlite3_backup* backup = sqlite3_backup_init(m_db, "main", src, "main");
+    if (!backup) {
+        const std::string msg = std::string("sqlite3_backup_init: ") + sqlite3_errmsg(m_db);
+        sqlite3_close(src);
+        throw std::runtime_error(msg);
+    }
+    int rc;
+    while ((rc = sqlite3_backup_step(backup, -1)) == SQLITE_OK || rc == SQLITE_BUSY ||
+           rc == SQLITE_LOCKED)
+        sqlite3_sleep(20);
+    sqlite3_backup_finish(backup);
+    sqlite3_close(src);
+    if (rc != SQLITE_DONE)
+        throw std::runtime_error("sqlite3_backup_step: " + std::string(sqlite3_errstr(rc)));
+}
+
+void Database::useWal()
+{
+    if (m_path == ":memory:" || m_path.empty() || m_readOnly) return;
+    sqlite3_exec(m_db, "PRAGMA journal_mode = WAL", nullptr, nullptr, nullptr);
+    sqlite3_exec(m_db, "PRAGMA synchronous = NORMAL", nullptr, nullptr, nullptr);
 }
 
 Database::~Database()

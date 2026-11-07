@@ -5,6 +5,7 @@
 #include "compiler/filelist_parser.h"
 #include "compiler/project_config.h"
 #include "compiler/parse_worker.h"
+#include "db/db_lock.h"
 #include "svlsp_git_version.h"
 #include <algorithm>
 #include <cstring>
@@ -119,8 +120,33 @@ int explicitFileCount(const std::string& configPath)
 // actual compile work lives in LibraryDbBuilder (src/lsp/library_db_builder.h),
 // factored out so it's unit-testable; this is just the CLI-facing wrapper.
 // Returns the process exit code.
-int buildDb(const std::string& configPath, const std::string& outputPath, bool collectDocs)
+int buildDb(const std::string& configPath, const std::string& outputPath, bool collectDocs,
+            bool wait)
 {
+    // One writer at a time (plan.md §6.34 S3). A server that has the DB
+    // open refreshes it itself; another --build-db is waited for with
+    // --wait.
+    DbLock lock;
+    if (!lock.acquire(outputPath, "build-db")) {
+        int pid = 0;
+        const auto who = DbLock::holder(outputPath, &pid);
+        if (who == DbLock::Holder::Server && !wait) {
+            std::cerr << "svlsp: svlsp pid " << pid << " has '" << outputPath
+                      << "' open; it refreshes it itself (--wait to wait for it)\n";
+            return 0;
+        }
+        if (!wait) {
+            std::cerr << "svlsp: svlsp --build-db pid " << pid << " is writing '" << outputPath
+                      << "' (--wait to wait for it)\n";
+            return 1;
+        }
+        std::cerr << "svlsp: waiting for pid " << pid << " to release '" << outputPath << "'\n";
+        if (!lock.acquire(outputPath, "build-db", /*wait=*/true)) {
+            std::cerr << "svlsp: can't lock '" << outputPath << "'\n";
+            return 1;
+        }
+    }
+
     // Progress feedback goes to stderr as a single growing counter (see
     // ProgressCounterBuf above) -- unlike the server's --log-files (which
     // targets a file and keeps every line, since stdout/stderr are reserved
@@ -180,7 +206,9 @@ int buildDb(const std::string& configPath, const std::string& outputPath, bool c
 // grouped before their values) is NOT accepted, only `--build-db config.f
 // --output db.f` (each flag immediately followed by its own value); see
 // plan.md §6.19 and docs/usage.md. Adding --no-doc-comments stores no doc
-// comments (plan.md §6.31), for a smaller DB.
+// comments (plan.md §6.31), for a smaller DB. A server holding the DB open
+// (plan.md §6.34 S3) makes --build-db exit 0 at once (the server refreshes
+// it); --wait waits for the holder instead.
 int main(int argc, char** argv)
 {
     // Checked in its own pass, ahead of everything else: --version must
@@ -211,6 +239,7 @@ int main(int argc, char** argv)
     std::string buildDbConfigPath;
     std::string buildDbOutputPath;
     bool collectDocs = true;
+    bool waitForLock = false;
     bool inProcessParse = false;
     std::size_t parseWorkerMaxRssMb = ParseWorker::Options{}.maxRssMb;
     unsigned parseWorkerIdleSeconds = ParseWorker::Options{}.idleSeconds;
@@ -269,6 +298,8 @@ int main(int argc, char** argv)
             buildDbOutputPath = argv[++i];
         } else if (std::strcmp(argv[i], "--no-doc-comments") == 0) {
             collectDocs = false;
+        } else if (std::strcmp(argv[i], "--wait") == 0) {
+            waitForLock = true;
         } else if (std::strcmp(argv[i], "--in-process-parse") == 0) {
             inProcessParse = true;
         } else if (std::strcmp(argv[i], "--parse-worker-idle") == 0) {
@@ -301,7 +332,7 @@ int main(int argc, char** argv)
             std::cerr << "svlsp: --build-db requires --output <db-path>\n";
             return 1;
         }
-        return buildDb(buildDbConfigPath, buildDbOutputPath, collectDocs);
+        return buildDb(buildDbConfigPath, buildDbOutputPath, collectDocs, waitForLock);
     }
 
     // The server parses in a worker process unless told not to; --build-db
@@ -316,6 +347,7 @@ int main(int argc, char** argv)
 
     auto& io = lsp::io::standardIO();
     LanguageServer server(io, logStream, requestLog);
+    server.setVersion(SVLSP_GIT_VERSION);
     if (parseWorker)
         server.setWalker([w = parseWorker.get()](const std::string& source,
                                                   const std::vector<SourceLine>& sourceMap,

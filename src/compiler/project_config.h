@@ -33,4 +33,7 @@ struct ProjectConfig {
     std::vector<LibraryDbSource> libraryDbSources; // -svlsp_library_db_source /
                                                     // "libraryDbSources" -- build-and-cache
                                                     // on first use (plan.md §6.19 piece 3)
+    std::string database;                          // -svlsp_db / "database": the project's
+                                                    // own DB file ("" = in memory;
+                                                    // plan.md §6.34 S3)
 };

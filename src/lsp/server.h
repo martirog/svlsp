@@ -25,6 +25,7 @@
 #include "db/symbol_database.h"
 #include "db/compilation_controller.h"
 #include "db/project_refresher.h"
+#include "db/db_lock.h"
 #include <atomic>
 #include <condition_variable>
 #include <future>
@@ -46,6 +47,11 @@ public:
     // Runs the message loop until the client sends 'exit'. Returns the exit
     // code the process should use (0 after clean shutdown, 1 otherwise).
     int run();
+
+    // The svlsp build (SVLSP_GIT_VERSION) recorded in a project DB; a DB
+    // recorded by another build is reset (plan.md §6.34 S3). Call before
+    // run(); unset, no check.
+    void setVersion(std::string version) { m_version = std::move(version); }
 
     // The parse every compile runs (CompilationController::setWalker), e.g.
     // a ParseWorker's. Call before run().
@@ -74,12 +80,27 @@ private:
     std::mutex m_compileMutex;
     std::ostream* m_requestLog; // `--log-requests`; null = off
 
+    // The project DB (plan.md §6.34 S3). Memory: ":memory:" (no DB set, the
+    // default). Writer: the file, holding its lock. Waiting: a --build-db
+    // holds the lock; the file is open read-only and the queue waits for
+    // the lock before its next job. Copy: another server holds the lock;
+    // the file was copied into memory and is never written (D2). Guarded
+    // by m_dataMutex.
+    enum class DbMode { Memory, Writer, Waiting, Copy };
+    DbMode      m_dbMode{DbMode::Memory};
+    std::string m_dbPath;
+    DbLock      m_dbLock;
+    std::string m_version;      // setVersion()
+    std::string m_buildVersion; // m_version and the doc-comment setting
+
     // Documents whose compile since didOpen / didSave hasn't run yet, by
     // path: a request on one waits for it (plan.md §6.34 S4) -- the
     // document's own answers need its own compile, not the project load's.
+    // Not while the queue waits for a --build-db (m_dbWaiting).
     std::mutex              m_awaitMutex;
     std::condition_variable m_awaitCv;
     std::set<std::string>   m_awaiting;
+    std::atomic<bool>       m_dbWaiting{false};
     void awaitCompile(const std::string& path);
     void compiled(const std::string& path);
     void waitForDocument(const lsp::DocumentUri& uri);
@@ -107,6 +128,16 @@ private:
         });
     }
 
+    // Makes `path` the server's DB, unless one was chosen already or
+    // something was compiled into memory. Caller holds m_dataMutex.
+    void openProjectDb(const std::string& path);
+    // Opens m_dbPath read-write (the lock is held). Caller holds m_dataMutex.
+    void becomeWriter();
+    // Resets a DB recorded by another svlsp build. Caller holds m_dataMutex.
+    void checkDbVersion();
+    // Before a queue job: in Waiting mode, waits for the lock and becomes
+    // the writer. Takes m_dataMutex itself.
+    void waitForWriter();
 
     // "<path>:<line>:<character>" for a request's log line ("" with no log).
     std::string requestWhere(const lsp::DocumentUri& uri, const lsp::Position& pos) const;

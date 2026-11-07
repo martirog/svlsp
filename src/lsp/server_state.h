@@ -66,6 +66,9 @@ public:
     // `window/workDoneProgress/create` and `$/progress` (plan.md §6.34 S4).
     bool workDoneProgressSupported() const { return m_workDoneProgress; }
 
+    // `initializationOptions.svlsp.database` (plan.md §6.34 S3): the
+    // server's DB file, over any project config's "database"; "" if unset.
+    const std::string& databasePath() const { return m_databasePath; }
 
 private:
     std::atomic<Phase> m_phase{Phase::Uninitialized};
@@ -75,11 +78,15 @@ private:
     bool               m_fuzzyCompletionEnabled{true};
     bool               m_docCommentsEnabled{true};
     bool               m_workDoneProgress{false};
+    std::string        m_databasePath;
 
     // Throws lsp::RequestError if the server is not in Active state.
     void requireActive(const char* method) const;
 
     static std::string extractProjectConfigPath(const lsp::InitializeParams& params);
+    // `initializationOptions.svlsp.<key>` when present and a string, else "".
+    static std::string extractStringOption(const lsp::InitializeParams& params,
+                                           std::string_view key);
     // `initializationOptions.svlsp.<key>` when present and a boolean, else true.
     static bool extractBoolOption(const lsp::InitializeParams& params, std::string_view key);
 };

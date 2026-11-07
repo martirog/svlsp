@@ -133,6 +133,9 @@ void parseFile(const std::string& path, const std::string& baseDir,
                     std::string cfgPath   = resolvePath(baseDir, needArg(tok));
                     std::string cachePath = resolvePath(baseDir, needArg(tok));
                     config.libraryDbSources.push_back({cfgPath, cachePath});
+                } else if (tok == "-svlsp_db") {
+                    const std::string raw = needArg(tok);
+                    config.database = raw == ":memory:" ? raw : resolvePath(baseDir, raw);
                 } else if (tok == "-top") {
                     config.topModule = needArg(tok);
                 } else {

@@ -116,6 +116,13 @@ ProjectConfig ProjectManifestParser::parse(const std::string& path) {
         }
     }
 
+    if (const lsp::json::Value* v = obj.find("database")) {
+        if (!v->isString()) {
+            throw std::runtime_error(path + ": \"database\" must be a string");
+        }
+        config.database = v->string() == ":memory:" ? v->string() : resolvePath(baseDir, v->string());
+    }
+
     if (const lsp::json::Value* v = obj.find("top")) {
         if (!v->isString()) {
             throw std::runtime_error(path + ": \"top\" must be a string");

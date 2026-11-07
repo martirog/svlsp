@@ -231,6 +231,7 @@ target_link_libraries(svlsp_compiler PUBLIC svlsp_antlr4 svlsp_options)
 # ---------------------------------------------------------------------------
 add_library(svlsp_db STATIC
     src/db/database.cpp
+    src/db/db_lock.cpp
     src/db/symbol_database.cpp
     src/db/compilation_controller.cpp
     src/db/library_resolver.cpp
@@ -339,6 +340,7 @@ add_executable(unit_tests
     tests/unit/db/test_library_resolver.cpp
     tests/unit/db/test_project_compiler.cpp
     tests/unit/db/test_project_refresher.cpp
+    tests/unit/db/test_db_lock.cpp
 )
 target_compile_definitions(unit_tests PRIVATE
     SV_EXAMPLES_DIR="${CMAKE_SOURCE_DIR}/examples"

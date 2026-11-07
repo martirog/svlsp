@@ -48,6 +48,8 @@ LibraryDbBuilder::Result LibraryDbBuilder::build(
             std::filesystem::create_directories(parent);
 
         Database db(outputPath);
+        // No fsync per commit while building (plan.md §6.34 S0 F2).
+        db.useWal();
         db.initSchema();
         SymbolDatabase sdb(db);
 
@@ -88,6 +90,14 @@ LibraryDbBuilder::Result LibraryDbBuilder::build(
 
         if (auto stmt = db.prepare("SELECT COUNT(*) FROM diagnostics"); stmt.step())
             result.diagnosticCount = stmt.columnInt(0);
+
+        // Leave one self-contained file (no -wal beside it), so it can be
+        // attached read-only, copied or archived as a library DB. A reader
+        // open on it keeps WAL; that is harmless.
+        try {
+            db.execute("PRAGMA journal_mode = DELETE");
+        } catch (const std::exception&) {
+        }
 
         result.ok = true;
     } catch (const std::exception& e) {

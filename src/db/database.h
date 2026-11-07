@@ -16,6 +16,25 @@ public:
     Database(Database&&)                 = delete;
     Database& operator=(Database&&)      = delete;
 
+    // Closes this connection and opens `path` instead (plan.md §6.34 S3),
+    // read-only when `readOnly`. Throws like the constructor. Anything
+    // attached is gone; statements must not outlive the old connection.
+    void reopen(const std::string& path, bool readOnly = false);
+
+    // Replaces this connection's main database with a copy of the file at
+    // `path` (SQLite's online backup; the file is only read). Throws if it
+    // can't be read.
+    void copyFrom(const std::string& path);
+
+    // For a DB file: WAL journal and synchronous=NORMAL, so a commit costs
+    // no fsync (plan.md §6.34 S0 F2) and readers see the last commit while
+    // a writer works. A no-op on ":memory:".
+    void useWal();
+
+    // The path this connection was opened with.
+    const std::string& path() const { return m_path; }
+    bool readOnly() const { return m_readOnly; }
+
     // Initialize the schema to SCHEMA_VERSION, running migrations as needed.
     void initSchema();
 
@@ -64,6 +83,10 @@ public:
 
 private:
     sqlite3* m_db{nullptr};
+    std::string m_path;
+    bool m_readOnly{false};
+
+    void open(const std::string& path, bool readOnly);
 
     void check(int rc, const char* context) const;
 };

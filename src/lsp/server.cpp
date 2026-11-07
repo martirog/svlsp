@@ -36,8 +36,12 @@ LanguageServer::LanguageServer(lsp::io::Stream& io, std::ostream* logStream,
     m_db.initSchema();
     m_compiler.setCalleeResolver(resolveCallees);
     m_compiler.setTypeChecker(checkTypeRefs);
-    // A newly discovered project loads in the background (plan.md §6.34 S4).
+    // A newly discovered project loads in the background (plan.md §6.34 S4),
+    // into its own DB file when it names one (S3).
     m_projects.deferLoading([this](const std::string& configPath) {
+        if (const ProjectConfig* c = m_projects.mutableConfig(configPath);
+            c && !c->database.empty() && c->database != ":memory:")
+            openProjectDb(c->database);
         m_queue.push({.kind = CompileQueue::Job::Kind::LoadProject, .key = configPath},
                      CompileQueue::kProjectSetup);
     });
@@ -192,17 +196,108 @@ void LanguageServer::waitForDocument(const lsp::DocumentUri& uri)
 {
     const std::string path{uri.path()};
     std::unique_lock l{m_awaitMutex};
-    m_awaitCv.wait(l, [&] { return !m_awaiting.count(path); });
+    m_awaitCv.wait(l, [&] { return !m_awaiting.count(path) || m_dbWaiting.load(); });
 }
 
 bool LanguageServer::awaiting(const lsp::DocumentUri& uri)
 {
     std::lock_guard l{m_awaitMutex};
-    return m_awaiting.count(std::string{uri.path()}) > 0;
+    return m_awaiting.count(std::string{uri.path()}) > 0 && !m_dbWaiting.load();
+}
+
+void LanguageServer::openProjectDb(const std::string& path)
+{
+    if (m_dbMode != DbMode::Memory) {
+        if (path != m_dbPath)
+            std::cerr << "svlsp: already using the DB '" << m_dbPath << "'; '" << path
+                      << "' is not opened (one DB per server)\n";
+        return;
+    }
+    if (!m_symbolDb.allFilePaths().empty()) {
+        std::cerr << "svlsp: files were compiled into memory already; the DB '" << path
+                  << "' is not opened\n";
+        return;
+    }
+    try {
+        if (const auto parent = std::filesystem::path(path).parent_path(); !parent.empty())
+            std::filesystem::create_directories(parent);
+        m_dbPath = path;
+        if (m_dbLock.acquire(path, "server")) {
+            becomeWriter();
+            return;
+        }
+        int pid = 0;
+        if (DbLock::holder(path, &pid) == DbLock::Holder::Builder) {
+            // A --build-db is writing it: serve what it has committed so far,
+            // and take over once it is done.
+            if (std::filesystem::exists(path)) {
+                m_db.reopen(path, /*readOnly=*/true);
+                m_symbolDb.connectionChanged();
+            }
+            m_dbMode = DbMode::Waiting;
+            m_dbWaiting = true;
+            m_awaitCv.notify_all();
+            std::cerr << "svlsp: svlsp --build-db (pid " << pid << ") is writing '" << path
+                      << "'; serving from it until it is done\n";
+            return;
+        }
+        // Another server writes it (D2): a copy in memory, never written.
+        m_db.copyFrom(path);
+        m_db.initSchema();
+        checkDbVersion();
+        m_symbolDb.connectionChanged();
+        m_dbMode = DbMode::Copy;
+        std::cerr << "svlsp: svlsp pid " << pid << " writes '" << path
+                  << "'; working on a copy in memory\n";
+    } catch (const std::exception& e) {
+        std::cerr << "svlsp: can't use the DB '" << path << "': " << e.what()
+                  << "; working in memory\n";
+        m_dbLock.release();
+        m_db.reopen(":memory:");
+        m_db.initSchema();
+        m_symbolDb.connectionChanged();
+        m_dbMode = DbMode::Memory;
+    }
+}
+
+void LanguageServer::becomeWriter()
+{
+    m_db.reopen(m_dbPath);
+    m_db.useWal();
+    m_db.initSchema();
+    checkDbVersion();
+    m_symbolDb.connectionChanged();
+    m_dbMode = DbMode::Writer;
+    m_dbWaiting = false;
+}
+
+void LanguageServer::checkDbVersion()
+{
+    if (m_buildVersion.empty() || m_symbolDb.builtByVersion() == m_buildVersion) return;
+    m_symbolDb.resetAllFiles();
+    m_symbolDb.setBuiltByVersion(m_buildVersion);
+}
+
+void LanguageServer::waitForWriter()
+{
+    std::string path;
+    {
+        std::lock_guard lock{m_dataMutex};
+        if (m_dbMode != DbMode::Waiting) return;
+        path = m_dbPath;
+    }
+    m_dbLock.acquire(path, "server", /*wait=*/true);
+    std::lock_guard lock{m_dataMutex};
+    try {
+        becomeWriter();
+    } catch (const std::exception& e) {
+        std::cerr << "svlsp: can't open the DB '" << path << "': " << e.what() << '\n';
+    }
 }
 
 void LanguageServer::runJob(const CompileQueue::Job& job)
 {
+    waitForWriter();
     switch (job.kind) {
     case CompileQueue::Job::Kind::Unit:          compileUnit(job); break;
     case CompileQueue::Job::Kind::LoadProject:   loadProject(job.key); break;
@@ -280,6 +375,7 @@ void LanguageServer::loadProject(const std::string& configPath)
         ProjectCompiler::attachLibraries(*c, m_symbolDb);
         ProjectLoad load;
         load.plan = ProjectRefresher::plan(key, *c, m_compiler, m_symbolDb);
+        load.plan.svlspVersion = m_buildVersion;
         load.progress = ProjectRefresher::begin(load.plan, m_symbolDb);
         load.pending.insert(load.plan.compile.begin(), load.plan.compile.end());
         load.total = load.pending.size();
@@ -486,8 +582,15 @@ void LanguageServer::registerHandlers()
         .add<lsp::requests::Initialize>(
             [this](lsp::InitializeParams&& params) {
                 auto result = m_state.handleInitialize(std::move(params));
+                std::lock_guard lock{m_dataMutex};
                 m_projects.setExplicitConfigPath(m_state.explicitProjectConfigPath());
                 m_compiler.setCollectDocs(m_state.docCommentsEnabled());
+                // The same string --build-db records (LibraryDbBuilder::build).
+                m_buildVersion = m_version.empty() || m_state.docCommentsEnabled()
+                    ? m_version
+                    : m_version + " (no doc comments)";
+                if (!m_state.databasePath().empty() && m_state.databasePath() != ":memory:")
+                    openProjectDb(m_state.databasePath());
                 return result;
             })
         .add<lsp::notifications::Initialized>(
