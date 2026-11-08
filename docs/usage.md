@@ -243,6 +243,35 @@ The `svlsp.waitForIndexing` command (`workspace/executeCommand`) answers
 once no load or refresh is queued or running. It is meant for scripts and
 tests.
 
+## Include errors
+
+In a file that belongs to a project, an `` `include `` that svlsp can't
+follow is a diagnostic on the directive. It is reported in the file that
+holds the directive, even when that file is itself included and never
+opened. The squiggle runs from the backtick to the end of the file name.
+
+| Message | Severity | Meaning |
+|---|---|---|
+| `` `include: cannot find "x.svh" `` | Error | Not beside the including file, and not in any `includeDirs`. |
+| `` `include: cycle detected for "/path/a.svh" `` | Error | The file includes itself, directly or through others, with no include guard to stop it. |
+| `` `include: depth limit exceeded (cycle?) `` | Error | Includes are nested more than 17 levels deep. |
+| `` `include: cannot open "/path/x.svh" `` | Error | The file exists but can't be read. |
+| `` `include: missing or malformed filename `` | Warning | No `"name"` or `<name>` after `` `include ``. `` `include `MACRO `` is not supported yet, so it gets this Warning too. |
+
+The rest of the file is still compiled without the included text, as a
+simulator would. Symbols that file would have declared are therefore
+missing, and their uses may be flagged as well.
+
+A file svlsp compiles on its own, outside any project, gets no include
+errors. It has no `includeDirs`, so every library `` `include `` (such as
+`uvm_macros.svh`) would be reported. Add the file to a project's `files`,
+with the right `includeDirs`, to see them.
+
+The error goes away when the file appears. That happens on the next compile
+of the including file, or on a refresh when files change on disk (see
+[Branch switches](#branch-switches-file-watching-and-svlsprefresh)). It
+comes back when the file is removed.
+
 ## A project database built ahead: `database`
 
 A project's database is a file, so it lasts between sessions. By default
