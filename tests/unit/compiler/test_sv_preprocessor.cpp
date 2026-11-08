@@ -694,8 +694,7 @@ TEST_CASE("include error: a file that exists but cannot be read",
 
 TEST_CASE("include error: malformed directives",
           "[compiler][preprocessor][include-errors]") {
-    // {source, line of the directive, the directive's extent}. `include
-    // `MACRO is §6.36; until then it is malformed too.
+    // {source, line of the directive, the directive's extent}.
     struct Case { const char* src; int line; const char* directive; };
     const Case cases[] = {
         {"`include\n", 1, "`include"},
@@ -703,7 +702,6 @@ TEST_CASE("include error: malformed directives",
         {"`include <unterminated.svh\n", 1, "`include <unterminated.svh"},
         {"`include bare_name.svh // c\n", 1, "`include bare_name.svh"},
         {"`include \"\"\n", 1, "`include \"\""},
-        {"`define INCERR_FILE \"x.svh\"\n`include `INCERR_FILE\n", 2, "`include `INCERR_FILE"},
     };
     for (const auto& c : cases) {
         INFO(c.src);
@@ -1653,4 +1651,138 @@ TEST_CASE("a conditional directive's error covers the directive, indented and co
     CHECK(r.errors[0].message == "`else without `ifdef");
     CHECK(r.errors[0].column == 4);
     CHECK(r.errors[0].endColumn == 9);
+}
+
+// ---------------------------------------------------------------------------
+// `include through a macro (plan.md §6.36): the argument is expanded with
+// the macros defined at the directive (IEEE 1800-2017 22.4).
+// ---------------------------------------------------------------------------
+
+namespace {
+struct IncMacro {
+    std::filesystem::path root;
+    explicit IncMacro(const std::string& name) : root(freshIncludeDir(name)) {}
+    std::string put(const std::string& rel, const std::string& text) {
+        writeFile(root / rel, text);
+        return (root / rel).string();
+    }
+    PreprocessorResult run(const std::string& src, std::vector<std::pair<std::string, std::string>> defs = {}) {
+        SvPreprocessor p({root.string()});
+        for (const auto& [n, v] : defs) p.define(n, v);
+        return p.process(src, (root / "top.sv").string());
+    }
+};
+}  // namespace
+
+TEST_CASE("include macro: an object-like macro defined in the file names the file",
+          "[compiler][preprocessor][include-macro]") {
+    IncMacro t("svlsp_test_incmac_file");
+    const auto hdr = t.put("im_cfg.svh", "wire from_cfg;\n");
+    auto r = t.run("`define IM_HDR \"im_cfg.svh\"\n`include `IM_HDR\nwire after;\n");
+    CHECK(r.errors.empty());
+    CHECK(r.source.find("wire from_cfg;") != std::string::npos);
+    CHECK(r.source.find("wire after;") != std::string::npos);
+    REQUIRE(r.includeDirectives.size() == 1);
+    CHECK(r.includeDirectives[0].name == "im_cfg.svh");  // the expanded name
+    CHECK(r.includeDirectives[0].resolved == hdr);
+    REQUIRE(r.includeSites.size() == 1);
+    CHECK(r.includeSites[0].line == 2);
+}
+
+TEST_CASE("include macro: angle brackets, a trailing comment, and an indent",
+          "[compiler][preprocessor][include-macro]") {
+    IncMacro t("svlsp_test_incmac_angle");
+    t.put("im_angle.svh", "wire from_angle;\n");
+    auto r = t.run("`define IM_A <im_angle.svh>\n  `include `IM_A   // pick\n");
+    CHECK(r.errors.empty());
+    CHECK(r.source.find("wire from_angle;") != std::string::npos);
+}
+
+TEST_CASE("include macro: defined in an included header, or by the config",
+          "[compiler][preprocessor][include-macro]") {
+    IncMacro t("svlsp_test_incmac_where");
+    t.put("im_defs.svh", "`define IM_WHERE \"im_target.svh\"\n");
+    t.put("im_target.svh", "wire from_target;\n");
+    auto viaHeader = t.run("`include \"im_defs.svh\"\n`include `IM_WHERE\n");
+    CHECK(viaHeader.errors.empty());
+    CHECK(viaHeader.source.find("wire from_target;") != std::string::npos);
+
+    auto viaConfig = t.run("`include `IM_CFG\n", {{"IM_CFG", "\"im_target.svh\""}});
+    CHECK(viaConfig.errors.empty());
+    CHECK(viaConfig.source.find("wire from_target;") != std::string::npos);
+}
+
+TEST_CASE("include macro: a function-like macro builds the name",
+          "[compiler][preprocessor][include-macro]") {
+    IncMacro t("svlsp_test_incmac_func");
+    t.put("agent_cfg.svh", "wire from_agent_cfg;\n");
+    auto r = t.run("`define IM_PATH(n) `\"n``_cfg.svh`\"\n`include `IM_PATH(agent)\n");
+    CHECK(r.errors.empty());
+    CHECK(r.source.find("wire from_agent_cfg;") != std::string::npos);
+    REQUIRE(r.includeDirectives.size() == 1);
+    CHECK(r.includeDirectives[0].name == "agent_cfg.svh");
+}
+
+TEST_CASE("include macro: redefined between two includes, each takes the definition then",
+          "[compiler][preprocessor][include-macro]") {
+    IncMacro t("svlsp_test_incmac_redef");
+    t.put("im_one.svh", "wire from_one;\n");
+    t.put("im_two.svh", "wire from_two;\n");
+    auto r = t.run(
+        "`define IM_R \"im_one.svh\"\n"
+        "`include `IM_R\n"
+        "`undef IM_R\n"
+        "`define IM_R \"im_two.svh\"\n"
+        "`include `IM_R\n");
+    CHECK(r.errors.empty());
+    CHECK(r.source.find("wire from_one;") != std::string::npos);
+    CHECK(r.source.find("wire from_two;") != std::string::npos);
+    CHECK(r.includeDirectives.size() == 2);
+}
+
+TEST_CASE("include macro: the expanded name that is not found is a not-found error",
+          "[compiler][preprocessor][include-macro]") {
+    IncMacro t("svlsp_test_incmac_missing");
+    auto r = t.run("`define IM_M \"im_nowhere.svh\"\n`include `IM_M\n");
+    REQUIRE(r.errors.size() == 1);
+    CHECK(r.errors[0].message == "`include: cannot find \"im_nowhere.svh\"");
+    checkAt(r.errors[0], Kind::IncludeNotFound, "", 2, 0, "`include `IM_M");
+    REQUIRE(r.includeDirectives.size() == 1);
+    CHECK(r.includeDirectives[0].name == "im_nowhere.svh");
+}
+
+TEST_CASE("include macro: an undefined macro is an error over the reference",
+          "[compiler][preprocessor][include-macro]") {
+    IncMacro t("svlsp_test_incmac_undef");
+    auto r = t.run("  `include `IM_NOPE  // c\nwire after;\n");
+    REQUIRE(r.errors.size() == 1);
+    CHECK(r.errors[0].message == "`include: macro `IM_NOPE is not defined");
+    CHECK(r.errors[0].kind == Kind::IncludeMalformed);
+    CHECK(r.errors[0].line == 1);
+    CHECK(r.errors[0].column == 11);
+    CHECK(r.errors[0].endColumn == 19);
+    CHECK(r.source.find("wire after;") != std::string::npos);
+    CHECK(r.includeDirectives.empty());
+}
+
+TEST_CASE("include macro: an expansion that is not one file name is malformed",
+          "[compiler][preprocessor][include-macro]") {
+    IncMacro t("svlsp_test_incmac_bad");
+    const char* cases[] = {
+        "`define IM_B im_bare.svh\n",
+        "`define IM_B \"a.svh\" \"b.svh\"\n",
+        "`define IM_B \"unterminated.svh\n",
+        "`define IM_B\n",
+    };
+    for (const char* def : cases) {
+        INFO(def);
+        auto r = t.run(std::string(def) + "`include `IM_B\n");
+        REQUIRE(r.errors.size() == 1);
+        CHECK(r.errors[0].message.rfind("`include: `IM_B does not expand to a file name", 0) == 0);
+        CHECK(r.errors[0].kind == Kind::IncludeMalformed);
+        CHECK(r.errors[0].line == 2);
+        CHECK(r.errors[0].column == 9);
+        CHECK(r.errors[0].endColumn == 14);
+        CHECK(r.includeDirectives.empty());
+    }
 }

@@ -13,7 +13,9 @@ struct SourceScan {
     // Names this text refers to: before `::`, after `import`, `extends` and
     // `implements`.
     std::vector<std::string> references;
-    // The file names of its `include directives, as written.
+    // The file names of its `include directives, as written. An `include
+    // `MACRO (plan.md §6.36) is not seen: the scan doesn't expand macros,
+    // which only costs ordering.
     std::vector<std::string> includes;
 };
 

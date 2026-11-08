@@ -914,18 +914,49 @@ static void processSource(const std::string& source, const std::string& filepath
             std::string_view r = trimSV(rest);
             std::string filename;
             int nameEnd = dirEnd;  // a malformed directive: up to the end of its code
-            if (!r.empty() && (r.front() == '"' || r.front() == '<')) {
-                char close = r.front() == '"' ? '"' : '>';
-                size_t end = r.find(close, 1);
-                if (end != std::string_view::npos) {
-                    filename = std::string(r.substr(1, end - 1));
-                    nameEnd = static_cast<int>(r.data() - line.data() + end + 1);
+            // A malformed directive's message; empty while the name is fine.
+            std::string malformed = "`include: missing or malformed filename";
+            int malformedColumn = dirColumn;
+            // The name inside one "name" / <name> at the start of `t`, and
+            // where it ends in `t`; nullopt if `t` doesn't start with one.
+            auto quoted = [](std::string_view t) -> std::optional<std::pair<std::string, size_t>> {
+                if (t.empty() || (t.front() != '"' && t.front() != '<')) return std::nullopt;
+                const size_t end = t.find(t.front() == '"' ? '"' : '>', 1);
+                if (end == std::string_view::npos || end == 1) return std::nullopt;
+                return std::pair{std::string(t.substr(1, end - 1)), end + 1};
+            };
+            if (auto q = quoted(r)) {
+                filename = q->first;
+                nameEnd = static_cast<int>(r.data() - line.data() + q->second);
+            } else if (!r.empty() && r.front() == '`') {
+                // `include `MACRO (plan.md §6.36, IEEE 1800-2017 22.4): the
+                // argument expanded with the macros defined here must be
+                // exactly one quoted or angle-bracketed name.
+                malformedColumn = static_cast<int>(r.data() - line.data());
+                size_t k = 1;
+                const std::string macro = readIdent(std::string(r), k);
+                const std::string_view arg = trimSV(codeOf(r));
+                if (!macro.empty() && !ctx.macros.count(macro)) {
+                    malformed = "`include: macro `" + macro + " is not defined";
+                    nameEnd = malformedColumn + 1 + static_cast<int>(macro.size());
+                } else {
+                    std::vector<std::string> expandErrors;
+                    const std::string expanded =
+                        expandStr(std::string(arg), ctx.macros, expandErrors, 0);
+                    const std::string_view t = trimSV(expanded);
+                    auto q2 = quoted(t);
+                    if (q2 && trimSV(t.substr(q2->second)).empty() && expandErrors.empty()) {
+                        filename = q2->first;
+                    } else {
+                        malformed = "`include: `" + macro + " does not expand to a file name (" +
+                                    (expandErrors.empty() ? "got: " + std::string(t)
+                                                          : expandErrors.front()) + ")";
+                    }
                 }
             }
             if (filename.empty()) {
-                ctx.error(PreprocessorError::Kind::IncludeMalformed,
-                          "`include: missing or malformed filename", mapFile, lineNo,
-                          dirColumn, nameEnd);
+                ctx.error(PreprocessorError::Kind::IncludeMalformed, malformed, mapFile, lineNo,
+                          malformedColumn, nameEnd);
                 emitBlank();
             } else {
                 processInclude(filename, filepath, mapFile, lineNo, dirColumn, nameEnd, ctx,

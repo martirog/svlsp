@@ -8,14 +8,17 @@
 # Own workspace in a temp directory, as test_55_watched_files.sh.
 # Line reference (0-based): top.sv line 1 "  `include \"ie_missing.svh\"" --
 # the directive spans chars 2..27; line 5 "  ie_c obj;" -- ie_c at char 2;
-# line 6 "  int ie_v = `IE_UNDEF;" -- an undefined macro (P4), chars 2..23.
+# line 6 "  int ie_v = `IE_UNDEF;" -- an undefined macro (P4), chars 2..23;
+# line 9 "`include `IE_HDR" (§6.36) and line 10 "module ie_m2; ie_hdr_c h;" --
+# ie_hdr_c at char 14.
 
 if [ ! -x "${SVLSP_BIN}" ]; then
     for name in \
         "a missing include is an Error over its directive" \
         "the file written on disk clears it and its class resolves" \
         "the file deleted on disk brings it back" \
-        "an undefined macro is an Error over its line"
+        "an undefined macro is an Error over its line" \
+        "a class from a header included through a macro resolves"
     do
         skip_test "$name" "svlsp binary not found at ${SVLSP_BIN}"
     done
@@ -25,8 +28,9 @@ fi
 section "include and preprocessor errors are diagnostics (plan.md §6.35)"
 
 IE_WORK="$(mktemp -d /tmp/svlsp-incerr.XXXXXX)"
-printf 'package ie_p;\n  `include "ie_missing.svh"\nendpackage\nmodule ie_m;\n  import ie_p::*;\n  ie_c obj;\n  int ie_v = `IE_UNDEF;\nendmodule\n' \
+printf 'package ie_p;\n  `include "ie_missing.svh"\nendpackage\nmodule ie_m;\n  import ie_p::*;\n  ie_c obj;\n  int ie_v = `IE_UNDEF;\nendmodule\n`define IE_HDR "ie_hdr.svh"\n`include `IE_HDR\nmodule ie_m2; ie_hdr_c h; endmodule\n' \
     > "${IE_WORK}/top.sv"
+printf 'class ie_hdr_c; endclass\n' > "${IE_WORK}/ie_hdr.svh"
 printf '{\n  "files": ["top.sv"]\n}\n' > "${IE_WORK}/.svlsp.json"
 IE_TOP="${IE_WORK}/top.sv"
 IE_INC="${IE_WORK}/ie_missing.svh"
@@ -71,16 +75,19 @@ _emacs_eval "(progn
   t)" >/dev/null
 
 # Definition of ie_c at its use: \"FILE LINE\", or what went wrong.
-IE_DEF="(let ((locs (with-current-buffer (get-file-buffer \"${IE_TOP}\")
+ie_def_at() {
+printf '%s' "(let ((locs (with-current-buffer (get-file-buffer \"${IE_TOP}\")
                     (lsp-request \"textDocument/definition\"
                                  (list :textDocument (list :uri (lsp--buffer-uri))
-                                       :position (list :line 5 :character 3))))))
+                                       :position (list :line $1 :character $2))))))
           (let ((loc (if (vectorp locs) (and (> (length locs) 0) (aref locs 0))
                        (if (and (listp locs) (not (hash-table-p locs))) (car locs) locs))))
             (if loc
                 (format \"%s %d\" (file-name-nondirectory (lsp--uri-to-path (gethash \"uri\" loc)))
                         (gethash \"line\" (gethash \"start\" (gethash \"range\" loc))))
               \"no location\")))"
+}
+IE_DEF="$(ie_def_at 5 3)"
 
 run_test "a missing include is an Error over its directive" \
     "(condition-case err
@@ -115,6 +122,11 @@ run_test "an undefined macro is an Error over its line" \
        (or (svlsp-ie/include-diag \"undefined macro \`IE_UNDEF\`\") (svlsp-ie/messages))
      (error (format \"elisp-error: %s\" (error-message-string err))))" \
     '"6 2 23 1"'
+
+run_test "a class from a header included through a macro resolves" \
+    "(condition-case err $(ie_def_at 10 15)
+       (error (format \"elisp-error: %s\" (error-message-string err))))" \
+    '"ie_hdr.svh 0"'
 
 _emacs_eval "(progn
   (let ((buf (get-file-buffer \"${IE_TOP}\")))

@@ -565,22 +565,19 @@ std::vector<ParseError> CompilationController::commit(Parsed&& parsed,
     }
 
     // Preprocessor errors (plan.md §6.35), on the file each is in. Include
-    // errors (P2) are 'include' rows over their directive: a malformed
-    // directive a Warning, the rest Errors (I1). The others (P4) are
+    // errors (P2) are 'include' rows over their directive, all Errors (I1's
+    // Warning for a malformed one ended with §6.36). The others (P4) are
     // 'preprocess' rows, all Errors (an undefined macro too, decided
     // 2026-11-08). Only under a project config (I2: a file
     // on its own has no include dirs, so no library macros). Replaced on
     // every file this unit read, so one that no longer fails is cleared,
     // and a file whose rows came or went is reported for republishing even
     // when it has no rows of its own (a wrapper of `include's).
-    using PPKind = PreprocessorError::Kind;
     std::unordered_map<std::string, std::vector<ParseError>> includeErrsByFile, ppErrsByFile;
     if (parsed.checkTypes)
-        for (const auto& e : preprocessed.errors) {
-            const bool warning = e.kind == PPKind::IncludeMalformed;
+        for (const auto& e : preprocessed.errors)
             (e.isInclude() ? includeErrsByFile : ppErrsByFile)[e.file].push_back(
-                {e.line, e.column, e.message, e.file, warning ? 2 : 1, e.endColumn});
-        }
+                {e.line, e.column, e.message, e.file, 1, e.endColumn});
     const std::pair<const char*, decltype(includeErrsByFile)*> ppSources[] = {
         {"include", &includeErrsByFile}, {"preprocess", &ppErrsByFile}};
     for (const auto& [source, byFile] : ppSources)

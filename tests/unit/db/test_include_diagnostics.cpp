@@ -130,14 +130,15 @@ TEST_CASE("include diagnostics: none for a file compiled outside a project",
     CHECK(f.rows("p.sv").empty());
 }
 
-TEST_CASE("include diagnostics: a malformed directive is a Warning", "[db][include-diags]")
+// A Warning until §6.36 supported `include `MACRO (I1); an Error since.
+TEST_CASE("include diagnostics: a malformed directive is an Error", "[db][include-diags]")
 {
     ID f("malformed");
     f.write("p.sv", "package id_mf;\n`include id_bare.svh\nendpackage\n");
     const auto errs = ID::includeErrors(f.compile("p.sv"));
     REQUIRE(errs.size() == 1);
     CHECK(errs[0].message == "`include: missing or malformed filename");
-    CHECK(errs[0].severity == 2);
+    CHECK(errs[0].severity == 1);
     CHECK(errs[0].endColumn == len("`include id_bare.svh"));
 }
 
@@ -349,4 +350,63 @@ TEST_CASE("preprocess diagnostics: a define-body conditional error is at the mac
     CHECK(rows[0].message == "`endif without `ifdef in the body of macro `ID_B`");
     CHECK(rows[0].line == 3);
     CHECK(rows[0].severity == 1);
+}
+
+// ---------------------------------------------------------------------------
+// `include through a macro (plan.md §6.36) and the compile cache (§6.34 S1).
+// ---------------------------------------------------------------------------
+
+TEST_CASE("include macro: a config define picks the header; changing it recompiles",
+          "[db][include-diags][include-macro]")
+{
+    ID f("macro-config");
+    f.write("im_a.svh", "class im_a_c; endclass\n");
+    f.write("im_b.svh", "class im_b_c; endclass\n");
+    f.write("p.sv", "package im_p;\n`include `IM_HDR\nendpackage\n");
+    f.config.defines["IM_HDR"] = "\"im_a.svh\"";
+    CHECK(ID::includeErrors(f.compile("p.sv")).empty());
+    CHECK(!f.sdb.findSymbolsByName("im_a_c").empty());
+
+    f.log.str("");
+    f.compile("p.sv");
+    CHECK(f.log.str().find("(cached)") != std::string::npos);
+
+    f.config.defines["IM_HDR"] = "\"im_b.svh\"";
+    f.log.str("");
+    f.compile("p.sv");
+    CHECK(f.log.str().find("(cached)") == std::string::npos);
+    CHECK(!f.sdb.findSymbolsByName("im_b_c").empty());
+    CHECK(f.sdb.findSymbolsByName("im_a_c").empty());
+}
+
+TEST_CASE("include macro: a define in an included header that changes recompiles the unit",
+          "[db][include-diags][include-macro]")
+{
+    ID f("macro-header");
+    f.write("im_a.svh", "class im_ha_c; endclass\n");
+    f.write("im_b.svh", "class im_hb_c; endclass\n");
+    f.write("defs.svh", "`define IM_H \"im_a.svh\"\n");
+    f.write("p.sv", "package im_hp;\n`include \"defs.svh\"\n`include `IM_H\nendpackage\n");
+    f.config.files = {f.file("p.sv")};
+    ProjectRefresher::refresh(f.key, f.config, f.ctrl, f.sdb);
+    CHECK(!f.sdb.findSymbolsByName("im_ha_c").empty());
+
+    f.write("defs.svh", "`define IM_H \"im_b.svh\"\n", 30);
+    ProjectRefresher::refresh(f.key, f.config, f.ctrl, f.sdb);
+    CHECK(!f.sdb.findSymbolsByName("im_hb_c").empty());
+    CHECK(f.sdb.findSymbolsByName("im_ha_c").empty());
+}
+
+TEST_CASE("include macro: an undefined macro is an Error diagnostic",
+          "[db][include-diags][include-macro]")
+{
+    ID f("macro-undefined");
+    f.write("p.sv", "package im_up;\n`include `IM_UNDEFINED\nendpackage\n");
+    f.compile("p.sv");
+    const auto rows = f.rows("p.sv");
+    REQUIRE(rows.size() == 1);
+    CHECK(rows[0].message == "`include: macro `IM_UNDEFINED is not defined");
+    CHECK(rows[0].severity == 1);
+    CHECK(rows[0].col == 9);
+    CHECK(rows[0].endCol == len("`include `IM_UNDEFINED"));
 }
