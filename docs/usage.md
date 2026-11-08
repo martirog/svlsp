@@ -256,7 +256,15 @@ opened. The squiggle runs from the backtick to the end of the file name.
 | `` `include: cycle detected for "/path/a.svh" `` | Error | The file includes itself, directly or through others, with no include guard to stop it. |
 | `` `include: depth limit exceeded (cycle?) `` | Error | Includes are nested more than 17 levels deep. |
 | `` `include: cannot open "/path/x.svh" `` | Error | The file exists but can't be read. |
-| `` `include: missing or malformed filename `` | Warning | No `"name"` or `<name>` after `` `include ``. `` `include `MACRO `` is not supported yet, so it gets this Warning too. |
+| `` `include: missing or malformed filename `` | Error | No `"name"` or `<name>` after `` `include ``. |
+| `` `include: macro `HDR is not defined `` | Error | `` `include `HDR `` with no `` `define HDR `` before it. |
+| `` `include: `HDR does not expand to a file name (...) `` | Error | `HDR`'s text is not exactly one `"name"` or `<name>`. |
+
+The file name may come from a macro (`` `define HDR "agent_cfg.svh" ``,
+then `` `include `HDR ``; function-like macros work too). The macro is
+expanded with the definitions in force at the directive, so redefining it
+between two includes picks two files. The macro can be defined in the file,
+in a header included before, or in the project's `defines`.
 
 The rest of the file is still compiled without the included text, as a
 simulator would. Symbols that file would have declared are therefore

@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-11-08 (§6.35 done: include and preprocessor errors are diagnostics).
+**Last updated:** 2026-11-08 (§6.35 and §6.36 done: include / preprocessor errors, `include `MACRO).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -251,7 +251,7 @@ Next steps:
      several readers;
    - profile the server load's per-unit overhead (10.3-10.9 s against
      8.4 s on `gen_tb`).
-2. **Planned as plan.md §6.35** (2026-11-08, not started): include errors
+2. **plan.md §6.35 done** (2026-11-08, P0-P4): include errors
    as diagnostics. Today a missing, cyclic or unreadable `` `include `` is
    silent. The preprocessor's errors are position-less strings that nothing
    publishes. Decisions I1-I4 were taken 2026-11-08 as recommended:
@@ -307,13 +307,14 @@ Next steps:
      Errors (an undefined macro too, decided 2026-11-08).
 
    Unit 1187/1187, Emacs 339/339, `test-integration-uvm` 15/15, corpus
-   1563 / 31, `perf-check` no regression. Next: §6.36.
-3. **Planned as plan.md §6.36** (2026-11-08, not started): `` `include
-   `MACRO `` support, which today is a malformed directive and is skipped.
-   The argument is expanded with the macros defined at that point; an
-   undefined macro or a result that is not a file name is an Error; and
-   `IncludeDirective` records the expanded name for the S1 cache. It comes
-   after §6.35 P1.
+   1563 / 31, `perf-check` no regression.
+3. **plan.md §6.36 is done** (2026-11-08): `` `include `MACRO `` is
+   expanded with the macros defined at the directive, function-like ones
+   included. An undefined macro, or an expansion that isn't one file name,
+   is an Error over the reference. Every include error is an Error now,
+   since I1's malformed Warning is gone. The S1 cache needed nothing new.
+   Unit 1198/1198, Emacs 340/340, `test-integration-uvm` 15/15, corpus
+   1563 / 31, `perf-check` no regression.
 4. Optional, LL cost on files with syntax errors (only they reach LL now):
    the remaining LL time is true ambiguity in `primary` (decision 1068)
    and `hierarchical_identifier` (1103): `a.b` is a name, a name + select

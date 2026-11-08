@@ -7817,7 +7817,8 @@ the symbols the include would have given are missing.
   the right times without new invalidation logic.
 
 **Decisions (taken 2026-11-08, the recommendations):**
-- **I1 -- Severity:** Error for not found, cycle, depth and unreadable
+- **I1 -- Severity** (malformed changed to Error by §6.36, 2026-11-08):
+  Error for not found, cycle, depth and unreadable
   (recommended). The unit really is compiled without that text, as
   simulators treat it (VCS, Xcelium and Verilator all stop). The
   alternative, Warning, understates a compile that is missing code.
@@ -8112,8 +8113,9 @@ reported as undefined macros: 19 sites on UVM (`m_uvm_field_begin`,
 
 ### 6.36 `` `include `` Through a Macro (`` `include `FILE ``)
 
-**Status:** planned 2026-11-08, at the user's request, as an item separate
-from §6.35. Not started.
+**Status:** done 2026-11-08 (see "Outcome" at the end of this section).
+Planned the same day at the user's request, as an item separate from
+§6.35.
 
 **Why.** IEEE 1800-2017 22.4 allows the file name of an `` `include `` to
 come from a macro: `` `define HDR "agent_cfg.svh" `` then
@@ -8165,6 +8167,47 @@ the line and reads a quoted or angle-bracketed name. Macro expansion
 
 **Order:** after §6.35 P1, which gives the errors their positions and
 kinds; it is independent of P2-P4.
+
+**Outcome (2026-11-08):**
+- **The include branch of `processSource`:** an argument starting with a
+  backtick is expanded by `expandStr` with `ctx.macros`. The result must
+  be exactly one `"name"` or `<name>` (a shared `quoted` helper). Then it
+  goes through `processInclude` like a written name, so
+  `IncludeDirective::name` records the expanded name.
+- **Errors**, kind IncludeMalformed, over the macro reference (backtick to
+  the end of the code):
+  - "`include: macro `HDR is not defined";
+  - "`include: `HDR does not expand to a file name (got: ... | the
+    expansion's own error)".
+
+  A not-found expanded name is a not-found error over the whole directive.
+- **Severity:** with `` `include `MACRO `` supported, §6.35 I1's Warning
+  for a malformed directive no longer has a reason. Every include error is
+  an Error now.
+- **Cache:** the plan's analysis held. A config define is in the inputs
+  key, and a define in an included header is in that file's hash. Both
+  are tested: the config change recompiles and an unchanged one is a hit;
+  a header change recompiles through a refresh.
+- **Load order:** `load_order.h` notes that the pre-scan doesn't see
+  macro includes.
+- **Tests:**
+  - 8 `[include-macro]` preprocessor cases: in the file, angle brackets
+    with an indent and a comment, from a header, from the config,
+    function-like with stringification and pasting, redefinition, not
+    found, undefined, four bad expansions;
+  - 3 controller cases;
+  - `test_56` gained "a class from a header included through a macro
+    resolves";
+  - the old "`include `MACRO is malformed" case is gone, and the malformed
+    severity checks are now 1.
+- **Real inputs:** UVM and `gen` have no `include `MACRO; their builds are
+  identical row for row.
+- **Verified:** unit 1198/1198, release 0 warnings, Emacs 340/340,
+  `test-integration-uvm` 15/15, corpus 1563 / 31 (log
+  `build/release/corpus_2026-11-08c.log`), `perf-check` small / uvm no
+  regression.
+- **Left for later**, as planned: definition on the directive itself
+  (opening the resolved file).
 
 ---
 
