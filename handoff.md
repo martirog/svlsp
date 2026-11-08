@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-11-08 (§6.35 P0: no include errors on any corpus).
+**Last updated:** 2026-11-08 (§6.35 P1: positioned preprocessor errors).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -274,8 +274,13 @@ Next steps:
    other errors (decided 2026-11-08). Before P1, the `[include-errors]`
    unit cases (`test_sv_preprocessor.cpp`) pin every include error kind.
    They found that guarded headers including each other are reported as a
-   cycle, a false Error once P2 lands. That case is `[!shouldfail]`, and
-   P1 fixes it. P1 is next.
+   cycle, a false Error once P2 lands.
+
+   **P1 is done** (2026-11-08; plan.md §6.35 "P1 outcome"): every
+   preprocessor error is a `PreprocessorError` with kind, file, line and
+   range, and a file may be on the include stack twice, so guards work.
+   Unit 1159/1159, Emacs 335/335. `test_37` is flaky in full runs (2 of 3
+   failed, passes alone); recheck it with P2. P2 is next.
 3. **Planned as plan.md §6.36** (2026-11-08, not started): `` `include
    `MACRO `` support, which today is a malformed directive and is skipped.
    The argument is expanded with the macros defined at that point; an

@@ -7783,8 +7783,8 @@ After S2-S6:
 
 ### 6.35 Include Errors as Diagnostics
 
-**Status:** planned 2026-11-08, at the user's request. P0 done
-2026-11-08 (no include errors on any input; see "P0 outcome"); P1 next.
+**Status:** planned 2026-11-08, at the user's request. P0 and P1
+done 2026-11-08 (see "P0 outcome", "P1 outcome"); P2 next.
 Decisions I1-I4 taken 2026-11-08: the user took the recommendations. The
 `` `include `MACRO `` form is a separate item, §6.36. Found in §6.34 S2: a file
 that `include`s a removed or misspelled file shows nothing wrong. Only
@@ -7921,6 +7921,31 @@ conditional errors.
   `[!shouldfail]` from "guarded headers that include each other are not a
   cycle". The S1 `[file-identity]` cases still pass: the cache still never
   reuses a failed include other than not-found.
+
+**P1 outcome (2026-11-08):**
+- `PreprocessorError` / `PreprocessorResult::errors` are as planned.
+  Messages are unchanged.
+- Positions: `kIncludeErrorPrefix` / `kIncludeNotFound` are gone, and
+  `includeFailed` tests the kind with the same rule as before: any include
+  error but not-found. The macro-expansion helpers still collect plain
+  messages (`Ctx::pending`); `processSource` gives them the line they came
+  from (`pendingAt`): kind Other, columns 0 to the line's end.
+- The conditional errors cover their directive. "unterminated `ifdef" is
+  at the outermost block left open: `CondEntry` records where each block
+  opens.
+- Cycles: a file may be on the include stack twice, and a third entry is
+  the cycle.
+- Tests: the 12 `[include-errors]` cases have kind, file, line and range.
+  New cases cover an indented `<...>` directive with a trailing comment,
+  and the Other errors' lines. The guarded mutual include passes, so
+  `[!shouldfail]` is gone.
+- No output changes on any input: P0 found no cycle there, and positions
+  are not stored. No corpus rerun was needed.
+- Verified: unit 1159/1159, release 0 warnings, Emacs 335/335.
+  `test_37` (an included file's diagnostics) failed 2 of 3 full runs and
+  passed alone and in a 00-37 run; HEAD passed its one full run. It looks
+  like a timing flake. Recheck it with P2, which adds diagnostics on
+  included files.
 
 **P2 -- Include errors are diagnostics.**
 - `commit` writes them with a new source, `'include'`, on the file each
