@@ -33,7 +33,10 @@ lsp::Diagnostic DiagnosticsPublisher::buildDiagnostic(const ParseError& err)
     lsp::Diagnostic diag;
     diag.range = {
         .start = {.line = lspLine, .character = lspCol},
-        .end   = {.line = lspLine, .character = lspCol + 1},
+        .end   = {.line = lspLine,
+                  .character = err.endColumn > err.column
+                                   ? static_cast<lsp::uint>(err.endColumn)
+                                   : lspCol + 1},
     };
     diag.message  = err.message;
     diag.severity = lsp::DiagnosticSeverityEnum{

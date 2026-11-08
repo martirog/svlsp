@@ -82,7 +82,7 @@ lsp::Array<lsp::Diagnostic> LanguageServer::storedDiagnostics(const std::string&
     for (const auto& r : m_symbolDb.diagnosticsForFile(path)) {
         if (holdBack && (r.source == "reference" || r.source == "call" || r.source == "library"))
             continue;
-        errs.push_back({r.line, r.col, r.message, {}, r.severity});
+        errs.push_back({r.line, r.col, r.message, {}, r.severity, r.endCol});
     }
     return toDiagnostics(errs);
 }

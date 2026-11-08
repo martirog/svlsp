@@ -47,6 +47,7 @@ struct DiagnosticRow {
     std::string filePath;
     int         severity{1}; // as ParseError::severity
     std::string source{};    // diagnostics.source: 'compile', 'reference', 'call', ...
+    int         endCol{0};   // as ParseError::endColumn
 };
 
 // A scope row of one file as scopeAtPosition sees it: its qualified name,

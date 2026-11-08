@@ -191,8 +191,10 @@ TEST_CASE("refresh: a deleted included file's rows go and its includer recompile
     CHECK_FALSE(f.has("rg_c"));
     CHECK(f.sdb.fileIdFor(f.file("gone.svh")) < 0);
     // The include is recorded as unresolved: a later plan stays quiet until
-    // the file is back (preprocessor include errors aren't diagnostics).
+    // the file is back (the missing include is an 'include' diagnostic,
+    // plan.md §6.35 P2).
     CHECK(f.plan().compile.empty());
+    CHECK(f.hasMessage(f.file("p.sv"), "cannot find \"gone.svh\""));
     f.write("gone.svh", "class rg_c; endclass\n");
     CHECK(f.plan().compile == std::vector<std::string>{f.file("p.sv")});
 }

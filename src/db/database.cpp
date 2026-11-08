@@ -172,6 +172,13 @@ void Database::initSchema()
                            : db::MIGRATION_V16_TO_V17);
     }
     if (v < 18) execute(db::MIGRATION_V17_TO_V18);
+    if (v < 19) {
+        // Same guard as v12.
+        auto col = prepare("SELECT 1 FROM pragma_table_info('diagnostics') "
+                           "WHERE name = 'end_col'");
+        execute(col.step() ? "UPDATE schema_version SET version = 19;"
+                           : db::MIGRATION_V18_TO_V19);
+    }
 }
 
 void Database::execute(const std::string& sql)

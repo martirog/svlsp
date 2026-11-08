@@ -92,6 +92,15 @@ TEST_CASE("parse worker: a walk result survives encode/decode", "[parse_worker]"
     REQUIRE(decodeWalkResult(encodeWalkResult(walked), back));
     CHECK(withoutScopes(back) == withoutScopes(walked));
     CHECK(back.includeScopes == walked.includeScopes);
+
+    // Fields the walker leaves at their defaults.
+    auto set = walked;
+    set.parseErrors[0].endColumn = 17;
+    set.parseErrors[0].severity  = 2;
+    WalkResult back2;
+    REQUIRE(decodeWalkResult(encodeWalkResult(set), back2));
+    CHECK(back2.parseErrors[0].endColumn == 17);
+    CHECK(back2.parseErrors[0].severity == 2);
 }
 
 TEST_CASE("parse worker: a truncated buffer does not decode", "[parse_worker]")

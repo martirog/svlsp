@@ -4,7 +4,7 @@ namespace db {
 
 // Current schema version.  Increment and add a migration in Database::initSchema
 // whenever the schema changes.
-inline constexpr int SCHEMA_VERSION = 18;
+inline constexpr int SCHEMA_VERSION = 19;
 
 // DDL executed on a fresh (version-0) database — always reflects the latest schema.
 inline constexpr const char* SCHEMA_DDL = R"sql(
@@ -73,8 +73,13 @@ CREATE TABLE diagnostics (
     -- What the row is about, where its producer needs it: the module name
     -- of a 'library' row, so a recompile can re-anchor it.
     subject TEXT    NOT NULL DEFAULT '',
-    -- LSP DiagnosticSeverity (schema v16): 1 = error and 3 = information
-    severity INTEGER NOT NULL DEFAULT 1
+    -- LSP DiagnosticSeverity (schema v16): 1 = error and 3 = information.
+    -- end_col (schema v19): the 0-based, end-exclusive end column on
+    -- `line`; 0 = a one-character range. 'include' rows cover their
+    -- directive. (No comment between the two: SQLite's DROP COLUMN
+    -- rewrites this text.)
+    severity INTEGER NOT NULL DEFAULT 1,
+    end_col  INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX idx_diagnostics_file_id ON diagnostics(file_id);
@@ -251,6 +256,13 @@ CREATE TABLE symbol_docs (
     doc     TEXT    NOT NULL,
     PRIMARY KEY (file_id, line, col)
 ) WITHOUT ROWID;
+)sql";
+
+// SQL applied when migrating an existing v18 database to v19: the
+// diagnostics' end column (plan.md §6.35 P2).
+inline constexpr const char* MIGRATION_V18_TO_V19 = R"sql(
+ALTER TABLE diagnostics ADD COLUMN end_col INTEGER NOT NULL DEFAULT 0;
+UPDATE schema_version SET version = 19;
 )sql";
 
 // SQL applied when migrating an existing v17 database to v18: projects,

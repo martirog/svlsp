@@ -125,6 +125,9 @@ struct ParseError {
     std::string message;
     std::string file{};  // original source file; empty = same as compiled file
     int         severity{1}; // LSP DiagnosticSeverity: 1 error, 2 warning, 3 information
+    // 0-based, end-exclusive end column on `line`; 0 = one character
+    // (plan.md §6.35: an `include error covers its directive).
+    int         endColumn{0};
 };
 
 // One package import/export statement: `import pkgName::item`, `import pkgName::*`,

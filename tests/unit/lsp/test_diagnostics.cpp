@@ -109,3 +109,17 @@ TEST_CASE("DiagnosticsPublisher: buildDiagnostic maps each ParseError severity",
     CHECK(severityOf(2) == lsp::DiagnosticSeverity::Warning);
     CHECK(severityOf(3) == lsp::DiagnosticSeverity::Information);
 }
+
+TEST_CASE("DiagnosticsPublisher: buildDiagnostic spans to endColumn when it has one",
+          "[diagnostics][include-diags]")
+{
+    ParseError e{3, 4, "m"};
+    auto d = DiagnosticsPublisher::buildDiagnostic(e);
+    CHECK(d.range.end.character == 5); // no end column: one character
+    e.endColumn = 20;
+    d = DiagnosticsPublisher::buildDiagnostic(e);
+    CHECK(d.range.start.line == 2);
+    CHECK(d.range.start.character == 4);
+    CHECK(d.range.end.line == 2);
+    CHECK(d.range.end.character == 20);
+}

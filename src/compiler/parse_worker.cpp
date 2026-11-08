@@ -143,6 +143,7 @@ void put(Writer& w, const ParseError& e)
     w.str(e.message);
     w.str(e.file);
     w.i32(e.severity);
+    w.i32(e.endColumn);
 }
 
 void get(Reader& r, ParseError& e)
@@ -151,7 +152,8 @@ void get(Reader& r, ParseError& e)
     e.column   = r.i32();
     e.message  = r.str();
     e.file     = r.str();
-    e.severity = r.i32();
+    e.severity  = r.i32();
+    e.endColumn = r.i32();
 }
 
 void put(Writer& w, const ImportRecord& i)

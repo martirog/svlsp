@@ -412,7 +412,7 @@ CompilationController::Prepared CompilationController::prepare(const std::string
         std::vector<ParseError> errs;
         errs.reserve(rows.size());
         for (const auto& r : rows)
-            errs.push_back({r.line, r.col, r.message, {}, r.severity});
+            errs.push_back({r.line, r.col, r.message, {}, r.severity, r.endCol});
         job.cached = std::move(errs);
         return job;
     }
@@ -564,6 +564,36 @@ std::vector<ParseError> CompilationController::commit(Parsed&& parsed,
         allIncluded.push_back(filePath);
     }
 
+    // Include errors (plan.md §6.35 P2): an `include the preprocessor
+    // couldn't follow, on the file holding the directive, over it. Only
+    // under a project config (I2: a file on its own has no include dirs);
+    // a malformed directive is a Warning, the rest Errors (I1). Replaced on
+    // every file this unit read, so one that no longer fails is cleared,
+    // and a file whose rows came or went is reported for republishing even
+    // when it has no rows of its own (a wrapper of `include's).
+    std::unordered_map<std::string, std::vector<ParseError>> includeErrsByFile;
+    if (parsed.checkTypes)
+        for (const auto& e : preprocessed.errors) {
+            if (!e.isInclude()) continue;
+            const int severity = e.kind == PreprocessorError::Kind::IncludeMalformed ? 2 : 1;
+            includeErrsByFile[e.file].push_back(
+                {e.line, e.column, e.message, e.file, severity, e.endColumn});
+        }
+    m_sdb.replaceDiagnostics(fid, includeErrsByFile[""], "include");
+    for (const auto& s : preprocessed.includeSites) {
+        if (s.file == path) continue;
+        const auto before = m_sdb.diagnosticsForFile(s.file);
+        const bool had = std::any_of(before.begin(), before.end(),
+                                     [](const DiagnosticRow& d) { return d.source == "include"; });
+        const auto it = includeErrsByFile.find(s.file);
+        const bool has = it != includeErrsByFile.end();
+        if (!had && !has) continue;
+        m_sdb.replaceDiagnostics(m_sdb.upsertFile(s.file, ""),
+                                 has ? it->second : std::vector<ParseError>{}, "include");
+        if (std::find(allIncluded.begin(), allIncluded.end(), s.file) == allIncluded.end())
+            allIncluded.push_back(s.file);
+    }
+
     // replaceDiagnostics above kept LibraryResolver's 'library' rows
     // (unresolved instantiations); re-anchor them to the instantiations just recorded -- after every
     // file of this unit is persisted, so a module it now declares clears
@@ -681,6 +711,7 @@ std::vector<ParseError> CompilationController::commit(Parsed&& parsed,
     if (includedFiles) *includedFiles = std::move(allIncluded);
 
     auto result = errsByFile[""];
+    result.insert(result.end(), includeErrsByFile[""].begin(), includeErrsByFile[""].end());
     result.insert(result.end(), primaryContextDiags.begin(), primaryContextDiags.end());
     result.insert(result.end(), primaryCallDiags.begin(), primaryCallDiags.end());
     result.insert(result.end(), primaryTypeDiags.begin(), primaryTypeDiags.end());

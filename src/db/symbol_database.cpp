@@ -506,8 +506,8 @@ void SymbolDatabase::replaceDiagnostics(int64_t fileId,
     del.step();
 
     auto ins = m_db.prepare(
-        "INSERT INTO diagnostics (file_id,line,col,message,source,severity) "
-        "VALUES (?,?,?,?,?,?)");
+        "INSERT INTO diagnostics (file_id,line,col,message,source,severity,end_col) "
+        "VALUES (?,?,?,?,?,?,?)");
     for (const auto& e : errors) {
         ins.reset();
         ins.bind(1, fileId)
@@ -515,7 +515,8 @@ void SymbolDatabase::replaceDiagnostics(int64_t fileId,
            .bind(3, e.column)
            .bind(4, e.message)
            .bind(5, source)
-           .bind(6, e.severity);
+           .bind(6, e.severity)
+           .bind(7, e.endColumn);
         ins.step();
     }
     m_db.execute("RELEASE sdb");
@@ -754,8 +755,8 @@ void SymbolDatabase::appendDiagnostics(int64_t fileId, const std::vector<ParseEr
 {
     m_db.execute("SAVEPOINT sdb");
     auto ins = m_db.prepare("INSERT INTO diagnostics "
-                            "(file_id,line,col,message,source,subject,severity) "
-                            "VALUES (?,?,?,?,?,?,?)");
+                            "(file_id,line,col,message,source,subject,severity,end_col) "
+                            "VALUES (?,?,?,?,?,?,?,?)");
     for (const auto& e : extra) {
         ins.reset();
         ins.bind(1, fileId)
@@ -764,7 +765,8 @@ void SymbolDatabase::appendDiagnostics(int64_t fileId, const std::vector<ParseEr
            .bind(4, e.message)
            .bind(5, source)
            .bind(6, subject)
-           .bind(7, e.severity);
+           .bind(7, e.severity)
+           .bind(8, e.endColumn);
         ins.step();
     }
     m_db.execute("RELEASE sdb");
@@ -1015,7 +1017,8 @@ std::vector<DiagnosticRow> SymbolDatabase::diagnosticsForFile(
     if (fid < 0) return {};
 
     auto stmt = m_db.prepare(
-        "SELECT line,col,message,severity,source FROM diagnostics WHERE file_id = ? ORDER BY line");
+        "SELECT line,col,message,severity,source,end_col FROM diagnostics WHERE file_id = ? "
+        "ORDER BY line");
     stmt.bind(1, fid);
 
     std::vector<DiagnosticRow> rows;
@@ -1025,7 +1028,8 @@ std::vector<DiagnosticRow> SymbolDatabase::diagnosticsForFile(
                         stmt.columnText(2),
                         path,
                         static_cast<int>(stmt.columnInt(3)),
-                        stmt.columnText(4)});
+                        stmt.columnText(4),
+                        static_cast<int>(stmt.columnInt(5))});
     return rows;
 }
 
@@ -1774,12 +1778,13 @@ std::vector<SymbolDatabase::Declaration> SymbolDatabase::declarationsOfUnit(
 std::unordered_map<std::string, std::string> SymbolDatabase::diagnosticsDigest() const
 {
     auto stmt = m_db.prepare(
-        "SELECT f.path, d.line, d.col, d.severity, d.source, d.message FROM diagnostics d "
+        "SELECT f.path, d.line, d.col, d.severity, d.source, d.message, d.end_col "
+        "FROM diagnostics d "
         "JOIN files f ON f.id = d.file_id ORDER BY f.path, d.line, d.col, d.message");
     std::unordered_map<std::string, std::string> all;
     while (stmt.step()) {
         std::string& acc = all[stmt.columnText(0)];
-        for (int i = 1; i < 6; ++i) {
+        for (int i = 1; i < 7; ++i) {
             acc += stmt.columnText(i);
             acc += '\x1f';
         }
