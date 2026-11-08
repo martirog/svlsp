@@ -7,23 +7,25 @@
 #
 # Own workspace in a temp directory, as test_55_watched_files.sh.
 # Line reference (0-based): top.sv line 1 "  `include \"ie_missing.svh\"" --
-# the directive spans chars 2..27; line 5 "  ie_c obj;" -- ie_c at char 2.
+# the directive spans chars 2..27; line 5 "  ie_c obj;" -- ie_c at char 2;
+# line 6 "  int ie_v = `IE_UNDEF;" -- an undefined macro (P4), chars 2..23.
 
 if [ ! -x "${SVLSP_BIN}" ]; then
     for name in \
         "a missing include is an Error over its directive" \
         "the file written on disk clears it and its class resolves" \
-        "the file deleted on disk brings it back"
+        "the file deleted on disk brings it back" \
+        "an undefined macro is an Error over its line"
     do
         skip_test "$name" "svlsp binary not found at ${SVLSP_BIN}"
     done
     return
 fi
 
-section "include errors are diagnostics (plan.md §6.35)"
+section "include and preprocessor errors are diagnostics (plan.md §6.35)"
 
 IE_WORK="$(mktemp -d /tmp/svlsp-incerr.XXXXXX)"
-printf 'package ie_p;\n  `include "ie_missing.svh"\nendpackage\nmodule ie_m;\n  import ie_p::*;\n  ie_c obj;\nendmodule\n' \
+printf 'package ie_p;\n  `include "ie_missing.svh"\nendpackage\nmodule ie_m;\n  import ie_p::*;\n  ie_c obj;\n  int ie_v = `IE_UNDEF;\nendmodule\n' \
     > "${IE_WORK}/top.sv"
 printf '{\n  "files": ["top.sv"]\n}\n' > "${IE_WORK}/.svlsp.json"
 IE_TOP="${IE_WORK}/top.sv"
@@ -35,8 +37,9 @@ IE_INC="${IE_WORK}/ie_missing.svh"
 # svlsp-ie/notify: reports TYPE (1 created, 3 deleted) for the include and
 # waits for the refresh.
 _emacs_eval "(progn
-  (defun svlsp-ie/find ()
-    (cl-find-if (lambda (d) (string-match-p \"cannot find \\\"ie_missing.svh\\\"\" (lsp:diagnostic-message d)))
+  (defun svlsp-ie/find (&optional re)
+    (cl-find-if (lambda (d) (string-match-p (or re \"cannot find \\\"ie_missing.svh\\\"\")
+                                            (lsp:diagnostic-message d)))
                 (svlsp-ie/top-diags)))
   ;; (lsp-diagnostics t) is the current buffer's workspace's.
   (defun svlsp-ie/top-diags ()
@@ -46,9 +49,9 @@ _emacs_eval "(progn
     (format \"no include diagnostic, only: %S\"
             (mapcar #'lsp:diagnostic-message
                     (svlsp-ie/top-diags))))
-  (defun svlsp-ie/include-diag ()
+  (defun svlsp-ie/include-diag (&optional re)
     (let ((deadline (+ (float-time) 10)) d)
-      (while (and (not (setq d (svlsp-ie/find))) (< (float-time) deadline)) (sit-for 0.3))
+      (while (and (not (setq d (svlsp-ie/find re))) (< (float-time) deadline)) (sit-for 0.3))
       (when d
         (let* ((r (lsp:diagnostic-range d)) (s (lsp:range-start r)) (e (lsp:range-end r)))
           (format \"%d %d %d %d\" (lsp:position-line s) (lsp:position-character s)
@@ -106,6 +109,12 @@ run_test "the file deleted on disk brings it back" \
          (or (svlsp-ie/include-diag) (svlsp-ie/messages)))
      (error (format \"elisp-error: %s\" (error-message-string err))))" \
     '"1 2 27 1"'
+
+run_test "an undefined macro is an Error over its line" \
+    "(condition-case err
+       (or (svlsp-ie/include-diag \"undefined macro \`IE_UNDEF\`\") (svlsp-ie/messages))
+     (error (format \"elisp-error: %s\" (error-message-string err))))" \
+    '"6 2 23 1"'
 
 _emacs_eval "(progn
   (let ((buf (get-file-buffer \"${IE_TOP}\")))

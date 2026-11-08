@@ -564,33 +564,43 @@ std::vector<ParseError> CompilationController::commit(Parsed&& parsed,
         allIncluded.push_back(filePath);
     }
 
-    // Include errors (plan.md §6.35 P2): an `include the preprocessor
-    // couldn't follow, on the file holding the directive, over it. Only
-    // under a project config (I2: a file on its own has no include dirs);
-    // a malformed directive is a Warning, the rest Errors (I1). Replaced on
+    // Preprocessor errors (plan.md §6.35), on the file each is in. Include
+    // errors (P2) are 'include' rows over their directive: a malformed
+    // directive a Warning, the rest Errors (I1). The others (P4) are
+    // 'preprocess' rows, all Errors (an undefined macro too, decided
+    // 2026-11-08). Only under a project config (I2: a file
+    // on its own has no include dirs, so no library macros). Replaced on
     // every file this unit read, so one that no longer fails is cleared,
     // and a file whose rows came or went is reported for republishing even
     // when it has no rows of its own (a wrapper of `include's).
-    std::unordered_map<std::string, std::vector<ParseError>> includeErrsByFile;
+    using PPKind = PreprocessorError::Kind;
+    std::unordered_map<std::string, std::vector<ParseError>> includeErrsByFile, ppErrsByFile;
     if (parsed.checkTypes)
         for (const auto& e : preprocessed.errors) {
-            if (!e.isInclude()) continue;
-            const int severity = e.kind == PreprocessorError::Kind::IncludeMalformed ? 2 : 1;
-            includeErrsByFile[e.file].push_back(
-                {e.line, e.column, e.message, e.file, severity, e.endColumn});
+            const bool warning = e.kind == PPKind::IncludeMalformed;
+            (e.isInclude() ? includeErrsByFile : ppErrsByFile)[e.file].push_back(
+                {e.line, e.column, e.message, e.file, warning ? 2 : 1, e.endColumn});
         }
-    m_sdb.replaceDiagnostics(fid, includeErrsByFile[""], "include");
+    const std::pair<const char*, decltype(includeErrsByFile)*> ppSources[] = {
+        {"include", &includeErrsByFile}, {"preprocess", &ppErrsByFile}};
+    for (const auto& [source, byFile] : ppSources)
+        m_sdb.replaceDiagnostics(fid, (*byFile)[""], source);
     for (const auto& s : preprocessed.includeSites) {
         if (s.file == path) continue;
         const auto before = m_sdb.diagnosticsForFile(s.file);
-        const bool had = std::any_of(before.begin(), before.end(),
-                                     [](const DiagnosticRow& d) { return d.source == "include"; });
-        const auto it = includeErrsByFile.find(s.file);
-        const bool has = it != includeErrsByFile.end();
-        if (!had && !has) continue;
-        m_sdb.replaceDiagnostics(m_sdb.upsertFile(s.file, ""),
-                                 has ? it->second : std::vector<ParseError>{}, "include");
-        if (std::find(allIncluded.begin(), allIncluded.end(), s.file) == allIncluded.end())
+        bool changed = false;
+        for (const auto& [source, byFile] : ppSources) {
+            const std::string src = source;
+            const bool had = std::any_of(before.begin(), before.end(),
+                                         [&](const DiagnosticRow& d) { return d.source == src; });
+            const auto it = byFile->find(s.file);
+            const bool has = it != byFile->end();
+            if (!had && !has) continue;
+            m_sdb.replaceDiagnostics(m_sdb.upsertFile(s.file, ""),
+                                     has ? it->second : std::vector<ParseError>{}, src);
+            changed = true;
+        }
+        if (changed && std::find(allIncluded.begin(), allIncluded.end(), s.file) == allIncluded.end())
             allIncluded.push_back(s.file);
     }
 
@@ -712,6 +722,7 @@ std::vector<ParseError> CompilationController::commit(Parsed&& parsed,
 
     auto result = errsByFile[""];
     result.insert(result.end(), includeErrsByFile[""].begin(), includeErrsByFile[""].end());
+    result.insert(result.end(), ppErrsByFile[""].begin(), ppErrsByFile[""].end());
     result.insert(result.end(), primaryContextDiags.begin(), primaryContextDiags.end());
     result.insert(result.end(), primaryCallDiags.begin(), primaryCallDiags.end());
     result.insert(result.end(), primaryTypeDiags.begin(), primaryTypeDiags.end());

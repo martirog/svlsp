@@ -3,6 +3,8 @@
 // on the file that holds the directive, over the directive. Error for not
 // found / a cycle / the depth limit / unreadable, Warning for a malformed
 // directive (I1); nothing for a file compiled outside a project (I2).
+// The other preprocessor errors (P4) are 'preprocess' diagnostics, all
+// Errors (an undefined macro too), under the same rule.
 
 #include <catch2/catch_test_macros.hpp>
 #include "db/project_refresher.h"
@@ -66,12 +68,12 @@ struct ID {
         return ctrl.compile(file(rel), read(rel), project ? &config : nullptr, &included, false,
                             &refreshed);
     }
-    // The stored 'include' rows of `rel`.
-    std::vector<DiagnosticRow> rows(const std::string& rel)
+    // The stored `source` rows of `rel`.
+    std::vector<DiagnosticRow> rows(const std::string& rel, const std::string& source = "include")
     {
         std::vector<DiagnosticRow> out;
         for (auto& d : sdb.diagnosticsForFile(file(rel)))
-            if (d.source == "include") out.push_back(d);
+            if (d.source == source) out.push_back(d);
         return out;
     }
     static std::vector<ParseError> includeErrors(const std::vector<ParseError>& errs)
@@ -248,4 +250,103 @@ TEST_CASE("include diagnostics: a refresh clears them when the file appears and 
     CHECK(f.rows("p.sv")[0].message == "`include: cannot find \"id_comes.svh\"");
     CHECK(std::find(r.changedDiagnostics.begin(), r.changedDiagnostics.end(), f.file("p.sv")) !=
           r.changedDiagnostics.end());
+}
+
+// ---------------------------------------------------------------------------
+// The other preprocessor errors (plan.md §6.35 P4): source 'preprocess'.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("preprocess diagnostics: an undefined macro is an Error over its line",
+          "[db][include-diags][preprocess-diags]")
+{
+    ID f("pp-undefined");
+    const std::string line = "  int x = `ID_NOPE;";
+    f.write("p.sv", "module id_pu;\n" + line + "  // c\nendmodule\n");
+    const auto errs = f.compile("p.sv");
+    const auto rows = f.rows("p.sv", "preprocess");
+    REQUIRE(rows.size() == 1);
+    CHECK(rows[0].message == "undefined macro `ID_NOPE`");
+    CHECK(rows[0].severity == 1);
+    CHECK(rows[0].line == 2);
+    CHECK(rows[0].col == 2);
+    CHECK(rows[0].endCol == len(line));
+    CHECK(std::any_of(errs.begin(), errs.end(), [](const ParseError& e) {
+        return e.message == "undefined macro `ID_NOPE`" && e.severity == 1;
+    }));
+
+    // Defining it (as the config would) clears it.
+    f.config.defines["ID_NOPE"] = "1";
+    f.compile("p.sv");
+    CHECK(f.rows("p.sv", "preprocess").empty());
+}
+
+TEST_CASE("preprocess diagnostics: none outside a project",
+          "[db][include-diags][preprocess-diags]")
+{
+    ID f("pp-no-project");
+    f.write("p.sv", "module id_pn;\n  int x = `ID_NOPE;\n`endif\nendmodule\n");
+    f.compile("p.sv", false);
+    CHECK(f.rows("p.sv", "preprocess").empty());
+}
+
+TEST_CASE("preprocess diagnostics: unbalanced conditionals and argument errors are Errors",
+          "[db][include-diags][preprocess-diags]")
+{
+    ID f("pp-errors");
+    f.write("p.sv",
+            "`define ID_F(A, B) A + B\n"
+            "module id_pe;\n"
+            "  int x = `ID_F(1);\n"
+            "`endif\n"
+            "endmodule\n"
+            "`ifdef ID_OPEN\n");
+    f.compile("p.sv");
+    auto rows = f.rows("p.sv", "preprocess");
+    std::sort(rows.begin(), rows.end(),
+              [](const DiagnosticRow& a, const DiagnosticRow& b) { return a.line < b.line; });
+    REQUIRE(rows.size() == 3);
+    CHECK(rows[0].line == 3);
+    CHECK(rows[0].message == "macro `ID_F`: missing required argument `B`");
+    CHECK(rows[0].severity == 1);
+    CHECK(rows[1].line == 4);
+    CHECK(rows[1].message == "`endif without `ifdef");
+    CHECK(rows[1].col == 0);
+    CHECK(rows[1].endCol == len("`endif"));
+    CHECK(rows[1].severity == 1);
+    CHECK(rows[2].line == 6);
+    CHECK(rows[2].message == "unterminated `ifdef/`ifndef block");
+    CHECK(rows[2].severity == 1);
+    CHECK(f.rows("p.sv").empty()); // none of them is an include error
+}
+
+TEST_CASE("preprocess diagnostics: an error in an included file is on that file",
+          "[db][include-diags][preprocess-diags]")
+{
+    ID f("pp-nested");
+    f.write("inner.svh", "class id_pp_c;\n  int y = `ID_INNER_NOPE;\nendclass\n");
+    f.write("p.sv", "package id_ppn;\n`include \"inner.svh\"\nendpackage\n");
+    f.compile("p.sv");
+    CHECK(f.rows("p.sv", "preprocess").empty());
+    const auto rows = f.rows("inner.svh", "preprocess");
+    REQUIRE(rows.size() == 1);
+    CHECK(rows[0].line == 2);
+    CHECK(rows[0].severity == 1);
+    CHECK(f.listed(f.included, "inner.svh"));
+
+    f.write("inner.svh", "class id_pp_c;\n  int y = 3;\nendclass\n", 30);
+    f.compile("p.sv");
+    CHECK(f.rows("inner.svh", "preprocess").empty());
+}
+
+TEST_CASE("preprocess diagnostics: a define-body conditional error is at the macro's use",
+          "[db][include-diags][preprocess-diags]")
+{
+    ID f("pp-body");
+    f.write("p.sv", "`define ID_B a `endif\nmodule id_pb;\n  wire `ID_B;\nendmodule\n");
+    f.compile("p.sv");
+    const auto rows = f.rows("p.sv", "preprocess");
+    REQUIRE(rows.size() == 1);
+    CHECK(rows[0].message == "`endif without `ifdef in the body of macro `ID_B`");
+    CHECK(rows[0].line == 3);
+    CHECK(rows[0].severity == 1);
 }

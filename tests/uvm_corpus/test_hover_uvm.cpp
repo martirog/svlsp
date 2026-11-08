@@ -111,7 +111,10 @@ TEST_CASE("doc comments: count recorded across the UVM corpus",
     // 18441 (plan.md §6.33 C2 follow-up): uvm_transaction's
     // `const local uvm_event_pool events`, a const-first class property.
     // 18441 -> 18737 (plan.md §6.21 step 1): +288 TypeParameter rows, +8
-    // parameter ports written without the `parameter` keyword.
-    CHECK(symbols == 18737);
+    // parameter ports written without the `parameter` keyword. 18737 ->
+    // 18736 (plan.md §6.35 P4, conditionals in `define bodies): the phantom
+    // `UVM_LEGACY_FIELD_MACRO_SEMANTICS behavior` Signal that both branches
+    // of m_warn_if_no_positive_ops left behind is gone.
+    CHECK(symbols == 18736);
     CHECK(documented == 965);
 }

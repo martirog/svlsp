@@ -60,12 +60,10 @@ struct Ctx {
                int line, int column, int endColumn) {
         errors.push_back({std::move(message), file, line, column, endColumn, kind});
     }
-    // The pending messages, as Other errors at `file` `line`, columns 0..`endColumn`.
-    void pendingAt(const std::string& file, int line, int endColumn) {
-        for (auto& m : pending)
-            error(PreprocessorError::Kind::Other, std::move(m), file, line, 0, endColumn);
-        pending.clear();
-    }
+    // The pending messages, as errors at `file` `line`, over `text` (that
+    // line's text) from its first non-blank character to the end of its
+    // code. An undefined macro is MacroUndefined, the rest Other.
+    void pendingAt(const std::string& file, int line, std::string_view text);
 
     bool isOutputting() const {
         for (const auto& e : condStack) if (!e.active) return false;
@@ -93,11 +91,31 @@ static std::string_view stripLineComment(std::string_view sv) {
     return pos == std::string_view::npos ? sv : trimSV(sv.substr(0, pos));
 }
 
+// `sv` up to a `//` comment, untrimmed: offsets into it are offsets into `sv`.
+static std::string_view codeOf(std::string_view sv) {
+    return sv.substr(0, sv.find("//"));
+}
+
 // Splits `line` into a macro-expandable code portion and a literal trailing
 // `// comment` portion (comment includes the "//" itself and everything
 // after — kept verbatim, never macro-expanded). Naive, like
 // stripLineComment: doesn't account for "//" appearing inside a string
 // literal.
+void Ctx::pendingAt(const std::string& file, int line, std::string_view text) {
+    const std::string_view code = codeOf(text);
+    const size_t first = code.find_first_not_of(" \t");
+    const size_t last = code.find_last_not_of(" \t\r");
+    const int column = first == std::string_view::npos ? 0 : static_cast<int>(first);
+    const int endColumn = last == std::string_view::npos ? column : static_cast<int>(last + 1);
+    for (auto& m : pending) {
+        const auto kind = m.rfind("undefined macro `", 0) == 0
+            ? PreprocessorError::Kind::MacroUndefined
+            : PreprocessorError::Kind::Other;
+        error(kind, std::move(m), file, line, column, endColumn);
+    }
+    pending.clear();
+}
+
 static std::pair<std::string_view, std::string_view> splitLineComment(std::string_view line) {
     size_t pos = line.find("//");
     if (pos == std::string_view::npos) return {line, {}};
@@ -206,6 +224,108 @@ static std::string expandStr(const std::string& src, const MacroMap& macros,
                               std::vector<std::string>& errors, int depth,
                               std::vector<ColShift>* colShifts = nullptr);
 
+// The conditional directives in a macro body (plan.md §6.35 P4): `ifdef /
+// `ifndef / `elsif / `else / `endif, evaluated when `name` is expanded,
+// against the macros defined there, as simulators do -- only the active
+// branches' text is kept. A body is one line (backslash continuations are
+// spliced), so a directive is followed by more text on the same line: each
+// becomes one space. String literals are text; a `" stringification marker
+// is copied through.
+static std::string evalConditionals(const std::string& body, const std::string& name,
+                                    const MacroMap& macros, std::vector<std::string>& errors) {
+    static constexpr std::string_view kDirectives[] = {"ifdef", "ifndef", "elsif", "else",
+                                                       "endif"};
+    auto directiveAt = [&](size_t i) -> std::string_view {
+        for (std::string_view d : kDirectives)
+            if (body.compare(i + 1, d.size(), d) == 0 &&
+                (i + 1 + d.size() >= body.size() || !isIdentChar(body[i + 1 + d.size()])))
+                return d;
+        return {};
+    };
+    bool any = false;
+    for (size_t i = body.find('`'); i != std::string::npos; i = body.find('`', i + 1))
+        if (!directiveAt(i).empty()) { any = true; break; }
+    if (!any) return body;
+
+    const std::string where = " in the body of macro `" + name + "`";
+    std::vector<CondEntry> stack;
+    auto emitting = [&] {
+        for (const auto& e : stack) if (!e.active) return false;
+        return true;
+    };
+    // The macro name after `ifdef / `ifndef / `elsif; "" (an error) if none.
+    auto readName = [&](size_t& i, std::string_view dir) {
+        while (i < body.size() && (body[i] == ' ' || body[i] == '\t')) ++i;
+        std::string n;
+        while (i < body.size() && isIdentChar(body[i])) n += body[i++];
+        if (n.empty()) errors.push_back("`" + std::string(dir) + " without a macro name" + where);
+        return n;
+    };
+
+    std::string out;
+    size_t i = 0;
+    while (i < body.size()) {
+        const char c = body[i];
+        if (c == '"') {  // a string literal, to its closing quote
+            size_t j = i + 1;
+            while (j < body.size() && body[j] != '"') j += body[j] == '\\' ? 2 : 1;
+            j = std::min(j + 1, body.size());
+            if (emitting()) out.append(body, i, j - i);
+            i = j;
+            continue;
+        }
+        if (c != '`') {
+            if (emitting()) out += c;
+            ++i;
+            continue;
+        }
+        const std::string_view dir = directiveAt(i);
+        if (dir.empty()) {  // a macro invocation, `" or ``: expanded later
+            if (emitting()) out += c;
+            ++i;
+            if (i < body.size() && body[i] == '"') {
+                if (emitting()) out += '"';
+                ++i;
+            }
+            continue;
+        }
+        i += 1 + dir.size();
+        if (dir == "ifdef" || dir == "ifndef") {
+            const std::string n = readName(i, dir);
+            const bool defined = !n.empty() && macros.count(n) > 0;
+            const bool active = !n.empty() && (dir == "ifdef" ? defined : !defined);
+            stack.push_back({active, active, false});
+        } else if (dir == "elsif") {
+            const std::string n = readName(i, dir);
+            if (stack.empty()) {
+                errors.push_back("`elsif without `ifdef" + where);
+            } else if (stack.back().inElse) {
+                errors.push_back("`elsif after `else" + where);
+            } else {
+                auto& top = stack.back();
+                top.active = !top.seenTrue && !n.empty() && macros.count(n) > 0;
+                top.seenTrue = top.seenTrue || top.active;
+            }
+        } else if (dir == "else") {
+            if (stack.empty()) {
+                errors.push_back("`else without `ifdef" + where);
+            } else if (stack.back().inElse) {
+                errors.push_back("duplicate `else" + where);
+            } else {
+                auto& top = stack.back();
+                top.inElse = true;
+                top.active = !top.seenTrue;
+            }
+        } else {  // endif
+            if (stack.empty()) errors.push_back("`endif without `ifdef" + where);
+            else stack.pop_back();
+        }
+        out += ' ';
+    }
+    if (!stack.empty()) errors.push_back("unterminated `ifdef/`ifndef" + where);
+    return out;
+}
+
 static std::string expandMacroCall(const std::string& name,
                                     const std::string& src, size_t& i,
                                     const MacroMap& macros,
@@ -222,7 +342,8 @@ static std::string expandMacroCall(const std::string& name,
     const MacroDef& def = it->second;
 
     if (!def.isFunctionLike) {
-        return expandStr(resolveTokenPaste(def.body), macros, errors, depth + 1);
+        return expandStr(resolveTokenPaste(evalConditionals(def.body, name, macros, errors)),
+                         macros, errors, depth + 1);
     }
 
     // Function-like: expect '(' next (after optional spaces)
@@ -250,7 +371,10 @@ static std::string expandMacroCall(const std::string& name,
     }
     // Step 1: replace bare param identifiers in the body with arg text
     std::string substituted = substituteParams(def.body, def.params, args);
-    // Step 2: resolve token-pasting, then expand any backtick macro invocations
+    // Step 2: keep the active branches of the body's conditionals (plan.md
+    // §6.35 P4), as the macros stand at this use.
+    substituted = evalConditionals(substituted, name, macros, errors);
+    // Step 3: resolve token-pasting, then expand any backtick macro invocations
     // in the substituted body
     return expandStr(resolveTokenPaste(substituted), macros, errors, depth + 1);
 }
@@ -292,6 +416,16 @@ static std::string expandStr(const std::string& src, const MacroMap& macros,
     size_t i = 0;
     int delta = 0; // cumulative output->original column delta, top-level calls only
     while (i < src.size()) {
+        if (src[i] == '"') {
+            // A string literal is text: no macro is expanded inside it
+            // (IEEE 1800-2017 22.5.1). One left open runs to the end.
+            size_t j = i + 1;
+            while (j < src.size() && src[j] != '"') j += src[j] == '\\' ? 2 : 1;
+            j = std::min(j + 1, src.size());
+            result.append(src, i, j - i);
+            i = j;
+            continue;
+        }
         if (src[i] != '`') { result += src[i++]; continue; }
         size_t invocationStart = i;
         if (i + 1 < src.size() && src[i + 1] == '"') {
@@ -660,7 +794,7 @@ static void processSource(const std::string& source, const std::string& filepath
                 std::vector<ColShift> shifts;
                 std::string expanded =
                     expandStr(std::string(code), ctx.macros, ctx.pending, 0, &shifts);
-                ctx.pendingAt(mapFile, firstLineNo, static_cast<int>(line.size()));
+                ctx.pendingAt(mapFile, firstLineNo, line);
                 emitLine(expanded + std::string(comment), std::move(shifts), firstLineNo);
                 for (int ln : contLines) emitBlank(ln);
             } else {
@@ -676,7 +810,7 @@ static void processSource(const std::string& source, const std::string& filepath
         // The directive's extent: from the backtick to the end of its code.
         const int dirColumn = static_cast<int>(ws);
         const int dirEnd = [&] {
-            const std::string_view code = stripLineComment(line);
+            const std::string_view code = codeOf(line);
             const size_t last = code.find_last_not_of(" \t\r");
             return last == std::string_view::npos ? dirColumn : static_cast<int>(last + 1);
         }();
@@ -756,7 +890,7 @@ static void processSource(const std::string& source, const std::string& filepath
                 emitBlank();
             }
             auto opt = parseMacroDefinition(mergedRest, ctx.macros, ctx.pending);
-            ctx.pendingAt(mapFile, defineLine, static_cast<int>(line.size()));
+            ctx.pendingAt(mapFile, defineLine, line);
             if (opt) {
                 const int column = static_cast<int>(i + opt->nameOffset);
                 if (rawLines.empty()) {
@@ -805,7 +939,7 @@ static void processSource(const std::string& source, const std::string& filepath
             auto [merged, contLines] = mergeInvocationContinuation(line);
             std::vector<ColShift> shifts;
             std::string expanded = expandStr(merged, ctx.macros, ctx.pending, 0, &shifts);
-            ctx.pendingAt(mapFile, firstLineNo, static_cast<int>(line.size()));
+            ctx.pendingAt(mapFile, firstLineNo, line);
             emitLine(expanded, std::move(shifts), firstLineNo);
             for (int ln : contLines) emitBlank(ln);
         }

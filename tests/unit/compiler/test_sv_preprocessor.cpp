@@ -756,14 +756,17 @@ TEST_CASE("preprocessor errors other than include errors carry their line",
         "wire y;\n", (root / "top.sv").string());
     REQUIRE(errs.size() == 3);
     CHECK(errs[0].message == "undefined macro `INCERR_UNDEFINED`");
-    CHECK(errs[0].kind == Kind::Other);
+    CHECK(errs[0].kind == Kind::MacroUndefined);
     CHECK(errs[0].file == inc);
     CHECK(errs[0].line == 2);
     CHECK(errs[0].column == 0);
     CHECK(errs[0].endColumn == static_cast<int>(std::string("wire x = `INCERR_UNDEFINED;").size()));
     CHECK(errs[1].message == "`endif without `ifdef");
+    CHECK(errs[1].kind == Kind::Other);
     CHECK(errs[1].file.empty());
     CHECK(errs[1].line == 2);
+    CHECK(errs[1].column == 2);  // the directive, past its indent
+    CHECK(errs[1].endColumn == 8);
     // An unterminated block points at its opening directive.
     CHECK(errs[2].message == "unterminated `ifdef/`ifndef block");
     CHECK(errs[2].file.empty());
@@ -1418,4 +1421,236 @@ TEST_CASE("macro record from an included file names that file",
     CHECK(result.macros[0].line == 2);
     CHECK(result.macros[1].name == "TOP_M");
     CHECK(result.macros[1].file.empty());
+}
+
+// ---------------------------------------------------------------------------
+// Conditionals inside a `define body (plan.md §6.35 P4): evaluated when the
+// macro is expanded, against the macros defined at that point; only the
+// active branch is kept. UVM's field macros rely on it.
+// ---------------------------------------------------------------------------
+
+namespace {
+// The preprocessed text with runs of whitespace collapsed to one space and
+// the ends trimmed, so a check doesn't depend on the blanks a directive
+// leaves behind.
+std::string squash(const std::string& s) {
+    std::string out;
+    bool space = false;
+    for (char c : s) {
+        if (c == ' ' || c == '\t' || c == '\n') { space = !out.empty(); continue; }
+        if (space) out += ' ';
+        space = false;
+        out += c;
+    }
+    return out;
+}
+PreprocessorResult pp(const std::string& src, std::vector<std::string> defines = {}) {
+    SvPreprocessor p;
+    for (const auto& d : defines) p.define(d);
+    return p.process(src, "/src/t.sv");
+}
+}  // namespace
+
+TEST_CASE("define-body conditionals: `ifndef keeps its text when the macro is undefined",
+          "[compiler][preprocessor][define-cond]") {
+    const std::string src =
+        "`define M(X) \\\n"
+        "`ifndef DC_FOO \\\n"
+        "  int X; \\\n"
+        "`endif\n"
+        "`M(a)\n";
+    auto r = pp(src);
+    CHECK(r.errors.empty());
+    CHECK(squash(r.source) == "int a;");
+
+    auto d = pp(src, {"DC_FOO"});
+    CHECK(d.errors.empty());
+    CHECK(squash(d.source).empty());
+}
+
+TEST_CASE("define-body conditionals: `ifdef / `else picks one branch",
+          "[compiler][preprocessor][define-cond]") {
+    const std::string src =
+        "`define M `ifdef DC_A int on; `else int off; `endif\n"
+        "`M\n";
+    CHECK(squash(pp(src).source) == "int off;");
+    CHECK(squash(pp(src, {"DC_A"}).source) == "int on;");
+    CHECK(pp(src).errors.empty());
+}
+
+TEST_CASE("define-body conditionals: an `elsif chain takes the first true branch only",
+          "[compiler][preprocessor][define-cond]") {
+    const std::string src =
+        "`define M `ifdef DC_A a `elsif DC_B b `elsif DC_C c `else d `endif\n"
+        "`M\n";
+    CHECK(squash(pp(src).source) == "d");
+    CHECK(squash(pp(src, {"DC_B"}).source) == "b");
+    CHECK(squash(pp(src, {"DC_B", "DC_C"}).source) == "b");
+    CHECK(squash(pp(src, {"DC_A", "DC_C"}).source) == "a");
+}
+
+TEST_CASE("define-body conditionals: nested blocks",
+          "[compiler][preprocessor][define-cond]") {
+    const std::string src =
+        "`define M `ifdef DC_A a1 `ifdef DC_B ab `else anb `endif a2 `else na `endif\n"
+        "`M\n";
+    CHECK(squash(pp(src).source) == "na");
+    CHECK(squash(pp(src, {"DC_A"}).source) == "a1 anb a2");
+    CHECK(squash(pp(src, {"DC_A", "DC_B"}).source) == "a1 ab a2");
+    // An inactive outer branch skips an inner one that would be true.
+    CHECK(squash(pp(src, {"DC_B"}).source) == "na");
+}
+
+TEST_CASE("define-body conditionals: evaluated at each use, not at the `define",
+          "[compiler][preprocessor][define-cond]") {
+    auto r = pp(
+        "`define M `ifdef DC_LATE late `else early `endif\n"
+        "`M\n"
+        "`define DC_LATE\n"
+        "`M\n"
+        "`undef DC_LATE\n"
+        "`M\n");
+    CHECK(r.errors.empty());
+    CHECK(squash(r.source) == "early late early");
+}
+
+TEST_CASE("define-body conditionals: a nested macro's own conditionals",
+          "[compiler][preprocessor][define-cond]") {
+    auto r = pp(
+        "`define INNER `ifdef DC_I i_on `else i_off `endif\n"
+        "`define OUTER(X) `ifndef DC_O X `INNER `endif\n"
+        "`OUTER(o)\n",
+        {"DC_I"});
+    CHECK(r.errors.empty());
+    CHECK(squash(r.source) == "o i_on");
+}
+
+TEST_CASE("define-body conditionals: a directive inside a string literal is text",
+          "[compiler][preprocessor][define-cond]") {
+    auto r = pp(
+        "`define M s = \"`ifdef DC_X not a directive\"; `ifdef DC_X x `endif\n"
+        "`M\n");
+    CHECK(r.errors.empty());
+    CHECK(squash(r.source) == "s = \"`ifdef DC_X not a directive\";");
+}
+
+// The three UVM macros (macros/uvm_object_defines.svh) P0 counted 19
+// "undefined macro `ifndef`" errors from, in their shapes.
+TEST_CASE("define-body conditionals: the UVM field-macro shapes expand without errors",
+          "[compiler][preprocessor][define-cond]") {
+    const std::string defs =
+        // m_uvm_field_op_begin: token-pasting around the conditional.
+        "`define DC_OP_BEGIN(OP, FLAG) \\\n"
+        "UVM_``OP: \\\n"
+        "  if ( \\\n"
+        "     `ifndef DC_LEGACY (((FLAG)&UVM_``OP)) && `endif \\\n"
+        "     (!((FLAG)&UVM_NO``OP)) \\\n"
+        "  ) begin\n"
+        // m_warn_if_no_positive_ops: strings in both branches, one naming
+        // the macro the condition tests.
+        "`define DC_WARN(ARG,FLAG) \\\n"
+        "  begin \\\n"
+        "      string behavior; \\\n"
+        "      `ifdef DC_LEGACY behavior = \"As DC_LEGACY is set\"; \\\n"
+        "      `else behavior = \"per IEEE (see Mantis 7187)\"; \\\n"
+        "      `endif \\\n"
+        "  end\n"
+        // m_uvm_field_begin: a nested macro, then a stringified argument.
+        "`define DC_FIELD_BEGIN(ARG, FLAG, REGEX=\"\") \\\n"
+        "  `DC_WARN(ARG,FLAG) \\\n"
+        "        if ( \\\n"
+        "           `ifndef DC_LEGACY (((FLAG)&UVM_SET)) && `endif \\\n"
+        "           (!((FLAG)&UVM_NOSET)) \\\n"
+        "           ) begin \\\n"
+        "          names.push_back('{`\"ARG`\", REGEX}); \\\n"
+        "        end\n";
+    const std::string uses =
+        "`DC_OP_BEGIN(COPY, f)\n"
+        "`DC_FIELD_BEGIN(fld, f)\n";
+
+    auto r = pp(defs + uses);
+    CHECK(r.errors.empty());
+    const auto out = squash(r.source);
+    CHECK(out.find("UVM_COPY: if ( (((f)&UVM_COPY)) && (!((f)&UVM_NOCOPY)) ) begin") !=
+          std::string::npos);
+    CHECK(out.find("behavior = \"per IEEE (see Mantis 7187)\";") != std::string::npos);
+    CHECK(out.find("As DC_LEGACY is set") == std::string::npos);
+    CHECK(out.find("if ( (((f)&UVM_SET)) && (!((f)&UVM_NOSET)) ) begin") != std::string::npos);
+    CHECK(out.find("names.push_back('{\"fld\", \"\"});") != std::string::npos);
+    CHECK(out.find('`') == std::string::npos);
+
+    auto legacy = pp(defs + uses, {"DC_LEGACY"});
+    CHECK(legacy.errors.empty());
+    const auto lout = squash(legacy.source);
+    CHECK(lout.find("UVM_COPY: if ( (!((f)&UVM_NOCOPY)) ) begin") != std::string::npos);
+    CHECK(lout.find("behavior = \"As DC_LEGACY is set\";") != std::string::npos);
+}
+
+TEST_CASE("define-body conditionals: the expansion keeps the source map one line per line",
+          "[compiler][preprocessor][define-cond]") {
+    const std::string src =
+        "`define M(X) \\\n"
+        "`ifdef DC_A \\\n"
+        "  int X; \\\n"
+        "`endif\n"
+        "module m;\n"
+        "  `M(a) wire w;\n"
+        "endmodule\n";
+    auto r = pp(src, {"DC_A"});
+    CHECK(r.errors.empty());
+    REQUIRE(r.sourceMap.size() == 7);
+    CHECK(r.sourceMap[5].line == 6);
+    CHECK(squash(r.source) == "module m; int a; wire w; endmodule");
+}
+
+TEST_CASE("define-body conditionals: unbalanced directives in a body are errors",
+          "[compiler][preprocessor][define-cond]") {
+    auto stray = pp("`define M a `endif b\n`M\n");
+    REQUIRE(stray.errors.size() == 1);
+    CHECK(stray.errors[0].message == "`endif without `ifdef in the body of macro `M`");
+    CHECK(stray.errors[0].line == 2);
+    CHECK(squash(stray.source) == "a b");
+
+    auto open = pp("`define M `ifdef DC_A a\n`M\n");
+    REQUIRE(open.errors.size() == 1);
+    CHECK(open.errors[0].message == "unterminated `ifdef/`ifndef in the body of macro `M`");
+    CHECK(open.errors[0].line == 2);
+
+    auto noName = pp("`define M `ifdef a `endif\n`M\n");
+    CHECK(noName.errors.empty());  // "a" is the name tested
+    auto missing = pp("`define M `ifdef `endif\n`M\n");
+    REQUIRE(missing.errors.size() == 1);
+    CHECK(missing.errors[0].message == "`ifdef without a macro name in the body of macro `M`");
+}
+
+TEST_CASE("a macro invocation inside a string literal is not expanded",
+          "[compiler][preprocessor][define-cond]") {
+    SvPreprocessor p;
+    auto r = p.process(
+        "`define DC_S 1\n"
+        "string s = \"`DC_S and \\\"`DC_S\\\"\"; int i = `DC_S;\n", "/src/t.sv");
+    CHECK(r.errors.empty());
+    CHECK(r.source.find("string s = \"`DC_S and \\\"`DC_S\\\"\"; int i = 1;") != std::string::npos);
+}
+
+TEST_CASE("an error found while expanding a line covers the line past its indent",
+          "[compiler][preprocessor][include-errors]") {
+    SvPreprocessor p;
+    auto r = p.process("module m;\n    wire w = `PP_NOPE + 1;   // c\nendmodule\n", "/src/t.sv");
+    REQUIRE(r.errors.size() == 1);
+    CHECK(r.errors[0].kind == PreprocessorError::Kind::MacroUndefined);
+    CHECK(r.errors[0].line == 2);
+    CHECK(r.errors[0].column == 4);
+    CHECK(r.errors[0].endColumn == static_cast<int>(std::string("    wire w = `PP_NOPE + 1;").size()));
+    CHECK_FALSE(r.errors[0].isInclude());
+}
+
+TEST_CASE("a conditional directive's error covers the directive, indented and commented",
+          "[compiler][preprocessor][include-errors]") {
+    SvPreprocessor p;
+    auto r = p.process("module m;\n    `else   // stray\nendmodule\n", "/src/t.sv");
+    REQUIRE(r.errors.size() == 1);
+    CHECK(r.errors[0].message == "`else without `ifdef");
+    CHECK(r.errors[0].column == 4);
+    CHECK(r.errors[0].endColumn == 9);
 }

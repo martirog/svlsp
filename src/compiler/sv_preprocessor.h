@@ -59,8 +59,9 @@ std::string resolveInclude(const std::string& name, const std::string& currentFi
 // ParseRecord::file -- `line` is 1-based, `column` / `endColumn` are
 // 0-based and end-exclusive. An `include error covers its directive, from
 // the backtick to the end of the file name (`endColumn` is the closing
-// quote's column + 1); any other error covers the line it was found on
-// (column 0 to the end of the line).
+// quote's column + 1); a conditional directive's error covers the
+// directive; any other error covers the line it was found on, from its
+// first non-blank character to the end of its code (before a `//`).
 struct PreprocessorError {
     // An `include the preprocessor couldn't follow. A name not found is an
     // IncludeDirective with no resolution; any other include failure means
@@ -71,7 +72,8 @@ struct PreprocessorError {
         IncludeDepth,       // nested deeper than the limit
         IncludeUnreadable,  // resolved, but could not be opened
         IncludeMalformed,   // no "name" / <name> after `include
-        Other,              // not an include error
+        MacroUndefined,     // `NAME with no `define of NAME (plan.md §6.35 P4)
+        Other,              // any other preprocessor error
     };
     std::string message;
     std::string file{};
@@ -80,7 +82,7 @@ struct PreprocessorError {
     int         endColumn{0};
     Kind        kind{Kind::Other};
 
-    bool isInclude() const { return kind != Kind::Other; }
+    bool isInclude() const { return kind <= Kind::IncludeMalformed; }
 };
 
 struct PreprocessorResult {
