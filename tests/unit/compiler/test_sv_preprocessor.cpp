@@ -407,12 +407,12 @@ TEST_CASE("each include directive is reported with what it resolved to",
     CHECK(resolveInclude("svlsp_test_ident_dir_a.svh", "/src/top.sv", {}).empty());
 }
 
-TEST_CASE("a failed include's error starts with the shared include-error prefix",
+TEST_CASE("a failed include's error is a not-found include error",
           "[compiler][preprocessor][file-identity]") {
     SvPreprocessor pp;
     auto [out, errs, macros_, map_, sites_, dirs_] = pp.process("`include \"no_such_file.svh\"\n", "t.sv");
     REQUIRE(errs.size() == 1);
-    CHECK(errs[0].rfind(kIncludeErrorPrefix, 0) == 0);
+    CHECK(errs[0].kind == PreprocessorError::Kind::IncludeNotFound);
     CHECK(sites_.empty());
 }
 
@@ -466,7 +466,7 @@ TEST_CASE("a relative include found only in the working directory is not found",
     auto [out, errs, macros_, map_, sites, dirs_] =
         pp.process("`include \"only_in_cwd.svh\"\n", (root / "lib/top.sv").string());
     REQUIRE(errs.size() == 1);
-    CHECK(errs[0].find("cannot find \"only_in_cwd.svh\"") != std::string::npos);
+    CHECK(errs[0].message.find("cannot find \"only_in_cwd.svh\"") != std::string::npos);
     CHECK(sites.empty());
 }
 
@@ -492,26 +492,38 @@ TEST_CASE("an include found through an include dir is named by its full, normali
 }
 
 // ---------------------------------------------------------------------------
-// Include errors (plan.md §6.35): every kind the preprocessor reports, and
-// that the rest of the unit is still processed. P1 adds each error's file,
-// line and range to these cases.
+// Include errors (plan.md §6.35): every kind the preprocessor reports, where
+// (the directive's file, line and range: P1), and that the rest of the unit
+// is still processed.
 // ---------------------------------------------------------------------------
 
 namespace {
-// The errors that are include errors, in order.
-std::vector<std::string> includeErrors(const std::vector<std::string>& errs) {
+using Kind = PreprocessorError::Kind;
+
+// The messages of the errors that are include errors, in order.
+std::vector<std::string> includeErrors(const std::vector<PreprocessorError>& errs) {
     std::vector<std::string> out;
     for (const auto& e : errs)
-        if (e.rfind(kIncludeErrorPrefix, 0) == 0) out.push_back(e);
+        if (e.isInclude()) out.push_back(e.message);
     return out;
 }
 void writeFile(const std::filesystem::path& p, const std::string& text) {
     std::ofstream f(p);
     f << text;
 }
+// `e` is a `kind` error on `line` of `file`, over `directive` (the
+// directive's text as written, from its backtick) starting at `column`.
+void checkAt(const PreprocessorError& e, Kind kind, const std::string& file, int line,
+             int column, const std::string& directive) {
+    CHECK(e.kind == kind);
+    CHECK(e.file == file);
+    CHECK(e.line == line);
+    CHECK(e.column == column);
+    CHECK(e.endColumn == column + static_cast<int>(directive.size()));
+}
 }  // namespace
 
-TEST_CASE("include error: a missing file is reported by name, and the unit goes on",
+TEST_CASE("include error: a missing file is reported by name at its directive, and the unit goes on",
           "[compiler][preprocessor][include-errors]") {
     const auto root = freshIncludeDir("svlsp_test_incerr_missing");
     SvPreprocessor pp({root.string()});
@@ -519,9 +531,9 @@ TEST_CASE("include error: a missing file is reported by name, and the unit goes 
         "wire before;\n"
         "`include \"incerr_missing.svh\"\n"
         "wire after;\n", (root / "top.sv").string());
-    REQUIRE(includeErrors(errs) == std::vector<std::string>{
-        std::string(kIncludeNotFound) + "\"incerr_missing.svh\""});
-    CHECK(errs.size() == 1);
+    REQUIRE(errs.size() == 1);
+    CHECK(errs[0].message == "`include: cannot find \"incerr_missing.svh\"");
+    checkAt(errs[0], Kind::IncludeNotFound, "", 2, 0, "`include \"incerr_missing.svh\"");
     CHECK(out.find("wire before;") != std::string::npos);
     CHECK(out.find("wire after;") != std::string::npos);
     CHECK(sites.empty());
@@ -529,9 +541,22 @@ TEST_CASE("include error: a missing file is reported by name, and the unit goes 
     CHECK(dirs[0].resolved.empty());
 }
 
-TEST_CASE("include error: a missing file named inside an included file",
+TEST_CASE("include error: the range covers the directive, not its indent or a trailing comment",
+          "[compiler][preprocessor][include-errors]") {
+    SvPreprocessor pp;
+    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+        "module m;\n"
+        "  `include <incerr_angle.svh>   // the reason\n"
+        "endmodule\n", "/src/top.sv");
+    REQUIRE(errs.size() == 1);
+    CHECK(errs[0].message == "`include: cannot find \"incerr_angle.svh\"");
+    checkAt(errs[0], Kind::IncludeNotFound, "", 2, 2, "`include <incerr_angle.svh>");
+}
+
+TEST_CASE("include error: a missing file named inside an included file is on that file",
           "[compiler][preprocessor][include-errors]") {
     const auto root = freshIncludeDir("svlsp_test_incerr_nested");
+    const auto outer = (root / "outer.svh").string();
     writeFile(root / "outer.svh",
               "wire in_outer;\n"
               "`include \"incerr_deeper_missing.svh\"\n"
@@ -539,16 +564,16 @@ TEST_CASE("include error: a missing file named inside an included file",
     SvPreprocessor pp({root.string()});
     auto [out, errs, macros_, map_, sites, dirs] =
         pp.process("`include \"outer.svh\"\nwire top_after;\n", (root / "top.sv").string());
-    REQUIRE(includeErrors(errs) == std::vector<std::string>{
-        std::string(kIncludeNotFound) + "\"incerr_deeper_missing.svh\""});
+    REQUIRE(errs.size() == 1);
+    CHECK(errs[0].message == "`include: cannot find \"incerr_deeper_missing.svh\"");
+    checkAt(errs[0], Kind::IncludeNotFound, outer, 2, 0, "`include \"incerr_deeper_missing.svh\"");
     CHECK(out.find("wire in_outer_after;") != std::string::npos);
     CHECK(out.find("wire top_after;") != std::string::npos);
     REQUIRE(sites.size() == 1);
-    CHECK(sites[0].file == (root / "outer.svh").string());
-    // The failed directive is the included file's, not the primary's.
+    CHECK(sites[0].file == outer);
     REQUIRE(dirs.size() == 2);
     CHECK(dirs[1].name == "incerr_deeper_missing.svh");
-    CHECK(dirs[1].fromFile == (root / "outer.svh").string());
+    CHECK(dirs[1].fromFile == outer);
     CHECK(dirs[1].resolved.empty());
 }
 
@@ -560,23 +585,28 @@ TEST_CASE("include error: a file that includes itself is a cycle",
     SvPreprocessor pp({root.string()});
     auto [out, errs, macros_, map_, sites_, dirs_] =
         pp.process("`include \"self.svh\"\nwire top_after;\n", (root / "top.sv").string());
-    REQUIRE(includeErrors(errs) == std::vector<std::string>{
-        std::string(kIncludeErrorPrefix) + "cycle detected for \"" + self + "\""});
+    // Unguarded: the second visit reaches the directive again, and the
+    // third entry is refused -- at self.svh's own directive.
+    REQUIRE(errs.size() == 1);
+    CHECK(errs[0].message == "`include: cycle detected for \"" + self + "\"");
+    checkAt(errs[0], Kind::IncludeCycle, self, 2, 0, "`include \"self.svh\"");
     CHECK(out.find("wire top_after;") != std::string::npos);
 }
 
 TEST_CASE("include error: two files that include each other are a cycle",
           "[compiler][preprocessor][include-errors]") {
     const auto root = freshIncludeDir("svlsp_test_incerr_pair");
-    writeFile(root / "a.svh", "wire in_a;\n`include \"b.svh\"\n");
-    writeFile(root / "b.svh", "wire in_b;\n`include \"a.svh\"\n");
+    const auto a = (root / "a.svh").string();
+    const auto b = (root / "b.svh").string();
+    writeFile(a, "wire in_a;\n`include \"b.svh\"\n");
+    writeFile(b, "wire in_b;\n`include \"a.svh\"\n");
     SvPreprocessor pp({root.string()});
     auto [out, errs, macros_, map_, sites, dirs_] =
         pp.process("`include \"a.svh\"\n", (root / "top.sv").string());
-    // Reported once, at b.svh's directive: a.svh is already being read.
-    REQUIRE(includeErrors(errs) == std::vector<std::string>{
-        std::string(kIncludeErrorPrefix) + "cycle detected for \"" +
-        (root / "a.svh").string() + "\""});
+    // Reported once, at b.svh's directive on b's second visit.
+    REQUIRE(errs.size() == 1);
+    CHECK(errs[0].message == "`include: cycle detected for \"" + a + "\"");
+    checkAt(errs[0], Kind::IncludeCycle, b, 2, 0, "`include \"a.svh\"");
     CHECK(out.find("wire in_a;") != std::string::npos);
     CHECK(out.find("wire in_b;") != std::string::npos);
     CHECK(sites.size() == 2);
@@ -597,13 +627,10 @@ TEST_CASE("include error: including the same file twice, one after the other, is
 
 // Guarded headers that include each other are fine in a simulator: the
 // second visit's `ifndef is false, so the inner `include is never reached
-// again. svlsp checks the include stack before reading the file, so it
-// reports a cycle -- a false Error once P2 publishes these. Fixed in
-// §6.35 P1 (drop [!shouldfail] then): a file may be on the stack twice,
-// and only a third entry -- the second visit reached the same `include,
-// so nothing guards it -- is a cycle.
+// again. A file may be on the include stack twice; only a third entry (the
+// second visit reached the same `include, so nothing guards it) is a cycle.
 TEST_CASE("include error: guarded headers that include each other are not a cycle",
-          "[compiler][preprocessor][include-errors][!shouldfail]") {
+          "[compiler][preprocessor][include-errors]") {
     const auto root = freshIncludeDir("svlsp_test_incerr_guarded_pair");
     writeFile(root / "a.svh",
               "`ifndef INCERR_A_SVH\n`define INCERR_A_SVH\n"
@@ -614,9 +641,10 @@ TEST_CASE("include error: guarded headers that include each other are not a cycl
     SvPreprocessor pp({root.string()});
     auto [out, errs, macros_, map_, sites, dirs_] =
         pp.process("`include \"a.svh\"\n", (root / "top.sv").string());
-    CHECK(includeErrors(errs).empty());
+    CHECK(errs.empty());
     CHECK(out.find("wire in_a;") != std::string::npos);
     CHECK(out.find("wire in_b;") != std::string::npos);
+    CHECK(sites.size() == 2);
 }
 
 TEST_CASE("include error: nesting deeper than the limit",
@@ -631,9 +659,11 @@ TEST_CASE("include error: nesting deeper than the limit",
     SvPreprocessor pp({root.string()});
     auto [out, errs, macros_, map_, sites, dirs_] =
         pp.process("`include \"d0.svh\"\nwire top_after;\n", (root / "top.sv").string());
-    REQUIRE(includeErrors(errs) == std::vector<std::string>{
-        std::string(kIncludeErrorPrefix) + "depth limit exceeded (cycle?)"});
+    REQUIRE(errs.size() == 1);
+    CHECK(errs[0].message == "`include: depth limit exceeded (cycle?)");
     // 17 levels are read (d0..d16); d16's directive is the one refused.
+    checkAt(errs[0], Kind::IncludeDepth, (root / "d16.svh").string(), 2, 0,
+            "`include \"d17.svh\"");
     CHECK(sites.size() == 17);
     CHECK(out.find("wire in_d16;") != std::string::npos);
     CHECK(out.find("wire in_d17;") == std::string::npos);
@@ -651,8 +681,9 @@ TEST_CASE("include error: a file that exists but cannot be read",
     auto [out, errs, macros_, map_, sites, dirs] =
         pp.process("`include \"locked.svh\"\nwire top_after;\n", (root / "top.sv").string());
     std::filesystem::permissions(locked, std::filesystem::perms::owner_all);
-    REQUIRE(includeErrors(errs) == std::vector<std::string>{
-        std::string(kIncludeErrorPrefix) + "cannot open \"" + locked.string() + "\""});
+    REQUIRE(errs.size() == 1);
+    CHECK(errs[0].message == "`include: cannot open \"" + locked.string() + "\"");
+    checkAt(errs[0], Kind::IncludeUnreadable, "", 1, 0, "`include \"locked.svh\"");
     CHECK(out.find("wire in_locked;") == std::string::npos);
     CHECK(out.find("wire top_after;") != std::string::npos);
     CHECK(sites.empty());
@@ -663,22 +694,25 @@ TEST_CASE("include error: a file that exists but cannot be read",
 
 TEST_CASE("include error: malformed directives",
           "[compiler][preprocessor][include-errors]") {
-    const std::string malformed = std::string(kIncludeErrorPrefix) + "missing or malformed filename";
-    // `include `MACRO is §6.36; until then it is malformed too.
-    const char* cases[] = {
-        "`include\n",
-        "`include \"unterminated.svh\n",
-        "`include <unterminated.svh\n",
-        "`include bare_name.svh\n",
-        "`include \"\"\n",
-        "`define INCERR_FILE \"x.svh\"\n`include `INCERR_FILE\n",
+    // {source, line of the directive, the directive's extent}. `include
+    // `MACRO is §6.36; until then it is malformed too.
+    struct Case { const char* src; int line; const char* directive; };
+    const Case cases[] = {
+        {"`include\n", 1, "`include"},
+        {"`include \"unterminated.svh\n", 1, "`include \"unterminated.svh"},
+        {"`include <unterminated.svh\n", 1, "`include <unterminated.svh"},
+        {"`include bare_name.svh // c\n", 1, "`include bare_name.svh"},
+        {"`include \"\"\n", 1, "`include \"\""},
+        {"`define INCERR_FILE \"x.svh\"\n`include `INCERR_FILE\n", 2, "`include `INCERR_FILE"},
     };
-    for (const char* src : cases) {
-        INFO(src);
+    for (const auto& c : cases) {
+        INFO(c.src);
         SvPreprocessor pp;
         auto [out, errs, macros_, map_, sites, dirs] =
-            pp.process(std::string(src) + "wire after;\n", "/src/top.sv");
-        CHECK(includeErrors(errs) == std::vector<std::string>{malformed});
+            pp.process(std::string(c.src) + "wire after;\n", "/src/top.sv");
+        REQUIRE(errs.size() == 1);
+        CHECK(errs[0].message == "`include: missing or malformed filename");
+        checkAt(errs[0], Kind::IncludeMalformed, "", c.line, 0, c.directive);
         CHECK(out.find("wire after;") != std::string::npos);
         CHECK(sites.empty());
         CHECK(dirs.empty());
@@ -696,11 +730,45 @@ TEST_CASE("include error: every failing directive in a unit is reported, in orde
         "`include bad\n"
         "`include \"incerr_second.svh\"\n", (root / "top.sv").string());
     CHECK(includeErrors(errs) == std::vector<std::string>{
-        std::string(kIncludeNotFound) + "\"incerr_first.svh\"",
-        std::string(kIncludeErrorPrefix) + "missing or malformed filename",
-        std::string(kIncludeNotFound) + "\"incerr_second.svh\""});
+        "`include: cannot find \"incerr_first.svh\"",
+        "`include: missing or malformed filename",
+        "`include: cannot find \"incerr_second.svh\""});
+    REQUIRE(errs.size() == 3);
+    CHECK(errs[0].line == 1);
+    CHECK(errs[1].line == 3);
+    CHECK(errs[2].line == 4);
     CHECK(out.find("wire in_ok;") != std::string::npos);
     CHECK(sites.size() == 1);
+}
+
+// The other preprocessor errors are not shown yet (§6.35 I3 / P4), but
+// carry the line they were found on already: kind Other, the whole line.
+TEST_CASE("preprocessor errors other than include errors carry their line",
+          "[compiler][preprocessor][include-errors]") {
+    const auto root = freshIncludeDir("svlsp_test_incerr_other");
+    const auto inc = (root / "inc.svh").string();
+    writeFile(inc, "wire w;\nwire x = `INCERR_UNDEFINED;\n");
+    SvPreprocessor pp({root.string()});
+    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+        "`include \"inc.svh\"\n"
+        "  `endif\n"
+        "`ifdef INCERR_NOT_DEFINED\n"
+        "wire y;\n", (root / "top.sv").string());
+    REQUIRE(errs.size() == 3);
+    CHECK(errs[0].message == "undefined macro `INCERR_UNDEFINED`");
+    CHECK(errs[0].kind == Kind::Other);
+    CHECK(errs[0].file == inc);
+    CHECK(errs[0].line == 2);
+    CHECK(errs[0].column == 0);
+    CHECK(errs[0].endColumn == static_cast<int>(std::string("wire x = `INCERR_UNDEFINED;").size()));
+    CHECK(errs[1].message == "`endif without `ifdef");
+    CHECK(errs[1].file.empty());
+    CHECK(errs[1].line == 2);
+    // An unterminated block points at its opening directive.
+    CHECK(errs[2].message == "unterminated `ifdef/`ifndef block");
+    CHECK(errs[2].file.empty());
+    CHECK(errs[2].line == 3);
+    CHECK(includeErrors(errs).empty());
 }
 
 TEST_CASE("include: __LINE__ inside included file resolves to its own line number",

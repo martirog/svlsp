@@ -54,17 +54,38 @@ struct IncludeDirective {
 std::string resolveInclude(const std::string& name, const std::string& currentFile,
                            const std::vector<std::string>& includeDirs);
 
-// Every error about an `include the preprocessor couldn't follow (not
-// found, not readable, a cycle, too deep) starts with this. A name not
-// found is an IncludeDirective with no resolution; any other failure
-// means the result depends on something not recorded, so it is never
-// reused.
-inline constexpr const char* kIncludeErrorPrefix = "`include: ";
-inline constexpr const char* kIncludeNotFound = "`include: cannot find ";
+// One preprocessor problem, with where it is (plan.md §6.35 P1). `file` is
+// the file the problem is written in -- "" for the compiled file, as
+// ParseRecord::file -- `line` is 1-based, `column` / `endColumn` are
+// 0-based and end-exclusive. An `include error covers its directive, from
+// the backtick to the end of the file name (`endColumn` is the closing
+// quote's column + 1); any other error covers the line it was found on
+// (column 0 to the end of the line).
+struct PreprocessorError {
+    // An `include the preprocessor couldn't follow. A name not found is an
+    // IncludeDirective with no resolution; any other include failure means
+    // the result depends on something not recorded, so it is never reused.
+    enum class Kind {
+        IncludeNotFound,
+        IncludeCycle,       // a file entered a third time (guards allow two)
+        IncludeDepth,       // nested deeper than the limit
+        IncludeUnreadable,  // resolved, but could not be opened
+        IncludeMalformed,   // no "name" / <name> after `include
+        Other,              // not an include error
+    };
+    std::string message;
+    std::string file{};
+    int         line{0};
+    int         column{0};
+    int         endColumn{0};
+    Kind        kind{Kind::Other};
+
+    bool isInclude() const { return kind != Kind::Other; }
+};
 
 struct PreprocessorResult {
     std::string source;
-    std::vector<std::string> errors;
+    std::vector<PreprocessorError> errors;
     std::vector<MacroRecord> macros;     // all `define macros encountered in active branches
     std::vector<SourceLine>  sourceMap;  // one entry per output line; index = line - 1
     std::vector<IncludeSite> includeSites;

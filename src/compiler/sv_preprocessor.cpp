@@ -34,12 +34,19 @@ struct CondEntry {
     bool active;    // should the current branch emit code?
     bool seenTrue;  // has any branch in this block been active?
     bool inElse;    // are we past `else?
+    std::string file{};  // where the `ifdef / `ifndef is ("" = the compiled file)
+    int line{0};
+    int column{0};
+    int endColumn{0};
 };
 
 struct Ctx {
     MacroMap macros{};
     std::vector<CondEntry> condStack{};
-    std::vector<std::string> errors{};
+    std::vector<PreprocessorError> errors{};
+    // Messages from macro expansion and `define parsing, which don't know
+    // the line; processSource gives them its position (pendingAt).
+    std::vector<std::string> pending{};
     std::vector<std::string> includeStack{}; // cycle detection
     const std::vector<std::string>& includePaths;
     std::ostream* progressLog{nullptr}; // real-time `include` progress, see sv_preprocessor.h
@@ -48,6 +55,17 @@ struct Ctx {
     std::vector<SourceLine> sourceMap{};
     std::vector<IncludeSite> includeSites{};
     std::vector<IncludeDirective> includeDirectives{};
+
+    void error(PreprocessorError::Kind kind, std::string message, const std::string& file,
+               int line, int column, int endColumn) {
+        errors.push_back({std::move(message), file, line, column, endColumn, kind});
+    }
+    // The pending messages, as Other errors at `file` `line`, columns 0..`endColumn`.
+    void pendingAt(const std::string& file, int line, int endColumn) {
+        for (auto& m : pending)
+            error(PreprocessorError::Kind::Other, std::move(m), file, line, 0, endColumn);
+        pending.clear();
+    }
 
     bool isOutputting() const {
         for (const auto& e : condStack) if (!e.active) return false;
@@ -484,11 +502,17 @@ std::string resolveInclude(const std::string& name, const std::string& currentFi
     return {};
 }
 
-// `includer`/`line`: where the directive is (IncludeSite).
+// `includer`/`line`: where the directive is (IncludeSite); `column` /
+// `endColumn`: its extent on that line, for the errors.
 static void processInclude(const std::string& filename, const std::string& currentFile,
-                            const std::string& includer, int line, Ctx& ctx, int depth) {
+                            const std::string& includer, int line, int column, int endColumn,
+                            Ctx& ctx, int depth) {
+    using Kind = PreprocessorError::Kind;
+    auto fail = [&](Kind kind, std::string message) {
+        ctx.error(kind, "`include: " + std::move(message), includer, line, column, endColumn);
+    };
     if (depth > 16) {
-        ctx.errors.push_back(std::string(kIncludeErrorPrefix) + "depth limit exceeded (cycle?)");
+        fail(Kind::IncludeDepth, "depth limit exceeded (cycle?)");
         return;
     }
 
@@ -500,15 +524,17 @@ static void processInclude(const std::string& filename, const std::string& curre
         ctx.includeDirectives.push_back({filename, currentFile, found});
 
     if (found.empty()) {
-        ctx.errors.push_back(std::string(kIncludeNotFound) + "\"" + filename + "\"");
+        fail(Kind::IncludeNotFound, "cannot find \"" + filename + "\"");
         return;
     }
 
-    for (const auto& p : ctx.includeStack) {
-        if (p == found) {
-            ctx.errors.push_back(std::string(kIncludeErrorPrefix) + "cycle detected for \"" + found + "\"");
-            return;
-        }
+    // A file may be read again while it is being read: an include guard
+    // makes the second visit skip its body, as in a simulator. A third
+    // entry means the second visit reached the same `include again, so
+    // nothing guards it.
+    if (std::count(ctx.includeStack.begin(), ctx.includeStack.end(), found) >= 2) {
+        fail(Kind::IncludeCycle, "cycle detected for \"" + found + "\"");
+        return;
     }
 
     // Stat before reading: a change after this moves the mtime away from
@@ -517,7 +543,7 @@ static void processInclude(const std::string& filename, const std::string& curre
     const auto stat = statFile(found);
     std::ifstream f(found);
     if (!f.is_open()) {
-        ctx.errors.push_back(std::string(kIncludeErrorPrefix) + "cannot open \"" + found + "\"");
+        fail(Kind::IncludeUnreadable, "cannot open \"" + found + "\"");
         return;
     }
     std::ostringstream ss;
@@ -633,7 +659,8 @@ static void processSource(const std::string& source, const std::string& filepath
                 auto [code, comment] = splitLineComment(merged);
                 std::vector<ColShift> shifts;
                 std::string expanded =
-                    expandStr(std::string(code), ctx.macros, ctx.errors, 0, &shifts);
+                    expandStr(std::string(code), ctx.macros, ctx.pending, 0, &shifts);
+                ctx.pendingAt(mapFile, firstLineNo, static_cast<int>(line.size()));
                 emitLine(expanded + std::string(comment), std::move(shifts), firstLineNo);
                 for (int ln : contLines) emitBlank(ln);
             } else {
@@ -646,6 +673,17 @@ static void processSource(const std::string& source, const std::string& filepath
         size_t i = ws + 1;
         std::string dir = readIdent(line, i);
         std::string_view rest(line.data() + i, line.size() - i);
+        // The directive's extent: from the backtick to the end of its code.
+        const int dirColumn = static_cast<int>(ws);
+        const int dirEnd = [&] {
+            const std::string_view code = stripLineComment(line);
+            const size_t last = code.find_last_not_of(" \t\r");
+            return last == std::string_view::npos ? dirColumn : static_cast<int>(last + 1);
+        }();
+        auto directiveError = [&](std::string message) {
+            ctx.error(PreprocessorError::Kind::Other, std::move(message), mapFile, lineNo,
+                      dirColumn, dirEnd);
+        };
 
         // ---- Conditional directives (processed even when skipping) ----
 
@@ -653,17 +691,17 @@ static void processSource(const std::string& source, const std::string& filepath
             std::string macName = std::string(trimSV(stripLineComment(rest)));
             bool defined = ctx.macros.count(macName) > 0;
             bool active  = (dir == "ifdef") ? defined : !defined;
-            ctx.condStack.push_back({active, active, false});
+            ctx.condStack.push_back({active, active, false, mapFile, lineNo, dirColumn, dirEnd});
             emitBlank();
             continue;
         }
         if (dir == "elsif") {
             if (ctx.condStack.empty()) {
-                ctx.errors.push_back("`elsif without `ifdef");
+                directiveError("`elsif without `ifdef");
             } else {
                 auto& top = ctx.condStack.back();
                 if (top.inElse) {
-                    ctx.errors.push_back("`elsif after `else");
+                    directiveError("`elsif after `else");
                 } else {
                     std::string macName = std::string(trimSV(stripLineComment(rest)));
                     bool defined = ctx.macros.count(macName) > 0;
@@ -677,17 +715,17 @@ static void processSource(const std::string& source, const std::string& filepath
         }
         if (dir == "else") {
             if (ctx.condStack.empty()) {
-                ctx.errors.push_back("`else without `ifdef");
+                directiveError("`else without `ifdef");
             } else {
                 auto& top = ctx.condStack.back();
-                if (top.inElse) { ctx.errors.push_back("duplicate `else"); }
+                if (top.inElse) { directiveError("duplicate `else"); }
                 else { top.inElse = true; top.active = !top.seenTrue; }
             }
             emitBlank();
             continue;
         }
         if (dir == "endif") {
-            if (ctx.condStack.empty()) ctx.errors.push_back("`endif without `ifdef");
+            if (ctx.condStack.empty()) directiveError("`endif without `ifdef");
             else ctx.condStack.pop_back();
             emitBlank();
             continue;
@@ -717,7 +755,9 @@ static void processSource(const std::string& source, const std::string& filepath
                 mergedRest += contLine;
                 emitBlank();
             }
-            if (auto opt = parseMacroDefinition(mergedRest, ctx.macros, ctx.errors)) {
+            auto opt = parseMacroDefinition(mergedRest, ctx.macros, ctx.pending);
+            ctx.pendingAt(mapFile, defineLine, static_cast<int>(line.size()));
+            if (opt) {
                 const int column = static_cast<int>(i + opt->nameOffset);
                 if (rawLines.empty()) {
                     std::istringstream all(source);
@@ -739,16 +779,23 @@ static void processSource(const std::string& source, const std::string& filepath
         } else if (dir == "include") {
             std::string_view r = trimSV(rest);
             std::string filename;
+            int nameEnd = dirEnd;  // a malformed directive: up to the end of its code
             if (!r.empty() && (r.front() == '"' || r.front() == '<')) {
                 char close = r.front() == '"' ? '"' : '>';
                 size_t end = r.find(close, 1);
-                if (end != std::string_view::npos) filename = std::string(r.substr(1, end - 1));
+                if (end != std::string_view::npos) {
+                    filename = std::string(r.substr(1, end - 1));
+                    nameEnd = static_cast<int>(r.data() - line.data() + end + 1);
+                }
             }
             if (filename.empty()) {
-                ctx.errors.push_back("`include: missing or malformed filename");
+                ctx.error(PreprocessorError::Kind::IncludeMalformed,
+                          "`include: missing or malformed filename", mapFile, lineNo,
+                          dirColumn, nameEnd);
                 emitBlank();
             } else {
-                processInclude(filename, filepath, mapFile, lineNo, ctx, depth);
+                processInclude(filename, filepath, mapFile, lineNo, dirColumn, nameEnd, ctx,
+                               depth);
                 // No blank line: included content replaces the `include line.
                 // The recursive processSource call pushed source map entries for it.
             }
@@ -757,7 +804,8 @@ static void processSource(const std::string& source, const std::string& filepath
             int firstLineNo = lineNo;
             auto [merged, contLines] = mergeInvocationContinuation(line);
             std::vector<ColShift> shifts;
-            std::string expanded = expandStr(merged, ctx.macros, ctx.errors, 0, &shifts);
+            std::string expanded = expandStr(merged, ctx.macros, ctx.pending, 0, &shifts);
+            ctx.pendingAt(mapFile, firstLineNo, static_cast<int>(line.size()));
             emitLine(expanded, std::move(shifts), firstLineNo);
             for (int ln : contLines) emitBlank(ln);
         }
@@ -793,8 +841,12 @@ PreprocessorResult SvPreprocessor::process(const std::string& source,
 
     processSource(source, filepath, ctx, 0);
 
-    if (!ctx.condStack.empty())
-        ctx.errors.push_back("unterminated `ifdef/`ifndef block");
+    // At the outermost block left open.
+    if (!ctx.condStack.empty()) {
+        const auto& open = ctx.condStack.front();
+        ctx.error(PreprocessorError::Kind::Other, "unterminated `ifdef/`ifndef block",
+                  open.file, open.line, open.column, open.endColumn);
+    }
 
     return {std::move(ctx.output), std::move(ctx.errors), std::move(ctx.macroRecords),
             std::move(ctx.sourceMap), std::move(ctx.includeSites),

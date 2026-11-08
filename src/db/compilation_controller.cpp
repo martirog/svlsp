@@ -206,14 +206,14 @@ bool inputsUnchanged(const SymbolDatabase& sdb, const std::string& path,
 
 // Whether a compile's preprocessing failed to follow an `include for a
 // reason other than a name not found (an IncludeDirective records that):
-// a cycle, the depth limit, an unreadable file. Its result depends on
-// something not recorded, so it is never reused.
+// a cycle, the depth limit, an unreadable file, a malformed directive. Its
+// result depends on something not recorded, so it is never reused.
 bool includeFailed(const PreprocessorResult& preprocessed)
 {
     return std::any_of(preprocessed.errors.begin(), preprocessed.errors.end(),
-                       [](const std::string& e) {
-                           return e.rfind(kIncludeErrorPrefix, 0) == 0 &&
-                                  e.rfind(kIncludeNotFound, 0) != 0;
+                       [](const PreprocessorError& e) {
+                           return e.isInclude() &&
+                                  e.kind != PreprocessorError::Kind::IncludeNotFound;
                        });
 }
 
