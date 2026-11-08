@@ -252,13 +252,13 @@ Next steps:
    - profile the server load's per-unit overhead (10.3-10.9 s against
      8.4 s on `gen_tb`).
 2. **plan.md §6.35 done** (2026-11-08, P0-P4): include errors
-   as diagnostics. Today a missing, cyclic or unreadable `` `include `` is
-   silent. The preprocessor's errors are position-less strings that nothing
-   publishes. Decisions I1-I4 were taken 2026-11-08 as recommended:
+   as diagnostics. Before it, a missing, cyclic or unreadable `` `include ``
+   was silent: the preprocessor's errors were position-less strings that
+   nothing published. Decisions I1-I4 (2026-11-08):
    - Error for not found, a cycle, the depth limit or an unreadable file;
-     Warning for a malformed directive;
+     a malformed directive was a Warning until §6.36 made it an Error;
    - nothing reported for files outside a project;
-   - other preprocessor errors later;
+   - the other preprocessor errors came in P4;
    - the range covers the directive.
 
    Stages: P0 counts the errors on the corpus first, P1 gives them
