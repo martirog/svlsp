@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-11-08 (§6.35 P1: positioned preprocessor errors).
+**Last updated:** 2026-11-08 (§6.35 P2: include errors are diagnostics, schema v19).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -280,7 +280,16 @@ Next steps:
    preprocessor error is a `PreprocessorError` with kind, file, line and
    range, and a file may be on the include stack twice, so guards work.
    Unit 1159/1159, Emacs 335/335. `test_37` is flaky in full runs (2 of 3
-   failed, passes alone); recheck it with P2. P2 is next.
+   failed, passes alone).
+
+   **P2 is done** (2026-11-08; plan.md §6.35 "P2 outcome"): under a
+   project config, include errors are `'include'` diagnostics on the file
+   holding the directive, over the directive (Error; Warning when
+   malformed). That needed **schema v19**: `diagnostics.end_col` /
+   `ParseError::endColumn`, a real range for the first time. No change on
+   UVM / `gen`. Unit 1169/1169, Emacs 335/335, `test-integration-uvm`
+   15/15, corpus 1563 / 31, `perf-check` no regression. P3 (Emacs round
+   trip, docs/usage.md) is next.
 3. **Planned as plan.md §6.36** (2026-11-08, not started): `` `include
    `MACRO `` support, which today is a malformed directive and is skipped.
    The argument is expanded with the macros defined at that point; an
@@ -292,6 +301,18 @@ Next steps:
    and `hierarchical_identifier` (1103): `a.b` is a name, a name + select
    `.b`, or a name + the method loop. Profile with `tools/grammar_profile.sh
    -- --profile`.
+
+What §6.35 changes for other work:
+- Diagnostics have the source `'include'` (not held back while
+  indexing), written only under a project config.
+- `ParseError::endColumn` / `diagnostics.end_col` (schema v19) give a
+  diagnostic a range; 0 keeps the old one-character range. A new
+  `ParseError` field goes into `parse_worker.cpp`'s encoding, and no
+  comment may sit between the last two `diagnostics` columns in the DDL
+  (SQLite's `DROP COLUMN` rewrites that text).
+- A preprocessor error is a `PreprocessorError` with a `Kind` and a
+  position; a file may be on the include stack twice (include guards).
+- `make test-integration-uvm` needs an absolute `SVLSP_BIN`.
 
 What C2 changes for other work:
 - **Grammar edits are checked with the harness**: `tools/grammar_profile.sh
@@ -896,7 +917,7 @@ ASan+UBSan (10-100x slower) — use release for anything corpus-sized.
 | LSP framework | lsp-framework v1.3.1 (submodule) |
 | Unit tests | Catch2 v3.8.1 (FetchContent) |
 | Parser | ANTLR4 v4.13.2 (FetchContent) |
-| Database | SQLite3 amalgamation, schema v17 |
+| Database | SQLite3 amalgamation, schema v19 |
 | Preprocessor | in-house C++ (not slang) |
 | Transport | stdio |
 
@@ -959,7 +980,7 @@ uses `SymbolDatabase::pickSameFilePreferred` (the simpler half of
 - `""` as a *scope* means top level — `findSymbolsInScope("")` returns every
   top-level symbol, so guard against an empty resolved type.
 
-### Database (`src/db/`, schema v17)
+### Database (`src/db/`, schema v19)
 
 Tables: `files` (identity since v17: `content_hash` SHA-256, `size`, `mtime_ns`, `stat_ns`, `inputs_fp`), `include_directives`, `symbols (kind, name, line, col, parent, detail, end_line,
 scope, access)`, `diagnostics (… source, subject)`, `symbol_docs`, `imports (pkg_name, item, is_export, scope)`,

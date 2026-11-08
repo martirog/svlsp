@@ -7783,8 +7783,8 @@ After S2-S6:
 
 ### 6.35 Include Errors as Diagnostics
 
-**Status:** planned 2026-11-08, at the user's request. P0 and P1
-done 2026-11-08 (see "P0 outcome", "P1 outcome"); P2 next.
+**Status:** planned 2026-11-08, at the user's request. P0-P2
+done 2026-11-08 (see each "outcome"); P3 next.
 Decisions I1-I4 taken 2026-11-08: the user took the recommendations. The
 `` `include `MACRO `` form is a separate item, §6.36. Found in §6.34 S2: a file
 that `include`s a removed or misspelled file shows nothing wrong. Only
@@ -7973,6 +7973,35 @@ conditional errors.
   - a malformed directive is a Warning;
   - a cache hit still reports it.
 
+**P2 outcome (2026-11-08):**
+- `commit` writes the include errors as `'include'` rows: severity 2 for
+  IncludeMalformed, 1 for the rest. Only under a config
+  (`parsed.checkTypes`). The rows are replaced on the primary and on every
+  file the unit read that had or has some, and such a file joins
+  `includedFiles`, so the server republishes it even when it has no other
+  rows (a wrapper of `include's whose error goes).
+- The primary's rows join `commit`'s return value. A cache hit returns
+  them from the DB with their range.
+- **Range: schema v19**, `diagnostics.end_col` (0 = one character, as
+  before), `ParseError::endColumn` (encoded by the worker) and
+  `DiagnosticRow::endCol`. `buildDiagnostic` ends the range there, and
+  `diagnosticsDigest` covers it, so a refresh reports a changed range. No
+  comment may sit between `severity` and `end_col` in the DDL: SQLite's
+  `DROP COLUMN` rewrites that text, and the migration test drops it.
+- Tests: new `tests/unit/db/test_include_diagnostics.cpp` (9 cases: the
+  range, no config, a Warning, in an included file, a wrapper file
+  cleared, cycle and depth, a cache hit, refresh appear / disappear), the
+  v19 migration, `buildDiagnostic`'s range, the worker round trip with a
+  set `endColumn`, and the refresher's deleted-include case, which now
+  checks the diagnostic.
+- No change on real inputs: UVM `--build-db` has 18737 symbols and no
+  diagnostic rows; `gen` A has 9439 symbols and 18 `'context'` rows, the
+  same as P0's v18 builds.
+- Verified: unit 1169/1169, release 0 warnings, Emacs 335/335 (`test_37`
+  passed), `test-integration-uvm` 15/15 (`SVLSP_BIN` must be absolute),
+  corpus 1563 / 31 (log `build/release/corpus_2026-11-08.log`), `make
+  perf-check` small / uvm no regression.
+
 **P3 -- Editor round trip.** An Emacs test in its own workspace, like
 `test_55`:
 - a project whose file includes `missing.svh`: the diagnostic shows at the
@@ -8008,11 +8037,14 @@ reported as undefined macros: 19 sites on UVM (`m_uvm_field_begin`,
   only for certain tools, and the corpus config defines `UVM_NO_DPI`. A
   Warning may fit better than an Error; decide that with the recount.
 
-**What other work must know (once P2 lands):**
+**What other work must know (P2 landed):**
 - Diagnostics have one more source, `'include'`. It is not cross-file, so
   it is not held back while indexing.
 - A new preprocessor error needs a `Kind` and a position, or it is never
   shown.
+- A diagnostic can have a range (schema v19 `end_col`,
+  `ParseError::endColumn`); other sources may now use one too (§6.21's
+  open "name-length ranges").
 
 ### 6.36 `` `include `` Through a Macro (`` `include `FILE ``)
 
