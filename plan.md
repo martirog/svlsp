@@ -7783,7 +7783,8 @@ After S2-S6:
 
 ### 6.35 Include Errors as Diagnostics
 
-**Status:** planned 2026-11-08, at the user's request. Not started.
+**Status:** planned 2026-11-08, at the user's request. P0 done
+2026-11-08 (no include errors on any input; see "P0 outcome"); P1 next.
 Decisions I1-I4 taken 2026-11-08: the user took the recommendations. The
 `` `include `MACRO `` form is a separate item, §6.36. Found in §6.34 S2: a file
 that `include`s a removed or misspelled file shows nothing wrong. Only
@@ -7853,6 +7854,34 @@ The expectation is zero include errors on UVM and `gen`. Anything else is
 either a real finding or a resolution bug, to fix before P2. Record the
 numbers here.
 
+**P0 outcome (2026-11-08, at 1d71838, release):** no include errors
+anywhere. Counted with a temporary, uncommitted stderr dump of
+`preprocessed.errors` in `commit`, under `--build-db`:
+
+| Input | Units | Include errors | Other errors |
+|---|---|---|---|
+| UVM corpus, `.svlsp.json` (`uvm.sv`, `includeDirs .`, `UVM_NO_DPI`) | 1 (167 files) | 0 | 19 |
+| UVM corpus, `+incdir+` `.f`, no defines | 1 | 0 | 19 (the same) |
+| `gen` variant A / B (`tools/gen_perf_project.py`, UVM library DB) | 380 / 380 | 0 / 0 | 0 / 0 |
+| Emacs fixtures `full_project`, `kind_tiebreak`, `multifile_project`, `typeref_proj` | 6, 3, 2, 2 | 0 | 0 |
+| `test-integration-uvm`'s `uvm_tb.sv` (library DB) | 1 | 0 | 0 |
+
+A two-line file with a missing and a `` `include `FOO `` gave both
+expected messages, so the dump does see include errors. P2 shows nothing
+new on any of these inputs.
+
+The 19 other errors are all one known gap (§"Preprocessor" in
+handoff.md): a conditional inside a `` `define `` body is not evaluated.
+Its directives reach the expansion as text and are reported as undefined
+macros: 9 `` `endif ``, 8 `` `ifndef ``, 1 `` `ifdef ``, 1 `` `else ``, from
+`m_uvm_field_begin`, `m_uvm_field_op_begin` and
+`m_warn_if_no_positive_ops` (`macros/uvm_object_defines.svh`). Reproduced
+with a three-line macro. **For P4:** an "undefined macro" diagnostic
+would flag these 19 sites on clean UVM. That gap has to be fixed first,
+or the compiler-directive names must be excluded from the check. Apart
+from that gap, UVM has no undefined-macro, argument or unbalanced-
+conditional errors.
+
 **P1 -- Positions for preprocessor errors.**
 - A new `struct PreprocessorError { std::string message; std::string file;
   int line; int column; int endColumn; Kind kind; }`. `file` is "" for the
@@ -7868,9 +7897,30 @@ numbers here.
   at the directive that would have recursed, in the file that holds it.
 - The other errors get the position of the line they are found on where
   `processSource` has it, else line 1. P1 only records them.
-- Tests: each include error kind with its file, line and range, also from
-  inside an included file. The S1 `[file-identity]` cases still pass (the
-  cache still never reuses a failed include other than not-found).
+- **Guarded headers that include each other are not a cycle.** Today
+  `processInclude` refuses any file already on the include stack, before
+  reading it. Guarded `a.svh` <-> `b.svh` is fine in a simulator (the
+  second visit's `` `ifndef `` is false), but svlsp reports a cycle. Once P2
+  publishes these, that is a false Error. Fix: a file may be on the stack
+  twice. Only a third entry is a cycle, because it means the second visit
+  reached the same `` `include `` with nothing guarding it. The unguarded
+  self-include and the unguarded pair still give one cycle error each, at
+  the directive of the second visit.
+- Tests: the `[include-errors]` cases in `test_sv_preprocessor.cpp`
+  (written 2026-11-08, before P1). They pin each kind's message and show
+  that the rest of the unit is still processed:
+  - missing, also inside an included file;
+  - self and mutual cycle;
+  - a plain re-include is no error;
+  - the depth limit (17 levels are read);
+  - unreadable (mode 000);
+  - six malformed shapes, `` `include `MACRO `` among them;
+  - several errors, in order.
+
+  P1 adds each error's file, line and range to them, and removes
+  `[!shouldfail]` from "guarded headers that include each other are not a
+  cycle". The S1 `[file-identity]` cases still pass: the cache still never
+  reuses a failed include other than not-found.
 
 **P2 -- Include errors are diagnostics.**
 - `commit` writes them with a new source, `'include'`, on the file each
@@ -7909,13 +7959,29 @@ numbers here.
 Also `docs/usage.md`: what the diagnostics say, and that files outside a
 project don't get them (I2).
 
-**P4 -- The other preprocessor errors (I3), only if P0's numbers allow
-it.** They would use the same positions and a source of their own,
-`'preprocess'`: undefined macro, argument errors, unbalanced `` `ifdef ``
-/ `` `else `` / `` `endif ``. "Undefined macro" needs a noise check on UVM
-first: some macros are defined only for certain tools, and the corpus
-config defines `UVM_NO_DPI`. A Warning may fit better than an Error. To
-be decided with P0's counts.
+**P4 -- The other preprocessor errors (I3), and the conditional-in-
+`define` gap.** Decided 2026-11-08 (the user): P4 fixes the gap P0 found.
+Today a `` `ifdef `` / `` `ifndef `` / `` `elsif `` / `` `else `` /
+`` `endif `` inside a `` `define `` body is not evaluated. Both branches
+are concatenated, and the directives reach the output as text and are
+reported as undefined macros: 19 sites on UVM (`m_uvm_field_begin`,
+`m_uvm_field_op_begin`, `m_warn_if_no_positive_ops`).
+- **First, the gap:** expanding a body evaluates its conditionals against
+  the macros defined at the expansion point, as simulators do. Only the
+  active branch is kept, and nesting works. The expansion's line count and
+  column shifts must still map back to the invocation. Unit cases: each
+  directive, nesting, a condition that depends on a define made after the
+  `` `define `` but before the use, and the three UVM macros' shapes. On
+  UVM the 19 errors go to 0, and the corpus symbol / diagnostic pins move
+  only where the dropped branch held declarations (to be checked against
+  a simulator's reading).
+- **Then the errors:** the same positions as P1 and a source of their own,
+  `'preprocess'`: undefined macro, argument errors, and unbalanced
+  `` `ifdef `` / `` `else `` / `` `endif ``. With the gap fixed P0 counts 0
+  of these on UVM, so "undefined macro" no longer fires on clean UVM. A
+  noise check on the other inputs is still due: some macros are defined
+  only for certain tools, and the corpus config defines `UVM_NO_DPI`. A
+  Warning may fit better than an Error; decide that with the recount.
 
 **What other work must know (once P2 lands):**
 - Diagnostics have one more source, `'include'`. It is not cross-file, so

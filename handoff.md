@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-11-03 (symlinked paths fixed; missing-argument check fails closed).
+**Last updated:** 2026-11-08 (§6.35 P0: no include errors on any corpus).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -265,6 +265,17 @@ Next steps:
    positions, P2 makes them diagnostics with source `'include'`, P3 is an
    Emacs round trip, and P4 (optional) covers the other preprocessor
    errors.
+
+   **P0 is done** (2026-11-08; plan.md §6.35 "P0 outcome"): 0 include
+   errors on UVM, `gen` A / B, the four fixture projects and `uvm_tb.sv`.
+   UVM's only other errors are 19 "undefined macro" hits on
+   `` `ifndef `` / `` `endif `` / ..., from conditionals inside `` `define ``
+   bodies (the known gap). P4 now fixes that gap first, then reports the
+   other errors (decided 2026-11-08). Before P1, the `[include-errors]`
+   unit cases (`test_sv_preprocessor.cpp`) pin every include error kind.
+   They found that guarded headers including each other are reported as a
+   cycle, a false Error once P2 lands. That case is `[!shouldfail]`, and
+   P1 fixes it. P1 is next.
 3. **Planned as plan.md §6.36** (2026-11-08, not started): `` `include
    `MACRO `` support, which today is a malformed directive and is skipped.
    The argument is expanded with the macros defined at that point; an
@@ -987,8 +998,8 @@ pass 2 (`SvPreprocessor::process`) does `` `define ``/`` `ifdef ``/
 `` `include ``/expansion (defaults, stringification, token-pasting, multi-line
 invocations), producing a `sourceMap` + column shifts that `SvTreeWalker` uses
 to map records back to original coordinates. Not supported: `` `ifdef `` inside
-a `` `define `` body is not evaluated (both branches concatenated — one known
-UVM site, `` `m_uvm_field_op_begin ``); token-pasting on an unexpanded nested
+a `` `define `` body is not evaluated (both branches concatenated — three
+UVM macros, 19 sites; plan.md §6.35 P4 fixes it); token-pasting on an unexpanded nested
 macro's result.
 
 ---
