@@ -243,7 +243,7 @@ The `svlsp.waitForIndexing` command (`workspace/executeCommand`) answers
 once no load or refresh is queued or running. It is meant for scripts and
 tests.
 
-## Include errors
+## Include and preprocessor errors
 
 In a file that belongs to a project, an `` `include `` that svlsp can't
 follow is a diagnostic on the directive. It is reported in the file that
@@ -271,6 +271,26 @@ The error goes away when the file appears. That happens on the next compile
 of the including file, or on a refresh when files change on disk (see
 [Branch switches](#branch-switches-file-watching-and-svlsprefresh)). It
 comes back when the file is removed.
+
+Other preprocessor errors in a project file are reported the same way, on
+the line where they are found:
+
+| Message (examples) | Severity |
+|---|---|
+| `` undefined macro `NAME` `` | Error |
+| `` `endif without `ifdef ``, `` `else without `ifdef ``, `` duplicate `else ``, `` unterminated `ifdef/`ifndef block `` | Error |
+| `` macro `M`: missing required argument `B` ``, `` macro `M`: expected at most 2 args, got 3 `` | Error |
+| `` `define: malformed parameter list for `M` ``, `` unterminated stringification `" `` | Error |
+
+An undefined macro is often a define that the build passes but the
+project's `defines` doesn't list. Add it there.
+
+Conditionals inside a `` `define `` body (`` `ifdef ``, `` `ifndef ``,
+`` `elsif ``, `` `else ``, `` `endif ``) are evaluated each time the macro is
+used, against the macros defined at that point, as a simulator does. An
+unbalanced one is reported at the line that uses the macro, with
+"in the body of macro `` `M ``". Macros inside a string literal are not
+expanded.
 
 ## A project database built ahead: `database`
 

@@ -7783,8 +7783,8 @@ After S2-S6:
 
 ### 6.35 Include Errors as Diagnostics
 
-**Status:** planned 2026-11-08, at the user's request. P0-P3
-done 2026-11-08 (see each "outcome"); P4 next.
+**Status:** done 2026-11-08 (P0-P4; see each "outcome"). Started
+the same day, at the user's request.
 Decisions I1-I4 taken 2026-11-08: the user took the recommendations. The
 `` `include `MACRO `` form is a separate item, §6.36. Found in §6.34 S2: a file
 that `include`s a removed or misspelled file shows nothing wrong. Only
@@ -8050,11 +8050,62 @@ reported as undefined macros: 19 sites on UVM (`m_uvm_field_begin`,
   only for certain tools, and the corpus config defines `UVM_NO_DPI`. A
   Warning may fit better than an Error; decide that with the recount.
 
-**What other work must know (P2 landed):**
+**P4 outcome (2026-11-08):**
+- **The gap is fixed.** `evalConditionals` (`sv_preprocessor.cpp`) runs
+  on every expanded body: after a function-like macro's parameters are
+  substituted, before token-pasting and the rescan. It keeps the active
+  branches of `` `ifdef `` / `` `ifndef `` / `` `elsif `` / `` `else `` /
+  `` `endif ``, against the macros defined at that use. String literals
+  are text, `` `" `` markers pass through, and each directive becomes one
+  space. A body is one line, so the source map and line count are
+  unchanged.
+- **Unbalanced conditionals in a body** are errors "... in the body of
+  macro `` `M ``", at the line of the use.
+- **Strings, found on the way:** `expandStr` expanded macros inside
+  ordinary string literals, which IEEE 1800-2017 22.5.1 forbids. It no
+  longer does.
+- **UVM:** 19 errors -> 0. One phantom Signal is gone, the corpus symbol
+  pin moves 18737 -> 18736 (`test_hover_uvm.cpp`), and the other differing
+  rows are the same names with shifted anonymous-block ids, all on one
+  expanded line (`uvm_reg_mem_hdl_paths_seq.svh:67`). The phantom was
+  `behavior` of type `UVM_LEGACY_FIELD_MACRO_SEMANTICS`, from
+  `` `ifdef UVM_LEGACY_FIELD_MACRO_SEMANTICS behavior = ... `` once the
+  directive was dropped. It is very likely §6.21 step 2's "one
+  macro-expanded phantom".
+- **The other errors** are `'preprocess'` diagnostics, under the same
+  rules as `'include'`: project only, on the file each is in, and not held
+  back. All are Errors, an undefined macro (new kind `MacroUndefined`)
+  too. The first version made it a Warning, because the config may lack a
+  define the build passes; the user decided on Error (2026-11-08), as
+  simulators do. A message-only error covers its line from the first non-blank
+  character to the end of its code. A conditional directive's error covers
+  the directive.
+- **Range bug fixed:** P1 took offsets from `stripLineComment`, which
+  trims, so an indented directive with a trailing comment got a short
+  range. `codeOf` is the untrimmed cut.
+- **Recount:** 0 preprocessor errors of any kind on UVM, `gen` A / B, the
+  four fixture projects and `uvm_tb.sv`. So no Warning or Error appears on
+  any of them.
+- **Tests:**
+  - 11 `[define-cond]` preprocessor cases: each directive, `elsif`
+    chains, nesting, evaluation at the use, nested macros, strings, the
+    three UVM shapes, the source map, unbalanced bodies, a macro in a
+    string;
+  - kinds and ranges;
+  - 5 `[preprocess-diags]` controller cases;
+  - `test_56` gained "an undefined macro is an Error over its line".
+- **Verified:** unit 1187/1187, release 0 warnings, Emacs 339/339,
+  `test-integration-uvm` 15/15, corpus 1563 / 31 (log
+  `build/release/corpus_2026-11-08b.log`), `perf-check` small / uvm no
+  regression.
+
+**What other work must know:**
 - Diagnostics have one more source, `'include'`. It is not cross-file, so
   it is not held back while indexing.
 - A new preprocessor error needs a `Kind` and a position, or it is never
-  shown.
+  shown. `'preprocess'` is the source of the non-include ones (P4).
+- Macro bodies are run through `evalConditionals` at each expansion;
+  string literals are never macro-expanded.
 - A diagnostic can have a range (schema v19 `end_col`,
   `ParseError::endColumn`); other sources may now use one too (§6.21's
   open "name-length ranges").

@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-11-08 (§6.35 P3 done: include errors reach the editor; P4 next).
+**Last updated:** 2026-11-08 (§6.35 done: include and preprocessor errors are diagnostics).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -296,6 +296,18 @@ Next steps:
    is next**: evaluate conditionals inside `` `define `` bodies (UVM's 19
    false "undefined macro" sites), then report the other preprocessor
    errors as `'preprocess'` diagnostics.
+
+   **P4 is done, so §6.35 is done** (2026-11-08; plan.md §6.35 "P4
+   outcome"):
+   - conditionals in `` `define `` bodies are evaluated at each use, and
+     macros are no longer expanded inside string literals;
+   - UVM's 19 errors are gone, and so is one phantom Signal (corpus symbol
+     pin 18737 -> 18736);
+   - the other preprocessor errors are `'preprocess'` diagnostics, all
+     Errors (an undefined macro too, decided 2026-11-08).
+
+   Unit 1187/1187, Emacs 339/339, `test-integration-uvm` 15/15, corpus
+   1563 / 31, `perf-check` no regression. Next: §6.36.
 3. **Planned as plan.md §6.36** (2026-11-08, not started): `` `include
    `MACRO `` support, which today is a malformed directive and is skipped.
    The argument is expanded with the macros defined at that point; an
@@ -309,8 +321,8 @@ Next steps:
    -- --profile`.
 
 What §6.35 changes for other work:
-- Diagnostics have the source `'include'` (not held back while
-  indexing), written only under a project config.
+- Diagnostics have the sources `'include'` and `'preprocess'` (neither
+  held back while indexing), written only under a project config.
 - `ParseError::endColumn` / `diagnostics.end_col` (schema v19) give a
   diagnostic a range; 0 keeps the old one-character range. A new
   `ParseError` field goes into `parse_worker.cpp`'s encoding, and no
@@ -1030,9 +1042,9 @@ pass 2 (`SvPreprocessor::process`) does `` `define ``/`` `ifdef ``/
 `` `include ``/expansion (defaults, stringification, token-pasting, multi-line
 invocations), producing a `sourceMap` + column shifts that `SvTreeWalker` uses
 to map records back to original coordinates. Not supported: `` `ifdef `` inside
-a `` `define `` body is not evaluated (both branches concatenated — three
-UVM macros, 19 sites; plan.md §6.35 P4 fixes it); token-pasting on an unexpanded nested
-macro's result.
+a `` `define `` body was not evaluated until §6.35 P4 (fixed 2026-11-08:
+`evalConditionals`, at each use); token-pasting on an unexpanded nested
+macro's result. Macros are not expanded inside string literals.
 
 ---
 
