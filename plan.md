@@ -7783,8 +7783,8 @@ After S2-S6:
 
 ### 6.35 Include Errors as Diagnostics
 
-**Status:** planned 2026-11-08, at the user's request. P0-P2
-done 2026-11-08 (see each "outcome"); P3 next.
+**Status:** planned 2026-11-08, at the user's request. P0-P3
+done 2026-11-08 (see each "outcome"); P4 next.
 Decisions I1-I4 taken 2026-11-08: the user took the recommendations. The
 `` `include `MACRO `` form is a separate item, §6.36. Found in §6.34 S2: a file
 that `include`s a removed or misspelled file shows nothing wrong. Only
@@ -8012,6 +8012,19 @@ conditional errors.
 
 Also `docs/usage.md`: what the diagnostics say, and that files outside a
 project don't get them (I2).
+
+**P3 outcome (2026-11-08):** new `tests/integration/test_56_include_errors.sh`,
+in its own workspace:
+- the missing include is an Error over 2..27 on line 1;
+- writing the file (a watched-file "created") clears it, and `ie_c`
+  resolves into the new file;
+- deleting it brings the Error back.
+
+A trap for such tests: `(lsp-diagnostics t)` returns the current
+buffer's workspace's diagnostics, so call it from inside the file's
+buffer. `docs/usage.md` has a new "Include errors" section: the five
+messages and their severities, and that files outside a project get none
+(I2). Emacs **338/338**. §6.35's core is done; P4 remains.
 
 **P4 -- The other preprocessor errors (I3), and the conditional-in-
 `define` gap.** Decided 2026-11-08 (the user): P4 fixes the gap P0 found.

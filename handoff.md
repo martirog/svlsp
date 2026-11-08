@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-11-08 (§6.35 P2: include errors are diagnostics, schema v19).
+**Last updated:** 2026-11-08 (§6.35 P3 done: include errors reach the editor; P4 next).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -288,8 +288,14 @@ Next steps:
    malformed). That needed **schema v19**: `diagnostics.end_col` /
    `ParseError::endColumn`, a real range for the first time. No change on
    UVM / `gen`. Unit 1169/1169, Emacs 335/335, `test-integration-uvm`
-   15/15, corpus 1563 / 31, `perf-check` no regression. P3 (Emacs round
-   trip, docs/usage.md) is next.
+   15/15, corpus 1563 / 31, `perf-check` no regression.
+
+   **P3 is done** (2026-11-08): `test_56_include_errors.sh` covers the
+   missing include, the file written, then the file deleted, and
+   docs/usage.md has an "Include errors" section. Emacs **338/338**. **P4
+   is next**: evaluate conditionals inside `` `define `` bodies (UVM's 19
+   false "undefined macro" sites), then report the other preprocessor
+   errors as `'preprocess'` diagnostics.
 3. **Planned as plan.md §6.36** (2026-11-08, not started): `` `include
    `MACRO `` support, which today is a malformed directive and is skipped.
    The argument is expanded with the macros defined at that point; an
