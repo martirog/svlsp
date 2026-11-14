@@ -68,6 +68,7 @@ struct SubjectDiagnosticRow {
     int         line;
     int         col;
     std::string subject;
+    std::string message;
 };
 
 struct ImportRow {
@@ -464,6 +465,16 @@ public:
     std::vector<SymbolRow>     findSymbolsByName(const std::string& name) const;
     std::vector<DiagnosticRow> diagnosticsForFile(const std::string& path) const;
 
+    // Whether this DB or an attached library DB declares package `pkg`.
+    bool packageKnown(const std::string& pkg) const;
+
+    // Whether `pkg::name` names something (the import check, plan.md
+    // §6.37): `pkg` declares `name`, or exports it -- `export q::name`,
+    // `export q::*` of a package q that provides it, or `export *::*`
+    // (taken to cover any name: what it re-exports isn't worked out).
+    // Exports are followed in this DB and every attached one.
+    bool packageProvides(const std::string& pkg, const std::string& name) const;
+
     // All symbols whose direct enclosing scope equals `scope`
     // (pass "" for top-level symbols).  Ordered by name. With `name`, only
     // the rows of that name.
@@ -613,6 +624,10 @@ private:
     static MacroRow macroRowFromStmt(Database::Statement& stmt);
 
     std::vector<ImportRow> importsForFileId(int64_t fileId) const;
+
+    // {package, item} of each `export` package `pkg` writes, in this DB and
+    // every attached one ({"*", "*"} for `export *::*`).
+    std::vector<std::pair<std::string, std::string>> exportsOfPackage(const std::string& pkg) const;
 
     // The file_id of the file that declares top-level package `pkgName`,
     // or -1 if no such package is known.

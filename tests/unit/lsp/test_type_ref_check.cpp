@@ -31,13 +31,16 @@ struct F {
         ctrl.setTypeChecker(checkTypeRefs);
     }
 
-    // compile()'s Warnings (the primary file's 'reference' diagnostics).
+    // compile()'s Warnings (the primary file's 'reference' diagnostics; not
+    // the import check's, plan.md §6.37).
     std::vector<ParseError> compile(const std::string& path, const std::string& text,
                                     std::vector<std::string>* refreshed = nullptr)
     {
         std::vector<ParseError> warnings;
         for (auto& e : ctrl.compile(path, text, &config, nullptr, false, refreshed))
-            if (e.severity == 2) warnings.push_back(e);
+            if (e.severity == 2 && e.message.rfind("unknown package '", 0) != 0 &&
+                e.message.find("is not declared in package") == std::string::npos)
+                warnings.push_back(e);
         return warnings;
     }
 

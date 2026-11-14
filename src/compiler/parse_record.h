@@ -48,6 +48,12 @@ enum class ParseRecordKind {
                    // is the default type ("" for none; plan.md §6.21 step 1)
     Covergroup,    // `covergroup name ...`: a leaf row, so the type is declared
                    // (plan.md §6.21 step 3); coverpoints aren't recorded
+    // Leaf rows, so a package's `import p::name` of one finds it (plan.md
+    // §6.37); their ports and bodies aren't recorded.
+    Sequence,      // `sequence name ...`
+    Property,      // `property name ...`
+    Let,           // `let name(...) = ...;`
+    Checker,       // `checker name ...`
 };
 
 // Reserved ParseRecord::detail values for built-in container/data types with
@@ -131,7 +137,8 @@ struct ParseError {
 };
 
 // One package import/export statement: `import pkgName::item`, `import pkgName::*`,
-// `export pkgName::item`, or `export pkgName::*`.
+// `export pkgName::item`, `export pkgName::*`, or `export *::*` (pkgName and
+// item both "*").
 struct ImportRecord {
     std::string pkgName;   // package being imported/exported
     std::string item;      // symbol name, or "*" for wildcard
@@ -139,6 +146,10 @@ struct ImportRecord {
     std::string file{};    // empty = same as compiled file
     bool        isExport{false}; // true for `export`, false for plain `import`
     std::string scope{};   // enclosing scope chain ("" = compilation unit)
+    // 0-based columns in `file` (plan.md §6.37): of the item, and of the
+    // package name. A wildcard's item column is its package's.
+    int         column{0};
+    int         pkgColumn{0};
 };
 
 // One module/interface/program instantiation: `Foo u0 (...);` — a reference

@@ -1027,6 +1027,50 @@ public:
                currentScope());
     }
 
+    // ---- Leaf declarations a package can export (plan.md §6.37) ----
+
+    // `nettype T name;` declares a type, as a typedef does: a Typedef row
+    // whose detail is T. `nettype [scope::]T alias;` names an existing one.
+    void enterNet_type_declaration(SvParser::Net_type_declarationContext* ctx) override {
+        const auto ids = ctx->net_type_identifier();
+        if (ctx->data_type()) {
+            recordTypeRef(ctx->data_type());
+            if (!ids.empty())
+                pushId(ParseRecordKind::Typedef, ids[0]->IDENTIFIER(), ctx, currentScope(),
+                       dataTypeName(ctx->data_type()));
+        } else if (ids.size() >= 2) {
+            const std::string qualifier = ctx->class_scope()
+                                              ? classScopeName(ctx->class_scope())
+                                              : packageScopeName(ctx->package_scope());
+            recordTypeRef(ids[0]->IDENTIFIER(), qualifier);
+            pushId(ParseRecordKind::Typedef, ids[1]->IDENTIFIER(), ctx, currentScope(),
+                   (qualifier.empty() ? "" : qualifier + "::") + ids[0]->getText());
+        }
+    }
+
+    void enterSequence_declaration(SvParser::Sequence_declarationContext* ctx) override {
+        if (!ctx->sequence_identifier().empty())
+            pushId(ParseRecordKind::Sequence, ctx->sequence_identifier(0)->IDENTIFIER(), ctx,
+                   currentScope());
+    }
+
+    void enterProperty_declaration(SvParser::Property_declarationContext* ctx) override {
+        if (!ctx->property_identifier().empty())
+            pushId(ParseRecordKind::Property, ctx->property_identifier(0)->IDENTIFIER(), ctx,
+                   currentScope());
+    }
+
+    void enterLet_declaration(SvParser::Let_declarationContext* ctx) override {
+        if (auto* id = ctx->let_identifier())
+            pushId(ParseRecordKind::Let, id->IDENTIFIER(), ctx, currentScope());
+    }
+
+    void enterChecker_declaration(SvParser::Checker_declarationContext* ctx) override {
+        if (!ctx->checker_identifier().empty())
+            pushId(ParseRecordKind::Checker, ctx->checker_identifier(0)->IDENTIFIER(), ctx,
+                   currentScope());
+    }
+
     void enterGenvar_declaration(SvParser::Genvar_declarationContext* ctx) override {
         if (auto* list = ctx->list_of_genvar_identifiers())
             for (auto* gi : list->genvar_identifier())
@@ -1156,8 +1200,20 @@ public:
     // ---- Package imports / exports ----
 
     void enterPackage_export_declaration(
-        SvParser::Package_export_declarationContext* /*ctx*/) override {
+        SvParser::Package_export_declarationContext* ctx) override {
         m_inExport = true;
+        // `export *::*` has no package_import_item: recorded as package "*"
+        // (plan.md §6.37), so the import check knows the package exports
+        // whatever it imports.
+        if (ctx->package_import_item().empty()) {
+            auto* tok = ctx->getStart();
+            const int compiledLine = static_cast<int>(tok->getLine());
+            auto [file, line] = translateLine(compiledLine, m_sourceMap);
+            const int col = translateColumn(compiledLine,
+                                            static_cast<int>(tok->getCharPositionInLine()),
+                                            m_sourceMap);
+            m_imports.push_back({"*", "*", line, file, true, currentScopeChain(), col, col});
+        }
     }
 
     void exitPackage_export_declaration(
@@ -1173,8 +1229,15 @@ public:
         std::string pkg  = pkgId->getText();
         std::string item = ctx->IDENTIFIER() ? ctx->IDENTIFIER()->getText() : "*";
         auto* tok = pkgId->getSymbol();
-        auto [file, line] = translateLine(static_cast<int>(tok->getLine()), m_sourceMap);
-        m_imports.push_back({pkg, item, line, file, m_inExport, currentScopeChain()});
+        const int compiledLine = static_cast<int>(tok->getLine());
+        auto [file, line] = translateLine(compiledLine, m_sourceMap);
+        auto columnOf = [&](antlr4::Token* t) {
+            return translateColumn(static_cast<int>(t->getLine()),
+                                   static_cast<int>(t->getCharPositionInLine()), m_sourceMap);
+        };
+        const int pkgCol = columnOf(tok);
+        const int itemCol = ctx->IDENTIFIER() ? columnOf(ctx->IDENTIFIER()->getSymbol()) : pkgCol;
+        m_imports.push_back({pkg, item, line, file, m_inExport, currentScopeChain(), itemCol, pkgCol});
     }
 
     // ---- Instantiations (module/interface/program references) ----

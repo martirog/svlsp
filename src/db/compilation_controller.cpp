@@ -129,7 +129,7 @@ std::string configKey(const ProjectConfig* config, bool collectDocs, bool callee
     addField(key, config ? "config" : "no-config");
     addField(key, collectDocs ? "docs" : "no-docs");
     addField(key, calleeCheck ? "callees" : "no-callees");
-    addField(key, typeCheck && config ? "types" : "no-types");
+    addField(key, typeCheck && config ? "types+imports" : "no-types"); // §6.37
     if (!config) return key;
     for (const auto& [name, value] : config->defines) {  // a std::map: sorted
         addField(key, name);
@@ -262,6 +262,66 @@ std::vector<TypeRefRecord> parseTypeRefs(const std::string& data)
     }
     return refs;
 }
+
+std::string serializeImports(const std::vector<ImportRecord>& imports)
+{
+    std::string out;
+    for (const auto& i : imports)
+        out += i.pkgName + '\x1f' + i.item + '\x1f' + std::to_string(i.line) + '\x1f' +
+               std::to_string(i.column) + '\x1f' + std::to_string(i.pkgColumn) + '\x1f' +
+               i.file + '\n';
+    return out;
+}
+
+std::vector<ImportRecord> parseImports(const std::string& data)
+{
+    std::vector<ImportRecord> imports;
+    for (const auto& line : splitOn(data, '\n')) {
+        const auto f = splitOn(line, '\x1f');
+        if (f.size() < 6) continue;
+        ImportRecord i;
+        i.pkgName = f[0];
+        i.item = f[1];
+        i.line = toInt(f[2]);
+        i.column = toInt(f[3]);
+        i.pkgColumn = toInt(f[4]);
+        i.file = f[5];
+        imports.push_back(std::move(i));
+    }
+    return imports;
+}
+
+// The import check (plan.md §6.37): nullopt if `import pkg::item` names
+// something, else the Warning, over the package name when the package
+// itself is unknown, else over the item. `std` (built in) and `export
+// *::*` are never flagged.
+std::optional<ParseError> importProblem(const SymbolDatabase& sdb, const ImportRecord& imp)
+{
+    if (imp.pkgName == "*" || imp.pkgName == "std") return std::nullopt;
+    auto at = [&](int col, const std::string& name, std::string message) {
+        ParseError e{imp.line, col, std::move(message), imp.file, 2,
+                     col + static_cast<int>(name.size())};
+        return e;
+    };
+    if (!sdb.packageKnown(imp.pkgName))
+        return at(imp.pkgColumn, imp.pkgName, "unknown package '" + imp.pkgName + "'");
+    if (imp.item == "*" || sdb.packageProvides(imp.pkgName, imp.item)) return std::nullopt;
+    std::string message = "'" + imp.item + "' is not declared in package '" + imp.pkgName + "'";
+    std::vector<std::string> where;
+    for (const auto& r : sdb.findSymbolsByName(imp.item))
+        if (!r.scope.empty() && r.scope != imp.pkgName && r.scope.find("::") == std::string::npos &&
+            std::find(where.begin(), where.end(), r.scope) == where.end() &&
+            sdb.packageKnown(r.scope))
+            where.push_back(r.scope);
+    if (!where.empty()) {
+        std::string list;
+        for (const auto& w : where) list += (list.empty() ? "" : ", ") + w;
+        message += " (declared in " + list + ")";
+    }
+    return at(imp.column, imp.item, std::move(message));
+}
+
+std::string importSubject(const ImportRecord& imp) { return imp.pkgName + "::" + imp.item; }
 
 // `resolved[i]`: whether calls[i]'s callee resolved when it was last
 // checked (a 10th field, "1" or "0").
@@ -634,6 +694,8 @@ std::vector<ParseError> CompilationController::commit(Parsed&& parsed,
     m_sdb.replaceUnitChecks(fid, "calls", serializeCalls(walked.calls, resolvedCalls));
     m_sdb.replaceUnitChecks(fid, "types",
                             parsed.checkTypes ? serializeTypeRefs(walked.typeRefs) : "");
+    m_sdb.replaceUnitChecks(fid, "imports",
+                            parsed.checkTypes ? serializeImports(walked.imports) : "");
 
     // Always persisted (plan.md §6.4), independent of whether a caller asked
     // for `includedFiles` -- this is what lets a *different* file's own
@@ -693,6 +755,12 @@ std::vector<ParseError> CompilationController::commit(Parsed&& parsed,
         parsed.checkTypes ? runTypeCheck(path, fid, text, walked.typeRefs, unitFiles)
                           : std::vector<ParseError>{};
     refreshTypeRefDiagnostics(fid, allIncluded, refreshedFiles);
+    // Imports (plan.md §6.37), the same way: this unit's checked, then the
+    // other files' warnings this commit may have cleared.
+    const std::vector<ParseError> primaryImportDiags =
+        parsed.checkTypes ? runImportCheck(fid, walked.imports, unitFiles)
+                          : std::vector<ParseError>{};
+    refreshImportDiagnostics(fid, allIncluded, refreshedFiles);
 
     // Each file's identity as this compile read it (plan.md §6.34 S1), last:
     // the steps above may add rows for these files. An included file's rows
@@ -723,6 +791,7 @@ std::vector<ParseError> CompilationController::commit(Parsed&& parsed,
     result.insert(result.end(), primaryContextDiags.begin(), primaryContextDiags.end());
     result.insert(result.end(), primaryCallDiags.begin(), primaryCallDiags.end());
     result.insert(result.end(), primaryTypeDiags.begin(), primaryTypeDiags.end());
+    result.insert(result.end(), primaryImportDiags.begin(), primaryImportDiags.end());
     result.insert(result.end(), primaryUnresolvedDiags.begin(), primaryUnresolvedDiags.end());
     return result;
 }
@@ -778,6 +847,63 @@ std::vector<ParseError> CompilationController::runTypeCheck(
     return warningsByFile[""];
 }
 
+// The import check (plan.md §6.37) of the unit whose primary is file
+// `fid`: every `import` / `export` of a package, checked once the whole unit
+// is persisted, as 'import' Warnings with "pkg::item" as subject. Every
+// file in `unitFiles` has its old rows replaced. Returns the primary's.
+std::vector<ParseError> CompilationController::runImportCheck(
+    int64_t fid, const std::vector<ImportRecord>& imports, const std::vector<std::string>& unitFiles)
+{
+    if (!m_typeChecker) return {};
+    m_sdb.clearDiagnostics("import", unitFiles);
+    std::vector<ParseError> primary;
+    for (const auto& imp : imports) {
+        auto diag = importProblem(m_sdb, imp);
+        if (!diag) continue;
+        const int64_t fileId = imp.file.empty() ? fid : knownFileId(m_sdb, imp.file);
+        m_sdb.appendDiagnostics(fileId, {*diag}, "import", importSubject(imp));
+        if (imp.file.empty()) primary.push_back(std::move(*diag));
+    }
+    return primary;
+}
+
+// Re-checks the 'import' rows of files outside the unit just committed
+// (`fid` and `included`), as refreshTypeRefDiagnostics does the
+// 'reference' ones: a package compiled after its importers, or a name just
+// added to it. Deletes the ones that pass; their files go to
+// `refreshedFiles`.
+void CompilationController::refreshImportDiagnostics(int64_t fid,
+                                                     const std::vector<std::string>& included,
+                                                     std::vector<std::string>* refreshedFiles)
+{
+    if (!m_typeChecker) return;
+    for (const auto& row : m_sdb.diagnosticsFromSource("import")) {
+        if (row.fileId == fid ||
+            std::find(included.begin(), included.end(), row.filePath) != included.end())
+            continue;
+        const size_t sep = row.subject.find("::");
+        if (sep == std::string::npos) continue;
+        ImportRecord imp;
+        imp.pkgName = row.subject.substr(0, sep);
+        imp.item = row.subject.substr(sep + 2);
+        imp.line = row.line;
+        imp.file = row.filePath;
+        // A row is over the package name if the package was unknown, else
+        // over the item; a package now known moves it to the item, which
+        // follows its `::` (as written nearly always).
+        const bool overPackage = row.message.rfind("unknown package", 0) == 0;
+        imp.pkgColumn = overPackage ? row.col : 0;
+        imp.column = overPackage ? row.col + static_cast<int>(sep) + 2 : row.col;
+        const auto now = importProblem(m_sdb, imp);
+        if (now && now->message == row.message) continue;
+        m_sdb.deleteDiagnostic(row.fileId, row.line, row.col, "import");
+        if (now) m_sdb.appendDiagnostics(row.fileId, {*now}, "import", row.subject);
+        if (refreshedFiles && std::find(refreshedFiles->begin(), refreshedFiles->end(),
+                                        row.filePath) == refreshedFiles->end())
+            refreshedFiles->push_back(row.filePath);
+    }
+}
+
 // The missing-required-argument check (plan.md §6.23), run once every
 // symbol of the unit is persisted, so a callee declared later in the same
 // file, or in one of its `include's, resolves. Each call's callee is
@@ -826,7 +952,7 @@ void CompilationController::recheckUnits(const std::vector<std::string>& units,
                                          const RecheckNames& names)
 {
     const auto start = std::chrono::steady_clock::now();
-    size_t calls = 0, refs = 0;
+    size_t calls = 0, refs = 0, imports = 0;
     for (const auto& unit : units) {
         const int64_t fid = m_sdb.fileIdFor(unit);
         if (fid < 0) continue;
@@ -848,6 +974,24 @@ void CompilationController::recheckUnits(const std::vector<std::string>& units,
         if (const std::string types = m_sdb.unitChecks(fid, "types"); !types.empty())
             for (auto& r : parseTypeRefs(types))
                 if (namesOneOf(names.changed, r.name)) unitRefs.push_back(std::move(r));
+        // Imports (plan.md §6.37): one whose package or name changed or
+        // was added. Their rows are replaced here, from the stored records.
+        if (m_typeChecker) {
+            const std::string stored = m_sdb.unitChecks(fid, "imports");
+            for (const auto& imp : stored.empty() ? std::vector<ImportRecord>{}
+                                                  : parseImports(stored)) {
+                const auto touched = [&](const std::string& n) {
+                    return namesOneOf(names.changed, n) || namesOneOf(names.added, n);
+                };
+                if (!touched(imp.pkgName) && !touched(imp.item)) continue;
+                const int64_t fileId = imp.file.empty() ? fid : knownFileId(m_sdb, imp.file);
+                m_sdb.deleteDiagnostic(fileId, imp.line, imp.column, "import");
+                m_sdb.deleteDiagnostic(fileId, imp.line, imp.pkgColumn, "import");
+                if (const auto diag = importProblem(m_sdb, imp))
+                    m_sdb.appendDiagnostics(fileId, {*diag}, "import", importSubject(imp));
+                ++imports;
+            }
+        }
         if (callIdx.empty() && unitRefs.empty()) continue;
 
         const auto text = readFile(unit);
@@ -883,7 +1027,7 @@ void CompilationController::recheckUnits(const std::vector<std::string>& units,
         const auto ms = std::chrono::duration<double, std::milli>(
                             std::chrono::steady_clock::now() - start).count();
         *m_log << "[recheck]  " << units.size() << " units, " << calls << " calls, " << refs
-               << " type refs, " << static_cast<int>(ms) << " ms\n";
+               << " type refs, " << imports << " imports, " << static_cast<int>(ms) << " ms\n";
         m_log->flush();
     }
 }

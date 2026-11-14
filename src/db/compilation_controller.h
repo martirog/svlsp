@@ -152,7 +152,8 @@ public:
     // The checker the declared-type check (plan.md §6.21 step 3, 'reference'
     // diagnostics, Warnings) uses -- in practice lsp/symbol_resolution.h's
     // checkTypeRefs. It runs only on files compiled under a project config;
-    // unset (the default), it doesn't run.
+    // unset (the default), it doesn't run -- nor does the import check
+    // (plan.md §6.37, 'import' diagnostics, Warnings), which it turns on.
     void setTypeChecker(TypeChecker checker) { m_typeChecker = std::move(checker); }
 
     // Runs the parse (SvTreeWalker::walk's signature). Unset, the walk runs
@@ -195,7 +196,8 @@ public:
     // files' texts on disk, the checks whose result `names` can change
     // (plan.md §6.34 D3): a call whose callee was unresolved and is now
     // declared, or whose callee's name changed; a declared-type reference
-    // whose name changed. What a refresh does for the
+    // whose name changed; an import whose package or name changed or was
+    // added (plan.md §6.37). What a refresh does for the
     // units it didn't recompile. Their rows are replaced one by one; the
     // other checks' rows stay.
     void recheckUnits(const std::vector<std::string>& units, const RecheckNames& names);
@@ -227,6 +229,10 @@ private:
                              std::vector<MacroRow>* contextMacros) const;
     void refreshTypeRefDiagnostics(int64_t fid, const std::vector<std::string>& included,
                                    std::vector<std::string>* refreshedFiles);
+    std::vector<ParseError> runImportCheck(int64_t fid, const std::vector<ImportRecord>& imports,
+                                           const std::vector<std::string>& unitFiles);
+    void refreshImportDiagnostics(int64_t fid, const std::vector<std::string>& included,
+                                  std::vector<std::string>* refreshedFiles);
     Walker          m_walker;
 
     static std::string hashContent(const std::string& text);

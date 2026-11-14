@@ -80,7 +80,8 @@ lsp::Array<lsp::Diagnostic> LanguageServer::storedDiagnostics(const std::string&
 {
     std::vector<ParseError> errs;
     for (const auto& r : m_symbolDb.diagnosticsForFile(path)) {
-        if (holdBack && (r.source == "reference" || r.source == "call" || r.source == "library"))
+        if (holdBack && (r.source == "reference" || r.source == "call" || r.source == "import" ||
+                         r.source == "library"))
             continue;
         errs.push_back({r.line, r.col, r.message, {}, r.severity, r.endCol});
     }

@@ -224,6 +224,30 @@ TEST_CASE("refresh: removing a class flags its uses in an unchanged file; restor
     CHECK_FALSE(f.hasMessage(f.file("use.sv"), "unknown type"));
 }
 
+TEST_CASE("refresh: removing an imported name flags an unchanged importer; restoring it clears it",
+          "[db][refresh][d3][phase6.37]")
+{
+    RF f("d3-import");
+    const std::string withType = "package ri_p; typedef int ri_t; endpackage\n";
+    f.write("pkg.sv", withType);
+    f.write("use.sv", "module ri_m;\n  import ri_p::ri_t;\nendmodule\n");
+    f.list({"pkg.sv", "use.sv"});
+    f.refresh();
+    REQUIRE_FALSE(f.hasMessage(f.file("use.sv"), "is not declared in package"));
+
+    f.write("pkg.sv", "package ri_p; endpackage\n", 30);
+    auto r = f.refresh();
+    CHECK(f.parsed() == std::vector<std::string>{f.file("pkg.sv")}); // use.sv not parsed
+    CHECK(r.rechecked);
+    CHECK(f.hasMessage(f.file("use.sv"), "'ri_t' is not declared in package 'ri_p'"));
+    CHECK(std::find(r.changedDiagnostics.begin(), r.changedDiagnostics.end(),
+                    f.file("use.sv")) != r.changedDiagnostics.end());
+
+    f.write("pkg.sv", withType, 20);
+    r = f.refresh();
+    CHECK_FALSE(f.hasMessage(f.file("use.sv"), "is not declared in package"));
+}
+
 TEST_CASE("refresh: a callee that gains a required argument flags an unchanged caller",
           "[db][refresh][d3]")
 {

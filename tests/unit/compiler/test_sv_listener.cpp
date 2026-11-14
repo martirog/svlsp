@@ -1402,6 +1402,62 @@ TEST_CASE("import inside a package that also exports is recorded distinctly",
     CHECK(result.imports[1].isExport);
 }
 
+TEST_CASE("an import records the columns of its package and its item (plan.md §6.37)",
+          "[compiler][listener][import][phase6.37]") {
+    auto result = walkSource(
+        "module m;\n"
+        "  import pa::Item, pb::*;\n"
+        "endmodule\n");
+    REQUIRE(result.imports.size() == 2);
+    CHECK(result.imports[0].line == 2);
+    CHECK(result.imports[0].pkgColumn == 9);
+    CHECK(result.imports[0].column == 13);
+    CHECK(result.imports[1].pkgColumn == 19);
+    CHECK(result.imports[1].column == 19); // a wildcard's is its package's
+}
+
+TEST_CASE("`export *::*` is recorded as an export of package '*' (plan.md §6.37)",
+          "[compiler][listener][import][export][phase6.37]") {
+    auto result = walkSource("package my_pkg;\n  export *::*;\nendpackage\n");
+    REQUIRE(result.parseErrors.empty());
+    REQUIRE(result.imports.size() == 1);
+    CHECK(result.imports[0].pkgName == "*");
+    CHECK(result.imports[0].item == "*");
+    CHECK(result.imports[0].isExport);
+    CHECK(result.imports[0].scope == "my_pkg");
+    CHECK(result.imports[0].line == 2);
+}
+
+TEST_CASE("sequences, properties, lets, checkers and nettypes are recorded (plan.md §6.37)",
+          "[compiler][listener][phase6.37]") {
+    const auto r = walkSource(
+        "package sp;\n"
+        "  sequence seq1; 1; endsequence\n"
+        "  property prop1; 1; endproperty\n"
+        "  let my_let(x) = x + 1;\n"
+        "  nettype logic nt_t;\n"
+        "  nettype nt_t nt_alias;\n"
+        "  checker chk; endchecker\n"
+        "  int after;\n"
+        "endpackage\n");
+    REQUIRE(r.parseErrors.empty());
+    const std::pair<ParseRecordKind, const char*> expected[] = {
+        {ParseRecordKind::Sequence, "seq1"}, {ParseRecordKind::Property, "prop1"},
+        {ParseRecordKind::Let, "my_let"},    {ParseRecordKind::Typedef, "nt_t"},
+        {ParseRecordKind::Typedef, "nt_alias"}, {ParseRecordKind::Checker, "chk"},
+        {ParseRecordKind::Signal, "after"}};
+    int line = 2;
+    for (const auto& [kind, name] : expected) {
+        INFO(name);
+        auto* rec = findRecord(r.records, kind, name);
+        REQUIRE(rec != nullptr);
+        CHECK(rec->scope == "sp");
+        CHECK(rec->line == line++);
+    }
+    CHECK(findRecord(r.records, ParseRecordKind::Typedef, "nt_t")->detail.empty()); // built in, as for a typedef
+    CHECK(findRecord(r.records, ParseRecordKind::Typedef, "nt_alias")->detail == "nt_t");
+}
+
 // ---------------------------------------------------------------------------
 // Programs
 // ---------------------------------------------------------------------------

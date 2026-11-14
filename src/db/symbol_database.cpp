@@ -37,6 +37,10 @@ static std::string kindStr(ParseRecordKind k)
     case ParseRecordKind::Clocking:    return "Clocking";
     case ParseRecordKind::TypeParameter: return "TypeParameter";
     case ParseRecordKind::Covergroup:    return "Covergroup";
+    case ParseRecordKind::Sequence:      return "Sequence";
+    case ParseRecordKind::Property:      return "Property";
+    case ParseRecordKind::Let:           return "Let";
+    case ParseRecordKind::Checker:       return "Checker";
     }
     return "Unknown";
 }
@@ -782,14 +786,14 @@ void SymbolDatabase::clearDiagnostics(const std::string& source)
 std::vector<SubjectDiagnosticRow> SymbolDatabase::diagnosticsFromSource(
     const std::string& source) const
 {
-    auto q = m_db.prepare("SELECT d.file_id, f.path, d.line, d.col, d.subject "
+    auto q = m_db.prepare("SELECT d.file_id, f.path, d.line, d.col, d.subject, d.message "
                           "FROM diagnostics d JOIN files f ON f.id = d.file_id "
                           "WHERE d.source = ? ORDER BY f.path, d.line, d.col");
     q.bind(1, source);
     std::vector<SubjectDiagnosticRow> rows;
     while (q.step())
         rows.push_back({q.columnInt(0), q.columnText(1), static_cast<int>(q.columnInt(2)),
-                        static_cast<int>(q.columnInt(3)), q.columnText(4)});
+                        static_cast<int>(q.columnInt(3)), q.columnText(4), q.columnText(5)});
     return rows;
 }
 
@@ -970,6 +974,49 @@ void SymbolDatabase::collectExportedImports(
             outSpecific.emplace_back(imp.pkgName, imp.item);
         }
     }
+}
+
+bool SymbolDatabase::packageKnown(const std::string& pkg) const
+{
+    for (const auto& r : findSymbolsInScope("", pkg))
+        if (r.kind == "Package") return true;
+    return false;
+}
+
+std::vector<std::pair<std::string, std::string>> SymbolDatabase::exportsOfPackage(
+    const std::string& pkg) const
+{
+    // In every schema: the package's own exports (scope = the package; a
+    // pre-v14 row has no scope and counts in the package's declaring file).
+    std::vector<std::pair<std::string, std::string>> out;
+    for (size_t i = 0; i <= m_attachedLibraryPaths.size(); ++i) {
+        const std::string sch = i == 0 ? "" : "lib" + std::to_string(i - 1) + ".";
+        auto stmt = m_db.prepare(
+            "SELECT im.pkg_name, im.item FROM " + sch + "imports im WHERE im.is_export = 1 AND "
+            "(im.scope = ? OR (im.scope = '' AND im.file_id IN (SELECT file_id FROM " + sch +
+            "symbols WHERE kind = 'Package' AND name = ?)))");
+        stmt.bind(1, pkg).bind(2, pkg);
+        while (stmt.step()) out.emplace_back(stmt.columnText(0), stmt.columnText(1));
+    }
+    return out;
+}
+
+bool SymbolDatabase::packageProvides(const std::string& pkg, const std::string& name) const
+{
+    std::vector<std::string> todo{pkg}, visited;
+    while (!todo.empty()) {
+        const std::string p = std::move(todo.back());
+        todo.pop_back();
+        if (std::find(visited.begin(), visited.end(), p) != visited.end()) continue;
+        visited.push_back(p);
+        if (p == "*") return true; // `export *::*`
+        if (!findSymbolsInScope(p, name).empty()) return true;
+        for (auto& [from, item] : exportsOfPackage(p)) {
+            if (item == "*") todo.push_back(std::move(from));
+            else if (item == name) return true;
+        }
+    }
+    return false;
 }
 
 std::vector<SymbolRow> SymbolDatabase::symbolsForFile(

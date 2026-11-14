@@ -59,6 +59,9 @@ lsp::SymbolKind symbolKindFor(const std::string& kind)
     if (kind == "Clocking")    return lsp::SymbolKind::Event;
     if (kind == "TypeParameter") return lsp::SymbolKind::TypeParameter;
     if (kind == "Covergroup")    return lsp::SymbolKind::Class;
+    if (kind == "Sequence" || kind == "Property" || kind == "Let")
+        return lsp::SymbolKind::Function;
+    if (kind == "Checker")       return lsp::SymbolKind::Module;
     return lsp::SymbolKind::Variable;
 }
 
@@ -84,6 +87,9 @@ lsp::CompletionItemKind completionKindFor(const std::string& kind)
     if (kind == "Clocking")    return lsp::CompletionItemKind::Event;
     if (kind == "TypeParameter") return lsp::CompletionItemKind::TypeParameter;
     if (kind == "Covergroup")    return lsp::CompletionItemKind::Class;
+    if (kind == "Sequence" || kind == "Property" || kind == "Let")
+        return lsp::CompletionItemKind::Function;
+    if (kind == "Checker")       return lsp::CompletionItemKind::Module;
     return lsp::CompletionItemKind::Variable;
 }
 

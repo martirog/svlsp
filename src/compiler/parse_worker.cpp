@@ -164,6 +164,8 @@ void put(Writer& w, const ImportRecord& i)
     w.str(i.file);
     w.u8(i.isExport ? 1 : 0);
     w.str(i.scope);
+    w.i32(i.column);
+    w.i32(i.pkgColumn);
 }
 
 void get(Reader& r, ImportRecord& i)
@@ -174,6 +176,8 @@ void get(Reader& r, ImportRecord& i)
     i.file     = r.str();
     i.isExport = r.u8() != 0;
     i.scope    = r.str();
+    i.column    = r.i32();
+    i.pkgColumn = r.i32();
 }
 
 void put(Writer& w, const InstantiationRecord& i)
