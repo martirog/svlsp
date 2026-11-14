@@ -8209,6 +8209,74 @@ kinds; it is independent of P2-P4.
 - **Left for later**, as planned: definition on the directive itself
   (opening the resolved file).
 
+### 6.37 The Import Check (`import p::x` of a Name `p` Doesn't Have)
+
+**Status:** done 2026-11-14 (see "Outcome").
+
+**Why.** Found on the user's `policy` project (2026-11-14): a typedef
+written the wrong way round (`typedef policy_queue_t policy_bases[$];`)
+declared `policy_bases`, not `policy_queue_t`. The §6.21 check flagged each
+use of `policy_queue_t`, but not `import policy_api_pkg::policy_queue_t;`
+itself, which is where a simulator stops and where the user looked.
+
+**Decisions (2026-11-14):**
+- `import p::x;` / `export p::x;` whose package doesn't provide `x` is a
+  Warning (as §6.21's: a gap in what svlsp records must not turn into an
+  Error), "'x' is not declared in package 'p'", "(declared in q, ...)"
+  added when other packages declare it. Over the name.
+- `import p::...` of a package no DB declares: "unknown package 'p'", over
+  the package name. `std` is never flagged.
+- "Provides": `p` declares `x` (any row in scope `p`, library DBs
+  included), or exports it: `export q::x`, `export q::*` of a `q` that
+  provides it, or `export *::*` (taken to cover anything).
+- Source `'import'`, subject `"p::x"`, only under a project config and
+  only with a TypeChecker set (it rides §6.21's switch); held back while
+  indexing.
+
+**Outcome (2026-11-14):**
+- **Walker:** `ImportRecord` gained `column` (the item's; a wildcard's is
+  the package's) and `pkgColumn`, in the worker encoding too. `export *::*`
+  is recorded as an export of package `*` (it was dropped);
+  `findSymbolsVisibleAt` finds nothing in scope `*`, so visibility is
+  unchanged.
+- **Rows the check needed** (probed first: an `import` of each would have
+  been a false Warning): new leaf kinds `Sequence`, `Property`, `Let`,
+  `Checker` (document symbol / completion kinds Function or Module; not
+  Value, Callable or TypeLike); `nettype T name;` is a `Typedef` with
+  detail T, and its data type a type reference.
+- **Check:** `importProblem` (compilation_controller.cpp) over
+  `SymbolDatabase::packageKnown` / `packageProvides`. Run at commit after
+  the §6.21 check (`runImportCheck`); `refreshImportDiagnostics` re-checks
+  other files' rows after every commit and replaces or deletes them (a
+  row's message tells whether it is over the package). Stored as
+  `unit_checks` kind `"imports"`, so `recheckUnits` re-checks an import
+  whose package or name a refresh changed. `SubjectDiagnosticRow` gained
+  the message. The inputs key's `types` field became `types+imports`, so
+  units cached before the check are recompiled once.
+- **Tests:** 3 listener cases (columns, `export *::*`, the new kinds), 10
+  `[importcheck]` controller cases, 1 refresher case, `test_57` (Emacs:
+  the Warning's range and message, cleared by an edit). Two §6.21 cases
+  now also get an import Warning; their fixture counts only 'reference'
+  ones.
+- **Real inputs:** UVM `--build-db` 0 diagnostics, 18736 symbols (no
+  sequences, properties, lets, checkers or nettypes). `policy`: with the
+  original typedef, `policy_mixin.sv:16` is flagged; it also reports
+  `type_wrapper_pkg` unknown (its file isn't in the config's `files`).
+- **Verified:** unit 1212/1212, release 0 warnings, Emacs 342/342,
+  `test-integration-uvm` 15/15, corpus 1563 / 31 (log
+  `build/release/corpus_2026-11-14.log`), `perf-check` small ok. `uvm`
+  flagged edit -> diagnostics (server 34.7 -> ~48 ms) and typing p90
+  against its 2026-10-26 baseline, but HEAD (e6a3ae6, built in a
+  worktree) measures the same, alternated twice: edit server 49.1 / 41.6
+  ms (HEAD) vs 47.4 / 40.1 (this change). The baseline predates later
+  work; refresh it with `make perf-baseline SCENARIO=uvm`.
+- **Exports are followed into library DBs** too
+  (`SymbolDatabase::exportsOfPackage`, every schema), unlike
+  `findSymbolsVisibleAt`'s chain: a library package re-exporting another
+  would otherwise be a false Warning. Tested.
+- **Left open**, as for §6.21: an edit removing a name re-flags importers
+  only at a refresh or their recompile, not at once (§6.4 name index).
+
 ---
 
 ## Appendix A — Technology Stack Summary

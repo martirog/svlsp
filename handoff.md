@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-11-08 (§6.35 and §6.36 done: include / preprocessor errors, `include `MACRO).
+**Last updated:** 2026-11-14 (§6.37 done: the import check).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -315,11 +315,35 @@ Next steps:
    since I1's malformed Warning is gone. The S1 cache needed nothing new.
    Unit 1198/1198, Emacs 340/340, `test-integration-uvm` 15/15, corpus
    1563 / 31, `perf-check` no regression.
-4. Optional, LL cost on files with syntax errors (only they reach LL now):
+4. **plan.md §6.37 is done** (2026-11-14, 4eba985): `import
+   p::x;` / `export p::x;` of a name `p` doesn't provide is an `'import'`
+   Warning over the name ("'x' is not declared in package 'p'"), and an
+   unknown package is one over the package name. Found on the user's
+   `policy` project, where only the uses were flagged. It needed rows for
+   `sequence` / `property` / `let` / `checker` (new leaf kinds) and
+   `nettype` (a Typedef), and `export *::*` recorded (package `*`).
+   Unit 1212/1212, Emacs 342/342 (test_57 new), `test-integration-uvm`
+   15/15, corpus 1563 / 31, UVM `--build-db` 0 diagnostics. `perf-check`
+   uvm flags edit -> diagnostics against its 2026-10-26 baseline, but HEAD
+   measures the same: refresh the baseline.
+5. Optional, LL cost on files with syntax errors (only they reach LL now):
    the remaining LL time is true ambiguity in `primary` (decision 1068)
    and `hierarchical_identifier` (1103): `a.b` is a name, a name + select
    `.b`, or a name + the method loop. Profile with `tools/grammar_profile.sh
    -- --profile`.
+
+What §6.37 changes for other work:
+- New kinds **`Sequence`, `Property`, `Let`, `Checker`** (leaf rows, not
+  Value / Callable / TypeLike); a `nettype` is a `Typedef`. Anything
+  switching on kind strings must consider them.
+- `ImportRecord` has `column` / `pkgColumn` (last members; in
+  `parse_worker.cpp`'s encoding). `export *::*` is an ImportRecord with
+  package and item `"*"`.
+- Diagnostics have the source `'import'` (Warning, subject `"p::x"`, held
+  back while indexing); `unit_checks` kind `"imports"`. It runs only with
+  a TypeChecker set, like §6.21's. `SubjectDiagnosticRow` has `message`.
+- The inputs key's `types` field is `types+imports`: every unit compiled
+  before misses the cache once.
 
 What §6.35 changes for other work:
 - Diagnostics have the sources `'include'` and `'preprocess'` (neither

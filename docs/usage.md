@@ -300,6 +300,30 @@ unbalanced one is reported at the line that uses the macro, with
 "in the body of macro `` `M ``". Macros inside a string literal are not
 expanded.
 
+## Import errors
+
+In a file that belongs to a project, an `import` or `export` that names
+something svlsp can't find is a Warning. The squiggle covers the name it
+can't find.
+
+| Message | Meaning |
+|---|---|
+| `'x' is not declared in package 'p'` | `import p::x;` or `export p::x;`, but `p` declares no `x` and doesn't export one. If another package declares `x`, the message adds "(declared in q)". |
+| `unknown package 'p'` | `import p::...;` of a package neither the project nor an attached library DB declares. Often a file the project's `files` doesn't list. |
+
+A name counts as declared by `p` if `p` declares it (any kind: class,
+typedef, enum literal, parameter, variable, function, task, covergroup,
+sequence, property, `let`, checker, nettype), or if `p` exports it
+(`export q::x`, `export q::*` of a package that has it, or `export *::*`).
+`import std::*` is never flagged.
+
+Like unknown types, import errors are held back while a project indexes.
+A warning goes away as soon as the package, or the name in it, is
+compiled. Removing a name from a package re-flags the files that import
+it on the next refresh
+([Branch switches](#branch-switches-file-watching-and-svlsprefresh)) or
+when they are recompiled.
+
 ## A project database built ahead: `database`
 
 A project's database is a file, so it lasts between sessions. By default
