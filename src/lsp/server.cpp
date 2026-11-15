@@ -1,4 +1,5 @@
 #include "server.h"
+#include "lsp/unix_socket.h"
 #include "lsp/symbol_resolution.h"
 #include "lsp/symbol_utils.h"
 #include "lsp/library_db_builder.h"
@@ -55,11 +56,33 @@ LanguageServer::LanguageServer(lsp::io::Stream& io, std::ostream* logStream,
     registerHandlers();
 }
 
+std::string LanguageServer::initializeRoot(const lsp::InitializeParams& params)
+{
+    if (!params.rootUri.isNull()) {
+        std::string path{params.rootUri->path()};
+        if (!path.empty()) return path;
+    }
+    if (params.rootPath && !params.rootPath->isNull() && !params.rootPath->value().empty())
+        return params.rootPath->value();
+    if (params.workspaceFolders && !params.workspaceFolders->isNull() &&
+        !params.workspaceFolders->value().empty())
+        return std::string{params.workspaceFolders->value().front().uri.path()};
+    return "";
+}
+
 int LanguageServer::run()
 {
     try {
         while (m_state.isRunning())
             m_messageHandler.processIncomingMessages();
+    } catch (const lsp::io::Error& e) {
+        // The client went away without `exit` (or a daemon's session was
+        // cut by its stop): an end, not a fault of the server.
+        std::cerr << "svlsp: connection closed: " << e.what() << '\n';
+        return 1;
+    } catch (const lsp::ConnectionError& e) {
+        std::cerr << "svlsp: connection closed: " << e.what() << '\n';
+        return 1;
     } catch (const std::exception& e) {
         std::cerr << "svlsp: fatal error: " << e.what() << '\n';
         return 1;
@@ -728,6 +751,15 @@ void LanguageServer::registerHandlers()
     m_messageHandler
         .add<lsp::requests::Initialize>(
             [this](lsp::InitializeParams&& params) {
+                if (!m_requiredRoot.empty()) {
+                    const std::string root = initializeRoot(params);
+                    if (!root.empty() && unix_socket::normalizeRoot(root) != m_requiredRoot)
+                        throw lsp::RequestError(
+                            lsp::MessageError::RequestFailed,
+                            "svlsp: this server serves " + m_requiredRoot + ", not " +
+                                unix_socket::normalizeRoot(root) +
+                                " (start `svlsp --socket` from that project)");
+                }
                 auto result = m_state.handleInitialize(std::move(params));
                 std::lock_guard lock{m_dataMutex};
                 m_projects.setExplicitConfigPath(m_state.explicitProjectConfigPath());

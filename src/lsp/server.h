@@ -57,7 +57,18 @@ public:
     // a ParseWorker's. Call before run().
     void setWalker(CompilationController::Walker walker) { m_compiler.setWalker(std::move(walker)); }
 
+    // The project root a `svlsp --daemon` serves (plan.md §6.38,
+    // unix_socket::normalizeRoot form): an `initialize` naming another root
+    // is refused with an error naming this one. Call before run(); unset,
+    // any root.
+    void setRequiredRoot(std::string root) { m_requiredRoot = std::move(root); }
+
+    // The root an `initialize` names: rootUri, else rootPath, else the
+    // first workspace folder; "" when none.
+    static std::string initializeRoot(const lsp::InitializeParams& params);
+
 private:
+    std::string           m_requiredRoot;
     ServerState           m_state;
     DocumentStore         m_store;
     Database              m_db;          // in-memory for now; file path in Phase 6

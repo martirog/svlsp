@@ -268,6 +268,9 @@ add_library(svlsp_lib STATIC
     src/lsp/project_registry.cpp
     src/lsp/library_db_builder.cpp
     src/lsp/server.cpp
+    src/lsp/socket_daemon.cpp
+    src/lsp/socket_relay.cpp
+    src/lsp/unix_socket.cpp
 )
 target_include_directories(svlsp_lib PUBLIC src)
 target_link_libraries(svlsp_lib PUBLIC lsp svlsp_compiler svlsp_db svlsp_options)
@@ -318,6 +321,7 @@ add_executable(unit_tests
     tests/unit/lsp/test_references_library.cpp
     tests/unit/lsp/test_type_ref_check.cpp
     tests/unit/lsp/test_import_check.cpp
+    tests/unit/lsp/test_unix_socket.cpp
     tests/unit/lsp/test_rename.cpp
     tests/unit/lsp/test_signature_help.cpp
     tests/unit/lsp/test_macro_resolution.cpp

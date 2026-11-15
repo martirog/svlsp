@@ -75,6 +75,10 @@ public:
     // Every config loaded so far.
     std::vector<std::string> configPaths() const;
 
+    // The config discovery finds for a file in `fileDir`, searching up
+    // from it ("" = none).
+    static std::string discoverConfigPath(const std::string& fileDir);
+
 private:
     CompilationController& m_controller;
     SymbolDatabase&         m_sdb;
@@ -82,6 +86,5 @@ private:
     std::map<std::string, std::unique_ptr<ProjectConfig>> m_loaded;
     NewProjectCallback      m_onNew;
 
-    static std::string discoverConfigPath(const std::string& fileDir);
     const ProjectConfig* loadAndCache(const std::string& configPath);
 };

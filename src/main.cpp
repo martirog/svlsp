@@ -2,12 +2,17 @@
 #include "lsp/server.h"
 #include "lsp/library_db_builder.h"
 #include "lsp/project_manifest_parser.h"
+#include "lsp/project_registry.h"
+#include "lsp/socket_daemon.h"
+#include "lsp/socket_relay.h"
+#include "lsp/unix_socket.h"
 #include "compiler/filelist_parser.h"
 #include "compiler/project_config.h"
 #include "compiler/parse_worker.h"
 #include "db/db_lock.h"
 #include "svlsp_git_version.h"
 #include <algorithm>
+#include <csignal>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -232,8 +237,13 @@ int main(int argc, char** argv)
 
     // The parse worker the server starts (plan.md §6.33 C1): the socket to
     // the server is on stdin. Not a user-facing flag.
-    if (argc == 2 && std::strcmp(argv[1], "--internal-parse-worker") == 0)
+    if (argc == 2 && std::strcmp(argv[1], "--internal-parse-worker") == 0) {
+        // A daemon's stop signals are blocked, and the mask survives exec.
+        sigset_t none;
+        sigemptyset(&none);
+        sigprocmask(SIG_SETMASK, &none, nullptr);
         return runParseWorker(0);
+    }
 
     std::ofstream logFile;
     std::ostream* logStream = nullptr;
@@ -251,6 +261,16 @@ int main(int argc, char** argv)
     bool inProcessParse = false;
     std::size_t parseWorkerMaxRssMb = ParseWorker::Options{}.maxRssMb;
     unsigned parseWorkerIdleSeconds = ParseWorker::Options{}.idleSeconds;
+    // The Unix-socket modes (plan.md §6.38).
+    enum class Mode { Stdio, Relay, Daemon, SocketPath } mode = Mode::Stdio;
+    std::string socketPath;  // --socket / --daemon [PATH]; "" = the default
+    std::string rootDir;     // --root DIR, or --socket-path's [DIR]
+    std::chrono::seconds idleTimeout = SocketDaemon::Options{}.idleTimeout;
+    bool preload = true;
+    // The flags a relay passes on to the server it starts (paths absolute:
+    // the server runs in /).
+    std::vector<std::string> serverArgs;
+    auto absolute = [](const char* p) { return std::filesystem::absolute(p).string(); };
     for (int i = 1; i < argc; ++i) {
         // A flag's value is required to be the very next argv entry; if
         // that's missing, or looks like another flag (starts with "--"),
@@ -270,6 +290,7 @@ int main(int argc, char** argv)
                 return 1;
             }
             const char* logPath = argv[++i];
+            serverArgs.insert(serverArgs.end(), {"--log-files", absolute(logPath)});
             logFile.open(logPath, std::ios::out | std::ios::app);
             if (logFile)
                 logStream = &logFile;
@@ -283,6 +304,7 @@ int main(int argc, char** argv)
                 return 1;
             }
             const char* logPath = argv[++i];
+            serverArgs.insert(serverArgs.end(), {"--log-requests", absolute(logPath)});
             requestLogFile.open(logPath, std::ios::out | std::ios::app);
             if (requestLogFile)
                 requestLog = &requestLogFile;
@@ -322,6 +344,37 @@ int main(int argc, char** argv)
             ++i;
         } else if (std::strcmp(argv[i], "--in-process-parse") == 0) {
             inProcessParse = true;
+            serverArgs.push_back(argv[i]);
+        } else if (std::strcmp(argv[i], "--socket") == 0 ||
+                   std::strcmp(argv[i], "--daemon") == 0 ||
+                   std::strcmp(argv[i], "--socket-path") == 0) {
+            const bool relay = std::strcmp(argv[i], "--socket") == 0;
+            const bool print = std::strcmp(argv[i], "--socket-path") == 0;
+            mode = relay ? Mode::Relay : print ? Mode::SocketPath : Mode::Daemon;
+            // An optional value: the next argument, unless it is a flag.
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                if (print) rootDir = argv[++i];
+                else socketPath = absolute(argv[++i]);
+            }
+        } else if (std::strcmp(argv[i], "--root") == 0) {
+            if (nextIsMissingOrFlag) {
+                std::cerr << "svlsp: --root requires a <dir> argument immediately after it\n";
+                return 1;
+            }
+            rootDir = argv[++i];
+        } else if (std::strcmp(argv[i], "--idle-timeout") == 0) {
+            const auto d = nextIsMissingOrFlag ? std::nullopt
+                                               : unix_socket::parseDuration(argv[i + 1]);
+            if (!d) {
+                std::cerr << "svlsp: --idle-timeout requires a duration immediately after it "
+                             "(45s, 30m, 24h, 2d; 0 = never)\n";
+                return 1;
+            }
+            idleTimeout = *d;
+            serverArgs.insert(serverArgs.end(), {argv[i], argv[i + 1]});
+            ++i;
+        } else if (std::strcmp(argv[i], "--no-preload") == 0) {
+            preload = false;
         } else if (std::strcmp(argv[i], "--parse-worker-idle") == 0) {
             char* end = nullptr;
             const char* value = nextIsMissingOrFlag ? "" : argv[i + 1];
@@ -332,6 +385,7 @@ int main(int argc, char** argv)
                 return 1;
             }
             parseWorkerIdleSeconds = static_cast<unsigned>(seconds);
+            serverArgs.insert(serverArgs.end(), {argv[i], argv[i + 1]});
             ++i;
         } else if (std::strcmp(argv[i], "--parse-worker-max-rss") == 0) {
             char* end = nullptr;
@@ -343,6 +397,7 @@ int main(int argc, char** argv)
                 return 1;
             }
             parseWorkerMaxRssMb = mb;
+            serverArgs.insert(serverArgs.end(), {argv[i], argv[i + 1]});
             ++i;
         }
     }
@@ -371,6 +426,35 @@ int main(int argc, char** argv)
         return buildDb(buildDbConfigPath, buildDbOutputPath, collectDocs, waitForLock, buildJobs);
     }
 
+    const std::string root = unix_socket::normalizeRoot(
+        rootDir.empty() ? std::filesystem::current_path().string() : rootDir);
+    if (mode == Mode::SocketPath) {
+        std::cout << unix_socket::defaultPath(root) << '\n';
+        return 0;
+    }
+    if (mode == Mode::Relay)
+        return runRelay(RelayOptions{.root       = rootDir.empty() ? "" : root,
+                                     .socketPath = socketPath,
+                                     .exe        = std::filesystem::read_symlink("/proc/self/exe"),
+                                     .serverArgs = serverArgs});
+
+    // A client that goes away mid-write is a write error, not a SIGPIPE.
+    std::signal(SIGPIPE, SIG_IGN);
+    if (mode == Mode::Daemon) {
+        // Before any thread: every thread inherits the mask, and the
+        // daemon's signal thread takes them (SocketDaemon::Options).
+        SocketDaemon::blockStopSignals();
+        if (socketPath.empty()) {
+            if (std::string e =
+                    unix_socket::ensurePrivateDirectory(unix_socket::defaultDirectory());
+                !e.empty()) {
+                std::cerr << "svlsp: " << e << '\n';
+                return 1;
+            }
+            socketPath = unix_socket::defaultPath(root);
+        }
+    }
+
     // The server parses in a worker process unless told not to; --build-db
     // above parses in-process (a one-shot run, so its memory goes at exit,
     // and every file after the first gets a warm DFA).
@@ -381,14 +465,49 @@ int main(int argc, char** argv)
                                  .idleSeconds = parseWorkerIdleSeconds,
                                  .log         = logStream});
 
-    auto& io = lsp::io::standardIO();
-    LanguageServer server(io, logStream, requestLog);
-    server.setVersion(SVLSP_GIT_VERSION);
-    if (parseWorker)
-        server.setWalker([w = parseWorker.get()](const std::string& source,
-                                                  const std::vector<SourceLine>& sourceMap,
-                                                  bool collectDocs, const std::string& scope) {
-            return w->walk(source, sourceMap, collectDocs, scope);
-        });
-    return server.run();
+    // One editor's session: a fresh server each time (plan.md §6.38); the
+    // parse worker, and the project DB on disk, carry over between them.
+    auto serve = [&](lsp::io::Stream& io, const std::string& requiredRoot) {
+        LanguageServer server(io, logStream, requestLog);
+        server.setVersion(SVLSP_GIT_VERSION);
+        server.setRequiredRoot(requiredRoot);
+        if (parseWorker)
+            server.setWalker([w = parseWorker.get()](const std::string& source,
+                                                      const std::vector<SourceLine>& sourceMap,
+                                                      bool collectDocs, const std::string& scope) {
+                return w->walk(source, sourceMap, collectDocs, scope);
+            });
+        return server.run();
+    };
+    if (mode == Mode::Stdio) return serve(lsp::io::standardIO(), "");
+
+    // The daemon. It preloads the project the root's config names into its
+    // project DB, through a `--build-db` child (its parse memory goes with
+    // it), unless started by a relay: the editor is about to attach and
+    // loads the project itself.
+    SocketDaemon::Options options;
+    options.socketPath    = socketPath;
+    options.root          = root;
+    options.idleTimeout   = idleTimeout;
+    options.handleSignals = true;
+    options.log           = &std::cerr;
+    if (preload) {
+        const std::string config = ProjectRegistry::discoverConfigPath(root);
+        if (!config.empty()) {
+            try {
+                const ProjectConfig c = ProjectRegistry::parseConfig(config);
+                const std::string db = c.database.empty()
+                                           ? ProjectRegistry::defaultDatabasePath(config)
+                                           : c.database;
+                if (!db.empty() && db != ":memory:")
+                    options.preload = {std::filesystem::read_symlink("/proc/self/exe").string(),
+                                       "--build-db", config, "--output", db};
+            } catch (const std::exception& e) {
+                std::cerr << "svlsp: no preload: " << e.what() << '\n';
+            }
+        }
+    }
+    SocketDaemon daemon{std::move(options),
+                        [&](lsp::io::Stream& io, const unix_socket::Peer&) { serve(io, root); }};
+    return daemon.run();
 }
