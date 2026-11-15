@@ -8279,6 +8279,270 @@ itself, which is where a simulator stops and where the user looked.
 
 ---
 
+### 6.38 A Unix-Socket Server: svlsp Outliving the Editor
+
+**Status:** done 2026-11-15 (the Unix socket; TCP investigated, not
+done -- D1). Asked for by the user: besides stdin/stdout, run svlsp as a
+server the editor reaches through a port, on shared machines. The outcome
+is at the end of this section.
+
+**What exists (read 2026-11-14):**
+- `LanguageServer` already takes any `lsp::io::Stream&`; `main.cpp` passes
+  `lsp::io::standardIO()`. The transport is one line to swap.
+- lsp-framework ships `lsp::io::Socket` / `SocketListener`
+  (`third_party/lsp-framework/lsp/io/socket.{h,cpp}`). As it is, it:
+  - binds only `127.0.0.1` (hard-coded `INADDR_LOOPBACK`);
+  - never sets `TCP_NODELAY` (see the measurements: it matters);
+  - `send`s without `MSG_NOSIGNAL`, and svlsp doesn't ignore SIGPIPE, so a
+    client that disconnects while a compile publishes kills the server;
+  - is read one byte per `recv` for headers (`Connection::InputReader`):
+    ~25 syscalls a message, a few µs, no buffering.
+- A failed read or EOF throws, so `LanguageServer::run` ends on a dropped
+  connection exactly as on stdin EOF.
+- lsp-mode (20260512) has `lsp-tcp-connection` (it starts the server with
+  a free port and connects to `localhost`) and `lsp-tcp-server-command`
+  (Emacs listens, the server connects). Both start the server process
+  themselves; attaching to an already running server needs a custom
+  `:connect`. Eglot can attach to `("host" port)` directly. Emacs 32 cannot
+  set `TCP_NODELAY` on a network process (`:nodelay` is not a socket
+  option it knows), and `localhost` resolves to `::1` first here.
+
+**Measured (2026-11-14, this laptop, loopback, Python ping-pong with
+LSP framing, byte-wise header reads):**
+
+| Round trip | pipe | TCP | TCP + fix |
+|---|---|---|---|
+| 300 B request, 300 B reply | 29 µs | 34 µs | 34 µs |
+| 300 B request, 46 KB reply (completion) | 50 µs | 50 µs | 46 µs |
+| 8 KB request, 2 KB + 200 B replies back to back (didChange: diagnostics, then the response) | 32 µs | **44 ms** | 49 µs (p90 371 µs), `TCP_NODELAY` |
+| client writes a notification then a request back to back (Emacs: didChange, then completion) | -- | **44 ms** | 75 µs (p90 428 µs), server `TCP_QUICKACK` |
+
+A Unix socket, measured the same way: 28 µs, 45 µs and 25 µs for the
+first three rows -- the pipe's numbers, and no Nagle stall (there is no
+Nagle on a local socket).
+
+Transport cost itself is noise against server times (2 ms point requests,
+~300 ms edit -> diagnostics with the debounce) and Emacs's own (~20 ms
+completion). The 44 ms rows are Nagle's algorithm meeting delayed ACKs:
+the second of two small writes waits for the first's ACK. Without the
+fixes, every edit and every completion while typing would pay ~40 ms.
+Both sides need it: svlsp sets `TCP_NODELAY` on its socket, and re-arms
+`TCP_QUICKACK` before each read so Emacs's unfixable side is ACKed at once
+(Linux; elsewhere the option is skipped).
+
+**Other effects:**
+- CPU / memory: none extra; an idle connection blocks in `recv` (0 CPU).
+- A remote editor (another host, through an `ssh -L` tunnel) adds one
+  network RTT per request, and svlsp reads every file by its path on its
+  own filesystem: the paths in the editor's URIs must exist there (shared
+  NFS home, or the same checkout path). Not a goal; documented only.
+- Security, the real cost on a shared machine: a loopback port is open to
+  **every local user**. LSP has no authentication; a connection can read
+  any file svlsp can (definition/hover of a project path, didOpen of any
+  path, `svlsp.refresh`). Stdio has no such exposure.
+
+**A Unix socket instead of TCP (checked 2026-11-14, at the user's
+question).** It closes the security gap and is as fast as a pipe:
+- Access is the file system's: the socket file's mode and its directory.
+  `$XDG_RUNTIME_DIR` (`/run/user/1001`, mode 0700, tmpfs) is private to the
+  user. The kernel also gives the peer's uid (`SO_PEERCRED`; tested: the
+  connecting Emacs's pid and uid came back), so the same-user check is
+  one `getsockopt`, not a `/proc/net/tcp` lookup.
+- No Nagle, no `TCP_NODELAY` / `TCP_QUICKACK`, no port to pick or collide.
+- Emacs 32 connects (`make-network-process :family 'local :service PATH`,
+  tested against a framed reply).
+
+Its costs, none blocking:
+- **The umask.** A socket file gets 0777 minus the umask: here (002) it
+  was created **0775**, so group members could connect. svlsp must create
+  it 0600 (`fchmod` before `bind`, or `umask(077)` around it) and check
+  the peer uid anyway.
+- **Stale files.** A crashed server leaves the file; the next `bind` fails
+  (EADDRINUSE). On start: try to connect; refused means stale, so unlink
+  and bind; accepted means another svlsp owns it, so stop with an error.
+- **Path length.** `sun_path` is 108 bytes; a socket in a deep project
+  directory may not fit. Default to `$XDG_RUNTIME_DIR/svlsp/<hash>.sock`
+  (the same hash as the §6.34 cache DB), error clearly on a too-long path.
+- **`$XDG_RUNTIME_DIR` lifetime.** systemd removes it when the user's last
+  session ends (unless lingering is on): a persistent server (T2) in a
+  detached tmux then loses its socket. Fall back to `$XDG_CACHE_HOME` or
+  `/tmp/svlsp-$UID/` (created 0700, owner checked).
+- **NFS homes.** A socket file is host-local even on NFS; two hosts with
+  the same home could see each other's stale file. The runtime dir is
+  local, so the default avoids it.
+- **Editors.** lsp-mode has no Unix-socket connection: ~15 lines of
+  elisp (`:connect` with `make-network-process :family 'local`, retrying
+  until the file appears, as `lsp--open-network-stream` does for a port).
+  Eglot takes a function returning the process. VS Code-style clients
+  support a pipe path natively. Windows has AF_UNIX since Windows 10, not
+  a target here.
+- **Not remote.** By design; `ssh -L local.sock:remote.sock` (OpenSSH
+  6.7+) forwards one if ever needed, with the path caveat above.
+
+**What a socket gains over stdio at all.** When the editor starts svlsp
+itself (lsp-mode's normal way), stdio is already private to the user and
+as fast; a socket adds nothing there. A socket is worth it only for a
+server that outlives the editor or that the editor attaches to (T2).
+
+**Recommendation (2026-11-14):** do the Unix socket, not TCP: `svlsp
+--socket [PATH]` with T2's persistent mode, plus the Emacs `:connect`
+helper in docs/usage.md (and tests/integration's init). Keep TCP out
+unless a client that can only do TCP shows up; if it does, T1 below
+with every fix listed.
+
+**The modes (user, 2026-11-15; D1: Unix socket only, no TCP).**
+- `svlsp` (no `--socket`): stdio, as today, unchanged.
+- `svlsp --socket [--root DIR] [PATH]`, started by the editor: connect to
+  the project's server; if none is listening, start one (detached), then
+  connect. The process the editor started is a **relay**: it copies
+  stdin -> socket and socket -> stdout, and exits when either side
+  closes. The editor still talks stdio, so lsp-mode needs no elisp:
+  only the command line changes. Cost: one extra local hop (~30 µs, see
+  the table), an idle relay blocks in `poll` (0 CPU).
+- `svlsp --daemon [--root DIR] [PATH]`: the server itself, in the
+  foreground (what the relay starts with `setsid`, stdio on /dev/null,
+  stderr to a log beside the socket; also what a user puts in tmux or a
+  systemd user unit).
+
+The server (T2 below, for the socket):
+- one project: DIR defaults to the current directory (the relay: the
+  editor's working directory, or `--root`); it loads the project at once;
+- one editor at a time; a second connection is refused (an LSP error
+  reply to its `initialize`, then close) while one is attached;
+- the editor's `shutdown`/`exit`, or a dropped connection, ends the
+  session, not the process: open-document state is dropped, the index and
+  the parse worker stay, the next `initialize` is answered at once;
+- an `initialize` whose rootUri isn't the server's project is refused
+  with a message naming the project the server serves;
+- **idle exit:** with no editor attached for `--idle-timeout` (default
+  **24 h**, user 2026-11-15; 0 = never), it exits. Counted from the last
+  detach, or from the start if no editor ever attached: close the editor
+  after a work day and attach the next morning to a warm server; start
+  one before leaving and attach hours later. Auto-started servers still
+  don't pile up for ever on a shared machine. Units: `30m`, `24h`, `2d`.
+  Idle memory is small (perf baselines): a project on the UVM library
+  DB ~45 MB in all; the UVM source as the project peaks at ~3 GB (the
+  parse worker) and drops to ~50 MB 60 s after going idle, when the
+  over-limit worker is replaced (§6.33). The log says when the server
+  goes idle and when it will exit;
+- **the socket must outlive a logout** (the 24 h case spans one), so the
+  default directory is **`/tmp/svlsp-$UID/`** (created 0700, owner and
+  mode checked, refused otherwise), not `$XDG_RUNTIME_DIR`, which systemd
+  removes at the last logout and would orphan the server (D3, 2026-11-15).
+  Socket: `/tmp/svlsp-$UID/<hash>.sock` (the §6.34 project hash);
+- **orphan check:** every minute the server `stat`s its socket path; if
+  the file is gone or another inode (tmp cleaning, a removed directory),
+  it exits -- otherwise the next relay would start a second server on the
+  same project DB;
+- stopped by SIGTERM / SIGINT too; always removes its socket file.
+- **Start race:** two editors opening the same project at once. The relay
+  takes `flock` on `PATH.lock`, connects again under the lock, starts the
+  server only if still refused, then waits (up to 10 s) for the socket to
+  accept. The server binds only while holding the same lock.
+- `svlsp --socket-path [DIR]` prints the default path, for scripts.
+
+**Plan (TCP, if it is ever wanted):**
+- **T1 -- `svlsp --port N` (listen) and `svlsp --connect host:port`.**
+  One client, then exit, as with stdio. `--port` matches
+  `lsp-tcp-connection`, `--connect` `lsp-tcp-server-command`; `--port 0`
+  picks a free port and prints it on stderr (for scripts).
+  - Own `TcpStream` (`src/lsp/tcp_stream.{h,cpp}`, an `lsp::io::Stream`)
+    instead of patching the vendored socket: `TCP_NODELAY`,
+    `TCP_QUICKACK` before each read, `MSG_NOSIGNAL`, a 64 KB read buffer,
+    bound to `127.0.0.1` and `::1` (Emacs tries `::1` first).
+  - Accept only the server's own user (decision D1): on Linux, find the
+    peer's socket in `/proc/net/tcp{,6}` and compare its uid; refuse and
+    keep listening otherwise.
+  - `signal(SIGPIPE, SIG_IGN)` in every server mode (stdio too: an editor
+    that dies mid-publish shouldn't SIGPIPE-kill the process, it should
+    end it through the write error).
+  - `main.cpp`: the flags (mutually exclusive with `--build-db`), the
+    stream chosen before `LanguageServer` is built. ~40 lines; TcpStream
+    ~200.
+- **T2 (optional) -- `--port N --persistent`:** after a client disconnects
+  (or sends `exit`), accept the next one with a fresh `LanguageServer`.
+  The index stays warm on disk (the §6.34 project DB) and the parse
+  worker can stay alive; a reconnect then costs a refresh, not a load.
+  Needs: `exit` ends the session, not the process; the DB lock (`DbLock`)
+  released between sessions; one client at a time (a second gets refused
+  until the first leaves).
+- **Not planned -- several editors on one live server at once.** Per
+  client: document store, publishing, initialize state, progress tokens,
+  and who a compile's diagnostics go to. Large, and §6.34 D2 already lets
+  a second server share a project DB (as a memory copy).
+
+**Tests:**
+- unit: `TcpStream` over a loopback pair -- framing of split and joined
+  messages, EOF ends `run`, the options are set (`getsockopt`), a write
+  to a closed peer is an error and not a signal, another uid refused (a
+  fake `/proc/net/tcp` reader);
+- `lsp_perf.py --tcp`: every scenario over TCP; `perf-check small uvm`
+  must match stdio within noise (in particular edit -> diagnostics and
+  typing completion, the rows Nagle would hit);
+- Emacs: `test_58` through `lsp-tcp-connection` (hover and a diagnostic
+  round trip), and a typing-completion timing against stdio.
+
+**Decisions (user, 2026-11-15):**
+- **D1:** Unix socket only; no TCP.
+- **D2:** a socket server is persistent; the editor reaches it through
+  `svlsp --socket` (a relay that starts one if none runs), and plain
+  `svlsp` stays stdio.
+- **D3:** `/tmp/svlsp-$UID/<hash>.sock` (outlives a logout), idle
+  timeout 24 h.
+
+**Outcome (2026-11-15, 602e419).**
+- `src/lsp/unix_socket.{h,cpp}`: the default directory and path (the
+  root's hash), `ensurePrivateDirectory` (0700, owner, mode, no symlink),
+  `FdStream` (64 KB buffered reads, `MSG_NOSIGNAL` writes), `peerOf`
+  (`SO_PEERCRED`), `StartLock` (`flock` on `PATH.lock`), `Listener` (stale
+  file replaced, live one refused, file 0600 under any umask, `stillOurs`
+  by device and inode), `parseDuration`.
+- `src/lsp/socket_daemon.{h,cpp}`: `SocketDaemon` -- an acceptor thread
+  (uid check, idle and orphan checks every poll), sessions on the calling
+  thread, a signal thread (`sigtimedwait`; the stop signals are blocked
+  in `main` before any thread starts, and unblocked again in the parse
+  worker and the preload child, since the mask survives `exec`). A
+  connection while a session runs waits up to `busyGrace` (5 s) for it to
+  end -- found by the tests: an editor that restarts reconnects while its
+  old session is still being torn down -- then gets a `RequestFailed`
+  reply to its first request. The preload is a `--build-db` child, so its
+  parse memory goes with it.
+- `src/lsp/socket_relay.{h,cpp}`: `runRelay` reads the first message
+  (the `initialize`) for its root (`rootFromInitialize`: rootUri, rootPath,
+  first workspace folder; else `--root`, else the cwd), connects, or under
+  the start lock starts `svlsp --daemon PATH --root ROOT --no-preload`
+  (double fork + `setsid`, stdio on /dev/null, stderr to `<socket>.log`,
+  cwd /) and waits up to 10 s for it; then forwards the buffered bytes
+  and copies both ways (`poll`). The editor closing stdin half-closes the
+  socket: the server ends the session and closes it, and the relay exits.
+- `LanguageServer`: `setRequiredRoot` (an `initialize` for another root
+  is refused, one with no root served), `initializeRoot`; a lost
+  connection logs "connection closed" instead of "fatal error". A fresh
+  `LanguageServer` per session; the `ParseWorker` lives in `main` and
+  carries over. `main.cpp`: `--socket [PATH]`, `--daemon [PATH]`,
+  `--root`, `--idle-timeout`, `--no-preload`, `--socket-path [DIR]`;
+  SIGPIPE ignored in every server mode (stdio too); the flags a relay
+  passes on (`--log-files`, `--log-requests` made absolute, the parse
+  worker's, `--idle-timeout`, `--in-process-parse`).
+  `ProjectRegistry::discoverConfigPath` is public (the preload's config).
+- Tests: `tests/unit/lsp/test_unix_socket.cpp` (18 cases: durations, the
+  path, the directory, the listener's mode / stale / live / long path /
+  removed file, the stream's framing and gone peer, the root of an
+  initialize, sessions one after another, a second editor refused, a
+  reconnect during teardown served, idle exit from start and from a
+  detach, orphan exit, `stop()` during a session, a second daemon refused,
+  the relay both ways, the required root through a real LanguageServer);
+  15 repeated random-order runs clean. Emacs `test_58_socket.sh`:
+  `--socket-path`, hover through a relay-started server, the server
+  outliving the session, a second session on the same server.
+- Unit 1230/1230, Emacs 346/346. Not run: the UVM corpus and
+  `--build-db` (no parsing or DB change) and perf-check (the stdio path
+  only gained the SIGPIPE ignore and the catch in `run()`).
+- Measured by hand: the relay's first `initialize` (server start
+  included) 73 ms on the debug build, a reattach 26 ms.
+
+---
+
 ## Appendix A — Technology Stack Summary
 
 | Concern | Choice | Rationale |

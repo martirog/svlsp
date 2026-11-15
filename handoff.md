@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-11-14 (§6.37 done: the import check).
+**Last updated:** 2026-11-15 (§6.38 done: the Unix-socket server).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -326,11 +326,28 @@ Next steps:
    15/15, corpus 1563 / 31, UVM `--build-db` 0 diagnostics. `perf-check`
    uvm flags edit -> diagnostics against its 2026-10-26 baseline, but HEAD
    measures the same: refresh the baseline.
-5. Optional, LL cost on files with syntax errors (only they reach LL now):
+5. **plan.md §6.38 is done** (2026-11-15, 602e419): `svlsp --socket` (what the
+   editor starts) relays stdio to a per-project server on
+   `/tmp/svlsp-$UID/<hash>.sock`, starting one (`svlsp --daemon`) if none
+   listens. The server outlives the editor (24 h idle timeout), one editor
+   at a time. Plain `svlsp` is stdio as before. Unix socket only, no TCP
+   (user's decision). Unit 1230/1230, Emacs 346/346 (test_58 new).
+6. Optional, LL cost on files with syntax errors (only they reach LL now):
    the remaining LL time is true ambiguity in `primary` (decision 1068)
    and `hierarchical_identifier` (1103): `a.b` is a name, a name + select
    `.b`, or a name + the method loop. Profile with `tools/grammar_profile.sh
    -- --profile`.
+
+What §6.38 changes for other work:
+- A daemon builds a **fresh `LanguageServer` per session**; anything
+  that should survive a reattach lives in `main` (the `ParseWorker`) or
+  on disk (the project DB). Its destructor must stay prompt: a
+  reconnecting editor waits at most 5 s for the old session's teardown.
+- The daemon blocks SIGTERM / SIGINT / SIGHUP in every thread; a new
+  child process that should get signals must unblock them before `exec`
+  (the parse worker does it in `main`).
+- SIGPIPE is ignored in every server mode: a write to a gone client is
+  an `lsp::io::Error`.
 
 What §6.37 changes for other work:
 - New kinds **`Sequence`, `Property`, `Let`, `Checker`** (leaf rows, not

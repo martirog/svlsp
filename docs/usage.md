@@ -4,7 +4,7 @@ This is a quick reference for the user-facing configuration knobs `svlsp`
 currently has: the completion fuzzy-matching toggle (set by your
 editor/client at connect time), and the `--version`, `--log-files`,
 `--log-requests`, `--parse-worker-max-rss`, `--parse-worker-idle`,
-`--in-process-parse` and
+`--in-process-parse`, `--socket` / `--daemon` and
 `--build-db` command-line flags (all set when you launch the binary). It
 will grow into the full end-user guide tracked by `plan.md` Phase 6.6 as
 more of that phase lands; for now it only covers what's actually
@@ -216,6 +216,73 @@ worker start, each parse's time and size, and each replacement:
 [worker] pid 41203 at 6666 MB > 1024 MB, recycled once idle 60 s
 [worker] pid 41203 idle 60 s, recycled
 ```
+
+## A server that outlives the editor: `--socket`, `--daemon`
+
+By default the editor starts `svlsp` and talks to it over stdin/stdout,
+and the server exits with the editor. With `--socket` the server keeps
+running after the editor closes, so the next editor session attaches to a
+server that has already loaded the project.
+
+- `svlsp` talks over stdin/stdout, as before.
+- `svlsp --socket` is what the editor starts instead. It reads the
+  editor's `initialize` to find the project root, connects to that
+  project's server, starts one in the background if none is running, and
+  passes messages between the editor and the server. The editor still
+  talks over stdin/stdout, so only the command changes:
+
+  ```elisp
+  (lsp-register-client
+   (make-lsp-client
+    :new-connection (lsp-stdio-connection '("svlsp" "--socket"))
+    :major-modes     '(verilog-mode)
+    :server-id       'svlsp))
+  ```
+- `svlsp --daemon` runs the server itself in the foreground, for the
+  current directory's project (`--root DIR` for another). Run it in a
+  shell or tmux to load a project before you open the editor: it builds
+  the project database at once (as `--build-db` would, in a child
+  process), and the first editor session finds it ready.
+
+How the server behaves:
+- **One project, one editor at a time.** A second editor connecting while
+  one is attached waits up to 5 s for that session to end, then gets the
+  error "the server for DIR is in use by another editor". An editor whose
+  project root isn't the server's is refused with an error naming the
+  server's project.
+- **Closing the editor ends the session, not the server.** The open
+  buffers are forgotten; the parse worker and the project database stay,
+  so reattaching costs a refresh, not a load.
+- **It exits after 24 hours with no editor attached** (counted from the
+  last detach, or from the start). `--idle-timeout 30m` (also `45s`, `8h`,
+  `2d`; `0` = never) changes that. Close the editor after a work day and
+  the server is still there the next morning.
+- **It stops** on Ctrl-C, `kill` (SIGTERM) or a closed terminal (SIGHUP),
+  and when its socket file is removed; it removes the file when it stops.
+- **Memory while idle** is the server's own, ~50 MB, plus the parse
+  worker until it is replaced (see the parse worker above).
+
+The socket is `/tmp/svlsp-<uid>/<hash>.sock`, one per project root;
+`svlsp --socket-path [DIR]` prints it. The directory is created mode 0700
+and refused if another user owns it or can access it; the socket is mode
+0600, and the server also refuses a connection from another user. `/tmp`
+rather than `$XDG_RUNTIME_DIR`: systemd removes the latter when you log
+out, which would cut off a server meant to outlive a logout. Give a path
+of your own as `--socket PATH` / `--daemon PATH` (at most 107 bytes). A
+server started by `--socket` logs to the socket's path with `.log` for
+`.sock`; the flags given to `--socket` (`--log-files`, `--idle-timeout`,
+the parse-worker flags, ...) are passed on to the server it starts. The
+log says when an editor attaches or detaches, when the server will exit,
+and why it stopped:
+
+```
+2026-11-15 21:39:50 [daemon] listening on /tmp/svlsp-1001/a42415aac0fb110f.sock (pid 10086) for /home/me/proj; idle timeout 24h
+2026-11-15 21:39:52 [daemon] editor attached (connection from pid 10099)
+2026-11-15 21:39:52 [daemon] editor detached (pid 10099); exits in 24h if none attaches
+```
+
+The socket is local to the machine; editors on other hosts can't reach
+it.
 
 ## Background indexing
 
