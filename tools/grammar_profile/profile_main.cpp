@@ -17,8 +17,13 @@
 //                    then chose one alternative -- where an SLL parse can
 //                    go wrong (LL runs only)
 //     --where D,...  print where those happened for decisions D (line:col
-//                    in the input and the tokens SLL looked at)
+//                    in the input and the tokens SLL looked at), and
+//                    where D's longest SLL lookahead was
 //     --samples N    locations per --where decision (default 8)
+//     --list         the file is a list of files, one per line: parse each
+//                    (a fresh parser each, one process) and print
+//                    `<syntax errors>\t<file>` per file -- a grammar's
+//                    pass/fail on a test suite (tools/sv_tests_compare.sh)
 //     --tree         print the parse tree (LISP form) -- compare an SLL and
 //                    an LL parse of a small input to see where SLL went wrong
 //
@@ -28,6 +33,7 @@
 #include "SvLexer.h"
 #include "SvParser.h"
 #include "antlr4-runtime.h"
+#include "atn/LookaheadEventInfo.h"
 #include "atn/ParseInfo.h"
 #include "atn/ParserATNSimulator.h"
 #include "atn/PredictionMode.h"
@@ -65,13 +71,13 @@ long peakRssMb() {
 void usage() {
     std::cerr << "usage: grammar_profile [--sll] [--profile] [--top N] [--tsv FILE] "
                  "[--repeat N] [--slice LINES] [--errors N] [--sort ctx|time] [--where D,...] "
-                 "[--samples N] [--tree] file.pp.sv\n";
+                 "[--samples N] [--tree] [--list] file.pp.sv\n";
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-    bool sll = false, profile = false, sortCtx = false, tree = false;
+    bool sll = false, profile = false, sortCtx = false, tree = false, list = false;
     size_t top = 15, repeat = 1, slice = 0, errors = 5, samples = 8;
     std::vector<size_t> where;
     std::string tsv, file;
@@ -84,6 +90,7 @@ int main(int argc, char** argv) {
         if (a == "--sll") sll = true;
         else if (a == "--profile") profile = true;
         else if (a == "--tree") tree = true;
+        else if (a == "--list") list = true;
         else if (a == "--top") top = std::stoul(next());
         else if (a == "--tsv") tsv = next();
         else if (a == "--repeat") repeat = std::stoul(next());
@@ -102,6 +109,32 @@ int main(int argc, char** argv) {
         else { usage(); return 2; }
     }
     if (file.empty()) { usage(); return 2; }
+
+    if (list) {
+        std::ifstream names(file);
+        if (!names) { std::cerr << "grammar_profile: cannot read " << file << "\n"; return 1; }
+        for (std::string name; std::getline(names, name);) {
+            if (name.empty()) continue;
+            std::ifstream one(name);
+            std::stringstream text;
+            text << one.rdbuf();
+            antlr4::ANTLRInputStream input(text.str());
+            SvLexer lexer(&input);
+            antlr4::CommonTokenStream tokens(&lexer);
+            SvParser parser(&tokens);
+            CountingListener listener;
+            listener.printLimit = 0;
+            lexer.removeErrorListeners();
+            lexer.addErrorListener(&listener);
+            parser.removeErrorListeners();
+            parser.addErrorListener(&listener);
+            parser.getInterpreter<antlr4::atn::ParserATNSimulator>()->setPredictionMode(
+                sll ? antlr4::atn::PredictionMode::SLL : antlr4::atn::PredictionMode::LL);
+            parser.source_text();
+            std::cout << listener.count << '\t' << name << '\n';
+        }
+        return 0;
+    }
 
     std::ifstream in(file);
     if (!in) { std::cerr << "grammar_profile: cannot read " << file << "\n"; return 1; }
@@ -175,6 +208,15 @@ int main(int argc, char** argv) {
             const auto& events = infos[w].contextSensitivities;
             std::printf("  decision %zu (%s): %zu context sensitivities\n", w, ruleOf(w).c_str(),
                         events.size());
+            if (const auto& m = infos[w].SLL_MaxLookEvent) {
+                std::string text =
+                    tokens.getText(antlr4::misc::Interval(m->startIndex, m->stopIndex));
+                for (auto& c : text) if (c == '\n' || c == '\t') c = ' ';
+                if (text.size() > 300) text = text.substr(0, 150) + " ... " + text.substr(text.size() - 150);
+                std::printf("    longest SLL lookahead, %zu:%zu  %s\n",
+                            tokens.get(m->startIndex)->getLine(),
+                            tokens.get(m->startIndex)->getCharPositionInLine(), text.c_str());
+            }
             for (size_t k = 0; k < std::min(samples, events.size()); ++k) {
                 const auto& e = events[k];
                 const auto* start = tokens.get(e.startIndex);
