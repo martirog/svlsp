@@ -19,6 +19,8 @@
 //     --where D,...  print where those happened for decisions D (line:col
 //                    in the input and the tokens SLL looked at)
 //     --samples N    locations per --where decision (default 8)
+//     --tree         print the parse tree (LISP form) -- compare an SLL and
+//                    an LL parse of a small input to see where SLL went wrong
 //
 // The parse is the walker's (SvTreeWalker::walk): a fresh lexer, token
 // stream and parser per run, `source_text` as the start rule, ANTLR's
@@ -63,13 +65,13 @@ long peakRssMb() {
 void usage() {
     std::cerr << "usage: grammar_profile [--sll] [--profile] [--top N] [--tsv FILE] "
                  "[--repeat N] [--slice LINES] [--errors N] [--sort ctx|time] [--where D,...] "
-                 "[--samples N] file.pp.sv\n";
+                 "[--samples N] [--tree] file.pp.sv\n";
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-    bool sll = false, profile = false, sortCtx = false;
+    bool sll = false, profile = false, sortCtx = false, tree = false;
     size_t top = 15, repeat = 1, slice = 0, errors = 5, samples = 8;
     std::vector<size_t> where;
     std::string tsv, file;
@@ -81,6 +83,7 @@ int main(int argc, char** argv) {
         };
         if (a == "--sll") sll = true;
         else if (a == "--profile") profile = true;
+        else if (a == "--tree") tree = true;
         else if (a == "--top") top = std::stoul(next());
         else if (a == "--tsv") tsv = next();
         else if (a == "--repeat") repeat = std::stoul(next());
@@ -128,7 +131,8 @@ int main(int argc, char** argv) {
             sll ? antlr4::atn::PredictionMode::SLL : antlr4::atn::PredictionMode::LL);
 
         const auto t0 = std::chrono::steady_clock::now();
-        parser.source_text();
+        auto* parsed = parser.source_text();
+        if (tree) std::cout << parsed->toStringTree(&parser, true) << "\n";
         const double secs =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         totalErrors += listener.count;

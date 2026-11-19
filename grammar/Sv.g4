@@ -3419,8 +3419,8 @@ range_expression :
     | part_select_range
 ;
 
-// time_literal first: `9200s` is a number followed by a name under SLL
-// (plan.md §6.33 C2)
+// time_literal is one token (TIME_LITERAL) since plan.md §6.39, so `9200s`
+// no longer depends on this order (§6.33 C2 put it first for SLL).
 primary_literal :
       time_literal
     | number
@@ -3438,13 +3438,11 @@ time_literal :
 ;
 */
 
+// One token: the unit follows the number without a space (IEEE 1800-2017
+// 5.8). As `DECIMAL_NUMBER time_unit` with any identifier for the unit, SLL
+// read `##1 a && b` as `##(1a) && b` (plan.md §6.39).
 time_literal :
-      DECIMAL_NUMBER time_unit 
-    | FIXED_POINT_NUMBER time_unit 
-;
-
-time_unit:
-    IDENTIFIER /* TODO need attribute */
+      TIME_LITERAL
 ;
 
 
@@ -3864,6 +3862,7 @@ variable_identifier :
      | (NON_ZERO_UNSIGNED_NUMBER NUM_BLANK)? DECIMAL_BASE NUM_BLANK X_DIGIT '_'*
      | (NON_ZERO_UNSIGNED_NUMBER NUM_BLANK)? DECIMAL_BASE NUM_BLANK Z_DIGIT '_'* ;
  FIXED_POINT_NUMBER : DEC_VALUE  '.' DEC_VALUE ;
+ TIME_LITERAL : DEC_VALUE ('.' DEC_VALUE)? ('s' | 'ms' | 'us' | 'ns' | 'ps' | 'fs') ;
  ACTUAL_REAL_NUMBER : DEC_VALUE ('.' DEC_VALUE)? ('e'|'E') ('+'|'-')? DEC_VALUE ;
  UNSIGNED_NUMBER    : DEC_VALUE ;
  INIT_VAL : '1' ['] [bB] [01xX] | '1' | '0' ;

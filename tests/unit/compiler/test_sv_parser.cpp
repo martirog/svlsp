@@ -604,3 +604,30 @@ TEST_CASE("generate items and continuous assigns keep every IEEE form",
     CHECK(parseErrors(src) == 0);
     CHECK(parseErrors(src, true) == 0);
 }
+
+TEST_CASE("a cycle delay before a name is not a time literal under SLL",
+          "[compiler][parser][sll][ibex]") {
+    // plan.md §6.39: time_literal was `DECIMAL_NUMBER time_unit` with any
+    // identifier as the unit, so SLL read `##1 a && b` as `##(1a) && b` and
+    // fell back to LL (prim_lfsr in ibex). A time literal is one token now:
+    // the unit follows the number without a space (IEEE 1800-2017 5.8).
+    const std::string src =
+        "module m(input logic clk_i, a, b, c);\n"
+        "  timeunit 1ns; timeprecision 10ps;\n"
+        "  logic q;\n"
+        "  assert property (@(posedge clk_i) ##1 a && !b |=> c);\n"
+        "  assert property (##1 a |=> c);\n"
+        "  assert property (@(posedge clk_i) a ##2 b ##[1:3] c);\n"
+        "  assert property (@(posedge clk_i) ##1 (a) |-> ##1 b);\n"
+        "  clocking cb @(posedge clk_i); default input #1step output #2ns; endclocking\n"
+        "  initial begin\n"
+        "    #1 q = a;\n"
+        "    #1.5ns q = b;\n"
+        "    #10us;\n"
+        "    if ($time == 9200s) q = 1;\n"
+        "    #(2ps) q = c;\n"
+        "  end\n"
+        "endmodule\n";
+    CHECK(parseErrors(src) == 0);
+    CHECK(parseErrors(src, true) == 0);
+}
