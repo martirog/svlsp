@@ -18,7 +18,8 @@
 //                    go wrong (LL runs only)
 //     --where D,...  print where those happened for decisions D (line:col
 //                    in the input and the tokens SLL looked at), and
-//                    where D's longest SLL lookahead was
+//                    where D's longest SLL lookahead and its first
+//                    ambiguities were
 //     --samples N    locations per --where decision (default 8)
 //     --list         the file is a list of files, one per line: parse each
 //                    (a fresh parser each, one process) and print
@@ -208,6 +209,18 @@ int main(int argc, char** argv) {
             const auto& events = infos[w].contextSensitivities;
             std::printf("  decision %zu (%s): %zu context sensitivities\n", w, ruleOf(w).c_str(),
                         events.size());
+            const auto& ambig = infos[w].ambiguities;
+            for (size_t k = 0; k < std::min(samples, ambig.size()); ++k) {
+                const auto& e = ambig[k];
+                std::string text =
+                    tokens.getText(antlr4::misc::Interval(e.startIndex, e.stopIndex));
+                for (auto& c : text) if (c == '\n' || c == '\t') c = ' ';
+                if (text.size() > 110) text = text.substr(0, 110) + "...";
+                std::printf("    ambiguity %zu:%zu alts %s  %s\n",
+                            tokens.get(e.startIndex)->getLine(),
+                            tokens.get(e.startIndex)->getCharPositionInLine(),
+                            e.ambigAlts.toString().c_str(), text.c_str());
+            }
             if (const auto& m = infos[w].SLL_MaxLookEvent) {
                 std::string text =
                     tokens.getText(antlr4::misc::Interval(m->startIndex, m->stopIndex));

@@ -773,3 +773,26 @@ TEST_CASE("net declarations with delays and parameterized class types parse unde
     CHECK(parseErrors(src) == 0);
     CHECK(parseErrors(src, true) == 0);
 }
+
+TEST_CASE("casts and calls in every primary form parse under LL and SLL",
+          "[compiler][parser][sll]") {
+    // plan.md §6.39 cold prediction: a call was both a tf_call and a name with
+    // call parens, and a cast's `restricted_constant_primary '(...)` took
+    // dotted, selected names, so SLL read every call to its closing paren and
+    // every name to its end. Call parens on a name are a dotted name's only;
+    // a cast is a tail of what it casts by.
+    const std::string src =
+        "package pkg; typedef logic [3:0] nib_t; typedef enum {A, B} e_t; endpackage\n"
+        "class C; typedef int t; static int s; function int g(); return 1; endfunction endclass\n"
+        "module m #(parameter int N = 4); typedef logic [7:0] byte_t; int x; logic [7:0] v; C o;\n"
+        "  initial begin\n"
+        "    x = int'(v) + byte_t'(x) + pkg::nib_t'(x) + N'(x) + 8'(x) + (N + 1)'(x) + $bits(v)'(x);\n"
+        "    x = signed'(v) + unsigned'(v) + string'(x).len() + logic'(x) + real'(x) + const'(x);\n"
+        "    x = pkg::e_t'(1) + C::t'(x) + type(x)'(v) + shortint'(x) + {v}'(x);\n"
+        "    v = byte_t'({4'h1, 4'h2});\n"
+        "    x = int'(o.g()) + o.g() + C::s + pkg::A + this_is_a_name[1] + v[3:0];\n"
+        "  end\n"
+        "endmodule\n";
+    CHECK(parseErrors(src) == 0);
+    CHECK(parseErrors(src, true) == 0);
+}

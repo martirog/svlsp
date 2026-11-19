@@ -3392,27 +3392,8 @@ constant_primary :
 
 // TODO added as constant_primary minus | primary  '.' method_call_body
 
-restricted_constant_primary :
-      primary_literal
-    | ps_parameter_identifier constant_select
-    | specparam_identifier ('[' constant_range_expression ']')?
-    | genvar_identifier
-    | formal_port_identifier constant_select
-    | (package_scope | class_scope)? enum_identifier
-    | constant_concatenation ('[' constant_range_expression ']')?
-    | constant_multiple_concatenation ('[' constant_range_expression ']')?
-    | tf_call
-    | system_tf_call
-    | implicit_class_handle '.' method_call_body
-    | ('std' '::')? randomize_call
-    | '(' constant_mintypmax_expression ')'
-    | simple_type SINGLE_QUOTE '(' constant_expression ')'
-    | restricted_constant_primary SINGLE_QUOTE '(' constant_expression ')'
-    | (signing | 'string' | 'const') SINGLE_QUOTE '(' constant_expression ')'
-    | constant_assignment_pattern_expression
-    | type_reference
-    | 'null'
-;
+// restricted_constant_primary removed (plan.md §6.39): primary's casts are
+// cast_tail now, and an unused rule still adds its follow under SLL.
 
 module_path_primary :
       number
@@ -3437,21 +3418,23 @@ module_path_primary :
 // (tf_call, system_tf_call, name_tail's parens or `with`, a part select),
 // a literal, a concatenation, an assignment pattern, a cast or a
 // parenthesized primary.
+// Casts are cast_tail on what they cast by, and a name takes call parens only
+// when dotted (scoped_name); `this.`/`super.` names are the
+// implicit_class_handle alternative's (plan.md §6.39).
 primary :
-      primary_literal ('.' method_call_body)*
-    | tf_call ('.' method_call_body)*
-    | package_scope hierarchical_identifier select name_tail?
-    | class_qualifier hierarchical_identifier select name_tail?
+      primary_literal cast_tail? ('.' method_call_body)*
+    | tf_call cast_tail? ('.' method_call_body)*
+    | package_scope scoped_name
+    | ('local' '::')? implicit_class_handle '.' hierarchical_identifier select name_tail?
+    | ('local' '::')? class_scope? scoped_name
     | empty_unpacked_array_concatenation
-    | concatenation ('[' range_expression ']')? ('.' method_call_body)*
-    | multiple_concatenation ('[' range_expression ']')? ('.' method_call_body)*
-    | system_tf_call ('.' method_call_body)*
-    | implicit_class_handle '.' method_call_body
+    | concatenation ('[' range_expression ']')? cast_tail? ('.' method_call_body)*
+    | multiple_concatenation ('[' range_expression ']')? cast_tail? ('.' method_call_body)*
+    | system_tf_call cast_tail? ('.' method_call_body)*
     | ('std' '::')? randomize_call
-    | '(' mintypmax_expression ')' ('.' method_call_body)*
-    | simple_type SINGLE_QUOTE '(' expression ')' ('.' method_call_body)*
-    | restricted_constant_primary SINGLE_QUOTE '(' expression ')' ('.' method_call_body)*
-    | (signing | 'string' | 'const') SINGLE_QUOTE '(' expression ')' ('.' method_call_body)*
+    | '(' mintypmax_expression ')' cast_tail? ('.' method_call_body)*
+    | (integer_type | non_integer_type | signing | 'string' | 'const') cast_tail ('.' method_call_body)*
+    | type_reference cast_tail
     | assignment_pattern_expression ('.' method_call_body)*
     | streaming_concatenation ('.' method_call_body)*
     | 'this'
@@ -3504,8 +3487,40 @@ implicit_class_handle :
 // `with` and a method chain, a `with` (`q.sum with (item)`), or one of the
 // keyword-named array methods hierarchical_identifier can't take. Never a
 // bare '.' IDENTIFIER, which would make every dotted name ambiguous.
+// A name after an optional scope in a primary (plan.md §6.39): call parens
+// only on a dotted name. `f(...)`, `pkg::f(...)` and `C::f(...)` are
+// tf_call's -- with both, every call was a tf_call and a name with call
+// parens, and SLL read each call's arguments to the closing paren.
+scoped_name :
+      dotted_identifier select name_tail?
+    | IDENTIFIER select plain_name_tail?
+;
+
+dotted_identifier :
+      '$root' '.' hierarchical_identifier
+    | (IDENTIFIER ('[' expression ']')* '.')+ IDENTIFIER
+;
+
+// name_tail without the call parens
+plain_name_tail :
+      cast_tail ('.' method_call_body)*
+    | with_clause ('.' method_call_body)*
+    | '.' keyword_method_body ('.' method_call_body)*
+;
+
+// A cast (IEEE 6.24.1) as a tail of what it casts by (plan.md §6.39): a
+// keyword type, a named type or parameter (scoped_name's tails), a literal
+// (`8'(x)`), a call, a concatenation or `( ... )`. As `simple_type '(...)`
+// and `restricted_constant_primary '(...)` alternatives -- the latter taking
+// dotted, selected names -- SLL read every name to its end to rule out a
+// following quote.
+cast_tail :
+      SINGLE_QUOTE '(' expression ')'
+;
+
 name_tail :
-      '(' list_of_arguments ')' with_clause? ('.' method_call_body)*
+      cast_tail ('.' method_call_body)*
+    | '(' list_of_arguments ')' with_clause? ('.' method_call_body)*
     | with_clause ('.' method_call_body)*
     | '.' keyword_method_body ('.' method_call_body)*
 ;

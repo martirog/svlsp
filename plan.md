@@ -8818,6 +8818,21 @@ parser once. Then S1 to S3.
   s, 2.6 GB -> 348 MB**; ibex `--build-db` 22.6 s / 272 MB. walk_dump
   identical, sv-tests 0 regressions, unit 1257/1257, corpus, Emacs
   346/346. This was also the `data_type` item of the investigation list.
+- **`primary`** (follow-up, cold prediction): 27% of a cold ibex parse.
+  Every call was both a `tf_call` and a name with call parens (1295
+  ambiguities on ibex, SLL reading each call to its closing paren), and a
+  cast's `restricted_constant_primary '(...)` took dotted, selected names,
+  so every name was read to its end to rule out a following quote. Now a
+  name (`scoped_name`) takes call parens only when dotted -- `f(...)`,
+  `pkg::f(...)`, `C::f(...)` stay `tf_call`, which the walker records --
+  and a cast is a `cast_tail` on what it casts by (keyword types, named
+  types/parameters, literals, calls, concatenations, `( ... )`,
+  `type(...)`); `restricted_constant_primary` and the duplicate
+  `implicit_class_handle '.' method_call_body` are gone. Cold SLL parse,
+  paired: ibex 15.1 -> 5.9 s, UVM 7.5 -> 2.9 s; ibex `--build-db` 22.6 ->
+  10.9 s / 198 MB. walk_dump identical, sv-tests 0 regressions, unit
+  1258/1258, corpus, Emacs 346/346. `mintypmax_expression` fell from 1.0
+  to 0.3 s with it (no change of its own needed).
 - **sv-tests** (github.com/chipsalliance/sv-tests, ~/src/sv-tests):
   `tools/sv_tests_compare.sh` preprocesses its 1028 tests (UVM on the
   include path) and parses each with grammar/Sv.g4 at HEAD and as edited
