@@ -700,8 +700,13 @@ ref_declaration :
 
 // A.2.1.3 Type declarations
 
+// The data type may be left out only with `var` (IEEE 1800-2017 A.2.1.3,
+// footnote 11; plan.md §6.39). With `'var'? ... data_type_or_implicit`, a
+// block's leading `x = 1;` and `t;` were also declarations, and SLL read on
+// through the statements to decide.
 data_declaration :
-      'const'? 'var'? lifetime? data_type_or_implicit list_of_variable_decl_assignments ';'
+      'const'? 'var' lifetime? data_type_or_implicit list_of_variable_decl_assignments ';'
+    | 'const'? lifetime? data_type list_of_variable_decl_assignments ';'
     | type_declaration
     | package_import_declaration
     | net_type_declaration
@@ -3322,9 +3327,10 @@ value_range :
     | '[' expression ':' expression ']'
 ;
 
+// One expression, then the optional `:typ:max` (plan.md §6.39): as two
+// alternatives SLL read each expression to its end to look for a ':'.
 mintypmax_expression :
-      expression
-    | expression ':' expression ':' expression
+      expression (':' expression ':' expression)?
 ;
 
 module_path_expression :

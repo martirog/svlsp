@@ -2930,3 +2930,33 @@ TEST_CASE("type references: a net's user type, qualified or not, with a delay",
     REQUIRE(d != nullptr);
     CHECK(d->detail.empty());
 }
+
+TEST_CASE("type references: a variable's declared type in every declaration position",
+          "[compiler][listener][typeref]") {
+    // plan.md §6.39: data_declaration has a `var` form (data_type_or_implicit)
+    // and a typed form (data_type); both record the type as detail and as a
+    // type reference.
+    const auto r = walkSource(
+        "package p; class Obj; endclass typedef enum {A} e_t; string ps; Obj po; endpackage\n"
+        "class K;\n"
+        "  p::Obj prop; p::e_t mode; string name;\n"
+        "  function void f();\n"
+        "    p::Obj loc; var p::e_t v; var [3:0] imp;\n"
+        "  endfunction\n"
+        "endclass\n");
+    REQUIRE(r.parseErrors.empty());
+    auto detailOf = [&](const char* name) {
+        auto* rec = findRecord(r.records, ParseRecordKind::Signal, name);
+        return rec ? rec->detail : std::string("<missing>");
+    };
+    CHECK(detailOf("ps") == "$string");
+    CHECK(detailOf("po") == "Obj");
+    CHECK(detailOf("prop") == "p::Obj");
+    CHECK(detailOf("mode") == "p::e_t");
+    CHECK(detailOf("name") == "$string");
+    CHECK(detailOf("loc") == "p::Obj");
+    CHECK(detailOf("v") == "p::e_t");
+    CHECK(detailOf("imp").empty());
+    CHECK(typeRefsNamed(r, "Obj").size() == 3);
+    CHECK(typeRefsNamed(r, "e_t").size() == 2);
+}

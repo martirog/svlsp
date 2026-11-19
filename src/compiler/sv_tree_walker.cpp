@@ -165,6 +165,16 @@ static std::string userTypeName(SvParser::Data_type_or_implicitContext* dtoi)
     return dtoi ? dataTypeName(dtoi->data_type()) : "";
 }
 
+// A data_declaration's written data type, nullptr if implicit. The grammar
+// has two forms (plan.md §6.39): `var` with a data_type_or_implicit, and a
+// data_type without `var`.
+static SvParser::Data_typeContext* declaredDataType(SvParser::Data_declarationContext* ctx)
+{
+    if (auto* dt = ctx->data_type()) return dt;
+    auto* dtoi = ctx->data_type_or_implicit();
+    return dtoi ? dtoi->data_type() : nullptr;
+}
+
 // The qualifier of a net's user type (`pkg::`, `C::`, "" if none). A net
 // declaration has its own data type rule (plan.md §6.39), whose only named
 // form is `[class_scope | package_scope] type_identifier`.
@@ -255,8 +265,10 @@ static std::optional<std::string> structOwnerPath(SvParser::Data_typeContext* dt
             return std::nullopt;
         return td->type_identifier(0)->IDENTIFIER()->getText();
     }
-    if (auto* dtoi = dynamic_cast<SvParser::Data_type_or_implicitContext*>(parent)) {
-        auto* decl = dynamic_cast<SvParser::Data_declarationContext*>(dtoi->parent);
+    if (dynamic_cast<SvParser::Data_type_or_implicitContext*>(parent) ||
+        dynamic_cast<SvParser::Data_declarationContext*>(parent)) {
+        auto* decl = dynamic_cast<SvParser::Data_declarationContext*>(parent);
+        if (!decl) decl = dynamic_cast<SvParser::Data_declarationContext*>(parent->parent);
         if (!decl) return std::nullopt;
         auto name = firstVariableName(decl->list_of_variable_decl_assignments());
         if (name.empty()) return std::nullopt;
@@ -911,10 +923,10 @@ public:
             if (auto* id = parenLessCallName(ctx)) recordCall(id, nullptr);
             return;
         }
-        auto* dtoi = ctx->data_type_or_implicit();
-        recordTypeRef(dtoi ? dtoi->data_type() : nullptr);
-        const std::string typeName = userTypeName(dtoi);
-        const std::string bareTag  = builtinBareTypeTag(dtoi ? dtoi->data_type() : nullptr);
+        auto* declType = declaredDataType(ctx);
+        recordTypeRef(declType);
+        const std::string typeName = dataTypeName(declType);
+        const std::string bareTag  = builtinBareTypeTag(declType);
         // Element tag/type text to append after any container-dimension
         // tags below -- bareTag ($string/$event) wins over a genuine
         // class/interface typeName the same way it always has (a built-in

@@ -361,9 +361,11 @@ Second follow-up:
    parse 48.8 -> 7.2 s (2.6 GB -> 348 MB), ibex 20.8 -> 13.6 s. Then
    calls are tf_call only (a name takes parens only when dotted) and casts
    a `cast_tail`: ibex 15.1 -> 5.9 s, UVM 7.5 -> 2.9 s, ibex `--build-db`
-   10.9 s. Left open
-   (plan.md §6.39): cold prediction in `seq_block`, `property_expr`,
-   `constant_expression`.
+   10.9 s. Then an implicit data type needs `var` (a block's `x = 1;` is a
+   statement, not a declaration) and mintypmax shares its expression: ibex
+   6.0 -> 4.9 s, `--build-db` 9.6 s / 164 MB. Left open
+   (plan.md §6.39): cold prediction is now flat (top decision ~0.36 s of
+   ~4 s on ibex); `property_expr` investigated, see plan.md.
 7. Optional, LL cost on files with syntax errors (only they reach LL now):
    the remaining LL time is true ambiguity in `primary` (decision 1068)
    and `hierarchical_identifier` (1103): `a.b` is a name, a name + select

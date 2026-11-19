@@ -8833,6 +8833,22 @@ parser once. Then S1 to S3.
   10.9 s / 198 MB. walk_dump identical, sv-tests 0 regressions, unit
   1258/1258, corpus, Emacs 346/346. `mintypmax_expression` fell from 1.0
   to 0.3 s with it (no change of its own needed).
+- **Block items and mintypmax** (follow-up, cold prediction):
+  `data_declaration` took an implicit type without `var`, so a block's
+  `x = 1;` and `t;` were also declarations (the walker's
+  isMisparsedAssignment / parenLessCallName worked around it) and SLL read
+  on through the statements; now an implicit type needs `var` (A.2.1.3,
+  footnote 11) and the typed form is `data_type` -- `x = 1;` is a
+  statement and `t;` a paren_less_tf_call, recorded as the same call.
+  `mintypmax_expression` shares its first expression. The walker reads a
+  declaration's type from either form (`declaredDataType`); the first
+  cut read only the `var` form, which unit tests missed and walk_dump
+  (type details gone), Emacs (20 failures) and the corpus caught -- new
+  listener test for a declaration's type in every position. Cold SLL
+  parse, paired: ibex 6.0 -> 4.9 s, UVM 2.9 -> 2.3 s; ibex `--build-db`
+  9.6 s / 164 MB, the same 6 Warnings and 14864 symbols. walk_dump
+  identical, sv-tests 0 regressions, unit 1260/1260, corpus, Emacs
+  346/346.
 - **sv-tests** (github.com/chipsalliance/sv-tests, ~/src/sv-tests):
   `tools/sv_tests_compare.sh` preprocesses its 1028 tests (UVM on the
   include path) and parses each with grammar/Sv.g4 at HEAD and as edited

@@ -796,3 +796,30 @@ TEST_CASE("casts and calls in every primary form parse under LL and SLL",
     CHECK(parseErrors(src) == 0);
     CHECK(parseErrors(src, true) == 0);
 }
+
+TEST_CASE("block declarations and leading statements parse under LL and SLL",
+          "[compiler][parser][sll]") {
+    // plan.md §6.39 cold prediction: data_declaration took an implicit type
+    // without `var`, so a block's `x = 1;` and `t;` were also declarations
+    // and SLL read on to decide. An implicit type needs `var` (IEEE
+    // 1800-2017 A.2.1.3, footnote 11); and mintypmax_expression shares its
+    // first expression.
+    const std::string src =
+        "package pkg; int v; function automatic void f(); endfunction endpackage\n"
+        "class C; static function void sf(); endfunction rand int r; int unsigned u; endclass\n"
+        "module m; typedef logic [3:0] nib_t; int x; nib_t n; C c;\n"
+        "  task automatic t(); endtask\n"
+        "  initial begin\n"
+        "    int i = 0; var y; var [3:0] z = 1; automatic int k; static logic s;\n"
+        "    const int ci = 1; nib_t w; nib_t [1:0] ww; C #() c2; pkg::v = 1;\n"
+        "  end\n"
+        "  initial begin\n"
+        "    x = 1; t; c.r = 2; x++; C::sf(); pkg::f(); pkg::v = 3; n[1] = 1'b0;\n"
+        "  end\n"
+        "  initial begin : named int q; q = 1; t(); end\n"
+        "  initial #(1:2:3) x = (1:2:3);\n"
+        "  function automatic int g(int a); int b; b = a; return b; endfunction\n"
+        "endmodule\n";
+    CHECK(parseErrors(src) == 0);
+    CHECK(parseErrors(src, true) == 0);
+}
