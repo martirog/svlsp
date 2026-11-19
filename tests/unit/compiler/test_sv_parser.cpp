@@ -631,3 +631,48 @@ TEST_CASE("a cycle delay before a name is not a time literal under SLL",
     CHECK(parseErrors(src) == 0);
     CHECK(parseErrors(src, true) == 0);
 }
+
+TEST_CASE("dotted names, selects and method chains parse under LL and SLL",
+          "[compiler][parser][sll]") {
+    // plan.md §6.39 cold prediction: `a.b` was both a dotted
+    // hierarchical_identifier and `a` with a `.b` from select, from
+    // `primary '.' method_call_body`, from net_lvalue's constant_select, from
+    // hierarchical_btf_identifier and from sequence_method_call, so SLL read
+    // on to the end of the statement and beyond at every dotted name. A
+    // name's dots are the hierarchical_identifier's alone now; a method
+    // chain follows call parens, and `.unique/.and/.or/.xor` (keywords) get
+    // their own tail.
+    const std::string src =
+        "class C;\n"
+        "  int q[$]; int a[4]; C o; int x;\n"
+        "  function C g(int i); return this; endfunction\n"
+        "  function void f();\n"
+        "    x = o.o.x + o.a[1] + a[2] + o.o.a[x + 1];\n"
+        "    x = q[$].x + q[$] + o.a[1].x;\n"
+        "    x = q.size() + o.q.sum() with (item * 2) + q.sum with (item);\n"
+        "    x = a.xor() ^ a.and with (item > 1) ^ a.or;\n"
+        "    q = q.unique();\n"
+        "    x = g(1).x + g(1).g(2).x + o.g(1).g(2).x;\n"
+        "    x = $root.top.x + this.x + this.o.g(1).x;\n"
+        "    x = $urandom() + $sformatf(\"%0d\", x).len() + (o).x;\n"
+        "    x = C'(o).x + int'(x) + string'(x).len();\n"
+        "    x = \"abc\".len() + {a[0], a[1]}.sum() + '{1, 2}.size() + {>>{a}}.size();\n"
+        "    x = q[0:1].size() + a[1:0].sum() + q.find_first with (item > 1).size();\n"
+        "    x = std::randomize(x) + o.randomize() + o.randomize() with { x < 3; };\n"
+        "    void'(o.randomize(x) with (x) { x > 1; });\n"
+        "    o.o.x = 1; o.a[1] = 2; a[1:0] = '{1, 2}; q[$].x = 3;\n"
+        "    o.g(1).g(2); g(1).f(); this.f(); super.f(); o.o.f; f;\n"
+        "    x = pkg::v.x + pkg::f(1).x + C::x;\n"
+        "  endfunction\n"
+        "endclass\n"
+        "module m(input logic clk); wire [3:0] w; logic [1:0] s;\n"
+        "  sub u();\n"
+        "  assign u.w[1] = 1'b0;\n"
+        "  assign w[1:0] = u.s;\n"
+        "  sequence sq; @(posedge clk) s[0]; endsequence\n"
+        "  initial wait (sq.triggered);\n"
+        "  always @(posedge clk) s <= {u.s[0], w[3]};\n"
+        "endmodule\n";
+    CHECK(parseErrors(src) == 0);
+    CHECK(parseErrors(src, true) == 0);
+}

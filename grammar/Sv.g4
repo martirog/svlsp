@@ -1412,9 +1412,10 @@ cycle_delay_range :
     | '##' '[' '+' ']'
 ;
 
-sequence_method_call :
-      sequence_instance '.' method_identifier
-;
+// sequence_method_call (`sequence_instance '.' method_identifier`) removed:
+// unused since §6.33 C2, but SLL still followed every name with its '.'
+// (plan.md §6.39). `s.triggered` is a dotted name.
+
 
 sequence_match_item :
       operator_assignment
@@ -1515,10 +1516,12 @@ block_event_expression :
     | 'end' hierarchical_btf_identifier
 ;
 
+// `hierarchical_identifier '.' method_identifier` dropped: a dotted name
+// covers it, and SLL followed every name with that '.' (plan.md §6.39).
 hierarchical_btf_identifier :
       hierarchical_tf_identifier
     | hierarchical_block_identifier
-    | (hierarchical_identifier '.' | class_scope)? method_identifier
+    | class_scope method_identifier
 ;
 
 cover_point :
@@ -3122,7 +3125,7 @@ subroutine_call :
     | system_tf_call
     | ('std' '::')? randomize_call
     | paren_less_tf_call
-    | (package_scope | class_qualifier) hierarchical_identifier select ('(' list_of_arguments ')')? ('.' method_call_body)*
+    | (package_scope | class_qualifier) hierarchical_identifier select name_tail?
     | implicit_class_handle '.' method_call_body ('.' method_call_body)*
 ;
 
@@ -3384,27 +3387,31 @@ module_path_primary :
 // replaced inline   | casting_type SINGLE_QUOTE '(' expression ')'
 
 // SLL-clean ordering (plan.md §6.33 C2): tf_call (undotted, with parens) first, so
-// a bare call stays a tf_call; the name alternatives take call parens, so
-// `a.b(...)` parses whichever way SLL resolves `.` loops; let_expression and
-// sequence_method_call dropped (tf_call and the name alternative cover them).
+// a bare call stays a tf_call; let_expression and sequence_method_call dropped
+// (tf_call and the name alternative cover them). No `primary '.'
+// method_call_body` (plan.md §6.39): with it, `a.b` was also `a` then `.b`,
+// and SLL read to the end of the statement at every dotted name. A name's
+// dots are hierarchical_identifier's; a method chain follows a call
+// (tf_call, system_tf_call, name_tail's parens or `with`, a part select),
+// a literal, a concatenation, an assignment pattern, a cast or a
+// parenthesized primary.
 primary :
-      primary_literal
-    | tf_call
-    | package_scope hierarchical_identifier select ('(' list_of_arguments ')')?
-    | class_qualifier hierarchical_identifier select ('(' list_of_arguments ')')?
+      primary_literal ('.' method_call_body)*
+    | tf_call ('.' method_call_body)*
+    | package_scope hierarchical_identifier select name_tail?
+    | class_qualifier hierarchical_identifier select name_tail?
     | empty_unpacked_array_concatenation
-    | concatenation ('[' range_expression ']')?
-    | multiple_concatenation ('[' range_expression ']')?
-    | system_tf_call
-    | primary '.' method_call_body
+    | concatenation ('[' range_expression ']')? ('.' method_call_body)*
+    | multiple_concatenation ('[' range_expression ']')? ('.' method_call_body)*
+    | system_tf_call ('.' method_call_body)*
     | implicit_class_handle '.' method_call_body
     | ('std' '::')? randomize_call
-    | '(' mintypmax_expression ')'
-    | simple_type SINGLE_QUOTE '(' expression ')'
-    | restricted_constant_primary SINGLE_QUOTE '(' expression ')'
-    | (signing | 'string' | 'const') SINGLE_QUOTE '(' expression ')'
-    | assignment_pattern_expression
-    | streaming_concatenation
+    | '(' mintypmax_expression ')' ('.' method_call_body)*
+    | simple_type SINGLE_QUOTE '(' expression ')' ('.' method_call_body)*
+    | restricted_constant_primary SINGLE_QUOTE '(' expression ')' ('.' method_call_body)*
+    | (signing | 'string' | 'const') SINGLE_QUOTE '(' expression ')' ('.' method_call_body)*
+    | assignment_pattern_expression ('.' method_call_body)*
+    | streaming_concatenation ('.' method_call_body)*
     | 'this'
     | '$'
     | 'null'
@@ -3451,13 +3458,35 @@ implicit_class_handle :
     | 'super'
     | 'this' '.' 'super'
 ;
+// What may follow a name and its select (plan.md §6.39): call parens with a
+// `with` and a method chain, a `with` (`q.sum with (item)`), or one of the
+// keyword-named array methods hierarchical_identifier can't take. Never a
+// bare '.' IDENTIFIER, which would make every dotted name ambiguous.
+name_tail :
+      '(' list_of_arguments ')' with_clause? ('.' method_call_body)*
+    | with_clause ('.' method_call_body)*
+    | '.' keyword_method_body ('.' method_call_body)*
+;
 
+with_clause :
+      'with' '(' expression ')'
+    | 'with' ('(' identifier_list? ')')? constraint_block
+;
+
+keyword_method_body :
+      ('unique' | 'and' | 'or' | 'xor') attribute_instance* ('(' list_of_arguments ')')? ('with' '(' expression ')')?
+;
+
+// select and nonrange_select lost their leading `.member` chain (plan.md
+// §6.39): they always follow a hierarchical_identifier, which takes the dots.
+// A method chain may follow a part select (`q[0:1].size()`): after `]` of
+// a range, never directly after the name, so `a.b` stays unambiguous.
 select :
-      (('.' member_identifier (('[' expression ']')*))* '.' member_identifier)? (('[' expression ']')*) ('[' part_select_range ']')?
+      ('[' expression ']')* ('[' part_select_range ']' ('.' method_call_body)*)?
 ;
 
 nonrange_select :
-      (('.' member_identifier (('[' expression ']')*))* '.' member_identifier)? (('[' expression ']')*)
+      ('[' expression ']')*
 ;
 
 constant_select :
@@ -3476,8 +3505,9 @@ constant_select :
 //    casting_type SINGLE_QUOTE '(' expression ')'
 // A.8.5 Expression left-side values
 
+// constant_select without its `.member` chain (plan.md §6.39, as select)
 net_lvalue :
-      ps_or_hierarchical_net_identifier constant_select
+      ps_or_hierarchical_net_identifier ('[' constant_expression ']')* ('[' constant_part_select_range ']')?
     | '{' net_lvalue (',' net_lvalue)* '}'
     | assignment_pattern_expression_type? assignment_pattern_net_lvalue
 ;
@@ -3629,8 +3659,10 @@ hierarchical_event_identifier :
       hierarchical_identifier
 ;
 
+// Indices before a '.' are expressions (`q[$].x`), as select's were when
+// select took the dots (plan.md §6.39).
 hierarchical_identifier :
-      ('$root' '.')? (IDENTIFIER (('[' constant_expression ']')*) '.')* IDENTIFIER
+      ('$root' '.')? (IDENTIFIER ('[' expression ']')* '.')* IDENTIFIER
 ;
 
 hierarchical_net_identifier :
