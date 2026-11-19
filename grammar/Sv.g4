@@ -1405,8 +1405,14 @@ sequence_expr :
     | clocking_event sequence_expr
 ;
 
+// `##` takes a number, a name or `( ... )` as cycle_delay does, not any
+// constant_primary (plan.md §6.39): `##$x (a ...)` and `##N (a ...)` made
+// every `$x(` and `N(` also a delay followed by a parenthesized sequence,
+// and SLL read each `$cast(...)` to the end of its block.
 cycle_delay_range :
-      '##' constant_primary
+      '##' integral_number
+    | '##' package_scope? IDENTIFIER
+    | '##' '(' constant_mintypmax_expression ')'
     | '##' '[' cycle_delay_const_range_expression ']'
     | '##' '[' '*' ']'
     | '##' '[' '+' ']'
@@ -3107,10 +3113,18 @@ paren_less_tf_call :
       ps_or_hierarchical_tf_identifier attribute_instance*
 ;
 
+// One argument list (plan.md §6.39): the IEEE alternatives -- arguments, a
+// data_type, expressions and a clocking event -- all began `$name (` and
+// all matched `$bits(x)`, so SLL read each call's arguments to the end.
 system_tf_call :
-      SYSTEM_TF_IDENTIFIER ('(' list_of_arguments ')')?
-    | SYSTEM_TF_IDENTIFIER '(' data_type (',' expression)? ')'
-    | SYSTEM_TF_IDENTIFIER '(' expression (',' expression?)* (',' clocking_event?)? ')'
+      SYSTEM_TF_IDENTIFIER ('(' system_tf_argument? (',' system_tf_argument?)* ')')?
+;
+
+system_tf_argument :
+      expression
+    | data_type
+    | clocking_event
+    | '.' IDENTIFIER '(' expression? ')'
 ;
 
 

@@ -676,3 +676,39 @@ TEST_CASE("dotted names, selects and method chains parse under LL and SLL",
     CHECK(parseErrors(src) == 0);
     CHECK(parseErrors(src, true) == 0);
 }
+
+TEST_CASE("system calls and cycle delays keep every form under LL and SLL",
+          "[compiler][parser][sll]") {
+    // plan.md §6.39 cold prediction: system_tf_call had three alternatives
+    // sharing `$name (`, and `##` took any constant_primary, so after `$x`
+    // a `(` could also start the sequence after `##$x` -- SLL read each
+    // `$cast(...)` to the end of its block. One argument list now (each an
+    // expression, a type, a clocking event or a named argument), and `##`
+    // takes a number, a (package-scoped) name or a parenthesized expression.
+    const std::string src =
+        "package pkg; localparam int D = 2; endpackage\n"
+        "module m #(parameter int N = 1) (input logic clk, a, b, en);\n"
+        "  typedef logic [3:0] nib_t; nib_t v; int x; string s; int q[$];\n"
+        "  initial begin\n"
+        "    x = $bits(v) + $bits(logic [3:0]) + $bits(nib_t) + $size(q, 1);\n"
+        "    s = $typename(int); s = $sformatf(\"%0d %s\", x, s);\n"
+        "    x = $countones({a, b}) + $clog2(N + 1) + $urandom_range(1, 4);\n"
+        "    if (!$cast(x, v)) $fatal(1, \"cast\");\n"
+        "    $display(\"%0d\", x,, a); $display; $finish; x = $time;\n"
+        "    if ($isunknown(a)) $info(\"x\");\n"
+        "    $dumpvars(0, m);\n"
+        "  end\n"
+        "  assert property (@(posedge clk) $rose(a) |-> ##1 $stable(b));\n"
+        "  assert property (@(posedge clk) a |=> $past(b, 2, en, @(posedge clk)));\n"
+        "  assert property (@(posedge clk) a |=> $past(b,,, @(posedge clk)));\n"
+        "  assert property (@(posedge clk) $rose(a, @(posedge clk)) |-> b);\n"
+        "  assert property (@(posedge clk) a ##0 b ##N a ##(N + 1) b ##pkg::D a);\n"
+        "  assert property (@(posedge clk) a ##[1:3] b ##[*] a ##[+] b ##[0:$] a);\n"
+        "  assert property (@(posedge clk) ##1 (a ##1 b) |-> ##2 (a && b));\n"
+        "  assert property (@(posedge clk) a ##4'd2 b);\n"
+        "  default clocking cb @(posedge clk); endclocking\n"
+        "  initial begin ##1; ##N; ##(N * 2); end\n"
+        "endmodule\n";
+    CHECK(parseErrors(src) == 0);
+    CHECK(parseErrors(src, true) == 0);
+}

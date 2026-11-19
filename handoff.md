@@ -352,9 +352,11 @@ Second follow-up:
    in select, no `primary '.'`), so SLL stops reading at every `a.b` --
    cold ibex parse 49 -> 40 s, UVM 103 -> 72 s, `--build-db` 63 -> 55 s.
    `tools/sv_tests_compare.sh` (sv-tests, old vs new grammar) for every
-   grammar change: 0 regressions here. Left open
-   (plan.md §6.39): cold prediction in `system_tf_call`, `primary`,
-   dangling `else`, `class_type`.
+   grammar change: 0 regressions here. Then system calls take one
+   argument list and `##` a number/name/`( ... )`: ibex cold parse 37.9 ->
+   26.4 s, `--build-db` 38 s. Left open
+   (plan.md §6.39): cold prediction in `primary`, dangling `else`,
+   `class_type`, `mintypmax_expression`, `seq_block`.
 7. Optional, LL cost on files with syntax errors (only they reach LL now):
    the remaining LL time is true ambiguity in `primary` (decision 1068)
    and `hierarchical_identifier` (1103): `a.b` is a name, a name + select

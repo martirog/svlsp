@@ -8780,6 +8780,17 @@ parser once. Then S1 to S3.
   -> 675 MB (both follow-ups). walk_dump identical on UVM and ibex;
   `q[$].x = 3;` parses now. Index after a method chain (`o.f(1).a[0]`)
   still doesn't, as before.
+- **System calls and `##`** (follow-up, cold prediction):
+  `system_tf_call`'s optional `(` was 18% of a cold ibex parse (SLL read
+  each `$cast(...)` to the end of its block): its three IEEE alternatives
+  all began `$name (`, and `cycle_delay_range : '##' constant_primary`
+  let a `(` follow any `$x` or `N` (`##N (a ##1 b)`). One argument list
+  now (`system_tf_argument`: expression, data_type, clocking_event or
+  named), and `##` takes a number, a package-scoped name or `( ... )`, as
+  `cycle_delay` does. Cold SLL parse, paired: ibex 37.9 -> 26.4 s, UVM
+  71.3 -> 58.8 s; ibex `--build-db` 38 s / 640 MB. walk_dump identical,
+  sv-tests 0 regressions, unit 1254/1254, corpus 1563 / 31, Emacs 346/346
+  (one run 345: a flake, two reruns clean).
 - **sv-tests** (github.com/chipsalliance/sv-tests, ~/src/sv-tests):
   `tools/sv_tests_compare.sh` preprocesses its 1028 tests (UVM on the
   include path) and parses each with grammar/Sv.g4 at HEAD and as edited
