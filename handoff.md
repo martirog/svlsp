@@ -344,8 +344,10 @@ Next steps:
    and `generate_item` / `continuous_assign` lost their overlapping
    alternatives: ibex load 155 -> 73 s, `--build-db` 149 -> 63 s. Unit
    1251/1251, Emacs 346/346, corpus 1563 / 31, UVM `--build-db` 0
-   diagnostics, `test-integration-uvm` 15/15, `perf-check` ok. Left open
-   (plan.md §6.39): SLL misparses `##1 a && !b |=> c`; cold prediction
+   diagnostics, `test-integration-uvm` 15/15, `perf-check` ok. Follow-up:
+   a time literal is one token (`1ns`, unit touching the number), so SLL
+   no longer reads `##1 a` as `##(1a)` -- 0 SLL errors on ibex and UVM.
+   Left open (plan.md §6.39): cold prediction
    in `hierarchical_identifier`, `system_tf_call`, dangling `else`,
    `class_type`.
 7. Optional, LL cost on files with syntax errors (only they reach LL now):

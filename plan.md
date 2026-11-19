@@ -8748,8 +8748,16 @@ parser once. Then S1 to S3.
   -> 659 MB, 0% CPU after; `--build-db` 149 -> 63 s, 930 -> 749 MB.
   Slowest units now: core_ibex_test_pkg 8.4 s, push_pull_agent_pkg 6.9
   s (was 25.1), dv_base_reg_pkg 4.4 s, prim_count 4.3 s (was 7.8).
-- **Left open:** SLL misparses `##1 a && !b |=> c` (LL parses it), so a
-  file with that sequence is parsed twice (prim_lfsr in ibex). Cold
+- **SLL and cycle delays** (follow-up): SLL read `##1 a && !b |=> c` as
+  `##(1a) && ...` -- `time_literal` was `DECIMAL_NUMBER time_unit` with
+  any identifier for the unit, and §6.33 C2 had put it first in
+  `primary_literal` -- so prim_lfsr was parsed twice. A time literal is
+  one token now, `TIME_LITERAL`, with the unit right after the number
+  (IEEE 1800-2017 5.8). SLL: 0 errors on all of ibex and UVM. walk_dump:
+  UVM identical; ibex the same records minus 5 bogus calls to `ps`/`us`
+  (`#1ps;` was `1` and a call `ps`). `grammar_profile --tree` prints the
+  parse tree, to compare an SLL and an LL parse of a small input.
+- **Left open:** cold
   prediction still dominates a first load: `hierarchical_identifier` (a
   `[...]` before a `.`), `system_tf_call`'s optional `(`, the dangling
   `else`, `class_type` -- each needs an SLL-safe rewrite like the above.
