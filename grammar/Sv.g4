@@ -2164,8 +2164,8 @@ variable_assignment :
 // A.6.3 Parallel and sequential blocks
 
 action_block :
-      statement_or_null
-    | statement? 'else' statement_or_null
+      'else' statement_or_null
+    | statement_else
 ;
 
 seq_block :
@@ -2300,8 +2300,19 @@ disable_statement :
 
 // A.6.6 Conditional statements
 
+// No else-if loop (plan.md §6.39): `else if (c) s` was both a loop turn and
+// `else` + a nested if, so SLL read each chain to its end. The nested if
+// covers it. The `else` is statement_else's, shared with action_block: with
+// an `else` of its own in action_block, the dangling-else reading "this else
+// is the enclosing assertion's" never merged with "it's this if's", and SLL
+// read every else branch to its end. Greedy: an else binds to the nearest
+// if or assertion, as IEEE 1800-2017 12.4 says.
 conditional_statement :
-      unique_priority? 'if' '(' cond_predicate ')' statement_or_null ('else' 'if' '(' cond_predicate ')' statement_or_null)* ('else' statement_or_null)?
+      unique_priority? 'if' '(' cond_predicate ')' statement_else
+;
+
+statement_else :
+      statement_or_null ('else' statement_or_null)?
 ;
 
 unique_priority :

@@ -8791,6 +8791,20 @@ parser once. Then S1 to S3.
   71.3 -> 58.8 s; ibex `--build-db` 38 s / 640 MB. walk_dump identical,
   sv-tests 0 regressions, unit 1254/1254, corpus 1563 / 31, Emacs 346/346
   (one run 345: a flake, two reruns clean).
+- **Dangling `else`** (follow-up, cold prediction): two decisions in
+  `conditional_statement` were 22% of a cold ibex parse. `else if (c) s`
+  was both a turn of the else-if loop and `else` + a nested if (loop
+  dropped: the nested if covers it); and `action_block`'s own `else`
+  (`assert (a) s; else t;`) kept the reading "this else is the enclosing
+  assertion's" alive beside "it's this if's" -- different rules, so SLL
+  never merged them and read every else branch to its end. Both now use
+  one rule, `statement_else : statement_or_null ('else'
+  statement_or_null)?` (greedy: an else binds to the nearest if or
+  assertion, 12.4). SLL also misparsed `assert (a) x <= 1; else x <=
+  2;` before (LL fallback); not now. Cold SLL parse, paired: ibex 27.4 ->
+  19.7 s, UVM 57.7 -> 48.5 s; ibex `--build-db` 29.6 s / 544 MB.
+  walk_dump identical, sv-tests 0 regressions, unit 1255/1255, corpus,
+  Emacs 346/346.
 - **sv-tests** (github.com/chipsalliance/sv-tests, ~/src/sv-tests):
   `tools/sv_tests_compare.sh` preprocesses its 1028 tests (UVM on the
   include path) and parses each with grammar/Sv.g4 at HEAD and as edited

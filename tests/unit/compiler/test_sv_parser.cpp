@@ -712,3 +712,33 @@ TEST_CASE("system calls and cycle delays keep every form under LL and SLL",
     CHECK(parseErrors(src) == 0);
     CHECK(parseErrors(src, true) == 0);
 }
+
+TEST_CASE("if / else-if chains, dangling else and action blocks parse under LL and SLL",
+          "[compiler][parser][sll]") {
+    // plan.md §6.39 cold prediction: `else if (c) s` was both a turn of
+    // conditional_statement's else-if loop and `else` + a nested if, so SLL
+    // read each chain to its end. The loop is gone (a nested if covers it).
+    const std::string src =
+        "module m(input logic clk, a, b, c); int x; logic [1:0] s;\n"
+        "  always_comb begin\n"
+        "    if (a) x = 1; else if (b) x = 2; else if (c) x = 3; else x = 4;\n"
+        "    if (a) begin x = 1; end else if (b) begin x = 2; end else begin x = 3; end\n"
+        "    if (a) if (b) x = 1; else x = 2;\n"
+        "    if (a) begin if (b) x = 1; end else x = 2;\n"
+        "    unique if (s == 0) x = 0; else if (s == 1) x = 1; else x = 2;\n"
+        "    priority if (a) x = 0; else if (b) x = 1;\n"
+        "    unique0 if (a) x = 0;\n"
+        "    if (a) ; else ;\n"
+        "    if (a &&& b) x = 1; else x = 0;\n"
+        "  end\n"
+        "  always @(posedge clk) begin\n"
+        "    assert (a) else $error(\"a\");\n"
+        "    assert (a) x <= 1; else x <= 2;\n"
+        "    assert (a) if (b) x <= 1; else x <= 2; else $error(\"a\");\n"
+        "    assume (b) else $warning(\"b\");\n"
+        "    if (a) assert (b) else $error(\"b\"); else x <= 3;\n"
+        "  end\n"
+        "endmodule\n";
+    CHECK(parseErrors(src) == 0);
+    CHECK(parseErrors(src, true) == 0);
+}

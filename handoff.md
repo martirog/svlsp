@@ -354,9 +354,11 @@ Second follow-up:
    `tools/sv_tests_compare.sh` (sv-tests, old vs new grammar) for every
    grammar change: 0 regressions here. Then system calls take one
    argument list and `##` a number/name/`( ... )`: ibex cold parse 37.9 ->
-   26.4 s, `--build-db` 38 s. Left open
-   (plan.md §6.39): cold prediction in `primary`, dangling `else`,
-   `class_type`, `mintypmax_expression`, `seq_block`.
+   26.4 s, `--build-db` 38 s. Then `if` and `action_block` share one
+   `else` rule (`statement_else`), no else-if loop: ibex 27.4 -> 19.7 s,
+   `--build-db` 30 s. Left open
+   (plan.md §6.39): cold prediction in `primary`, `class_type`,
+   `mintypmax_expression`, `seq_block`.
 7. Optional, LL cost on files with syntax errors (only they reach LL now):
    the remaining LL time is true ambiguity in `primary` (decision 1068)
    and `hierarchical_identifier` (1103): `a.b` is a name, a name + select
