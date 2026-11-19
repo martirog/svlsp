@@ -8757,10 +8757,42 @@ parser once. Then S1 to S3.
   UVM identical; ibex the same records minus 5 bogus calls to `ps`/`us`
   (`#1ps;` was `1` and a call `ps`). `grammar_profile --tree` prints the
   parse tree, to compare an SLL and an LL parse of a small input.
+- **Dotted names** (follow-up, cold prediction): `hierarchical_identifier`'s
+  `.` loop was 21% of a cold SLL parse of ibex (10.0 s, lookahead up to
+  1094 tokens, through to the next covergroup). SLL merges every caller's
+  follow, and five rules let `.IDENTIFIER` follow a name, so `a.b` was
+  both the dotted name and `a` then `.b` until the end of the statement:
+  `select`/`nonrange_select`'s leading `.member` chain, `primary '.'
+  method_call_body`, net_lvalue's `constant_select`,
+  `hierarchical_btf_identifier`'s `hierarchical_identifier '.'`, and the
+  unused `sequence_method_call` (an uninvoked rule still adds its follow
+  under SLL). The dots are now `hierarchical_identifier`'s alone (its
+  indices are expressions, for `q[$].x`); a new `name_tail` takes call
+  parens + `with` + method chain, a bare `with`, or the keyword methods
+  `.unique/.and/.or/.xor`; every other primary that had a `.method`
+  through `primary '.'` carries its own chain: tf_call, system_tf_call,
+  literals (`"abc".len()`), concatenations, assignment patterns,
+  streaming concatenations, casts, `( ... )`, a part select
+  (`q[0:1].size()`) and a `with` (`q.find_first with (...).size()`). The
+  first cut dropped those six forms; UVM, ibex and sv-tests don't use
+  them, a targeted check found them. Cold SLL parse, paired runs: ibex
+  49.4 -> 40.0 s, UVM 103.4 -> 72.3 s; ibex `--build-db` 63 -> 55 s, 749
+  -> 675 MB (both follow-ups). walk_dump identical on UVM and ibex;
+  `q[$].x = 3;` parses now. Index after a method chain (`o.f(1).a[0]`)
+  still doesn't, as before.
+- **sv-tests** (github.com/chipsalliance/sv-tests, ~/src/sv-tests):
+  `tools/sv_tests_compare.sh` preprocesses its 1028 tests (UVM on the
+  include path) and parses each with grammar/Sv.g4 at HEAD and as edited
+  (`grammar_profile --list`); a file that flips from pass to fail is a
+  regression. This change: 1020 parsed, 1007 pass both, 13 fail both, 0
+  regressions. Not sufficient alone (the six forms above aren't in it),
+  so each grammar change also gets a targeted parser test. Parser gaps it
+  shows, all older: escaped identifiers (5.6.1), `type(a) == type(b)`
+  (6.23), `` `begin_keywords `` (5.6.4), two macro corner cases.
 - **Left open:** cold
-  prediction still dominates a first load: `hierarchical_identifier` (a
-  `[...]` before a `.`), `system_tf_call`'s optional `(`, the dangling
-  `else`, `class_type` -- each needs an SLL-safe rewrite like the above.
+  prediction still dominates a first load: `system_tf_call`'s optional
+  `(` (15%), `primary` (11%), the dangling `else` (9 + 5%), `class_type`
+  (7%) -- each needs an SLL-safe rewrite like the above.
 
 ---
 

@@ -347,9 +347,14 @@ Next steps:
    diagnostics, `test-integration-uvm` 15/15, `perf-check` ok. Follow-up:
    a time literal is one token (`1ns`, unit touching the number), so SLL
    no longer reads `##1 a` as `##(1a)` -- 0 SLL errors on ibex and UVM.
-   Left open (plan.md §6.39): cold prediction
-   in `hierarchical_identifier`, `system_tf_call`, dangling `else`,
-   `class_type`.
+Second follow-up:
+   a name's dots belong to `hierarchical_identifier` alone (no `.member`
+   in select, no `primary '.'`), so SLL stops reading at every `a.b` --
+   cold ibex parse 49 -> 40 s, UVM 103 -> 72 s, `--build-db` 63 -> 55 s.
+   `tools/sv_tests_compare.sh` (sv-tests, old vs new grammar) for every
+   grammar change: 0 regressions here. Left open
+   (plan.md §6.39): cold prediction in `system_tf_call`, `primary`,
+   dangling `else`, `class_type`.
 7. Optional, LL cost on files with syntax errors (only they reach LL now):
    the remaining LL time is true ambiguity in `primary` (decision 1068)
    and `hierarchical_identifier` (1103): `a.b` is a name, a name + select
@@ -987,6 +992,11 @@ ASan+UBSan (10-100x slower) — use release for anything corpus-sized.
 - Verify empirically (live `svlsp` probe, real corpus, real fixture) rather
   than inferring behavior from reading `Sv.g4` — ANTLR's chosen alternative has
   surprised us more than once.
+- A grammar change gets three checks before commit: a targeted parser test
+  of the constructs around the changed rules (under LL and SLL),
+  `tools/sv_tests_compare.sh` (0 regressions on sv-tests), and walk_dump
+  diffs on UVM and ibex (`tools/grammar_profile.sh --walk-dump`, stdout
+  only -- don't grep the dump). sv-tests alone missed six forms in §6.39.
 
 ## Key decisions
 
