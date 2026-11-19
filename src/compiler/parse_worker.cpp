@@ -186,14 +186,16 @@ void put(Writer& w, const InstantiationRecord& i)
     w.str(i.instName);
     w.i32(i.line);
     w.str(i.file);
+    w.u8(i.conditional ? 1 : 0);
 }
 
 void get(Reader& r, InstantiationRecord& i)
 {
-    i.typeName = r.str();
-    i.instName = r.str();
-    i.line     = r.i32();
-    i.file     = r.str();
+    i.typeName    = r.str();
+    i.instName    = r.str();
+    i.line        = r.i32();
+    i.file        = r.str();
+    i.conditional = r.u8() != 0;
 }
 
 void put(Writer& w, const CallRecord& c)

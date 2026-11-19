@@ -66,7 +66,7 @@ std::vector<ParseError> checkMissingArguments(
 // An Information diagnostic on line 1 of a file `include'd in more than
 // one scope (in one compile or several), naming the scope svlsp uses
 // (SymbolDatabase::includeContextOf, the first site) and the others. {} for
-// a file whose sites all agree.
+// a file whose sites all agree, and for one that declares nothing.
 std::vector<ParseError> contextDiagnostics(const SymbolDatabase& sdb, const std::string& path)
 {
     const auto sites = sdb.includeSitesOf(path);
@@ -76,6 +76,9 @@ std::vector<ParseError> contextDiagnostics(const SymbolDatabase& sdb, const std:
                          [&](const IncludeSiteRow* d) { return d->scope == s.scope; }))
             distinct.push_back(&s);
     if (distinct.size() < 2) return {};
+    // A file that declares nothing (a macros-only header, included in
+    // every package) is the same in any scope (plan.md §6.39 S2).
+    if (sdb.symbolsForFile(path).empty()) return {};
 
     auto name = [](const std::string& scope) {
         return scope.empty() ? std::string{"the compilation unit"} : "'" + scope + "'";

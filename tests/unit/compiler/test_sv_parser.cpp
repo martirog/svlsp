@@ -471,3 +471,136 @@ TEST_CASE("SvParser accepts every call statement form, and still rejects non-cal
         CHECK(parseErrors(wrap(stmt)) > 0);
     }
 }
+
+// plan.md §6.39 G1-G5: constructs ibex uses that simulators accept. Each is
+// checked under LL and SLL (the two stages of §6.33 C2).
+
+TEST_CASE("G1: a cross body's bins items end in one semicolon each",
+          "[compiler][parser][ibex]") {
+    const std::string src =
+        "module m(input logic clk); logic [1:0] a; logic e;\n"
+        "  covergroup cg @(posedge clk);\n"
+        "    cp_a : coverpoint a; cp_e : coverpoint e;\n"
+        "    x : cross cp_a, cp_e iff (e) {\n"
+        "      option.weight = 2;\n"
+        "      illegal_bins i1 = binsof(cp_a) intersect {2'b00};\n"
+        "      ignore_bins i2 = binsof(cp_a) intersect {1} && binsof(cp_e) intersect {1'b1};\n"
+        "      bins b3 = binsof(cp_e);\n"
+        "      function CrossQueueType f(); endfunction\n"
+        "    }\n"
+        "    y : cross cp_a, cp_e { }\n"
+        "    z : cross cp_a, u_core.st.mie iff\n"
+        "          (e | e) {\n"
+        "      illegal_bins i4 = (!binsof(u_core.st.mie) intersect {1, 2} &&\n"
+        "                         binsof(cp_a) intersect {0}) with (cp_a > 0);\n"
+        "    }\n"
+        "  endgroup\n"
+        "endmodule\n";
+    CHECK(parseErrors(src) == 0);
+    CHECK(parseErrors(src, true) == 0);
+}
+
+TEST_CASE("G2: a queue slice may end at $", "[compiler][parser][ibex]") {
+    const std::string src =
+        "module m;\n"
+        "  string s[$], r[$]; int q[$];\n"
+        "  initial begin\n"
+        "    r = s[1:$];\n"
+        "    q = q[$-1:$];\n"
+        "    q = q[0:$-2];\n"
+        "    q[$] = 1;\n"
+        "  end\n"
+        "endmodule\n";
+    CHECK(parseErrors(src) == 0);
+    CHECK(parseErrors(src, true) == 0);
+}
+
+TEST_CASE("G3: a bind directive at file level", "[compiler][parser][ibex]") {
+    const std::string src =
+        "interface f_if; logic a; endinterface\n"
+        "module f_core; logic a; endmodule\n"
+        "bind f_core f_if u_bind (.*);\n"
+        "bind f_core f_if u_b2 (.a(a));\n"
+        "bind f_core : u_core1, u_core2 f_if #(.P(1)) u_b3 (.*);\n"
+        "module top; bind f_core f_if u_b4 (.*); endmodule\n";
+    CHECK(parseErrors(src) == 0);
+    CHECK(parseErrors(src, true) == 0);
+}
+
+TEST_CASE("G4: whitespace between a number's size, base and value",
+          "[compiler][parser][ibex]") {
+    const std::string src =
+        "module m;\n"
+        "  logic b = 1'b 0;\n"
+        "  logic [7:0] h = 8'h FF, o = 8 'o 17, d = 8'd 255, s = 8'sh 7f;\n"
+        "  logic u = 'b 1;\n"
+        "endmodule\n";
+    CHECK(parseErrors(src) == 0);
+    CHECK(parseErrors(src, true) == 0);
+}
+
+TEST_CASE("G5: foreach over a[i][j] as well as a[i, j]", "[compiler][parser][ibex]") {
+    const std::string src =
+        "module m; int d[2][3]; int e[2][3][4];\n"
+        "  initial begin\n"
+        "    foreach (d[i][j]) d[i][j] = 0;\n"
+        "    foreach (d[i, j]) d[i][j] = 0;\n"
+        "    foreach (e[i][j][k]) e[i][j][k] = 0;\n"
+        "    foreach (e[, j]) e[0][j][0] = 1;\n"
+        "  end\n"
+        "endmodule\n";
+    CHECK(parseErrors(src) == 0);
+    CHECK(parseErrors(src, true) == 0);
+}
+
+TEST_CASE("untyped and typed ports parse under SLL", "[compiler][parser][sll][ibex]") {
+    // plan.md §6.39: `input clk_i,` made SLL take `clk_i` as a type, so
+    // every RTL module with an untyped port was parsed twice (SLL, then LL).
+    const std::string src =
+        "typedef logic [3:0] mask_t;\n"
+        "module m #(parameter mask_t P = {$bits(mask_t){1'b1}}) (\n"
+        "  input clk_i,\n"
+        "  input wire rst_ni,\n"
+        "  input signed [3:0] s,\n"
+        "  input [3:0] v,\n"
+        "  input mask_t mk,\n"
+        "  output logic o,\n"
+        "  inout x\n"
+        ");\n"
+        "endmodule\n"
+        "module n (a, b, c);\n"
+        "  input a, b;\n"
+        "  output [1:0] c;\n"
+        "endmodule\n";
+    CHECK(parseErrors(src) == 0);
+    CHECK(parseErrors(src, true) == 0);
+}
+
+TEST_CASE("generate items and continuous assigns keep every IEEE form",
+          "[compiler][parser][sll]") {
+    // plan.md §6.39: generate_item and continuous_assign were rewritten
+    // without overlapping alternatives (SLL scanned each item to its end).
+    const std::string src =
+        "interface ifc; extern function void f(); endinterface\n"
+        "module m(input logic clk); wire w, w2; logic v; logic [3:0] q;\n"
+        "  for (genvar i = 0; i < 2; i++) begin : g\n"
+        "    always_ff @(posedge clk) v <= w;\n"
+        "    assign w = v;\n"
+        "    initial $display(\"%0d\", i);\n"
+        "    sub u (.a(w));\n"
+        "    and g1 (w2, w, v);\n"
+        "    if (i == 0) begin : g_if assign q[0] = 1'b1; end\n"
+        "    covergroup cg @(posedge clk); cp : coverpoint v; endgroup\n"
+        "    function automatic int f(int a); return a; endfunction\n"
+        "    property p; @(posedge clk) v |-> w; endproperty\n"
+        "    assert property (p);\n"
+        "  end\n"
+        "  assign (strong0, weak1) #(1, 2) w2 = v;\n"
+        "  assign #3 w = v, w2 = !v;\n"
+        "  assign {q[1], q[2]} = 2'b01;\n"
+        "  assign q[3] = w;\n"
+        "endmodule\n"
+        "module sub(input a); endmodule\n";
+    CHECK(parseErrors(src) == 0);
+    CHECK(parseErrors(src, true) == 0);
+}

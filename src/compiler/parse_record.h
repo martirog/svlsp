@@ -159,6 +159,9 @@ struct InstantiationRecord {
     std::string instName;   // instance_identifier text (name_of_instance)
     int         line{0};    // 1-based line in `file`
     std::string file{};     // empty = same as compiled file
+    // Inside an `if` / `case` generate branch, which may not be elaborated
+    // (plan.md §6.39 S3): its module unresolved is a Warning, not an Error.
+    bool        conditional{false};
 };
 
 // One argument slot at a bare function/task call site (plan.md §6.23): a

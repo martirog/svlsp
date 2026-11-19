@@ -86,21 +86,57 @@ static std::string_view trimSV(std::string_view sv) {
     return sv.substr(l, r - l + 1);
 }
 
+// Where the `//` comment of the line `sv` starts (npos: none), skipping
+// string literals and `/* */` comments (plan.md §6.39 P1). `inBlock`, when
+// given, says whether the line starts inside a `/* */` comment and is set
+// to whether it ends inside one; a `//` inside a block comment is comment
+// text. A `" stringification marker doesn't open a string.
+static size_t lineCommentPos(std::string_view sv, bool* inBlock = nullptr) {
+    bool block = inBlock && *inBlock;
+    bool str   = false;
+    size_t result = std::string_view::npos;
+    for (size_t i = 0; i < sv.size(); ++i) {
+        const char c = sv[i];
+        if (block) {
+            if (c == '*' && i + 1 < sv.size() && sv[i + 1] == '/') { block = false; ++i; }
+            continue;
+        }
+        if (str) {
+            if (c == '\\') ++i;
+            else if (c == '"') str = false;
+            continue;
+        }
+        if (c == '"' && (i == 0 || sv[i - 1] != '`')) { str = true; continue; }
+        if (c == '/' && i + 1 < sv.size()) {
+            if (sv[i + 1] == '/') { result = i; break; }
+            if (sv[i + 1] == '*') { block = true; ++i; }
+        }
+    }
+    if (inBlock) *inBlock = block;
+    return result;
+}
+
 static std::string_view stripLineComment(std::string_view sv) {
-    size_t pos = sv.find("//");
+    size_t pos = lineCommentPos(sv);
     return pos == std::string_view::npos ? sv : trimSV(sv.substr(0, pos));
 }
 
 // `sv` up to a `//` comment, untrimmed: offsets into it are offsets into `sv`.
 static std::string_view codeOf(std::string_view sv) {
-    return sv.substr(0, sv.find("//"));
+    return sv.substr(0, lineCommentPos(sv));
+}
+
+// Where the `/* */` comment that `sv` starts inside ends: the offset just
+// past its `*/`, npos if it doesn't end on this line.
+static size_t blockCommentEnd(std::string_view sv) {
+    const size_t pos = sv.find("*/");
+    return pos == std::string_view::npos ? pos : pos + 2;
 }
 
 // Splits `line` into a macro-expandable code portion and a literal trailing
 // `// comment` portion (comment includes the "//" itself and everything
-// after — kept verbatim, never macro-expanded). Naive, like
-// stripLineComment: doesn't account for "//" appearing inside a string
-// literal.
+// after — kept verbatim, never macro-expanded). A "//" inside a string
+// literal or a `/* */` comment on the line doesn't start one.
 void Ctx::pendingAt(const std::string& file, int line, std::string_view text) {
     const std::string_view code = codeOf(text);
     const size_t first = code.find_first_not_of(" \t");
@@ -117,7 +153,7 @@ void Ctx::pendingAt(const std::string& file, int line, std::string_view text) {
 }
 
 static std::pair<std::string_view, std::string_view> splitLineComment(std::string_view line) {
-    size_t pos = line.find("//");
+    size_t pos = lineCommentPos(line);
     if (pos == std::string_view::npos) return {line, {}};
     return {line.substr(0, pos), line.substr(pos)};
 }
@@ -359,6 +395,11 @@ static std::string expandMacroCall(const std::string& name,
                          std::to_string(args.size()));
         return "";
     }
+    // An empty argument takes the parameter's default, if it has one, and
+    // is empty text otherwise (IEEE 1800-2017 22.5.1; plan.md §6.39 P4).
+    for (size_t k = 0; k < args.size(); ++k)
+        if (args[k].empty() && k < def.defaults.size() && def.defaults[k].has_value())
+            args[k] = *def.defaults[k];
     // Any params beyond the supplied args must have a default value.
     for (size_t k = args.size(); k < def.params.size(); ++k) {
         if (k < def.defaults.size() && def.defaults[k].has_value()) {
@@ -422,6 +463,15 @@ static std::string expandStr(const std::string& src, const MacroMap& macros,
             size_t j = i + 1;
             while (j < src.size() && src[j] != '"') j += src[j] == '\\' ? 2 : 1;
             j = std::min(j + 1, src.size());
+            result.append(src, i, j - i);
+            i = j;
+            continue;
+        }
+        if (src[i] == '/' && i + 1 < src.size() && src[i + 1] == '*') {
+            // A comment is text too (plan.md §6.39 P1). One left open runs
+            // to the end (the caller tracks it into the next line).
+            const size_t end = src.find("*/", i + 2);
+            const size_t j = end == std::string::npos ? src.size() : end + 2;
             result.append(src, i, j - i);
             i = j;
             continue;
@@ -512,12 +562,21 @@ static std::optional<ParsedMacro> parseMacroDefinition(std::string_view rest, Ma
             if (i < line.size() && line[i] == '=') {
                 ++i; // skip '='
                 skipSpaces(line, i);
+                // A string literal is skipped whole: `D_ = ","` (plan.md
+                // §6.39 P5); `{}` and `[]` nest like `()`.
                 size_t start = i;
                 int parenDepth = 0;
                 while (i < line.size() &&
                        !(parenDepth == 0 && (line[i] == ',' || line[i] == ')'))) {
-                    if (line[i] == '(') ++parenDepth;
-                    else if (line[i] == ')') --parenDepth;
+                    const char c = line[i];
+                    if (c == '"') {
+                        ++i;
+                        while (i < line.size() && line[i] != '"') i += line[i] == '\\' ? 2 : 1;
+                        i = std::min(i + 1, line.size());
+                        continue;
+                    }
+                    if (c == '(' || c == '{' || c == '[') ++parenDepth;
+                    else if (c == ')' || c == '}' || c == ']') --parenDepth;
                     ++i;
                 }
                 defaultVal = std::string(trimSV(std::string_view(line).substr(start, i - start)));
@@ -577,6 +636,18 @@ static std::string macroDocAbove(const std::vector<std::string>& lines, int defi
 static bool hasUnterminatedInvocation(const std::string& line, const MacroMap& macros) {
     size_t i = 0;
     while (i < line.size()) {
+        if (line[i] == '"') {  // a string literal is text
+            ++i;
+            while (i < line.size() && line[i] != '"') i += line[i] == '\\' ? 2 : 1;
+            ++i;
+            continue;
+        }
+        if (line[i] == '/' && i + 1 < line.size() && line[i + 1] == '*') {  // so is a comment
+            const size_t end = line.find("*/", i + 2);
+            if (end == std::string::npos) return false;
+            i = end + 2;
+            continue;
+        }
         if (line[i] != '`') { ++i; continue; }
         ++i;
         if (i >= line.size() || !isIdentChar(line[i])) continue;
@@ -756,52 +827,87 @@ static void processSource(const std::string& source, const std::string& filepath
     // gets attributed to the first line for diagnostics/hover purposes --
     // an accepted imprecision, matching how multi-line `define bodies
     // already attribute their whole body to the starting line.
+    //
+    // Each line's `//` comment ends at that line (plan.md §6.39 P2): when a
+    // call continues, the first line's and every continuation line's comment
+    // are dropped, and the lines are joined with a space, so that a comment
+    // can't swallow the rest of the call and two lines' tokens don't glue.
     auto mergeInvocationContinuation =
         [&](std::string curLine) -> std::pair<std::string, std::vector<int>> {
         std::vector<int> continuationLines;
-        while (true) {
-            auto [code, comment] = splitLineComment(curLine);
-            (void)comment;
-            if (!hasUnterminatedInvocation(std::string(code), ctx.macros)) break;
+        std::string merged{codeOf(curLine)};
+        if (!hasUnterminatedInvocation(merged, ctx.macros)) return {curLine, continuationLines};
+        do {
             std::string contLine;
             if (!std::getline(iss, contLine)) break;
             ++lineNo;
             if (!contLine.empty() && contLine.back() == '\r') contLine.pop_back();
-            curLine += contLine;
+            merged += ' ';
+            merged += codeOf(contLine);
             continuationLines.push_back(lineNo);
-        }
-        return {curLine, continuationLines};
+        } while (hasUnterminatedInvocation(merged, ctx.macros));
+        return {merged, continuationLines};
     };
+
+    // Whether the previous line ended inside a `/* */` comment (plan.md
+    // §6.39 P1). Comment text is copied through as it is: no macro in it is
+    // expanded, and a directive in it is text. Tracked in inactive regions
+    // too, since a directive inside a comment can't end one.
+    bool inBlockComment = false;
 
     while (std::getline(iss, line)) {
         ++lineNo;
         if (!line.empty() && line.back() == '\r') line.pop_back();
 
+        // A line that starts inside a block comment: the comment's text, up
+        // to its `*/`, is `commentPrefix`; the rest of the line is code (and
+        // never a directive).
+        std::string commentPrefix;
+        if (inBlockComment) {
+            const size_t end = blockCommentEnd(line);
+            if (end == std::string::npos) {
+                if (ctx.isOutputting()) emitLine(line);
+                else emitBlank();
+                continue;
+            }
+            commentPrefix = line.substr(0, end);
+            line.erase(0, end);
+            inBlockComment = false;
+        }
+
         // Locate first non-whitespace character
         size_t ws = line.find_first_not_of(" \t");
-        bool startsWithBacktick = (ws != std::string::npos && line[ws] == '`');
+        bool startsWithBacktick =
+            commentPrefix.empty() && ws != std::string::npos && line[ws] == '`';
 
         if (!startsWithBacktick) {
             // Regular source line: expand macros if outputting. Only the code
             // portion before a trailing `//` comment is scanned for macro
             // invocations -- backtick-looking text inside a comment (common
             // in doc comments showing example macro usage) must not be
-            // treated as a real invocation.
+            // treated as a real invocation. expandStr copies `/* */`
+            // comments on the line through too.
             if (ctx.isOutputting()) {
                 int firstLineNo = lineNo;
                 auto [merged, contLines] = mergeInvocationContinuation(line);
+                lineCommentPos(merged, &inBlockComment);
                 auto [code, comment] = splitLineComment(merged);
                 std::vector<ColShift> shifts;
                 std::string expanded =
                     expandStr(std::string(code), ctx.macros, ctx.pending, 0, &shifts);
-                ctx.pendingAt(mapFile, firstLineNo, line);
-                emitLine(expanded + std::string(comment), std::move(shifts), firstLineNo);
+                for (auto& sh : shifts) sh.outputCol += static_cast<int>(commentPrefix.size());
+                ctx.pendingAt(mapFile, firstLineNo, commentPrefix + line);
+                emitLine(commentPrefix + expanded + std::string(comment), std::move(shifts),
+                         firstLineNo);
                 for (int ln : contLines) emitBlank(ln);
             } else {
+                lineCommentPos(line, &inBlockComment);
                 emitBlank();
             }
             continue;
         }
+        // A directive's line may open a block comment too.
+        lineCommentPos(line, &inBlockComment);
 
         // Parse directive name
         size_t i = ws + 1;
@@ -877,11 +983,23 @@ static void processSource(const std::string& source, const std::string& filepath
             // consumed physical line still needs its own source-map entry, so
             // the define line's blank is emitted first, then one more per
             // continuation line consumed, before parsing the merged body.
+            //
+            // A `//` comment on a continued line ends at that line (IEEE
+            // 1800-2017 22.5.1; plan.md §6.39 P3): it is dropped, with the
+            // `\` that ends it, before the next line is spliced on. The last
+            // line keeps its comment (the body is cut at it below, and a
+            // one-line define's trailing comment is its doc).
             int defineLine = lineNo;
             std::string mergedRest(rest);
             emitBlank();
             while (!mergedRest.empty() && mergedRest.back() == '\\') {
                 mergedRest.pop_back();
+                // The segment appended last: everything after the previous
+                // splice point. Its comment, if any, goes.
+                if (const size_t c = lineCommentPos(mergedRest); c != std::string::npos) {
+                    mergedRest.erase(c);
+                    mergedRest += ' ';
+                }
                 std::string contLine;
                 if (!std::getline(iss, contLine)) break;
                 ++lineNo;

@@ -82,7 +82,14 @@ struct InstantiationRow {
     int64_t     fileId;
     std::string filePath;
     int         line;
+    bool        conditional{false}; // as InstantiationRecord::conditional
 };
+
+// The diagnostic for an instantiation of `typeName` that nothing declares
+// (LibraryResolver; re-anchored by refreshLibraryDiagnostics): an Error, or
+// a Warning inside a conditional generate branch (plan.md §6.39 S3).
+ParseError unresolvedInstantiationDiagnostic(const std::string& typeName, int line,
+                                             bool conditional);
 
 // One `define (plan.md §6.29 part A), from the macros table.
 struct MacroRow {
@@ -358,7 +365,8 @@ public:
     // unresolved instantiations) to its current instantiations, once a
     // recompile has replaced them: each module name (subject) they were
     // about gets one row per instantiation of it still in the file, or none
-    // once something declares it. Returns the resulting rows. Never adds a
+    // once something declares it (unresolvedInstantiationDiagnostic). Returns
+    // the resulting rows. Never adds a
     // name that had no row (library resolution only runs on a project
     // compile).
     std::vector<ParseError> refreshLibraryDiagnostics(int64_t fileId);

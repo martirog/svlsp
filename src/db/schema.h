@@ -4,7 +4,7 @@ namespace db {
 
 // Current schema version.  Increment and add a migration in Database::initSchema
 // whenever the schema changes.
-inline constexpr int SCHEMA_VERSION = 19;
+inline constexpr int SCHEMA_VERSION = 20;
 
 // DDL executed on a fresh (version-0) database — always reflects the latest schema.
 inline constexpr const char* SCHEMA_DDL = R"sql(
@@ -100,12 +100,16 @@ CREATE TABLE imports (
 
 CREATE INDEX idx_imports_file_id ON imports(file_id);
 
+-- conditional (schema v20): 1 for an instantiation inside an if/case
+-- generate branch (plan.md §6.39 S3). (No comment inside the table: SQLite's
+-- DROP COLUMN rewrites its text.)
 CREATE TABLE instantiations (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
     file_id   INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
     type_name TEXT    NOT NULL,
     inst_name TEXT    NOT NULL DEFAULT '',
-    line      INTEGER NOT NULL
+    line      INTEGER NOT NULL,
+    conditional INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX idx_instantiations_file_id   ON instantiations(file_id);
@@ -256,6 +260,13 @@ CREATE TABLE symbol_docs (
     doc     TEXT    NOT NULL,
     PRIMARY KEY (file_id, line, col)
 ) WITHOUT ROWID;
+)sql";
+
+// SQL applied when migrating an existing v19 database to v20: whether an
+// instantiation is inside an if/case generate branch (plan.md §6.39 S3).
+inline constexpr const char* MIGRATION_V19_TO_V20 = R"sql(
+ALTER TABLE instantiations ADD COLUMN conditional INTEGER NOT NULL DEFAULT 0;
+UPDATE schema_version SET version = 20;
 )sql";
 
 // SQL applied when migrating an existing v18 database to v19: the

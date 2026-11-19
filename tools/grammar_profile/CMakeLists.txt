@@ -70,5 +70,7 @@ target_link_libraries(walk_dump PRIVATE sv_parser)
 add_executable(pp_dump pp_dump.cpp
     "${SVLSP_ROOT}/src/compiler/sv_preprocessor.cpp"
     "${SVLSP_ROOT}/src/compiler/compiler_directive_stripper.cpp"
-    "${SVLSP_ROOT}/src/compiler/doc_comment.cpp")
+    "${SVLSP_ROOT}/src/compiler/doc_comment.cpp"
+    "${SVLSP_ROOT}/src/compiler/file_utils.cpp"
+    "${SVLSP_ROOT}/src/compiler/content_hash.cpp")
 target_include_directories(pp_dump PRIVATE "${SVLSP_ROOT}/src")

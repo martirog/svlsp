@@ -179,6 +179,13 @@ void Database::initSchema()
         execute(col.step() ? "UPDATE schema_version SET version = 19;"
                            : db::MIGRATION_V18_TO_V19);
     }
+    if (v < 20) {
+        // Same guard as v12.
+        auto col = prepare("SELECT 1 FROM pragma_table_info('instantiations') "
+                           "WHERE name = 'conditional'");
+        execute(col.step() ? "UPDATE schema_version SET version = 20;"
+                           : db::MIGRATION_V19_TO_V20);
+    }
 }
 
 void Database::execute(const std::string& sql)

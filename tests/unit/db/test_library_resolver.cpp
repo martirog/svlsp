@@ -5,6 +5,7 @@
 #include "db/library_resolver.h"
 #include "compiler/project_config.h"
 #include <algorithm>
+#include <map>
 #include <filesystem>
 #include <fstream>
 
@@ -243,4 +244,57 @@ TEST_CASE("resolving twice leaves one unresolved-instantiation diagnostic",
     LibraryResolver::resolve(ProjectConfig{}, f.ctrl, f.sdb);
 
     CHECK(unresolvedLines(f.sdb, "/top.sv", "ghost_mod") == std::vector<int>{1});
+}
+
+TEST_CASE("an unresolved instantiation in a generate branch is a Warning",
+          "[db][library-resolver][generate-branch]") {
+    // plan.md §6.39 S3, D3: svlsp doesn't evaluate generate conditions, and
+    // a branch that isn't elaborated may name a module the filelist leaves
+    // out (ibex: prim_secded_inv_hamming_22_16_enc). Outside a conditional
+    // branch it stays an Error; a generate `for` isn't conditional.
+    Fixture f;
+    const std::string top = "/gb_top.sv";
+    const std::string text =
+                   "module gb_top #(parameter bit P = 0, parameter int K = 0);\n"
+                   "  if (P) begin : g_if\n"
+                   "    gb_missing_a u_a();\n"
+                   "  end else begin : g_else\n"
+                   "    gb_missing_b u_b();\n"
+                   "  end\n"
+                   "  case (K)\n"
+                   "    0: begin : g_c0 gb_missing_c u_c(); end\n"
+                   "    default: ;\n"
+                   "  endcase\n"
+                   "  for (genvar i = 0; i < 2; i++) begin : g_for\n"
+                   "    gb_missing_d u_d();\n"
+                   "  end\n"
+                   "  gb_missing_e u_e();\n"
+                   "endmodule\n";
+    f.ctrl.compile(top, text);
+    ProjectConfig config;
+    LibraryResolver::resolve(config, f.ctrl, f.sdb);
+
+    std::map<int, DiagnosticRow> byLine;
+    for (const auto& d : f.sdb.diagnosticsForFile(top)) byLine.emplace(d.line, d);
+    REQUIRE(byLine.size() == 5);
+    for (int line : {3, 5, 8}) {
+        INFO("line " << line);
+        CHECK(byLine.at(line).severity == 2);
+        CHECK(byLine.at(line).message.find("in a conditional generate branch") !=
+              std::string::npos);
+    }
+    for (int line : {12, 14}) {
+        INFO("line " << line);
+        CHECK(byLine.at(line).severity == 1);
+        CHECK(byLine.at(line).message.find("generate") == std::string::npos);
+    }
+
+    // A recompile (a line added on top) re-anchors them through
+    // refreshLibraryDiagnostics, each keeping its severity.
+    f.ctrl.compile(top, "// edited\n" + text);
+    byLine.clear();
+    for (const auto& d : f.sdb.diagnosticsForFile(top)) byLine.emplace(d.line, d);
+    REQUIRE(byLine.size() == 5);
+    CHECK(byLine.at(4).severity == 2);
+    CHECK(byLine.at(13).severity == 1);
 }

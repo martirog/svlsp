@@ -865,6 +865,38 @@ TEST_CASE("Class::type_id::create resolves through that class's own type_id",
     CHECK(errs[0].message == "missing required argument 'parent' in call to 'create'");
 }
 
+TEST_CASE("C#(...)::type_id::create resolves through the specialized class's type_id",
+          "[db][ctrl][call-args]") {
+    // plan.md §6.39 S1 (ibex push_pull_driver_lib.sv:42): a component
+    // creating a parameterized object. The call must resolve through
+    // sub_obj's (object) type_id, not the enclosing driver's (component)
+    // one; through a parameterized component's it still flags `parent`.
+    // As in ibex, sub_obj is forward-declared and declared after the call.
+    Fixture f;
+    auto errs = f.ctrl.compile("/a.sv",
+        "package p;\n" + kRegistries +
+        "  typedef class sub_obj;\n"
+        "  class sub_comp #(int W = 1);\n"
+        "    typedef comp_registry type_id;\n"
+        "  endclass\n"
+        "  class driver #(int W = 8);\n"
+        "    typedef comp_registry type_id;\n"
+        "    function void build();\n"
+        "      void'(sub_obj#(W)::type_id::create(\n"
+        "          \"s\"));\n"
+        "      void'(sub_obj#(.W(W))::type_id::create(\"t\"));\n"
+        "      void'(sub_comp#(W)::type_id::create(\"c\"));\n"
+        "    endfunction\n"
+        "  endclass\n"
+        "  class sub_obj #(int W = 1);\n"
+        "    typedef obj_registry type_id;\n"
+        "  endclass\n"
+        "endpackage\n");
+    REQUIRE(errs.size() == 1);
+    CHECK(errs[0].line == 24);
+    CHECK(errs[0].message == "missing required argument 'parent' in call to 'create'");
+}
+
 TEST_CASE("a class-scoped typedef is followed to the class its own package declares",
           "[db][ctrl][call-args]") {
     // tq_b's typedef names a bare `Reg`: resolved from where the typedef is
@@ -1166,6 +1198,25 @@ TEST_CASE("a file included in two different scopes says which one svlsp uses",
     f.ctrl.compile("/is_top2.sv", "package is_r;\nendpackage\n");
     CHECK(f.sdb.diagnosticsForFile(f.incA).empty());
     CHECK(f.ctrl.compile(f.incA, f.textA + "\n\n").empty());
+}
+
+TEST_CASE("a macros-only header included in several scopes gets no scope note",
+          "[db][ctrl][include-scope]") {
+    // plan.md §6.39 S2: `uvm_macros.svh` and the like are included in every
+    // package; the scope only matters for what a file declares.
+    Fixture f;
+    const std::string inc = "/tmp/svlsp_test_is_macros.svh";
+    const std::string text =
+        "`ifndef IS_MACROS_SVH\n"
+        "`define IS_MACROS_SVH\n"
+        "`define IS_INFO(M_) $display(M_)\n"
+        "`endif\n";
+    { std::ofstream ofs(inc); ofs << text; }
+    f.ctrl.compile("/is_m1.sv", "package is_m1;\n`include \"" + inc + "\"\nendpackage\n");
+    f.ctrl.compile("/is_m2.sv", "package is_m2;\n`include \"" + inc + "\"\nendpackage\n");
+    CHECK(f.sdb.includeSitesOf(inc).size() == 2);
+    CHECK(f.sdb.diagnosticsForFile(inc).empty());
+    CHECK(f.ctrl.compile(inc, text + "\n").empty());
 }
 
 TEST_CASE("a file with no tokens of its own gets the scope it is included in",

@@ -51,7 +51,7 @@ int main(int argc, char** argv) {
     SvPreprocessor pp(includes);
     for (const auto& [name, value] : defines) pp.define(name, value);
     auto result = pp.process(stripped.source, file);
-    for (const auto& e : result.errors) std::cerr << "pp_dump: " << e << "\n";
+    for (const auto& e : result.errors) std::cerr << "pp_dump: " << e.message << "\n";
     std::cout << result.source;
     return 0;
 }

@@ -2,6 +2,7 @@
 #include "compiler/sv_preprocessor.h"
 #include "compiler/content_hash.h"
 #include "compiler/file_utils.h"
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -1785,4 +1786,158 @@ TEST_CASE("include macro: an expansion that is not one file name is malformed",
         CHECK(r.errors[0].endColumn == 14);
         CHECK(r.includeDirectives.empty());
     }
+}
+
+// ---------------------------------------------------------------------------
+// Comments and macro arguments (plan.md §6.39 P1-P5, found on ibex)
+// ---------------------------------------------------------------------------
+
+namespace {
+std::vector<std::string> messagesOf(const std::vector<PreprocessorError>& errs)
+{
+    std::vector<std::string> out;
+    for (const auto& e : errs) out.push_back(e.message);
+    return out;
+}
+const MacroRecord* macroNamed(const std::vector<MacroRecord>& macros, const std::string& name)
+{
+    for (const auto& m : macros)
+        if (m.name == name) return &m;
+    return nullptr;
+}
+} // namespace
+
+TEST_CASE("P1: a backtick inside a block comment is not a macro call",
+          "[compiler][preprocessor][comments]") {
+    SvPreprocessor pp;
+    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+        "/*\n"
+        " * when `cheriot_enable_i is set, `CapWidth bits\n"
+        " */\n"
+        "wire a; /* inline `UNDEF */ wire b;\n", "f.sv");
+    CHECK(messagesOf(errs).empty());
+    CHECK(out == "/*\n * when `cheriot_enable_i is set, `CapWidth bits\n */\n"
+                 "wire a; /* inline `UNDEF */ wire b;\n");
+}
+
+TEST_CASE("P1: a directive inside a block comment is comment text",
+          "[compiler][preprocessor][comments]") {
+    SvPreprocessor pp;
+    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+        "/* example:\n"
+        "`define B 2\n"
+        "`ifdef NOPE\n"
+        "*/\n"
+        "`ifdef B\nwire b;\n`endif\n"
+        "wire c;\n", "f.sv");
+    CHECK(messagesOf(errs).empty());
+    CHECK(macroNamed(macros_, "B") == nullptr);
+    CHECK(out.find("wire b;") == std::string::npos);
+    CHECK(out.find("wire c;") != std::string::npos);
+    CHECK(std::count(out.begin(), out.end(), '\n') == 8);
+}
+
+TEST_CASE("P1: code after a block comment's end is expanded, its columns mapped",
+          "[compiler][preprocessor][comments]") {
+    SvPreprocessor pp;
+    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+        "`define W 8\n"
+        "/* a comment\n"
+        "   ends here */ wire [`W:0] x; /* and `opens\n"
+        "   again */\n", "f.sv");
+    CHECK(messagesOf(errs).empty());
+    CHECK(out == "\n/* a comment\n   ends here */ wire [8:0] x; /* and `opens\n   again */\n");
+}
+
+TEST_CASE("P1: // inside a string is not a comment",
+          "[compiler][preprocessor][comments]") {
+    SvPreprocessor pp;
+    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+        "`define N 1\n"
+        "string s = \"http://host\"; int i = `N; // `N in a comment\n", "f.sv");
+    CHECK(messagesOf(errs).empty());
+    CHECK(out == "\nstring s = \"http://host\"; int i = 1; // `N in a comment\n");
+}
+
+TEST_CASE("P2: a // comment inside a multi-line macro call ends at its line",
+          "[compiler][preprocessor][comments]") {
+    SvPreprocessor pp;
+    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+        "`define CHK(C_, M_=\"m\") if (!(C_)) $error(M_);\n"
+        "`define RANDW(V_, W_) `CHK(V_.randomize() with {W_})\n"
+        "`define CB s\n"
+        "`RANDW(o,  // the item\n"
+        "       // TODO: while (!`CB) @(`CB);\n"
+        "       x < 10;)\n"
+        "wire after;\n", "f.sv");
+    CHECK(messagesOf(errs).empty());
+    // The call's text is on its first line; one line out per line in.
+    CHECK(out == "\n\n\nif (!(o.randomize() with {x < 10;})) $error(\"m\");\n\n\nwire after;\n");
+}
+
+TEST_CASE("P2: continuation lines of a macro call are joined with a space",
+          "[compiler][preprocessor][comments]") {
+    SvPreprocessor pp;
+    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+        "`define TWO(A_, B_) A_ B_\n"
+        "`TWO(logic\n"
+        "x, ;)\n", "f.sv");
+    CHECK(messagesOf(errs).empty());
+    CHECK(out == "\nlogic x ;\n\n");
+}
+
+TEST_CASE("P3: a // comment in a continued `define body ends at its line",
+          "[compiler][preprocessor][comments]") {
+    SvPreprocessor pp;
+    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+        "`define INIT_CHK(N_, P_) \\\n"
+        "  initial begin \\\n"
+        "    // wait for the net \\\n"
+        "    #1ps; \\\n"
+        "    N_: assert (P_); \\\n"
+        "  end // the last line's comment\n"
+        "`INIT_CHK(A_c, a === 1'b1)\n", "f.sv");
+    CHECK(messagesOf(errs).empty());
+    REQUIRE(macroNamed(macros_, "INIT_CHK"));
+    const std::string& body = macroNamed(macros_, "INIT_CHK")->body;
+    CHECK(body.find("//") == std::string::npos);
+    CHECK(body.find("#1ps;") != std::string::npos);
+    CHECK(out.find("A_c: assert (a === 1'b1);") != std::string::npos);
+    CHECK(out.find("end") != std::string::npos);
+}
+
+TEST_CASE("P4: an empty argument takes the parameter's default",
+          "[compiler][preprocessor][macro-args]") {
+    SvPreprocessor pp;
+    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+        "`define dv_fatal(M_, ID_) $fatal(1, M_);\n"
+        "`define downcast(E_, B_, MSG_=\"\", SEV_=fatal, ID_=\"x\") "
+        "if (!$cast(E_, B_)) `dv_``SEV_(MSG_, ID_)\n"
+        "`downcast(a, b, , , \"m\")\n", "f.sv");
+    CHECK(messagesOf(errs).empty());
+    CHECK(out == "\n\nif (!$cast(a, b)) $fatal(1, \"\");\n");
+}
+
+TEST_CASE("P4: an empty argument without a default is empty text",
+          "[compiler][preprocessor][macro-args]") {
+    SvPreprocessor pp;
+    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+        "`define PAIR(A_, B_) [A_|B_]\n"
+        "`PAIR(, 2)\n", "f.sv");
+    CHECK(messagesOf(errs).empty());
+    CHECK(out == "\n[|2]\n");
+}
+
+TEST_CASE("P5: a default value may be a string with a comma or a parenthesis",
+          "[compiler][preprocessor][macro-args]") {
+    SvPreprocessor pp;
+    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+        "`define gfn \"id\"\n"
+        "`define GETQ(Q_, D_ = \",\", C_ = 0, P_ = \"a)b\", S_ = {1, 2}, ID_ = `gfn) "
+        "f(Q_, D_, C_, P_, S_, ID_);\n"
+        "`GETQ(q)\n", "f.sv");
+    CHECK(messagesOf(errs).empty());
+    REQUIRE(macroNamed(macros_, "GETQ"));
+    CHECK(macroNamed(macros_, "GETQ")->params.size() == 6);
+    CHECK(out == "\n\nf(q, \",\", 0, \"a)b\", {1, 2}, \"id\");\n");
 }

@@ -715,13 +715,15 @@ void SymbolDatabase::replaceInstantiations(int64_t fileId,
     del.step();
 
     auto ins = m_db.prepare(
-        "INSERT INTO instantiations (file_id, type_name, inst_name, line) VALUES (?,?,?,?)");
+        "INSERT INTO instantiations (file_id, type_name, inst_name, line, conditional) "
+        "VALUES (?,?,?,?,?)");
     for (const auto& inst : insts) {
         ins.reset();
         ins.bind(1, fileId)
            .bind(2, inst.typeName)
            .bind(3, inst.instName)
-           .bind(4, inst.line);
+           .bind(4, inst.line)
+           .bind(5, inst.conditional ? 1 : 0);
         ins.step();
     }
     m_db.execute("RELEASE sdb");
@@ -744,14 +746,27 @@ std::vector<InstantiationRow> SymbolDatabase::instantiationsOfType(
     const std::string& typeName) const
 {
     auto stmt = m_db.prepare(
-        "SELECT i.file_id, f.path, i.line FROM instantiations i "
+        "SELECT i.file_id, f.path, i.line, i.conditional FROM instantiations i "
         "JOIN files f ON f.id = i.file_id WHERE i.type_name = ?");
     stmt.bind(1, typeName);
     std::vector<InstantiationRow> rows;
     while (stmt.step())
         rows.push_back({stmt.columnInt(0), stmt.columnText(1),
-                        static_cast<int>(stmt.columnInt(2))});
+                        static_cast<int>(stmt.columnInt(2)), stmt.columnInt(3) != 0});
     return rows;
+}
+
+ParseError unresolvedInstantiationDiagnostic(const std::string& typeName, int line,
+                                             bool conditional)
+{
+    std::string message = "Unresolved instantiation of '" + typeName +
+                          "': not found in project files, -v library files, or -y library "
+                          "directories.";
+    if (!conditional) return {line, 0, std::move(message)};
+    message += " It is in a conditional generate branch, which may not be elaborated.";
+    ParseError e{line, 0, std::move(message)};
+    e.severity = 2;
+    return e;
 }
 
 void SymbolDatabase::appendDiagnostics(int64_t fileId, const std::vector<ParseError>& extra,
@@ -821,13 +836,13 @@ void SymbolDatabase::deleteDiagnostic(int64_t fileId, int line, int col, const s
 
 std::vector<ParseError> SymbolDatabase::refreshLibraryDiagnostics(int64_t fileId)
 {
-    std::vector<std::pair<std::string, std::string>> tagged; // (module name, message)
+    std::vector<std::string> tagged; // the module names
     {
         auto q = m_db.prepare(
-            "SELECT subject, MIN(message) FROM diagnostics "
-            "WHERE file_id = ? AND source = 'library' GROUP BY subject");
+            "SELECT DISTINCT subject FROM diagnostics "
+            "WHERE file_id = ? AND source = 'library'");
         q.bind(1, fileId);
-        while (q.step()) tagged.emplace_back(q.columnText(0), q.columnText(1));
+        while (q.step()) tagged.push_back(q.columnText(0));
     }
     if (tagged.empty()) return {};
 
@@ -839,22 +854,25 @@ std::vector<ParseError> SymbolDatabase::refreshLibraryDiagnostics(int64_t fileId
     std::vector<ParseError> kept;
     auto declared = m_db.prepare(
         "SELECT 1 FROM symbols WHERE name = ? AND kind IN ('Module','Interface','Program') LIMIT 1");
-    auto lines = m_db.prepare(
-        "SELECT line FROM instantiations WHERE file_id = ? AND type_name = ? ORDER BY line");
-    auto ins = m_db.prepare("INSERT INTO diagnostics (file_id,line,col,message,source,subject) "
-                            "VALUES (?,?,?,?,'library',?)");
-    for (const auto& [typeName, message] : tagged) {
+    auto lines = m_db.prepare("SELECT line, conditional FROM instantiations "
+                              "WHERE file_id = ? AND type_name = ? ORDER BY line");
+    auto ins = m_db.prepare(
+        "INSERT INTO diagnostics (file_id,line,col,message,source,subject,severity) "
+        "VALUES (?,?,?,?,'library',?,?)");
+    for (const auto& typeName : tagged) {
         declared.reset();
         declared.bind(1, typeName);
         if (declared.step()) continue;
         lines.reset();
         lines.bind(1, fileId).bind(2, typeName);
         while (lines.step()) {
-            const int line = static_cast<int>(lines.columnInt(0));
+            ParseError e = unresolvedInstantiationDiagnostic(
+                typeName, static_cast<int>(lines.columnInt(0)), lines.columnInt(1) != 0);
             ins.reset();
-            ins.bind(1, fileId).bind(2, line).bind(3, 0).bind(4, message).bind(5, typeName);
+            ins.bind(1, fileId).bind(2, e.line).bind(3, 0).bind(4, e.message).bind(5, typeName)
+               .bind(6, e.severity);
             ins.step();
-            kept.push_back({line, 0, message});
+            kept.push_back(std::move(e));
         }
     }
     m_db.execute("RELEASE sdb");

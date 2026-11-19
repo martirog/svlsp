@@ -846,8 +846,8 @@ public:
                 type = m_tokens->getText(npt);
                 if (auto* nti = npt->net_type_identifier())
                     recordTypeRef(nti->IDENTIFIER(), "");
-                else if (auto* dtoi = npt->data_type_or_implicit())
-                    recordTypeRef(dtoi->data_type());
+                else if (auto* dt = npt->data_type())
+                    recordTypeRef(dt);
             }
         } else if (auto* vh = ctx->variable_port_header()) {
             if (auto* pd = vh->port_direction()) dir = pd->getText();
@@ -1115,6 +1115,20 @@ public:
         enterBlock(ctx, ids.empty() ? nullptr : ids[0]->IDENTIFIER(), true);
     }
     void exitGenerate_block(SvParser::Generate_blockContext*) override { exitBlock(); }
+
+    // Instantiations inside these are `conditional` (plan.md §6.39 S3).
+    void enterIf_generate_construct(SvParser::If_generate_constructContext*) override {
+        ++m_conditionalGenerate;
+    }
+    void exitIf_generate_construct(SvParser::If_generate_constructContext*) override {
+        --m_conditionalGenerate;
+    }
+    void enterCase_generate_construct(SvParser::Case_generate_constructContext*) override {
+        ++m_conditionalGenerate;
+    }
+    void exitCase_generate_construct(SvParser::Case_generate_constructContext*) override {
+        --m_conditionalGenerate;
+    }
 
     void enterLoop_statement(SvParser::Loop_statementContext* ctx) override {
         bool declares = false;
@@ -1391,6 +1405,7 @@ private:
     std::vector<ParseRecord>  m_records;
     std::vector<ImportRecord> m_imports;
     std::vector<InstantiationRecord> m_instantiations;
+    int m_conditionalGenerate{0}; // depth of if / case generate constructs
     std::vector<CallRecord>   m_calls;
     std::vector<TypeRefRecord> m_typeRefs;
     std::unordered_map<std::string, std::string> m_includeScopes;
@@ -1797,7 +1812,7 @@ private:
                 }
             }
             auto [file, origLine] = translateLine(line, m_sourceMap);
-            m_instantiations.push_back({type, instName, origLine, file});
+            m_instantiations.push_back({type, instName, origLine, file, m_conditionalGenerate > 0});
         }
     }
 };

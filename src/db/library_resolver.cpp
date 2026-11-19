@@ -105,12 +105,9 @@ int LibraryResolver::resolve(const ProjectConfig& config, CompilationController&
     sdb.clearDiagnostics("library");
     for (const auto& name : failedNames) {
         std::unordered_map<int64_t, std::vector<ParseError>> byFile;
-        for (const auto& ref : sdb.instantiationsOfType(name)) {
+        for (const auto& ref : sdb.instantiationsOfType(name))
             byFile[ref.fileId].push_back(
-                {ref.line, 0,
-                 "Unresolved instantiation of '" + name + "': not found in project files, "
-                 "-v library files, or -y library directories."});
-        }
+                unresolvedInstantiationDiagnostic(name, ref.line, ref.conditional));
         for (const auto& [fileId, errs] : byFile) sdb.appendDiagnostics(fileId, errs, "library", name);
     }
 

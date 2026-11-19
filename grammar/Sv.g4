@@ -287,9 +287,12 @@ parameter_override :
       'defparam' list_of_defparam_assignments ';'
 ;
 
+// IEEE 1800-2017 A.1.4 ends bind_directive with a `;`, but every
+// bind_instantiation alternative already ends in one -- an erratum like
+// cross_body's: `bind m i u (.*);` has one (plan.md §6.39 G3).
 bind_directive :
-      'bind' bind_target_scope (':' bind_target_instance_list)? bind_instantiation ';'
-    | 'bind' bind_target_instance bind_instantiation ';'
+      'bind' bind_target_scope (':' bind_target_instance_list)? bind_instantiation
+    | 'bind' bind_target_instance bind_instantiation
 ;
 
 bind_target_scope :
@@ -841,8 +844,15 @@ net_type :
     | 'wor'
 ;
 
+// IEEE's `net_type? data_type_or_implicit`, split with the implicit type
+// first (plan.md §6.39): under SLL, data_type_or_implicit's decision can't
+// see that a port name must follow, so `input clk_i,` took `clk_i` as a
+// type and the port name went missing -- every RTL module with an untyped
+// port failed SLL and was parsed again with LL (8 s for ibex prim_count).
+// Here the decision is net_port_type's, which only a port name follows.
 net_port_type :
-      net_type? data_type_or_implicit
+      net_type? implicit_data_type
+    | net_type? data_type
     | net_type_identifier
     | 'interconnect' implicit_data_type
 ;
@@ -1571,13 +1581,19 @@ list_of_cross_items :
       cross_item ',' cross_item (',' cross_item)*
 ;
 
+// A hierarchical name (`cross cp_a, u_core.sig.field`) isn't IEEE, but
+// simulators accept it and ibex uses it (plan.md §6.39 G1).
 cross_item :
       cover_point_identifier
     | variable_identifier
+    | hierarchical_identifier
 ;
 
+// IEEE 1800-2017 A.2.11 writes `{ cross_body_item ; }` with a `;` already
+// ending cross_body_item's bins alternative -- a known erratum: real code
+// (and every simulator) ends each bins item with one `;` (plan.md §6.39 G1).
 cross_body :
-      '{' (cross_body_item ';')* '}'
+      '{' cross_body_item* '}'
     | ';'
 ;
 
@@ -1610,9 +1626,11 @@ select_condition :
       'binsof' '(' bins_expression ')' ('intersect' '{' covergroup_range_list '}')?
 ;
 
+// A hierarchical name, as cross_item allows (plan.md §6.39 G1).
 bins_expression :
       variable_identifier
     | cover_point_identifier ('.' bin_identifier)?
+    | hierarchical_identifier
 ;
 
 covergroup_range_list :
@@ -1946,10 +1964,16 @@ generate_block :
     | (generate_block_identifier ':')? 'begin' (':' generate_block_identifier)? generate_item* 'end' (':' generate_block_identifier)?
 ;
 
+// IEEE's union of module_or_generate_item, interface_or_generate_item and
+// checker_or_generate_item, written without the overlap: an `always` or an
+// `assign` matched all three, and SLL scanned each item to its end to
+// choose (up to 8573 tokens on ibex; plan.md §6.39). What the other two add
+// to the first: extern prototypes, `rand` data and a generate region.
 generate_item :
       module_or_generate_item
-    | interface_or_generate_item
-    | checker_or_generate_item
+    | attribute_instance* extern_tf_declaration
+    | 'rand' data_declaration
+    | generate_region
 ;
 
 
@@ -2037,9 +2061,12 @@ udp_instance :
 // A.6 Behavioral statements
 // A.6.1 Continuous assignment and net alias statements
 
+// IEEE's two forms (net_lvalue and drive strength / variable_lvalue and
+// delay_control) are the same text without a strength or a delay, and SLL
+// scanned each assign to its end to choose (plan.md §6.39). One form: a
+// variable_lvalue covers a net_lvalue, and delay3 covers delay_control.
 continuous_assign :
-      'assign' drive_strength? delay3? list_of_net_assignments ';'
-    | 'assign' delay_control? list_of_variable_assignments ';'
+      'assign' drive_strength? delay3? list_of_variable_assignments ';'
 ;
 
 list_of_net_assignments :
@@ -2430,8 +2457,10 @@ for_step_assignment :
     | subroutine_call
 ;
 
+// `a[i, j]` is IEEE's form; `a[i][j]` isn't IEEE but every major simulator
+// accepts it, and real code (ibex, OpenTitan) uses it (plan.md §6.39 G5, D1).
 loop_variables :
-      index_variable_identifier? (',' index_variable_identifier?)*
+      index_variable_identifier? ((',' | ']' '[') index_variable_identifier?)*
 ;
 
 
@@ -3265,8 +3294,11 @@ module_path_mintypmax_expression :
     | module_path_expression ':' module_path_expression ':' module_path_expression
 ;
 
+// A part select's bounds are expressions (where `$`, a queue's last
+// index, is a primary): `q[1:$]`, `q[$-1:$]` (7.10.1; plan.md §6.39 G2).
+// constant_range stays for declarations, so `int q[$]` is still a queue.
 part_select_range :
-      constant_range
+      expression ':' expression
     | indexed_range
 ;
 
@@ -3820,13 +3852,17 @@ variable_identifier :
  UNBASED_UNSIZED_LITERAL : ['] ('0'|'1'|Z_OR_X) ;
  //EDGE_LIST : '[' EDGE_DESCRIPTOR (',' EDGE_DESCRIPTOR)* ']' ;
  EDGE_LIST : 'edge' WS '[' EDGE_DESCRIPTOR (',' EDGE_DESCRIPTOR)* ']' ;
- HEX_NUMBER :    NON_ZERO_UNSIGNED_NUMBER ? HEX_BASE    HEX_VALUE ;
- OCTAL_NUMBER  : NON_ZERO_UNSIGNED_NUMBER ? OCTAL_BASE  OCTAL_VALUE ;
- BINARY_NUMBER : NON_ZERO_UNSIGNED_NUMBER ? BINARY_BASE BINARY_VALUE ;
+// Size, base and value are separate tokens in IEEE 1800-2017 5.7.1, so
+// blanks may come between them: `1'b 0`, `8 'h FF` (plan.md §6.39 G4).
+// Kept as one token here; NUM_BLANK is spaces and tabs only.
+ HEX_NUMBER :    (NON_ZERO_UNSIGNED_NUMBER NUM_BLANK)? HEX_BASE    NUM_BLANK HEX_VALUE ;
+ OCTAL_NUMBER  : (NON_ZERO_UNSIGNED_NUMBER NUM_BLANK)? OCTAL_BASE  NUM_BLANK OCTAL_VALUE ;
+ BINARY_NUMBER : (NON_ZERO_UNSIGNED_NUMBER NUM_BLANK)? BINARY_BASE NUM_BLANK BINARY_VALUE ;
  DECIMAL_NUMBER :
-       NON_ZERO_UNSIGNED_NUMBER ? DECIMAL_BASE ? DEC_VALUE
-     | NON_ZERO_UNSIGNED_NUMBER ? DECIMAL_BASE   X_DIGIT '_'*
-     | NON_ZERO_UNSIGNED_NUMBER ? DECIMAL_BASE   Z_DIGIT '_'* ;
+       NON_ZERO_UNSIGNED_NUMBER ? DEC_VALUE
+     | (NON_ZERO_UNSIGNED_NUMBER NUM_BLANK)? DECIMAL_BASE NUM_BLANK DEC_VALUE
+     | (NON_ZERO_UNSIGNED_NUMBER NUM_BLANK)? DECIMAL_BASE NUM_BLANK X_DIGIT '_'*
+     | (NON_ZERO_UNSIGNED_NUMBER NUM_BLANK)? DECIMAL_BASE NUM_BLANK Z_DIGIT '_'* ;
  FIXED_POINT_NUMBER : DEC_VALUE  '.' DEC_VALUE ;
  ACTUAL_REAL_NUMBER : DEC_VALUE ('.' DEC_VALUE)? ('e'|'E') ('+'|'-')? DEC_VALUE ;
  UNSIGNED_NUMBER    : DEC_VALUE ;
@@ -3850,6 +3886,7 @@ variable_identifier :
  fragment LEVEL_SYMBOL : ('0' | '1' | 'x' | 'X' | '?' | 'b' | 'B') WS ;
  fragment EDGE_SYMBOL  : ('r' | 'R' | 'f' | 'F' | 'p' | 'P' | 'n' | 'N' | '*') WS ;
  fragment NON_ZERO_UNSIGNED_NUMBER : NON_ZERO_DECIMAL_DIGIT ('_' | DECIMAL_DIGIT)* ;
+ fragment NUM_BLANK : [ \t]* ;
  fragment Z_OR_X      : [xXzZ] ;
  fragment ZERO_OR_ONE : [01] ;
  fragment HEX_VALUE    : HEX_DIGIT     ('_' | HEX_DIGIT)* ;
