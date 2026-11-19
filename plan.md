@@ -8849,6 +8849,37 @@ parser once. Then S1 to S3.
   9.6 s / 164 MB, the same 6 Warnings and 14864 symbols. walk_dump
   identical, sv-tests 0 regressions, unit 1260/1260, corpus, Emacs
   346/346.
+- **Investigation: `data_type` and `property_expr`** (2026-11-20, ibex,
+  cold SLL parse 4.4 s, of which prediction 4.1 s; warm re-parse 0.50 s):
+  - `data_type` (was 1.4 s, 62 calls, lookahead up to 8484): the same
+    cause as `class_type` -- `virtual ifc #(N) vif;` with a `#` that could
+    be a net delay. Fixed by the net data type rule above; it is no longer
+    in the profile.
+  - `property_expr` (326 ms, 663 calls, ~0.5 ms each, lookahead avg 12,
+    max 209) and `sequence_expr` (154 ms, 504 calls): about 12% of
+    prediction on ibex. Two causes. (1) `sequence_expr` and `sequence_expr
+    '|->' / '|=>' / '#=#' property_expr` are separate alternatives, so
+    SLL reads each antecedent to its end to look for the operator.
+    Measured: factored as `sequence_expr (('|->' | '|=>' | '#-#' | '#=#')
+    property_expr)?`, `property_expr` drops 326 -> 94 ms (ibex total 4.40
+    -> 4.33 s); the grammar also lacks IEEE's `#-#`, which this adds. Not
+    applied yet. (2) `( ... )` is a parenthesized property, a
+    parenthesized sequence and a parenthesized expression at once
+    (longest case: `($onehot({...}))`); and `sequence_expr`'s
+    `expression_or_dist` and `sequence_instance` both match a name or a
+    call. These need a restructuring like `primary`'s; untried.
+  - Cost scales with assertion count: ~0.5 ms per assertion on a cold
+    parse, nothing on a warm one. An SVA-heavy (formal) code base would
+    see it; ibex, UVM and sv-tests barely do.
+  - Also in the profile, cold only: `method_call_body` 277 ms over 411
+    calls and `randomize_call` 160 ms over 28 (constraint blocks after
+    `with`); `randomize_call`'s semantic predicate does not stop DFA
+    caching -- neither appears in the warm run.
+  - Where it stands: the top decision is ~0.36 s of a 4.1 s prediction
+    total (`constant_expression`, `primary`, `property_expr`,
+    `statement_item`, ~6-9% each). From here a rewrite buys ~0.1-0.3 s
+    on ibex. Since §6.39 began: ibex cold parse 49.4 -> 4.4 s, UVM 103.4
+    -> 2.3 s, ibex `--build-db` 63 -> 9.6 s (749 -> 164 MB).
 - **sv-tests** (github.com/chipsalliance/sv-tests, ~/src/sv-tests):
   `tools/sv_tests_compare.sh` preprocesses its 1028 tests (UVM on the
   include path) and parses each with grammar/Sv.g4 at HEAD and as edited
