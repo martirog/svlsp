@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-11-15 (§6.38 done: the Unix-socket server).
+**Last updated:** 2026-11-19 (§6.39 done: false diagnostics and load time on ibex).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -332,7 +332,23 @@ Next steps:
    listens. The server outlives the editor (24 h idle timeout), one editor
    at a time. Plain `svlsp` is stdio as before. Unix socket only, no TCP
    (user's decision). Unit 1230/1230, Emacs 346/346 (test_58 new).
-6. Optional, LL cost on files with syntax errors (only they reach LL now):
+6. **plan.md §6.39 is done** (2026-11-19): tested on lowRISC ibex
+   (`~/src/ibex`, a UVM testbench; `.svlsp.json` from `ibex_dv.f`),
+   333 false diagnostics -> 6 Warnings. Preprocessor: `/* */` across
+   lines, `//` inside macro calls and continued defines, empty arguments
+   take defaults, string defaults. Grammar: cross bins `;`, `q[1:$]`,
+   top-level `bind`, `1'b 0`, `foreach (a[i][j])`, hierarchical cross
+   items. An unresolved instantiation in an if/case generate branch is a
+   Warning (schema **v20**); no "different scopes" note on macro-only
+   headers. Load time: untyped ports (`input clk_i,`) no longer fail SLL,
+   and `generate_item` / `continuous_assign` lost their overlapping
+   alternatives: ibex load 155 -> 73 s, `--build-db` 149 -> 63 s. Unit
+   1251/1251, Emacs 346/346, corpus 1563 / 31, UVM `--build-db` 0
+   diagnostics, `test-integration-uvm` 15/15, `perf-check` ok. Left open
+   (plan.md §6.39): SLL misparses `##1 a && !b |=> c`; cold prediction
+   in `hierarchical_identifier`, `system_tf_call`, dangling `else`,
+   `class_type`.
+7. Optional, LL cost on files with syntax errors (only they reach LL now):
    the remaining LL time is true ambiguity in `primary` (decision 1068)
    and `hierarchical_identifier` (1103): `a.b` is a name, a name + select
    `.b`, or a name + the method loop. Profile with `tools/grammar_profile.sh
@@ -1040,7 +1056,7 @@ uses `SymbolDatabase::pickSameFilePreferred` (the simpler half of
 - `""` as a *scope* means top level — `findSymbolsInScope("")` returns every
   top-level symbol, so guard against an empty resolved type.
 
-### Database (`src/db/`, schema v19)
+### Database (`src/db/`, schema v20)
 
 Tables: `files` (identity since v17: `content_hash` SHA-256, `size`, `mtime_ns`, `stat_ns`, `inputs_fp`), `include_directives`, `symbols (kind, name, line, col, parent, detail, end_line,
 scope, access)`, `diagnostics (… source, subject)`, `symbol_docs`, `imports (pkg_name, item, is_export, scope)`,
@@ -1125,13 +1141,13 @@ convert with `uriForRelPath`/`expectedUriPath` from
 |---|---|
 | `data_type`/`variable_decl_assignment` ambiguity (bare `IDENTIFIER` in several alts) — fails for 2+ qualifiers + `new(...)` initializer | Not fixed; 1 corpus diagnostic (`base/uvm_transaction.svh`) |
 | Bare `MyClass foo;` parses as `net_declaration` (nettype), not `data_declaration` | Handled in both listeners; ambiguity itself unchanged |
-| `bind … ;` needs `;;`; `bind` with `#(...)` override fails | Workaround |
-| `cross A, B { … }` double semicolon | Use empty body |
 | No backtick directives in grammar | By design — preprocessed first |
 
 Fixed and documented in plan.md / git history: string escapes, `void'(f())`,
 `#0;`, methods named `sample()`/`randomize()`, `'{}`, `const` property with
-`new(...)`, `X::Y::method()`, `interface class`, `super.new` after a statement.
+`new(...)`, `X::Y::method()`, `interface class`, `super.new` after a statement,
+`bind … ;` and cross bins `;` (both IEEE BNF errata), `q[1:$]`, `1'b 0`,
+`foreach (a[i][j])` (plan.md §6.39).
 
 ## Known gaps
 

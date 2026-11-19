@@ -8543,6 +8543,219 @@ The server (T2 below, for the socket):
 
 ---
 
+### 6.39 False Diagnostics on a Clean Project: ibex
+
+**Status:** done 2026-11-19 (see "Outcome"). ibex: 333 diagnostics -> 6
+Warnings, the editor's load 155 -> 73 s, `--build-db` 149 -> 63 s.
+
+**Why.** The user saw svlsp at 100% CPU on a big project. To find out
+why, it was tested (2026-11-18) on lowRISC ibex, a RISC-V core with a
+UVM testbench that simulators compile cleanly. The config,
+`~/src/ibex/.svlsp.json`, was taken from `dv/uvm/core_ibex/ibex_dv.f`:
+113 files, 18 include dirs, the compile script's defines, and
+`libraryDbs` set to a fresh `uvm-core/src/uvm-v19.db`.
+- **CPU:** the parse worker runs at ~100% for the whole load (155 s,
+  release build, empty cache), then the server and the worker sit at 0%.
+  Peak RSS is 935 MB, almost all of it the worker. The user's 100% is the
+  project load.
+- **Diagnostics:** 333, nearly all false. Every bug below has a minimal
+  repro (in the session's scratchpad, rewritten as unit tests in the
+  work). Each count is the number of ibex rows that bug causes,
+  cascades included.
+- **Slowest units:** `push_pull_agent_pkg` 25 s, `core_ibex_test_pkg`
+  13.4 s, `dv_base_reg_pkg` 10.6 s, `prim_count` 7.8 s,
+  `csr_utils_pkg` 7.1 s. Most have parse errors, which push ANTLR from
+  SLL to the full-LL second stage (§6.33 C2), so the fixes should also
+  shorten the load. That is to be measured, not assumed.
+
+**P -- preprocessor** (`src/compiler/sv_preprocessor.cpp`):
+- **P1. Backticks inside `/* */` comments are expanded** (24 rows): ``/*
+  ... `cheriot_enable_i ... */`` gives "undefined macro". The
+  preprocessor works line by line and knows only `//` comments
+  (`splitLineComment`); it has no block-comment state. Fix: track
+  "inside `/* */`" across lines in `processSource`, and copy comment
+  text through unexpanded. This includes a directive-looking line inside a
+  block comment (`` `define `` written in a comment must not define
+  anything). Also, `splitLineComment` must skip `//` inside string
+  literals (`"http://..."`).
+- **P2. A `//` comment inside a multi-line macro call swallows the rest
+  of the call** (39 rows: `core_ibex_vseq.sv`, `core_ibex_new_seq_lib.sv`,
+  `push_pull_driver_lib.sv` "undefined macro `` `undef ``" with its
+  cascades into `push_pull_monitor.sv` and `core_ibex_test_pkg.sv`).
+  `mergeInvocationContinuation` appends the following lines raw and
+  without a separator, so the first `//` in the merged text comments out
+  everything after it, and two lines' tokens can glue together. Fix:
+  remove each continuation line's `//` comment (and any `/* */` text,
+  per P1) before appending it, and join with a space.
+- **P3. A `//` comment inside a backslash-continued `` `define `` body
+  swallows the rest of the body** (`prim_assert_standard_macros.svh`
+  `ASSERT_INIT_NET`, which gives "mismatched 'endmodule'" in
+  `prim_count.sv`). IEEE 1800-2017 22.5.1: a one-line comment in macro
+  text is not part of the substituted text. Fix: drop each body line's
+  `//` comment when the continuation lines are spliced.
+- **P4. An empty argument does not take the parameter's default** (11
+  rows: `` `downcast(blk, x, , , msg) `` gives "undefined macro
+  `` `dv_ ``" in `csr_utils_pkg.sv` and `csr_excl_item.sv`). 22.5.1: an
+  empty actual argument takes the default if there is one, and is
+  otherwise empty text. Fix in `expandMacroCall`: an empty `args[k]` with a
+  default becomes the default.
+- **P5. A default value that is a string containing `,` or `)` is
+  "malformed"** (`DV_GET_QUEUE_PLUSARG(..., DELIMITER_ = ",", ...)`).
+  The default's scan in `parseMacroDefinition` counts only parentheses.
+  Fix: skip string literals, and nest `{}` / `[]` as well as `()`.
+
+**G -- grammar** (`grammar/Sv.g4`):
+- **G1. A `bins` item in a cross body needs two semicolons** (167 rows:
+  every cross with bins in `core_ibex_fcov_if.sv` and
+  `core_ibex_pmp_fcov_if.sv`, plus their cascades). `cross_body : '{'
+  (cross_body_item ';')* '}'` with `cross_body_item : ...
+  bins_selection_or_option ';'` copies a known erratum in the IEEE BNF.
+  Fix: `'{' cross_body_item* '}'`. The function_declaration alternative
+  ends in `endfunction`, not a `;`.
+- **G2. `[a:$]`, a queue slice up to the last element, fails** (51 rows:
+  `tokens[1:$]` in `dv_utils_pkg.sv`; its cascade is also the "unknown
+  type 'BUS_DW' in 'bus_params_pkg'", which is not a separate bug). Fix:
+  allow `$` as a range bound in `part_select_range` (a queue, 7.10.1).
+  Check that `$` doesn't become a general primary where SLL would then
+  go ambiguous.
+- **G3. A top-level `bind` fails** (2 rows: `core_ibex_fcov_bind.sv`).
+  Any port list fails, `.*` or named. `description` lists
+  `bind_directive`, so the cause is still to be found (the
+  `bind_target_scope` / `bind_target_instance` overlap is the first
+  suspect).
+- **G4. Whitespace between a number's base and its value** (2 rows:
+  `1'b 0` in `prim_fifo_sync.sv`; also `8'h FF`). 5.7.1 makes size, base
+  and value separate tokens. Fix in the lexer: allow `[ \t]*` after the
+  base, and after the size before the `'`.
+- **G5. `foreach (a[i][j])`** (4 rows: `core_ibex_test_lib.sv`). IEEE's
+  form is `a[i, j]`, but VCS, Questa and Xcelium all accept `[i][j]`,
+  and ibex and OpenTitan use it. See D1.
+
+**S -- checks:**
+- **S1. `C#(...)::type_id::create("x")` flagged "missing required
+  argument 'parent'"** (`push_pull_driver_lib.sv:42`).
+  `push_device_driver` uses `` `uvm_object_param_utils ``, and the object
+  registry's `create` defaults `parent = null`. svlsp checked the call
+  against the component registry's `create`. The suspect is that the
+  parameterized prefix `C#(...)::` doesn't resolve and the lookup falls
+  back to the enclosing class's `type_id` (`push_pull_driver` is a
+  component). Fix: resolve through the specialization's class, or fail
+  closed (no diagnostic) when the prefix doesn't resolve, as §6.26 does.
+- **S2. "`include'd in N different scopes" for define-only headers** (24
+  Information rows: `uvm_macros.svh`, `dv_macros.svh`, ...). Including
+  a macro header in every package is normal practice, and the scope a
+  file is included in matters only for what it declares. Fix: no such
+  diagnostic for a file that declares no symbols. See D2.
+- **S3. Unresolved instantiation inside a generate branch** (6 rows:
+  `prim_secded_inv_hamming_22_16_enc`, which exists on disk but is not
+  in `ibex_dv.f`; ibex's own filelist compiles because that branch is
+  never elaborated). svlsp doesn't evaluate generate conditions. See D3.
+
+**Decisions (the user, 2026-11-19: "continue on fixing all of these",
+with the recommendations):**
+- **D1.** Accept `foreach (a[i][j])` (not IEEE, accepted by every
+  major simulator), with no diagnostic. Recommended: yes.
+- **D2.** Drop the "different scopes" Information for headers that
+  declare nothing (macros only). Recommended: yes.
+- **D3.** An unresolved instantiation inside an `if`/`case` generate
+  branch becomes a Warning instead of an Error ("may be in a branch
+  that is not elaborated"). Recommended: yes. Outside a conditional
+  branch it stays an Error.
+
+**Order of work.** First P1 to P5: they are the root of most cascades,
+and P2 changes what reaches the parser. Then G1 to G5, regenerating the
+parser once. Then S1 to S3.
+- Each fix gets a unit test first, from its repro:
+  `test_sv_preprocessor.cpp`, `test_sv_parser.cpp` (G4 also in the
+  listener: the number keeps its value),
+  `test_compilation_controller.cpp`, `test_library_resolver.cpp`.
+- No new LSP feature, so no new Emacs test. The existing suites must
+  stay green.
+- Once the batch is done, run with no edits in flight: unit, Emacs, UVM
+  corpus, UVM `--build-db` (must stay at 0 diagnostics),
+  `test-integration-uvm`, `perf-check`.
+- Then re-run ibex (`--build-db` and the load measurement) and record
+  in the Outcome: diagnostics against 333, load time against 155 s,
+  peak RSS against 935 MB.
+
+**Not in this section:**
+- Making the load itself cheaper (parallel parse workers, a lower
+  priority for the worker): only if the re-run shows the time is not
+  mostly error recovery.
+- The core-v-verif testbench (OpenHW) as a second test project.
+
+**Outcome (2026-11-19):**
+- **Preprocessor** (`sv_preprocessor.cpp`): one comment scanner,
+  `lineCommentPos` (skips string literals and `/* */`, tracks a block
+  comment across lines), behind `codeOf` / `stripLineComment` /
+  `splitLineComment`. P1: `processSource` keeps "inside `/* */`" across
+  lines (comment lines are copied through; code after `*/` is expanded,
+  never a directive; tracked in inactive regions too), and `expandStr`
+  copies `/* */` text. P2: a call's continuation lines are joined with a
+  space, each without its `//` comment (the first line's too);
+  `hasUnterminatedInvocation` skips strings and comments. P3: a continued
+  `` `define `` line loses its `//` comment before the next is spliced on.
+  P4: an empty argument takes the default. P5: a default value skips
+  string literals and nests `{}` / `[]`.
+- **Grammar** (each commented "plan.md §6.39" in Sv.g4): G1 `cross_body`
+  with one `;` per bins item, and a hierarchical name allowed as a
+  `cross_item` and in `binsof()` (ibex crosses `u_core.sig`; not IEEE).
+  G2 `part_select_range` is `expression ':' expression` (`$` is a
+  primary there; `$` in `constant_primary` was tried first and made
+  `int q[$]` a fixed dimension). G3 `bind_directive` lost its own `;`
+  (the instantiation has one: the same kind of erratum as G1). G4
+  `NUM_BLANK` between size, base and value. G5 `loop_variables` takes
+  `][` as a separator.
+- **SLL** (found measuring the load, not in the plan): an untyped port
+  (`input clk_i,`) failed SLL -- `data_type_or_implicit` took `clk_i` as
+  a type -- so every RTL module with one was parsed twice; `net_port_type`
+  now has the implicit type as its own first alternative. Then a cold
+  profile of all 113 ibex units (`tools/grammar_profile.sh --input`, 208711
+  preprocessed lines) showed prediction time, not error recovery:
+  `generate_item` (three overlapping unions, up to 8573 tokens of
+  lookahead) and `continuous_assign` (two forms identical without a
+  strength or delay) were rewritten without overlap: cold SLL 70 -> 44 s.
+  `walk_dump` of all of UVM and all of ibex is identical before and after
+  those two. Tried and reverted (no gain): one argument list for
+  `system_tf_call`, `conditional_statement` without the `else if` loop --
+  their lookahead comes from the optional `(` / dangling `else` and the
+  global FOLLOW, not from the overlap.
+- **Checks:** S2 `contextDiagnostics` returns nothing for a file with no
+  symbols. S3: `InstantiationRecord::conditional` (the walker counts
+  if/case generate constructs; worker encoding; schema **v20**
+  `instantiations.conditional`), and `unresolvedInstantiationDiagnostic`
+  (symbol_database.h), used by `LibraryResolver` and
+  `refreshLibraryDiagnostics`: a Warning, "... It is in a conditional
+  generate branch, which may not be elaborated." S1 needed no fix: the
+  `create` diagnostic was a cascade of P2 and went with it; its test
+  stays (a forward-declared parameterized object created from a
+  component).
+- **Also:** `tools/grammar_profile/` builds again (`pp_dump` prints
+  `e.message`; file_utils / content_hash added).
+- **Tests:** 12 preprocessor cases (`[comments]`, `[macro-args]`), 7
+  parser cases (`[ibex]`, SLL ports, generate items and assigns), 1
+  include-scope, 1 `[generate-branch]` resolver case (severities kept
+  through a recompile), 1 controller call-args case, 1 v20 migration
+  case.
+- **Verified:** unit 1251/1251, Emacs 346/346, corpus 1563 / 31 (log
+  `build/release/corpus_2026-11-19.log`), UVM `--build-db` 0 diagnostics
+  and the same 18736 symbols as `uvm-v19.db` (101 s / 3.0 GB),
+  `test-integration-uvm` 15/15 (against the v20 UVM DB), `perf-check` no
+  regression.
+- **ibex** (release, fresh cache): diagnostics 333 -> **6** (Warnings,
+  `prim_ram_1p_adv.sv`'s ECC modules that `ibex_dv.f` leaves out); the
+  editor's load (`svlsp.waitForIndexing`) 155 -> **73 s**, peak RSS 935
+  -> 659 MB, 0% CPU after; `--build-db` 149 -> 63 s, 930 -> 749 MB.
+  Slowest units now: core_ibex_test_pkg 8.4 s, push_pull_agent_pkg 6.9
+  s (was 25.1), dv_base_reg_pkg 4.4 s, prim_count 4.3 s (was 7.8).
+- **Left open:** SLL misparses `##1 a && !b |=> c` (LL parses it), so a
+  file with that sequence is parsed twice (prim_lfsr in ibex). Cold
+  prediction still dominates a first load: `hierarchical_identifier` (a
+  `[...]` before a `.`), `system_tf_call`'s optional `(`, the dangling
+  `else`, `class_type` -- each needs an SLL-safe rewrite like the above.
+
+---
+
 ## Appendix A — Technology Stack Summary
 
 | Concern | Choice | Rationale |
