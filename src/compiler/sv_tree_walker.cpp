@@ -165,6 +165,24 @@ static std::string userTypeName(SvParser::Data_type_or_implicitContext* dtoi)
     return dtoi ? dataTypeName(dtoi->data_type()) : "";
 }
 
+// The qualifier of a net's user type (`pkg::`, `C::`, "" if none). A net
+// declaration has its own data type rule (plan.md §6.39), whose only named
+// form is `[class_scope | package_scope] type_identifier`.
+static std::string netTypeQualifier(SvParser::Net_data_type_or_implicitContext* n)
+{
+    return n->class_scope() ? classScopeName(n->class_scope())
+                            : packageScopeName(n->package_scope());
+}
+
+// dataTypeName of a net's data type: the qualified user type, else "".
+static std::string netTypeName(SvParser::Net_data_type_or_implicitContext* n)
+{
+    if (!n || !n->type_identifier() || !n->type_identifier()->IDENTIFIER()) return "";
+    const std::string qualifier = netTypeQualifier(n);
+    const std::string name = n->type_identifier()->IDENTIFIER()->getText();
+    return qualifier.empty() ? name : qualifier + "::" + name;
+}
+
 // True for a data_declaration that is really an assignment statement the
 // grammar misparsed: its first alternative accepts an implicit type, so a
 // block's leading `x = expr;` matches it as a declaration of `x`. The LRM
@@ -938,11 +956,11 @@ public:
         // form still goes through the normal userTypeName() path.
         const std::string typeName = ctx->net_type_identifier()
             ? ctx->net_type_identifier()->IDENTIFIER()->getText()
-            : userTypeName(ctx->data_type_or_implicit());
+            : netTypeName(ctx->net_data_type_or_implicit());
         if (auto* nti = ctx->net_type_identifier())
             recordTypeRef(nti->IDENTIFIER(), "");
-        else if (auto* dtoi = ctx->data_type_or_implicit())
-            recordTypeRef(dtoi->data_type());
+        else if (auto* ndt = ctx->net_data_type_or_implicit(); ndt && ndt->type_identifier())
+            recordTypeRef(ndt->type_identifier()->IDENTIFIER(), netTypeQualifier(ndt));
 
         // Form 1: comma-separated assignment list. Each declarator's
         // unpacked dimensions are fixed-size array layers, as in

@@ -742,3 +742,34 @@ TEST_CASE("if / else-if chains, dangling else and action blocks parse under LL a
     CHECK(parseErrors(src) == 0);
     CHECK(parseErrors(src, true) == 0);
 }
+
+TEST_CASE("net declarations with delays and parameterized class types parse under LL and SLL",
+          "[compiler][parser][sll]") {
+    // plan.md §6.39 cold prediction: net_declaration's `data_type_or_implicit
+    // delay3?` let a `#` follow any data_type, so in `C #(T) x;` and
+    // `virtual ifc #(N) vif;` SLL kept "C is a type, #(T) a net delay" alive
+    // and read on through the rest of the package. Nets get their own data
+    // type rule (net types are integral, IEEE 1800-2017 6.7.1: no class
+    // types, no virtual interfaces), so a `#` follows only that.
+    const std::string src =
+        "package pkg; typedef logic [3:0] nib_t; endpackage\n"
+        "interface ifc #(parameter int N = 1); logic [N-1:0] d; modport mp(input d); endinterface\n"
+        "module m;\n"
+        "  typedef logic [1:0] t2;\n"
+        "  wire a; wire #2 b; wire [3:0] #(1, 2) c; wire logic [3:0] #2 d;\n"
+        "  wire signed [7:0] e = 0; tri t2 #1 f; wire pkg::nib_t g; wire t2 h, i;\n"
+        "  wire struct packed { logic x; logic y; } s;\n"
+        "  wire logic [1:0] #(1:2:3) j; trireg (small) #4 k; wire (strong0, weak1) l = 1'b0;\n"
+        "  wand #(1, 2, 3) n; interconnect [3:0] ic;\n"
+        "  assign #3 a = b;\n"
+        "endmodule\n"
+        "class C #(type T = int); T v; endclass\n"
+        "class D;\n"
+        "  C #(int) c1; C#(D) c2; C #(.T(int)) c3;\n"
+        "  virtual ifc #(4) vif; virtual ifc #(.N(2)).mp vmp; virtual ifc vif2;\n"
+        "  typedef C #(byte) cb_t;\n"
+        "  function void f(); c1 = C#(int)::new(); endfunction\n"
+        "endclass\n";
+    CHECK(parseErrors(src) == 0);
+    CHECK(parseErrors(src, true) == 0);
+}

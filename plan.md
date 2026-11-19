@@ -8805,6 +8805,19 @@ parser once. Then S1 to S3.
   19.7 s, UVM 57.7 -> 48.5 s; ibex `--build-db` 29.6 s / 544 MB.
   walk_dump identical, sv-tests 0 regressions, unit 1255/1255, corpus,
   Emacs 346/346.
+- **`#` after a data type** (follow-up, cold prediction): `class_type`
+  (15%) and `data_type` (7%) on ibex -- `class_type`'s lookahead up to
+  49082 tokens, through the rest of a package. net_declaration's
+  `data_type_or_implicit delay3?` let a `#` follow every data_type, so
+  in `C #(T) x;` and `virtual ifc #(N) vif;` SLL kept "a type, then a net
+  delay" alive. Nets get `net_data_type_or_implicit` (data_type less
+  class types, virtual interfaces, string, chandle, event -- a net can't
+  have them, 6.7.1); the walker reads a net's `[scope::]type_identifier`
+  from it, recording the same detail and type reference (new listener
+  test). Cold SLL parse, paired: ibex 20.8 -> 13.6 s, **UVM 48.8 -> 7.2
+  s, 2.6 GB -> 348 MB**; ibex `--build-db` 22.6 s / 272 MB. walk_dump
+  identical, sv-tests 0 regressions, unit 1257/1257, corpus, Emacs
+  346/346. This was also the `data_type` item of the investigation list.
 - **sv-tests** (github.com/chipsalliance/sv-tests, ~/src/sv-tests):
   `tools/sv_tests_compare.sh` preprocesses its 1028 tests (UVM on the
   include path) and parses each with grammar/Sv.g4 at HEAD and as edited

@@ -729,7 +729,7 @@ genvar_declaration :
 ;
 
 net_declaration :
-      net_type (drive_strength | charge_strength)? ('vectored' | 'scalared')? data_type_or_implicit delay3? list_of_net_decl_assignments ';'
+      net_type (drive_strength | charge_strength)? ('vectored' | 'scalared')? net_data_type_or_implicit delay3? list_of_net_decl_assignments ';'
     | net_type_identifier delay_control? list_of_net_decl_assignments ';'
     | 'interconnect' implicit_data_type ('#' delay_value)? net_identifier unpacked_dimension* (',' net_identifier unpacked_dimension*)? ';'
 ;
@@ -775,6 +775,23 @@ data_type :
 
 data_type_or_implicit :
       data_type
+    | implicit_data_type
+;
+
+// A net's data type (plan.md §6.39): data_type less class types, virtual
+// interfaces, string, chandle and event, which a net can't have (IEEE
+// 1800-2017 6.7.1). A net declaration's delay3 follows it, so with
+// data_type here a `#` followed every data_type, and in `C #(T) x;` and
+// `virtual ifc #(N) vif;` SLL kept "a type, then a net delay" alive and read
+// on through the rest of the package.
+net_data_type_or_implicit :
+      integer_vector_type signing? packed_dimension*
+    | integer_atom_type signing?
+    | non_integer_type
+    | struct_union ('packed' signing?)? '{' struct_union_member struct_union_member* '}' packed_dimension*
+    | 'enum' enum_base_type? '{' enum_name_declaration (',' enum_name_declaration)* '}' packed_dimension*
+    | (class_scope | package_scope)? type_identifier packed_dimension*
+    | type_reference
     | implicit_data_type
 ;
 

@@ -356,9 +356,11 @@ Second follow-up:
    argument list and `##` a number/name/`( ... )`: ibex cold parse 37.9 ->
    26.4 s, `--build-db` 38 s. Then `if` and `action_block` share one
    `else` rule (`statement_else`), no else-if loop: ibex 27.4 -> 19.7 s,
-   `--build-db` 30 s. Left open
-   (plan.md §6.39): cold prediction in `primary`, `class_type`,
-   `mintypmax_expression`, `seq_block`.
+   `--build-db` 30 s. Then nets get their own data type rule
+   (`net_data_type_or_implicit`), so no `#` follows a data_type: UVM cold
+   parse 48.8 -> 7.2 s (2.6 GB -> 348 MB), ibex 20.8 -> 13.6 s. Left open
+   (plan.md §6.39): cold prediction in `primary`,
+   `mintypmax_expression`, `seq_block`, `property_expr`.
 7. Optional, LL cost on files with syntax errors (only they reach LL now):
    the remaining LL time is true ambiguity in `primary` (decision 1068)
    and `hierarchical_identifier` (1103): `a.b` is a name, a name + select

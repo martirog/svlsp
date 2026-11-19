@@ -2899,3 +2899,34 @@ TEST_CASE("a covergroup is recorded as a leaf Covergroup row",
     CHECK(after->scope == "cgm");
     CHECK(typeRefsNamed(r, "cg_t").size() == 1);
 }
+
+TEST_CASE("type references: a net's user type, qualified or not, with a delay",
+          "[compiler][listener][typeref]") {
+    // plan.md §6.39: net_declaration has its own data type rule now; a net's
+    // named type is still recorded (detail and type reference) as before.
+    const auto r = walkSource(
+        "package p; typedef logic [3:0] nib_t; endpackage\n"
+        "module nm;\n"
+        "  typedef logic [1:0] t2;\n"
+        "  wire t2 a;\n"
+        "  tri p::nib_t #2 b, c;\n"
+        "  wire logic [3:0] #1 d;\n"
+        "endmodule\n");
+    REQUIRE(r.parseErrors.empty());
+    const auto t2 = typeRefsNamed(r, "t2");
+    REQUIRE(t2.size() == 1);
+    CHECK(t2[0].qualifier.empty());
+    CHECK(t2[0].line == 4);
+    const auto nib = typeRefsNamed(r, "nib_t");
+    REQUIRE(nib.size() == 1);
+    CHECK(nib[0].qualifier == "p");
+    auto* a = findRecord(r.records, ParseRecordKind::Signal, "a");
+    REQUIRE(a != nullptr);
+    CHECK(a->detail == "t2");
+    auto* c = findRecord(r.records, ParseRecordKind::Signal, "c");
+    REQUIRE(c != nullptr);
+    CHECK(c->detail == "p::nib_t");
+    auto* d = findRecord(r.records, ParseRecordKind::Signal, "d");
+    REQUIRE(d != nullptr);
+    CHECK(d->detail.empty());
+}
