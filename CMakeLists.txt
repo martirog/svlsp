@@ -220,6 +220,7 @@ add_library(svlsp_compiler STATIC
     src/compiler/doc_comment.cpp
     src/compiler/filelist_parser.cpp
     src/compiler/file_utils.cpp
+    src/compiler/path_names.cpp
     src/compiler/content_hash.cpp
     src/compiler/parse_worker.cpp
 )
@@ -338,6 +339,7 @@ add_executable(unit_tests
     tests/unit/compiler/test_sv_error_recovery.cpp
     tests/unit/compiler/test_parse_cache.cpp
     tests/unit/compiler/test_filelist_parser.cpp
+    tests/unit/compiler/test_path_names.cpp
     tests/unit/compiler/test_parse_worker.cpp
     tests/unit/db/test_database.cpp
     tests/unit/db/test_symbol_database.cpp

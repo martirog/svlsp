@@ -4,6 +4,7 @@
 #include "compiler/filelist_parser.h"
 #include "db/project_compiler.h"
 #include "compiler/content_hash.h"
+#include "compiler/path_names.h"
 #include <cstdlib>
 #include <filesystem>
 
@@ -24,7 +25,7 @@ ProjectRegistry::ProjectRegistry(CompilationController& controller, SymbolDataba
 {}
 
 void ProjectRegistry::setExplicitConfigPath(std::string path) {
-    m_explicitConfigPath = std::move(path);
+    m_explicitConfigPath = path.empty() ? path : pathnames::canonical(path);
 }
 
 std::string ProjectRegistry::discoverConfigPath(const std::string& fileDir) {
@@ -36,7 +37,7 @@ std::string ProjectRegistry::discoverConfigPath(const std::string& fileDir) {
     while (true) {
         for (const char* name : kCandidates) {
             fs::path candidate = dir / name;
-            if (fs::exists(candidate)) return candidate.lexically_normal().string();
+            if (fs::exists(candidate)) return pathnames::canonical(candidate.string());
         }
         fs::path parent = dir.parent_path();
         if (parent == dir) break; // reached the filesystem root
@@ -71,7 +72,7 @@ const ProjectConfig* ProjectRegistry::loadAndCache(const std::string& configPath
     LibraryDbBuilder::resolveLibraryDbSources(config, nullptr, "", m_controller.walker());
 
     ProjectCompiler::loadProject(config, m_controller, m_sdb,
-                                 fs::absolute(configPath).lexically_normal().string());
+                                 pathnames::canonical(configPath));
 
     auto owned = std::make_unique<ProjectConfig>(std::move(config));
     const ProjectConfig* raw = owned.get();
@@ -90,13 +91,20 @@ std::string ProjectRegistry::defaultDatabasePath(const std::string& configPath) 
     if (const char* xdg = std::getenv("XDG_CACHE_HOME"); xdg && *xdg) base = xdg;
     else if (const char* home = std::getenv("HOME"); home && *home) base = std::string(home) + "/.cache";
     else return "";
-    const std::string key = fs::absolute(configPath).lexically_normal().string();
+    const std::string key = pathnames::canonical(configPath);
     return base + "/svlsp/" + contentHash(key).substr(0, 16) + ".db";
 }
 
 std::string ProjectRegistry::configPathFor(const std::string& filePath) const {
     if (!m_explicitConfigPath.empty()) return m_explicitConfigPath;
-    return discoverConfigPath(fs::path(filePath).parent_path().string());
+    // Up from the directory as the client names it first (plan.md §6.40
+    // D6): a config above a symlink the client went through is found
+    // there, not above the directory the symlink points to.
+    const std::string asClient = pathnames::toClient(filePath);
+    std::string found = discoverConfigPath(fs::path(asClient).parent_path().string());
+    if (found.empty() && asClient != filePath)
+        found = discoverConfigPath(fs::path(filePath).parent_path().string());
+    return found;
 }
 
 const ProjectConfig* ProjectRegistry::configFor(const std::string& filePath) {

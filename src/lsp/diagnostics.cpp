@@ -1,4 +1,5 @@
 #include "diagnostics.h"
+#include "lsp/symbol_utils.h"
 #include <lsp/types.h>
 
 DiagnosticsPublisher::DiagnosticsPublisher(lsp::MessageHandler& handler)
@@ -18,7 +19,8 @@ lsp::PublishDiagnosticsParams DiagnosticsPublisher::buildParams(
     lsp::Array<lsp::Diagnostic> diags)
 {
     lsp::PublishDiagnosticsParams params;
-    params.uri         = uri;
+    // The client's name for the file (plan.md §6.40 D6).
+    params.uri = uri.scheme() == "file" ? clientUri(std::string{uri.path()}) : uri;
     params.diagnostics = std::move(diags);
     if (version) params.version = *version;
     return params;

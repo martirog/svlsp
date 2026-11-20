@@ -189,7 +189,7 @@ lsp::TextDocument_ReferencesResult ReferencesProvider::getReferences(
     for (const auto& occ : *occurrences) {
         if (occ.isDeclaration && !params.context.includeDeclaration) continue;
         lsp::Location loc;
-        loc.uri   = pathToUri(occ.path);
+        loc.uri   = clientUri(occ.path);
         loc.range = makeRange(occ.line + 1, occ.character, static_cast<int>(word.size()));
         locations.push_back(std::move(loc));
     }

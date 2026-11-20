@@ -6861,7 +6861,9 @@ code reviews can show that a rewrite does not regress latency or memory.
   Tests: unit `[symlink]` (`pathToUri`; a server-level save through a
   symlinked directory, which failed on the old code), Emacs test_53 (fails
   on the old binary: diagnostics left under the real directory). A file
-  reached by two names is still two files, as before. Verified: unit
+  reached by two names is still two files, as before. (Superseded by
+  §6.40 D6: one canonical name inside svlsp, the client's name in every
+  URI sent back.) Verified: unit
   1100/1100, Emacs 329/329, `make test-integration-uvm` 15/15, corpus
   1563 / 31 (log `build/release/corpus_2026-11-03.log`), release build
   0 warnings.
@@ -8910,6 +8912,109 @@ parser once. Then S1 to S3.
   prediction still dominates a first load: `system_tf_call`'s optional
   `(` (15%), `primary` (11%), the dangling `else` (9 + 5%), `class_type`
   (7%) -- each needs an SLL-safe rewrite like the above.
+
+### 6.40 Debugging: Seeing What the Server Did, and Not Freezing the Editor
+
+**Status:** planned 2026-11-20. Asked for by the user after setting up
+svlsp on another machine (a conda GCC 14 on CentOS 7, a big project with
+a `uvm.db`). The questions there had no answer in svlsp's output: was
+the library DB found, which config is in use, why does Emacs hang after
+a save. Each point below is its own change, with a unit test and an
+Emacs test.
+
+**D1. Report library DB attaches, and never create an empty one.**
+- Now (read 2026-11-20): `SymbolDatabase::attachLibraryDbs` runs
+  `ATTACH DATABASE ?` on the read-write project connection. For a path
+  whose directory exists but whose file doesn't, SQLite creates an empty
+  file there and attaches it (checked with Python's sqlite3) -- silently,
+  so every UVM name stays unresolved with nothing said. A missing
+  directory throws `unable to open database`, seen only on stderr.
+  `checkLibraryDb` reports an unopenable DB as `total 0`, which is not
+  stale, so no warning either. Nothing confirms a good attach.
+- Change: check the file exists (and attach it read-only, `file:...?mode=ro`
+  URI) before `ATTACH`; on a missing file, an unopenable one, one with no
+  files or symbols, or a schema version this build can't read, send a
+  `window/showMessage` warning and a stderr line naming the config that
+  listed it. On success, a stderr / `window/logMessage` line: `attached
+  <path> (N files, M symbols) for <config>`.
+- Also report include dirs the library DB recorded at build time
+  (`mergeIncludeDirsFromLibraryDbs`) that don't exist on this machine --
+  a DB built elsewhere makes `` `include "uvm_macros.svh" `` fail with no
+  hint why.
+
+**D2. A timeout for requests waiting on a didSave compile (release the
+editor, keep compiling).**
+- Now: after `didSave` (and `didOpen`) the document is in `m_awaiting`;
+  a request on it waits in `waitForDocument` until its compile has run
+  (§6.34 S4). The wait is off the message thread, but lsp-mode's
+  completion-at-point, find-definition and find-references are
+  synchronous, so Emacs freezes for the whole compile (up to
+  `lsp-response-timeout`, 10 s) -- long on a cold parse worker or behind
+  a running project-load unit.
+- Change: `waitForDocument` waits at most a timeout (default ~1 s;
+  `initializationOptions.saveWaitTimeoutMs`, 0 = don't wait), then the
+  request is answered from the previous compile's state with the current
+  text, as during typing. The compile is not cancelled; its diagnostics
+  publish when it finishes. Completion answered this way is marked
+  `isIncomplete`, so lsp-mode asks again.
+- Open: whether `didOpen` gets the same timeout. A document opened for
+  the first time may have no previous state except what the project DB
+  indexed.
+- `--log-requests` notes a request answered after a timeout (`wait
+  1000 ms (timed out)`), so a hang can be told apart from a slow answer.
+- Tests: unit test with a compile held back (the queue's test hooks), a
+  request returning within the timeout from the old state, then the new
+  diagnostics; Emacs test that `M-.` after a save returns before the
+  compile ends.
+
+**D3. A status command: what the server thinks this file's project is.**
+- `workspace/executeCommand` `svlsp.status` (and an Emacs command around
+  it), for the current file: the config path discovery chose (and the
+  candidates it passed over), the files / include dirs / defines it
+  resolved, attached library DBs with their counts (D1), the project DB
+  path, the queue (job running, jobs pending, indexing or not), and the
+  parse worker (running, RSS, last restart).
+- Answers "which config is in use" without reading the discovery order
+  (`ProjectRegistry::discoverConfigPath`) by hand.
+
+**D4. `tools/find-cxx20.sh`: show why a compiler failed the probe.**
+- Now it prints only the first line containing "error". The CentOS 7
+  case showed `'timespec_get' has not been declared in '::'`, which
+  hides the cause: the conda env's sysroot (`.../sysroot/usr/include/
+  time.h`, glibc 2.12) ahead of the system's. Print the last ~15 lines
+  of the probe log, and for a header error the header path the compiler
+  picked (`-H`), so a foreign sysroot is visible at once.
+
+**D6. One name per file: symlinks resolved inside svlsp -- done
+2026-11-20.**
+- Found from a user report: an `include'd class file showed "undefined
+  macro `uvm_info`" although its package included `uvm_macros.svh`
+  first. svlsp compared paths as strings. When the config (or an include
+  dir) reached the package through a symlink and Emacs opened the class
+  file by its real path, or the other way round, the include site was
+  recorded under one name and looked up under the other: no includer,
+  so the file compiled on its own, without the package's macros (also
+  duplicate rows for one file under two names). §6.33 C8 had kept
+  client paths as sent and left "a file reached by two names is still
+  two files".
+- Fix: `pathnames::canonical` (`src/compiler/path_names.{h,cpp}`,
+  `weakly_canonical`) names every file inside svlsp: client URIs at each
+  `textDocument/*` handler and watched-file event (`toInternal`), config
+  paths (`.f` and JSON), include dirs, resolved `include targets, `-y`
+  matches, config discovery results and project keys. The client's name
+  is recorded (`fromClient`: the file, and each directory above it whose
+  canonical name differs); every URI sent back -- diagnostics,
+  definition, references, rename, workspace symbols -- maps back through
+  `clientUri` / `toClient` (the file's recorded name, else the deepest
+  recorded directory). Config discovery walks up from the client's
+  directory first, then the canonical one. `pathToUri` stays for the
+  server's own keys.
+- Tests: unit `[path_names]` (canonical, client-name mapping), server
+  `[symlink]` "an included file reached through a symlink keeps its
+  includer's macros, under the client's path" (both directions; fails on
+  the old code), Emacs test_59.
+- Library DBs built before this keep the paths they recorded; a project
+  DB is reset by the version check (`checkDbVersion`) anyway.
 
 ---
 

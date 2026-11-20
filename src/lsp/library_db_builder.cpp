@@ -1,4 +1,5 @@
 #include "lsp/library_db_builder.h"
+#include "compiler/path_names.h"
 #include "lsp/project_manifest_parser.h"
 #include "lsp/symbol_resolution.h"
 #include "compiler/filelist_parser.h"
@@ -79,7 +80,7 @@ LibraryDbBuilder::Result LibraryDbBuilder::build(
 
         result.fileCount = ProjectCompiler::loadProject(
             config, controller, sdb,
-            std::filesystem::absolute(configPath).lexically_normal().string(), buildVersion,
+            pathnames::canonical(configPath), buildVersion,
             &result.refresh, walker ? 1 : jobs);
 
         // Bake this build's own resolved includeDirs into the DB file
@@ -208,7 +209,7 @@ LibraryDbBuilder::CheckResult LibraryDbBuilder::check(const std::string& configP
         // The plan records new stat data; roll it back.
         Database::Transaction txn(db, "dry_run");
         const auto plan = ProjectRefresher::plan(
-            std::filesystem::absolute(configPath).lexically_normal().string(), config,
+            pathnames::canonical(configPath), config,
             controller, sdb);
         if (plan.configChanged) {
             r.stale = true;

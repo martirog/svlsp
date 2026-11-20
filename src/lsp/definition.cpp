@@ -13,7 +13,7 @@ lsp::TextDocument_DefinitionResult DefinitionProvider::getDefinition(
             pickMacro(db.findMacros(at->name), curPath, static_cast<int>(at->line) + 1);
         if (!macro) return nullptr;
         lsp::Location loc;
-        loc.uri   = pathToUri(macro->filePath);
+        loc.uri   = clientUri(macro->filePath);
         loc.range = makeRange(macro->line, macro->col, static_cast<int>(macro->name.size()));
         return lsp::Definition{loc};
     }
@@ -24,7 +24,7 @@ lsp::TextDocument_DefinitionResult DefinitionProvider::getDefinition(
     const SymbolRow& best = resolved->row;
 
     lsp::Location loc;
-    loc.uri   = pathToUri(best.filePath);
+    loc.uri   = clientUri(best.filePath);
     loc.range = makeRange(best.line, best.col, static_cast<int>(best.name.size()));
     return lsp::Definition{loc};
 }

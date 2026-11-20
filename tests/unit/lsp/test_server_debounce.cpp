@@ -26,6 +26,7 @@
 #include <fstream>
 #include <iostream>
 #include <condition_variable>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <poll.h>
@@ -973,4 +974,81 @@ TEST_CASE("a project without a database gets one in the XDG cache; \":memory:\" 
         client.shutdownAndExit();
     }
     CHECK_FALSE(std::filesystem::exists(pb));
+}
+
+namespace {
+
+// Opens `open` in a project whose config is `config` and returns the last
+// publish for each URI after the load ends (plan.md §6.40 D6).
+std::map<std::string, std::vector<std::string>> lastPublishes(const std::string& open,
+                                                              const std::string& text)
+{
+    std::map<std::string, std::vector<std::string>> last;
+    TestClient client;
+    client.initializeWithProgress();
+    client.didOpen("file://" + open, text, 1);
+    auto note = [&](const lsp::json::Value& msg) {
+        const auto* method = msg.object().find("method");
+        if (method && method->string() == "textDocument/publishDiagnostics")
+            last[publishedUri(msg)] = publishedMessages(msg);
+    };
+    for (const auto& msg : client.recvUntilProgressEnd()) note(msg);
+    bool timedOut = false;
+    while (true) {
+        auto msg = client.recvSkippingProgress(&timedOut, 500);
+        if (timedOut) break;
+        note(msg);
+    }
+    client.shutdownAndExit();
+    return last;
+}
+
+} // namespace
+
+TEST_CASE("an included file reached through a symlink keeps its includer's macros, under the "
+          "client's path (plan.md §6.40 D6)",
+          "[lsp][server][symlink]")
+{
+    namespace fs = std::filesystem;
+    const std::string dir = "/tmp/svlsp_test_symctx";
+    fs::remove_all(dir);
+    const std::string cls = "class sc_c;\n  `SC_DECL(v)\nendclass\n";
+    writeFileAt(dir + "/real/pkg.sv",
+                "`define SC_DECL(n) int n;\npackage sc_p;\n  `include \"cls.svh\"\nendpackage\n");
+    writeFileAt(dir + "/real/cls.svh", cls);
+    fs::create_directory_symlink(dir + "/real", dir + "/alias");
+
+    auto noMacroError = [](const std::vector<std::string>& msgs) {
+        return std::none_of(msgs.begin(), msgs.end(), [](const std::string& m) {
+            return m.find("undefined macro") != std::string::npos;
+        });
+    };
+    auto underDir = [](const std::map<std::string, std::vector<std::string>>& pubs,
+                       const std::string& prefix) {
+        return std::any_of(pubs.begin(), pubs.end(),
+                           [&](const auto& p) { return p.first.rfind(prefix, 0) == 0; });
+    };
+
+    SECTION("the config names the symlink, the client the real path") {
+        writeFileAt(dir + "/.svlsp.json",
+                    R"({"files": ["alias/pkg.sv"], "database": ":memory:"})");
+        const auto pubs = lastPublishes(dir + "/real/cls.svh", cls);
+        const std::string uri = "file://" + dir + "/real/cls.svh";
+        REQUIRE(pubs.count(uri));
+        CHECK(noMacroError(pubs.at(uri)));
+        CHECK(pubs.at(uri).empty());
+        CHECK_FALSE(pubs.count("file://" + dir + "/alias/cls.svh"));
+    }
+    SECTION("the config names the real path, the client the symlink") {
+        writeFileAt(dir + "/.svlsp.json",
+                    R"({"files": ["real/pkg.sv"], "database": ":memory:"})");
+        const auto pubs = lastPublishes(dir + "/alias/cls.svh", cls);
+        const std::string uri = "file://" + dir + "/alias/cls.svh";
+        REQUIRE(pubs.count(uri));
+        CHECK(noMacroError(pubs.at(uri)));
+        CHECK(pubs.at(uri).empty());
+        // Everything the client sees is under the name it used.
+        CHECK_FALSE(underDir(pubs, "file://" + dir + "/real/"));
+    }
+    fs::remove_all(dir);
 }

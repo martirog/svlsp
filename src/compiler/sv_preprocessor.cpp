@@ -1,4 +1,5 @@
 #include "compiler/sv_preprocessor.h"
+#include "compiler/path_names.h"
 #include "compiler/content_hash.h"
 #include "compiler/file_utils.h"
 #include "compiler/compiler_directive_stripper.h"
@@ -696,13 +697,13 @@ std::string resolveInclude(const std::string& name, const std::string& currentFi
     // An absolute name is taken as is. A relative one is never tried against
     // the working directory: the server's (or --build-db's) cwd is arbitrary,
     // and a hit there names the file relative to it, which providers later
-    // absolutize against a different cwd. Normalized so `./` and `../` don't
-    // give one file two names.
+    // absolutize against a different cwd. Canonical, so neither `./`, `../`
+    // nor a symlink gives one file two names (plan.md §6.40 D6).
     if (fs::path(name).is_absolute())
-        return fs::exists(name) ? fs::path(name).lexically_normal().string() : std::string{};
+        return fs::exists(name) ? pathnames::canonical(name) : std::string{};
     for (const auto& dir : search) {
         auto candidate = fs::path(dir) / name;
-        if (fs::exists(candidate)) return candidate.lexically_normal().string();
+        if (fs::exists(candidate)) return pathnames::canonical(candidate.string());
     }
     return {};
 }

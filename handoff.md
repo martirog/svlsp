@@ -433,7 +433,11 @@ What C2 changes for other work:
 What the symlinked-path fix changes for other work:
 - Turn a stored path into a URI only with `pathToUri`, never
   `lsp::FileUri::fromPath` (it resolves symlinks, so the URI wouldn't
-  match the client's).
+  match the client's). Since plan.md §6.40 D6: stored paths are
+  canonical; a URI sent to the client goes through `clientUri` (the
+  client's own name), `pathToUri` only for the server's own keys; a new
+  handler taking a document URI calls `toInternal` first; a new path
+  from a config or an include goes through `pathnames::canonical`.
 
 What the fail-closed callee check changes for other work:
 - The missing-argument diagnostic is only as good as `resolveSymbolAt`:

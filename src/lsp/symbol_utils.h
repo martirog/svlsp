@@ -37,6 +37,13 @@ lsp::Range makeRange(int line1, int col0, int nameLen);
 // URI must map back to that same URI.
 lsp::DocumentUri pathToUri(const std::string& path);
 
+// The URI the client knows stored path `path` by (plan.md §6.40 D6): paths
+// inside svlsp are canonical, and the client's own name for the file (or
+// for a directory above it) is used when it sent one. Every URI in a
+// response or notification goes through this; pathToUri is for the
+// server's own keys.
+lsp::DocumentUri clientUri(const std::string& path);
+
 // Pick the best match among same-named symbols for hover/definition, given the
 // path of the file the request originated in. `rows` must be non-empty.
 // 1. A same-file match always wins (existing behavior).

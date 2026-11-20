@@ -1,4 +1,5 @@
 #include "db/library_resolver.h"
+#include "compiler/path_names.h"
 #include "db/compilation_controller.h"
 #include "db/symbol_database.h"
 #include "compiler/compiler_directive_stripper.h"
@@ -42,7 +43,7 @@ std::optional<std::pair<std::string, std::string>> searchLibraryDirs(
         for (const auto& ext : config.libExtensions) {
             std::string candidate = dir + "/" + name + ext;
             if (auto text = readFile(candidate)) {
-                return std::make_pair(candidate, std::move(*text));
+                return std::make_pair(pathnames::canonical(candidate), std::move(*text));
             }
         }
     }

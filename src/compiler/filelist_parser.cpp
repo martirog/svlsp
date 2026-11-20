@@ -1,4 +1,5 @@
 #include "compiler/filelist_parser.h"
+#include "compiler/path_names.h"
 #include <cctype>
 #include <filesystem>
 #include <fstream>
@@ -55,8 +56,9 @@ std::vector<std::string> splitChain(const std::string& token) {
 
 std::string resolvePath(const std::string& baseDir, const std::string& raw) {
     fs::path p(raw);
-    if (p.is_absolute()) return p.lexically_normal().string();
-    return (fs::path(baseDir) / p).lexically_normal().string();
+    // Canonical (plan.md §6.40 D6): one name per file, whichever
+    // symlinks reach it.
+    return pathnames::canonical(p.is_absolute() ? p.string() : (fs::path(baseDir) / p).string());
 }
 
 void parseFile(const std::string& path, const std::string& baseDir,

@@ -20,7 +20,7 @@ lsp::Workspace_SymbolResult WorkspaceSymbolsProvider::getWorkspaceSymbols(
         lsp::WorkspaceSymbol sym;
         sym.name     = row.name;
         sym.kind     = symbolKindFor(row.kind);
-        sym.location = lsp::Location{pathToUri(row.filePath),
+        sym.location = lsp::Location{clientUri(row.filePath),
                                      makeRange(row.line, row.col,
                                                static_cast<int>(row.name.size()))};
         // An unnamed block isn't a name: its nearest named scope contains it.
@@ -39,7 +39,7 @@ lsp::Workspace_SymbolResult WorkspaceSymbolsProvider::getWorkspaceSymbols(
         lsp::WorkspaceSymbol sym;
         sym.name          = m.name;
         sym.kind          = symbolKindFor("Macro");
-        sym.location      = lsp::Location{pathToUri(m.filePath),
+        sym.location      = lsp::Location{clientUri(m.filePath),
                                           makeRange(m.line, m.col, static_cast<int>(m.name.size()))};
         sym.containerName = "`define";
         result.push_back(std::move(sym));

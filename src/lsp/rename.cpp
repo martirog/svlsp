@@ -54,7 +54,7 @@ lsp::TextDocument_RenameResult RenameProvider::getRename(
         lsp::TextEdit edit;
         edit.range   = makeRange(occ.line + 1, occ.character, static_cast<int>(word.size()));
         edit.newText = params.newName;
-        changes[pathToUri(occ.path)].push_back(std::move(edit));
+        changes[clientUri(occ.path)].push_back(std::move(edit));
     }
 
     if (changes.empty()) return nullptr;

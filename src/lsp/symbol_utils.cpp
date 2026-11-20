@@ -1,4 +1,5 @@
 #include "lsp/symbol_utils.h"
+#include "compiler/path_names.h"
 #include "lsp/sv_builtin_methods.h"
 #include <lsp/fileuri.h>
 #include <algorithm>
@@ -148,6 +149,11 @@ lsp::DocumentUri pathToUri(const std::string& path)
     uri.setAuthority({});
     uri.setPath(std::filesystem::absolute(path).string());
     return lsp::DocumentUri{std::move(uri)};
+}
+
+lsp::DocumentUri clientUri(const std::string& path)
+{
+    return pathToUri(pathnames::toClient(std::filesystem::absolute(path).string()));
 }
 
 const SymbolRow* pickBestSymbol(const std::vector<SymbolRow>& rows, const std::string& curPath)

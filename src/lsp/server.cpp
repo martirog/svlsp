@@ -7,6 +7,7 @@
 #include "db/project_compiler.h"
 #include "db/library_check.h"
 #include "compiler/file_utils.h"
+#include "compiler/path_names.h"
 #include "compiler/sv_preprocessor.h"
 #include <unordered_map>
 #include <algorithm>
@@ -18,6 +19,21 @@
 #include <lsp/messages.h>
 #include <lsp/process.h>
 #include <lsp/uri.h>
+
+namespace {
+
+// A client's file URI as the server names the file: its canonical path
+// (plan.md §6.40 D6). The client's own name is recorded, and every URI
+// sent back maps to it (clientUri, DiagnosticsPublisher).
+void toInternal(lsp::DocumentUri& uri)
+{
+    if (uri.scheme() != "file") return;
+    const std::string path{uri.path()};
+    if (path.empty()) return;
+    uri = pathToUri(pathnames::fromClient(path));
+}
+
+} // namespace
 
 LanguageServer::LanguageServer(lsp::io::Stream& io, std::ostream* logStream,
                                std::ostream* requestLog)
@@ -529,7 +545,7 @@ void LanguageServer::loadProject(const std::string& configPath, bool rehash)
         }
     }
 
-    const std::string key = std::filesystem::absolute(configPath).lexically_normal().string();
+    const std::string key = pathnames::canonical(configPath);
     std::vector<std::string> units, force, includeDirs;
     std::vector<std::pair<std::string, std::string>> openTexts; // path, text
     std::set<std::string> knownIncluders; // units the DB says include an open document
@@ -794,6 +810,7 @@ void LanguageServer::registerHandlers()
                 // An open document's buffer is the truth: its events don't
                 // count (lsp-mode sends didChange when it reverts one).
                 bool relevant = false;
+                for (auto& change : params.changes) toInternal(change.uri);
                 {
                     std::lock_guard lock{m_dataMutex};
                     for (const auto& change : params.changes)
@@ -837,6 +854,7 @@ void LanguageServer::registerHandlers()
             })
         .add<lsp::notifications::TextDocument_DidOpen>(
             [this](lsp::notifications::TextDocument_DidOpen::Params&& params) {
+                toInternal(params.textDocument.uri);
                 const auto uri = params.textDocument.uri;
                 const std::string path{uri.path()};
                 {
@@ -855,6 +873,7 @@ void LanguageServer::registerHandlers()
             })
         .add<lsp::notifications::TextDocument_DidChange>(
             [this](lsp::notifications::TextDocument_DidChange::Params&& params) {
+                toInternal(params.textDocument.uri);
                 const auto uri = params.textDocument.uri;
                 {
                     std::lock_guard lock{m_dataMutex};
@@ -866,6 +885,7 @@ void LanguageServer::registerHandlers()
             })
         .add<lsp::notifications::TextDocument_DidSave>(
             [this](lsp::notifications::TextDocument_DidSave::Params&& params) {
+                toInternal(params.textDocument.uri);
                 const auto uri = params.textDocument.uri;
                 // Cancel any pending debounced compile for this URI first, so
                 // a stale, already-superseded timer can't fire a redundant
@@ -890,6 +910,7 @@ void LanguageServer::registerHandlers()
             })
         .add<lsp::notifications::TextDocument_DidClose>(
             [this](lsp::notifications::TextDocument_DidClose::Params&& params) {
+                toInternal(params.textDocument.uri);
                 const auto uri = params.textDocument.uri;
                 m_debouncer.cancel(uri.toString());
                 compiled(std::string{uri.path()});
@@ -898,6 +919,7 @@ void LanguageServer::registerHandlers()
             })
         .add<lsp::requests::TextDocument_Hover>(
             [this](lsp::HoverParams&& params) {
+                toInternal(params.textDocument.uri);
                 const auto uri = params.textDocument.uri;
                 return answer<lsp::requests::TextDocument_Hover>(uri, [this, params]() {
                     Request req{*this, "textDocument/hover",
@@ -909,6 +931,7 @@ void LanguageServer::registerHandlers()
             })
         .add<lsp::requests::TextDocument_Definition>(
             [this](lsp::DefinitionParams&& params) {
+                toInternal(params.textDocument.uri);
                 const auto uri = params.textDocument.uri;
                 return answer<lsp::requests::TextDocument_Definition>(uri, [this, params]() {
                     Request req{*this, "textDocument/definition",
@@ -920,6 +943,7 @@ void LanguageServer::registerHandlers()
             })
         .add<lsp::requests::TextDocument_References>(
             [this](lsp::ReferenceParams&& params) {
+                toInternal(params.textDocument.uri);
                 const auto uri = params.textDocument.uri;
                 return answer<lsp::requests::TextDocument_References>(uri, [this, params]() {
                     Request req{*this, "textDocument/references",
@@ -933,6 +957,7 @@ void LanguageServer::registerHandlers()
             })
         .add<lsp::requests::TextDocument_Completion>(
             [this](lsp::CompletionParams&& params) {
+                toInternal(params.textDocument.uri);
                 const auto uri = params.textDocument.uri;
                 return answer<lsp::requests::TextDocument_Completion>(uri, [this, params]() {
                     Request req{*this, "textDocument/completion",
@@ -961,6 +986,7 @@ void LanguageServer::registerHandlers()
             })
         .add<lsp::requests::TextDocument_DocumentSymbol>(
             [this](lsp::DocumentSymbolParams&& params) {
+                toInternal(params.textDocument.uri);
                 const auto uri = params.textDocument.uri;
                 return answer<lsp::requests::TextDocument_DocumentSymbol>(uri, [this, params]() {
                     Request req{*this, "textDocument/documentSymbol"};
@@ -974,6 +1000,7 @@ void LanguageServer::registerHandlers()
             })
         .add<lsp::requests::TextDocument_Rename>(
             [this](lsp::RenameParams&& params) {
+                toInternal(params.textDocument.uri);
                 const auto uri = params.textDocument.uri;
                 return answer<lsp::requests::TextDocument_Rename>(uri, [this, params]() {
                     Request req{*this, "textDocument/rename",
@@ -987,6 +1014,7 @@ void LanguageServer::registerHandlers()
             })
         .add<lsp::requests::TextDocument_SignatureHelp>(
             [this](lsp::SignatureHelpParams&& params) {
+                toInternal(params.textDocument.uri);
                 const auto uri = params.textDocument.uri;
                 return answer<lsp::requests::TextDocument_SignatureHelp>(uri, [this, params]() {
                     Request req{*this, "textDocument/signatureHelp",
