@@ -259,3 +259,26 @@ TEST_CASE("quoted filenames with spaces are a single token", "[compiler][filelis
     REQUIRE(config.files.size() == 1);
     CHECK(config.files[0] == kRoot + "/name with spaces.sv");
 }
+
+// plan.md §6.40 D8: headers read before every unit. A name found beside the
+// filelist becomes its absolute path; any other stays as written, for the
+// include dirs to resolve at compile time.
+TEST_CASE("-svlsp_preinclude is repeatable, beside the filelist or as written",
+          "[compiler][filelist][preinclude]") {
+    writeFile(kRoot + "/pre/here.svh", "`define PRE_HERE\n");
+    std::string path = writeFilelist("pre/pre.f",
+        "-svlsp_preinclude here.svh\n-svlsp_preinclude uvm_macros.svh\n"
+        "-svlsp_preinclude " + kRoot + "/abs.svh\n");
+
+    auto config = FilelistParser::parse(path, kRoot + "/pre");
+
+    REQUIRE(config.preincludes.size() == 3);
+    CHECK(config.preincludes[0] == kRoot + "/pre/here.svh");
+    CHECK(config.preincludes[1] == "uvm_macros.svh");
+    CHECK(config.preincludes[2] == kRoot + "/abs.svh");
+}
+
+TEST_CASE("-svlsp_preinclude without a name throws", "[compiler][filelist][preinclude]") {
+    std::string path = writeFilelist("pre_noarg.f", "-svlsp_preinclude\n");
+    CHECK_THROWS(FilelistParser::parse(path));
+}

@@ -21,6 +21,7 @@ std::vector<std::string> declaredTypeNames(const std::string& text, const std::s
                                             const CompilationController& controller) {
     auto stripped = CompilerDirectiveStripper::strip(text, path);
     SvPreprocessor pp(config.includeDirs);
+    for (const auto& h : config.preincludes) pp.preinclude(h);  // plan.md §6.40 D8
     for (const auto& [name, value] : config.defines) pp.define(name, value);
     auto preprocessed = pp.process(stripped.source, path);
     auto walked = controller.walk(preprocessed.source, preprocessed.sourceMap, true, "");

@@ -35,6 +35,10 @@ struct IncludeSite {
     int64_t     size{-1};
     int64_t     mtimeNs{0};
     int64_t     statNs{0};
+    // The directive's extent on `line` (0-based, end-exclusive), as
+    // PreprocessorError's: where a note about the file goes (plan.md §6.40 D5).
+    int         column{0};
+    int         endColumn{0};
 };
 
 // One `include directive (plan.md §6.34 S1): the name as written, the file
@@ -130,6 +134,13 @@ public:
     // a file compiled on its own. Not reported in PreprocessorResult::macros.
     void define(const MacroRecord& macro);
 
+    // A header read before the source, as an `include at its start (plan.md
+    // §6.40 D8, like gcc -include): an absolute path, or a name resolved
+    // beside the file and then through the include paths. Its IncludeSite
+    // has line 0. One that can't be found is recorded as an unresolved
+    // IncludeDirective and otherwise skipped -- no error in the file.
+    void preinclude(const std::string& name);
+
     // Preprocess `source` from the file at `filepath`.
     // Each call starts with a fresh macro table seeded from predefined macros.
     //
@@ -151,4 +162,5 @@ private:
     std::vector<std::string> m_includePaths;
     std::vector<std::pair<std::string, std::string>> m_predefined;
     std::vector<MacroRecord> m_seeded;
+    std::vector<std::string> m_preincludes;
 };

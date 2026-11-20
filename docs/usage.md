@@ -378,7 +378,60 @@ the line where they are found:
 | `` `define: malformed parameter list for `M` ``, `` unterminated stringification `" `` | Error |
 
 An undefined macro is often a define that the build passes but the
-project's `defines` doesn't list. Add it there.
+project's `defines` doesn't list. Add it there. If the macro comes from a
+header the simulator reads earlier in the filelist (often
+`uvm_macros.svh`), see [Pre-includes](#headers-read-before-every-file-preincludes).
+
+### A note at the `` `include `` in the file you have open
+
+Errors in an included file are reported on that file, and an editor shows
+a file's diagnostics only while it is open. So the file you are editing
+gets a note as well. Each `` `include `` in it whose file has include or
+preprocessor errors, or reads another file that does, is marked with an
+Information diagnostic:
+
+```
+this `include reads a file with an error: common.svh:3: `include: cannot find "uvm_macros.svh"
+this `include reads files with 5 errors: common.svh:3: ...; deep.svh:7: ...; and 3 more
+```
+
+When the error is nested, the note goes on the outermost `` `include ``, the
+one in your file. Include errors are named first, since they usually cause
+the rest. The note goes away when the errors are fixed.
+
+## Headers read before every file: `preincludes`
+
+A simulator compiles a filelist as one compilation unit, so a `` `define ``
+in an earlier file is visible in every later one. Some projects rely on
+this and never include `uvm_macros.svh` where they use its macros. svlsp
+compiles each file on its own, so such a file shows `` undefined macro
+`uvm_info` ``.
+
+List those headers as pre-includes. Each is read before every file of the
+project, as if the file started with an `` `include `` of it (like
+`gcc -include`):
+
+```json
+{ "files": ["tb.sv"], "includeDirs": ["uvm/src"], "preincludes": ["uvm_macros.svh"] }
+```
+
+In a `.f` filelist, use one `-svlsp_preinclude` per header:
+
+```
++incdir+uvm/src
+-svlsp_preinclude uvm_macros.svh
+tb.sv
+```
+
+A name is looked for beside the config first, then beside each file and in
+the `includeDirs`, including those a library DB adds. An absolute path is
+used as is. The header's own declarations are stored once, as its own.
+Editing the header, or changing the list, recompiles the project's files.
+
+The server reports each pre-include once. The file it is read from goes to
+the log (`*lsp-log*` in lsp-mode). One that is not in any include dir is a
+warning, and `--build-db` prints it as `svlsp: warning: pre-include ...`.
+It is then skipped. It is not reported as an error in each file.
 
 Conditionals inside a `` `define `` body (`` `ifdef ``, `` `ifndef ``,
 `` `elsif ``, `` `else ``, `` `endif ``) are evaluated each time the macro is

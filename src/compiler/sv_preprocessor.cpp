@@ -780,7 +780,8 @@ static void processInclude(const std::string& filename, const std::string& curre
     if (std::none_of(ctx.includeSites.begin(), ctx.includeSites.end(),
                      [&](const IncludeSite& s) { return s.file == found; }))
         ctx.includeSites.push_back({found, includer, line, contentHash(ss.str()),
-                                    stat ? stat->size : -1, stat ? stat->mtimeNs : 0, statNs});
+                                    stat ? stat->size : -1, stat ? stat->mtimeNs : 0, statNs,
+                                    column, endColumn});
     ctx.includeStack.push_back(found);
     processSource(stripped.source, found, ctx, depth + 1);
     ctx.includeStack.pop_back();
@@ -1111,6 +1112,10 @@ void SvPreprocessor::define(const MacroRecord& macro) {
     m_seeded.push_back(macro);
 }
 
+void SvPreprocessor::preinclude(const std::string& name) {
+    m_preincludes.push_back(name);
+}
+
 PreprocessorResult SvPreprocessor::process(const std::string& source,
                                             const std::string& filepath,
                                             std::ostream* progressLog) {
@@ -1122,6 +1127,18 @@ PreprocessorResult SvPreprocessor::process(const std::string& source,
     for (const auto& m : m_seeded)
         ctx.macros[m.name] = MacroDef{.isFunctionLike = m.isFunctionLike, .params = m.params,
                                       .defaults = m.defaults, .body = m.body};
+
+    for (const auto& name : m_preincludes) {
+        if (resolveInclude(name, filepath, ctx.includePaths).empty()) {
+            if (std::none_of(ctx.includeDirectives.begin(), ctx.includeDirectives.end(),
+                             [&](const IncludeDirective& d) {
+                                 return d.fromFile == filepath && d.name == name;
+                             }))
+                ctx.includeDirectives.push_back({name, filepath, ""});
+            continue;
+        }
+        processInclude(name, filepath, "", 0, 0, 0, ctx, 0);
+    }
 
     processSource(source, filepath, ctx, 0);
 

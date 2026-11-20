@@ -603,7 +603,7 @@ void LanguageServer::loadProject(const std::string& configPath, bool rehash)
     }
 
     const std::string key = pathnames::canonical(configPath);
-    std::vector<std::string> units, force, includeDirs;
+    std::vector<std::string> units, force, includeDirs, preincludes;
     std::vector<std::pair<std::string, std::string>> openTexts; // path, text
     std::set<std::string> knownIncluders; // units the DB says include an open document
     {
@@ -633,6 +633,27 @@ void LanguageServer::loadProject(const std::string& configPath, bool rehash)
                     knownIncluders.insert(std::move(inc));
             }
         includeDirs = c->includeDirs;
+        preincludes = c->preincludes;
+    }
+    // Where each pre-include is read from, or that it can't be found
+    // (plan.md §6.40 D8), once per config and header a session -- with
+    // the include dirs the library DBs added.
+    for (const auto& h : preincludes) {
+        if (!m_libraryReported.insert("preinclude\n" + configPath + "\n" + h).second) continue;
+        const std::string found = locatePreinclude(h, includeDirs);
+        if (found.empty()) {
+            const std::string msg = "svlsp: pre-include " + h + " (listed in " + configPath +
+                                    ") is not in any include dir";
+            std::cerr << msg << '\n';
+            m_messageHandler.sendNotification<lsp::notifications::Window_ShowMessage>(
+                lsp::ShowMessageParams{.type = lsp::MessageType::Warning, .message = msg});
+        } else {
+            const std::string msg = "svlsp: pre-include " + found + " read before every unit of " +
+                                    configPath;
+            std::cerr << msg << '\n';
+            m_messageHandler.sendNotification<lsp::notifications::Window_LogMessage>(
+                lsp::LogMessageParams{.type = lsp::MessageType::Info, .message = msg});
+        }
     }
 
     // The order (plan.md §6.34 S4), from a text pre-scan: the units that

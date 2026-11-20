@@ -105,6 +105,8 @@ ProjectConfig ProjectManifestParser::parse(const std::string& path) {
     for (const auto& raw : readStringArray(obj, "libraryDbs", path))
         config.libraryDbs.push_back(resolvePath(baseDir, raw));
     config.libraryDbSources = readLibraryDbSources(obj, baseDir, path);
+    for (const auto& raw : readStringArray(obj, "preincludes", path))
+        config.preincludes.push_back(resolvePreinclude(baseDir, raw));
 
     if (const lsp::json::Value* v = obj.find("defines")) {
         if (!v->isObject()) {

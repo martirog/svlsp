@@ -350,6 +350,7 @@ add_executable(unit_tests
     tests/unit/db/test_project_compiler.cpp
     tests/unit/db/test_project_refresher.cpp
     tests/unit/db/test_include_diagnostics.cpp
+    tests/unit/db/test_preinclude.cpp
     tests/unit/db/test_db_lock.cpp
 )
 target_compile_definitions(unit_tests PRIVATE

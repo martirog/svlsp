@@ -150,7 +150,9 @@ TEST_CASE("include diagnostics: a missing include inside an included file is on 
     f.write("p.sv", "package id_ns;\n`include \"inner.svh\"\nendpackage\n");
     const auto errs = f.compile("p.sv");
     CHECK(ID::includeErrors(errs).empty()); // not the primary's
-    CHECK(f.rows("p.sv").empty());
+    // Only the note at the directive (plan.md §6.40 D5).
+    REQUIRE(f.rows("p.sv").size() == 1);
+    CHECK(f.rows("p.sv")[0].severity == 3);
     const auto rows = f.rows("inner.svh");
     REQUIRE(rows.size() == 1);
     CHECK(rows[0].message == "`include: cannot find \"id_deeper.svh\"");
@@ -328,6 +330,7 @@ TEST_CASE("preprocess diagnostics: an error in an included file is on that file"
     f.write("p.sv", "package id_ppn;\n`include \"inner.svh\"\nendpackage\n");
     f.compile("p.sv");
     CHECK(f.rows("p.sv", "preprocess").empty());
+    REQUIRE(f.rows("p.sv").size() == 1); // the note at the directive (D5)
     const auto rows = f.rows("inner.svh", "preprocess");
     REQUIRE(rows.size() == 1);
     CHECK(rows[0].line == 2);
@@ -337,6 +340,7 @@ TEST_CASE("preprocess diagnostics: an error in an included file is on that file"
     f.write("inner.svh", "class id_pp_c;\n  int y = 3;\nendclass\n", 30);
     f.compile("p.sv");
     CHECK(f.rows("inner.svh", "preprocess").empty());
+    CHECK(f.rows("p.sv").empty());
 }
 
 TEST_CASE("preprocess diagnostics: a define-body conditional error is at the macro's use",
@@ -409,4 +413,91 @@ TEST_CASE("include macro: an undefined macro is an Error diagnostic",
     CHECK(rows[0].severity == 1);
     CHECK(rows[0].col == 9);
     CHECK(rows[0].endCol == len("`include `IM_UNDEFINED"));
+}
+
+// ---------------------------------------------------------------------------
+// A note at the directive (plan.md §6.40 D5): an included file with include
+// or preprocessor errors is named on the `include in the compiled file that
+// reads it -- the outermost one when it is nested -- since an editor shows a
+// file's own diagnostics only while it is open.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("include note: a nested missing include is named at the outer directive",
+          "[db][include-diags][include-note]")
+{
+    ID f("note-nested");
+    f.write("deep.svh", "class id_deep_c; endclass\n`include \"id_gone.svh\"\n");
+    f.write("common.svh", "`include \"deep.svh\"\n");
+    const std::string dir = "`include \"common.svh\"";
+    f.write("p.sv", "package id_nn;\n  " + dir + "\nendpackage\n");
+    const auto errs = f.compile("p.sv");
+
+    const auto rows = f.rows("p.sv");
+    REQUIRE(rows.size() == 1);
+    CHECK(rows[0].severity == 3);
+    CHECK(rows[0].line == 2);
+    CHECK(rows[0].col == 2);
+    CHECK(rows[0].endCol == 2 + len(dir));
+    CHECK(rows[0].message ==
+          "this `include reads a file with an error: deep.svh:2: "
+          "`include: cannot find \"id_gone.svh\"");
+    // Returned with the primary's diagnostics, for publishing.
+    CHECK(std::any_of(errs.begin(), errs.end(), [](const ParseError& e) {
+        return e.severity == 3 && e.line == 2 && e.file.empty();
+    }));
+    // The error itself stays on the file it is in.
+    CHECK(f.rows("deep.svh").size() == 1);
+    CHECK(f.rows("common.svh").empty());
+
+    // Fixed: the note goes.
+    f.write("id_gone.svh", "class id_gone_c; endclass\n", 30);
+    f.compile("p.sv");
+    CHECK(f.rows("p.sv").empty());
+}
+
+TEST_CASE("include note: several errors are counted, the first two named",
+          "[db][include-diags][include-note]")
+{
+    ID f("note-count");
+    f.write("inner.svh",
+            "class id_nc_c;\n"
+            "  int a = `ID_NC_NOPE1;\n"
+            "`include \"id_nc_gone.svh\"\n"
+            "  int b = `ID_NC_NOPE2;\n"
+            "endclass\n");
+    f.write("p.sv", "package id_nc;\n`include \"inner.svh\"\nendpackage\n");
+    f.compile("p.sv");
+    const auto rows = f.rows("p.sv");
+    REQUIRE(rows.size() == 1);
+    // Include errors first: they are the likely cause of the rest.
+    CHECK(rows[0].message ==
+          "this `include reads files with 3 errors: inner.svh:3: `include: cannot find "
+          "\"id_nc_gone.svh\"; inner.svh:2: " + f.rows("inner.svh", "preprocess")[0].message +
+          "; and 1 more");
+}
+
+TEST_CASE("include note: one note per directive, none outside a project",
+          "[db][include-diags][include-note]")
+{
+    ID f("note-two");
+    f.write("a.svh", "`include \"id_a_gone.svh\"\n");
+    f.write("b.svh", "`include \"id_b_gone.svh\"\n");
+    f.write("ok.svh", "class id_ok_c; endclass\n");
+    f.write("p.sv",
+            "package id_nt;\n`include \"a.svh\"\n`include \"ok.svh\"\n`include \"b.svh\"\nendpackage\n");
+    f.compile("p.sv");
+    auto rows = f.rows("p.sv");
+    std::sort(rows.begin(), rows.end(),
+              [](const DiagnosticRow& a, const DiagnosticRow& b) { return a.line < b.line; });
+    REQUIRE(rows.size() == 2);
+    CHECK(rows[0].line == 2);
+    CHECK(rows[0].message.find("a.svh:1:") != std::string::npos);
+    CHECK(rows[1].line == 4);
+    CHECK(rows[1].message.find("b.svh:1:") != std::string::npos);
+
+    ID g("note-no-project");
+    g.write("a.svh", "`include \"id_a_gone.svh\"\n");
+    g.write("p.sv", "package id_nt2;\n`include \"a.svh\"\nendpackage\n");
+    g.compile("p.sv", false);
+    CHECK(g.rows("p.sv").empty());
 }

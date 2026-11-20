@@ -1,4 +1,5 @@
 #pragma once
+#include <filesystem>
 #include <map>
 #include <string>
 #include <vector>
@@ -36,4 +37,38 @@ struct ProjectConfig {
     std::string database;                          // -svlsp_db / "database": the project's
                                                     // own DB file ("" = in memory;
                                                     // plan.md §6.34 S3)
+    std::vector<std::string> preincludes;          // -svlsp_preinclude / "preincludes":
+                                                    // headers read before every unit's
+                                                    // own text, like gcc -include
+                                                    // (plan.md §6.40 D8)
 };
+
+// A pre-include as the config names it: the path beside the config when a
+// file is there (or it is absolute), else the name as written, which the
+// include dirs resolve at compile time as for an `include.
+inline std::string resolvePreinclude(const std::string& baseDir, const std::string& raw)
+{
+    namespace fs = std::filesystem;
+    if (fs::path(raw).is_absolute()) return fs::path(raw).lexically_normal().string();
+    const fs::path beside = fs::path(baseDir) / raw;
+    std::error_code ec;
+    if (fs::is_regular_file(beside, ec)) return beside.lexically_normal().string();
+    return raw;
+}
+
+// Where a pre-include is read from by a unit: absolute, or the first of
+// `includeDirs` holding it ("" when none does). A unit also looks beside its
+// own file first, as for an `include; this is what the config alone says
+// (plan.md §6.40 D8: a missing one is reported once, not in every file).
+inline std::string locatePreinclude(const std::string& header,
+                                    const std::vector<std::string>& includeDirs)
+{
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (fs::path(header).is_absolute()) return fs::is_regular_file(header, ec) ? header : "";
+    for (const auto& d : includeDirs) {
+        const fs::path p = fs::path(d) / header;
+        if (fs::is_regular_file(p, ec)) return p.lexically_normal().string();
+    }
+    return "";
+}

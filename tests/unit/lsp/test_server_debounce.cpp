@@ -1200,3 +1200,48 @@ TEST_CASE("a project's library DBs are reported: attached with counts, or why no
     CHECK_FALSE(fs::exists(dir + "/lib/missing.db"));
     fs::remove_all(dir);
 }
+
+TEST_CASE("a project's pre-includes are reported: where each is read from, or that it "
+          "isn't found (plan.md §6.40 D8)",
+          "[lsp][server][d8]")
+{
+    namespace fs = std::filesystem;
+    const std::string dir = "/tmp/svlsp_test_d8";
+    fs::remove_all(dir);
+    writeFileAt(dir + "/inc/d8_macros.svh", "`define D8_INFO(m) $display(m)\n");
+    const std::string use = "module d8_m;\n  initial `D8_INFO(\"x\");\nendmodule\n";
+    writeFileAt(dir + "/proj/use.sv", use);
+    writeFileAt(dir + "/proj/.svlsp.json",
+                R"({"files": ["use.sv"], "database": ":memory:", "includeDirs": ["../inc"],)"
+                R"( "preincludes": ["d8_macros.svh", "d8_nowhere.svh"]})");
+
+    std::vector<std::string> logged, shown;
+    std::vector<lsp::json::Value> diags;
+    {
+        TestClient client;
+        client.initializeWithProgress();
+        client.didOpen("file://" + dir + "/proj/use.sv", use, 1);
+        for (const auto& msg : client.recvUntilProgressEnd()) {
+            const auto* method = msg.object().find("method");
+            if (!method) continue;
+            const auto& params = msg.object().get("params").object();
+            if (method->string() == "window/logMessage") logged.push_back(params.get("message").string());
+            if (method->string() == "window/showMessage") shown.push_back(params.get("message").string());
+            if (method->string() == "textDocument/publishDiagnostics" &&
+                params.get("uri").string() == "file://" + dir + "/proj/use.sv")
+                diags.push_back(params.get("diagnostics"));
+        }
+        client.shutdownAndExit();
+    }
+    auto has = [](const std::vector<std::string>& msgs, const std::string& part) {
+        return std::any_of(msgs.begin(), msgs.end(),
+                           [&](const std::string& m) { return m.find(part) != std::string::npos; });
+    };
+    CHECK(has(logged, "pre-include " + dir + "/inc/d8_macros.svh read before every unit of " +
+                          dir + "/proj/.svlsp.json"));
+    CHECK(has(shown, "pre-include d8_nowhere.svh (listed in " + dir +
+                         "/proj/.svlsp.json) is not in any include dir"));
+    REQUIRE(!diags.empty());
+    CHECK(diags.back().array().empty()); // the macro is defined
+    fs::remove_all(dir);
+}

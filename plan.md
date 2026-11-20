@@ -9022,7 +9022,18 @@ editor, keep compiling) -- done 2026-11-20.**
   of the probe log, and for a header error the header path the compiler
   picked (`-H`), so a foreign sysroot is visible at once.
 
-**D5. An `include whose file has errors says so at the directive.**
+**D5. An `include whose file has errors says so at the directive -- done
+2026-11-20.**
+- Outcome: `CompilationController::compile` adds one Information row
+  (source 'include', severity 3) per `include in the compiled file that
+  reads a file with include or preprocessor errors -- the outermost
+  directive when nested (`IncludeSite` now keeps the directive's columns):
+  "this `include reads a file with an error: deep.svh:2: `include: cannot
+  find \"x.svh\"", or "reads files with N errors: <two named>; and K
+  more", include errors named first. Only under a project config, as the
+  errors themselves. Tests: unit `[include-note]` (nested, counted, one per
+  directive, none outside a project, cleared when fixed), Emacs
+  test_62_include_note.sh (fails on the old binary).
 - Found 2026-11-20 helping a user: `tb.sv` includes `common.svh`, which
   includes `uvm_macros.svh`. When the inner include fails, the only error
   about it is on `common.svh`'s own directive; `tb.sv` shows "undefined
@@ -9037,7 +9048,20 @@ editor, keep compiling) -- done 2026-11-20.**
   naming the inner file and line; cleared when fixed), Emacs (the note
   shows in the opened file).
 
-**D8. A pre-include option: headers read before every unit.**
+**D8. A pre-include option: headers read before every unit -- done
+2026-11-20.**
+- Outcome: `ProjectConfig::preincludes` (both parsers; a name found
+  beside the config becomes its path, any other stays as written).
+  `SvPreprocessor::preinclude` reads each one through `processInclude`
+  before the unit's text (IncludeSite line 0), so its macros are
+  defined, its records are the header's own, and the include-site
+  machinery recompiles the units when it changes. The list is part of
+  the inputs key (only when non-empty, so existing caches stay valid). A
+  missing one is an unresolved IncludeDirective (its appearing
+  recompiles) and no error in the unit; the server reports each once
+  (found: logMessage; not found: showMessage Warning), `--build-db`
+  warns. D5's note skips pre-include sites. Tests: unit `[preinclude]`,
+  `[d8]`; Emacs test_63_preinclude.sh (fails on the old binary).
 - Simulators compile a filelist as one compilation unit: a `define in an
   earlier file (often `uvm_macros.svh` listed first) is visible in every
   later one, and some projects rely on that and never include the

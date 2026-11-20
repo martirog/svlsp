@@ -88,6 +88,11 @@ LibraryDbBuilder::Result LibraryDbBuilder::build(
             config, controller, sdb,
             pathnames::canonical(configPath), buildVersion,
             &result.refresh, walker ? 1 : jobs);
+        for (const auto& h : config.preincludes)  // plan.md §6.40 D8
+            if (locatePreinclude(h, config.includeDirs).empty())
+                result.libraryWarnings.push_back("pre-include " + h + " (listed in " +
+                                                 pathnames::canonical(configPath) +
+                                                 ") is not in any include dir");
 
         // Bake this build's own resolved includeDirs into the DB file
         // itself (plan.md §6.19 piece 4) -- by this point config.includeDirs

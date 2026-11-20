@@ -127,7 +127,7 @@ private:
                       const std::vector<std::string>& reattach = {});
     // Library archives already reported stale (plan.md §6.34 S7): once each.
     std::set<std::string> m_staleWarned;
-    std::set<std::string> m_libraryReported; // plan.md §6.40 D1
+    std::set<std::string> m_libraryReported; // plan.md §6.40 D1 (and D8: pre-includes)
 
     // A request's access to the DB: m_dataMutex and the writer's
     // connection, or (reader ready) the reader in one read transaction --

@@ -6,6 +6,7 @@
 #include "compiler/sv_tree_walker.h"
 #include <algorithm>
 #include <chrono>
+#include <filesystem>
 #include <functional>
 #include <optional>
 #include <ostream>
@@ -14,6 +15,57 @@
 #include <unordered_set>
 
 namespace {
+
+// plan.md §6.40 D5: one Information note per `include in the compiled file
+// whose file -- or a file it reads in turn -- has include or preprocessor
+// errors, on that directive. Those errors are on the file they are in, and
+// an editor shows a file's diagnostics only while it is open: the compiled
+// file showed only what followed from them ("undefined macro"). Include
+// errors are named first (the likely cause of the rest), then the others,
+// each in the order found; two are named, the rest counted.
+std::vector<ParseError> includeNotes(const std::vector<PreprocessorError>& errors,
+                                     const std::vector<IncludeSite>& sites)
+{
+    // The site in the compiled file that `file` is read through.
+    auto outerSite = [&](const std::string& file) -> const IncludeSite* {
+        std::string cur = file;
+        for (int depth = 0; depth < 64; ++depth) {
+            const auto it = std::find_if(sites.begin(), sites.end(),
+                                         [&](const IncludeSite& s) { return s.file == cur; });
+            if (it == sites.end()) return nullptr;
+            if (it->includer.empty()) return it->line > 0 ? &*it : nullptr; // 0: a pre-include
+            cur = it->includer;
+        }
+        return nullptr;
+    };
+    std::vector<const IncludeSite*> order;
+    std::unordered_map<const IncludeSite*, std::vector<const PreprocessorError*>> bySite;
+    for (const bool includeKind : {true, false})
+        for (const auto& e : errors) {
+            if (e.file.empty() || e.isInclude() != includeKind) continue;
+            const IncludeSite* site = outerSite(e.file);
+            if (!site) continue;
+            auto& v = bySite[site];
+            if (v.empty()) order.push_back(site);
+            v.push_back(&e);
+        }
+    std::vector<ParseError> notes;
+    for (const IncludeSite* site : order) {
+        const auto& errs = bySite[site];
+        std::string msg = errs.size() == 1
+            ? "this `include reads a file with an error: "
+            : "this `include reads files with " + std::to_string(errs.size()) + " errors: ";
+        const size_t named = std::min<size_t>(errs.size(), 2);
+        for (size_t k = 0; k < named; ++k) {
+            if (k) msg += "; ";
+            msg += std::filesystem::path(errs[k]->file).filename().string() + ":" +
+                   std::to_string(errs[k]->line) + ": " + errs[k]->message;
+        }
+        if (errs.size() > named) msg += "; and " + std::to_string(errs.size() - named) + " more";
+        notes.push_back({site->line, site->column, std::move(msg), "", 3, site->endColumn});
+    }
+    return notes;
+}
 
 // True if the declared parameter at `portIndex` received a real value at
 // this call site: by position (an actual expression, not an elided slot --
@@ -145,6 +197,10 @@ std::string configKey(const ProjectConfig* config, bool collectDocs, bool callee
     addField(key, "|libext");
     for (const auto& e : config->libExtensions) addField(key, e);
     addField(key, config->mode == SvLanguageMode::Verilog95 ? "v95" : "sv");
+    if (!config->preincludes.empty()) {  // keeps the key of a config without them
+        addField(key, "|preinclude");
+        for (const auto& h : config->preincludes) addField(key, h);
+    }
     return key;
 }
 
@@ -452,6 +508,8 @@ CompilationController::Prepared CompilationController::prepare(const std::string
     Prepared job{.path = path, .text = text, .hash = hashContent(text),
                  .preprocessor = config ? SvPreprocessor(config->includeDirs) : SvPreprocessor()};
     job.checkTypes = config != nullptr;
+    if (config)
+        for (const auto& h : config->preincludes) job.preprocessor.preinclude(h);
 
     // An included file compiled on its own (opened or edited) starts where
     // its includer left off: in the scope open at its `include, with the
@@ -641,6 +699,9 @@ std::vector<ParseError> CompilationController::commit(Parsed&& parsed,
         for (const auto& e : preprocessed.errors)
             (e.isInclude() ? includeErrsByFile : ppErrsByFile)[e.file].push_back(
                 {e.line, e.column, e.message, e.file, 1, e.endColumn});
+    if (parsed.checkTypes)
+        for (auto& note : includeNotes(preprocessed.errors, preprocessed.includeSites))
+            includeErrsByFile[""].push_back(std::move(note));
     const std::pair<const char*, decltype(includeErrsByFile)*> ppSources[] = {
         {"include", &includeErrsByFile}, {"preprocess", &ppErrsByFile}};
     for (const auto& [source, byFile] : ppSources)

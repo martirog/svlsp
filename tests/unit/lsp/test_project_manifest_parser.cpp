@@ -185,3 +185,22 @@ TEST_CASE("a bare config filename (no directory component) resolves relative pat
     REQUIRE(config.includeDirs.size() == 1);
     CHECK(config.includeDirs[0] == kRoot + "/macros");
 }
+
+// plan.md §6.40 D8, as the filelist's -svlsp_preinclude.
+TEST_CASE("preincludes: beside the manifest or as written", "[lsp][project-manifest][preinclude]") {
+    fs::create_directories(kRoot);
+    std::ofstream(kRoot + "/pre_here.svh") << "`define PRE_HERE\n";
+    std::string path = writeManifest("pre.svlsp.json",
+        R"({"preincludes": ["pre_here.svh", "uvm_macros.svh"]})");
+
+    auto config = ProjectManifestParser::parse(path);
+
+    REQUIRE(config.preincludes.size() == 2);
+    CHECK(config.preincludes[0] == kRoot + "/pre_here.svh");
+    CHECK(config.preincludes[1] == "uvm_macros.svh");
+}
+
+TEST_CASE("preincludes that isn't an array of strings throws", "[lsp][project-manifest][preinclude]") {
+    std::string path = writeManifest("pre_bad.svlsp.json", R"({"preincludes": "x.svh"})");
+    CHECK_THROWS(ProjectManifestParser::parse(path));
+}
