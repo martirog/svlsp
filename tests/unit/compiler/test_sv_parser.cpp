@@ -823,3 +823,43 @@ TEST_CASE("block declarations and leading statements parse under LL and SLL",
     CHECK(parseErrors(src) == 0);
     CHECK(parseErrors(src, true) == 0);
 }
+
+TEST_CASE("property implications parse under LL and SLL",
+          "[compiler][parser][sll]") {
+    // plan.md §6.39 cold prediction: a bare sequence and a sequence followed
+    // by `|->`, `|=>` or `#=#` were separate property_expr alternatives, so
+    // SLL read each antecedent to its end before choosing. They share one
+    // alternative now, which also adds the followed-by `#-#` (IEEE 1800-2017
+    // 16.12.9). Formal port types are optional in the port items rather
+    // than empty in data_type_or_implicit, so `p1(x); @(...)` is not read
+    // as a type `x` under SLL.
+    const std::string src =
+        "module m(input logic clk, rst, a, b, c);\n"
+        "  sequence s1; a ##1 b; endsequence\n"
+        "  property p1(x); @(posedge clk) x |-> ##[1:3] b; endproperty\n"
+        "  a1: assert property (@(posedge clk) disable iff (rst) a |-> b);\n"
+        "  a2: assert property (@(posedge clk) a ##1 b |=> c) else $error(\"x\");\n"
+        "  a3: assert property (@(posedge clk) s1 #-# c);\n"
+        "  a4: assert property (@(posedge clk) s1 #=# c);\n"
+        "  a5: assert property (@(posedge clk) a |-> b |=> c);\n"
+        "  a6: assert property (@(posedge clk) (a |-> b) and (b |=> c));\n"
+        "  a7: assert property (@(posedge clk) a |-> (b or c) until c);\n"
+        "  a8: assert property (@(posedge clk) a |-> if (b) c else ##1 c);\n"
+        "  a9: assert property (@(posedge clk) a[*2] ##1 b |-> s_eventually c);\n"
+        "  a10: assert property (p1(a));\n"
+        "  a11: assert property (@(posedge clk) not (a |-> b));\n"
+        "  c1: cover property (@(posedge clk) a ##1 b);\n"
+        "  a12: assert property (@(posedge clk) a |-> strong(##[1:$] b));\n"
+        "  property p2(logic x, int unsigned y, bit [1:0] z, sequence sq, untyped u,\n"
+        "              [3:0] w, signed v, local input int l, q, r = 1);\n"
+        "    @(posedge clk) x |-> sq;\n"
+        "  endproperty\n"
+        "  sequence s2(x, logic y, [1:0] z, untyped u); @(posedge clk) x ##1 y; endsequence\n"
+        "  let max(a, int b, [3:0] c, untyped d = 0) = (a > b) ? a : b;\n"
+        "endmodule\n"
+        "checker chk(x, logic y, event e, sequence s, property p, output bit o = 0);\n"
+        "  a: assert property (@(posedge x) y |-> p);\n"
+        "endchecker\n";
+    CHECK(parseErrors(src) == 0);
+    CHECK(parseErrors(src, true) == 0);
+}

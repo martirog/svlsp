@@ -420,7 +420,7 @@ checker_port_list :
 ;
 
 checker_port_item :
-      attribute_instance* checker_port_direction? property_formal_type formal_port_identifier variable_dimension* ('=' property_actual_arg)?
+      attribute_instance* checker_port_direction? property_formal_type? formal_port_identifier variable_dimension* ('=' property_actual_arg)?
 ;
 
 checker_port_direction :
@@ -1330,7 +1330,7 @@ property_port_list :
 ;
 
 property_port_item :
-      attribute_instance* ('local' property_lvar_port_direction?)? property_formal_type formal_port_identifier variable_dimension* ('=' property_actual_arg)?
+      attribute_instance* ('local' property_lvar_port_direction?)? property_formal_type? formal_port_identifier variable_dimension* ('=' property_actual_arg)?
 ;
 
 property_lvar_port_direction :
@@ -1346,19 +1346,19 @@ property_spec :
       clocking_event? ('disable' 'iff' '(' expression_or_dist ')')? property_expr
 ;
 
+// A bare sequence and an implication share one alternative (plan.md §6.39):
+// as separate alternatives SLL read every antecedent to its end to find
+// whether `|->`, `|=>` or `#=#` followed. `#-#` is IEEE 1800-2017 16.12.9.
 property_expr :
-      sequence_expr
+      sequence_expr (('|->' | '|=>' | '#-#' | '#=#') property_expr)?
     | 'strong' '(' sequence_expr ')'
     | 'weak' '(' sequence_expr ')'
     | '(' property_expr ')'
     | 'not' property_expr
     | property_expr 'or' property_expr
     | property_expr 'and' property_expr
-    | sequence_expr '|->' property_expr
-    | sequence_expr '|=>' property_expr
     | 'if' '(' expression_or_dist ')' property_expr ('else' property_expr)?
     | 'case' '(' expression_or_dist ')' property_case_item property_case_item* 'endcase'
-    | sequence_expr '#=#' property_expr
     | 'nexttime' property_expr
     | 'nexttime' '[' constant_expression ']' property_expr
     | 's_nexttime' property_expr
@@ -1397,7 +1397,7 @@ sequence_port_list :
 ;
 
 sequence_port_item :
-      attribute_instance* ('local' sequence_lvar_port_direction?)? sequence_formal_type formal_port_identifier variable_dimension* ('=' sequence_actual_arg)?
+      attribute_instance* ('local' sequence_lvar_port_direction?)? sequence_formal_type? formal_port_identifier variable_dimension* ('=' sequence_actual_arg)?
 ;
 
 sequence_lvar_port_direction :
@@ -1406,8 +1406,14 @@ sequence_lvar_port_direction :
     | 'output'
 ;
 
+// The formal types are never empty; the port items make them optional
+// (plan.md §6.39). An empty data_type_or_implicit let SLL reach the rule's
+// end, take every caller's follow, and read `x` in `property p(x);` as a
+// type when a clocking event followed the header.
 sequence_formal_type :
-      data_type_or_implicit
+      data_type
+    | signing packed_dimension*
+    | packed_dimension+
     | 'sequence'
     | 'untyped'
 ;
@@ -1709,11 +1715,13 @@ let_port_list :
 ;
 
 let_port_item :
-      attribute_instance* let_formal_type formal_port_identifier variable_dimension* ('=' expression)?
+      attribute_instance* let_formal_type? formal_port_identifier variable_dimension* ('=' expression)?
 ;
 
 let_formal_type :
-      data_type_or_implicit
+      data_type
+    | signing packed_dimension*
+    | packed_dimension+
     | 'untyped'
 ;
 

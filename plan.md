@@ -8862,8 +8862,8 @@ parser once. Then S1 to S3.
     SLL reads each antecedent to its end to look for the operator.
     Measured: factored as `sequence_expr (('|->' | '|=>' | '#-#' | '#=#')
     property_expr)?`, `property_expr` drops 326 -> 94 ms (ibex total 4.40
-    -> 4.33 s); the grammar also lacks IEEE's `#-#`, which this adds. Not
-    applied yet. (2) `( ... )` is a parenthesized property, a
+    -> 4.33 s); the grammar also lacks IEEE's `#-#`, which this adds. Applied,
+    see the next bullet. (2) `( ... )` is a parenthesized property, a
     parenthesized sequence and a parenthesized expression at once
     (longest case: `($onehot({...}))`); and `sequence_expr`'s
     `expression_or_dist` and `sequence_instance` both match a name or a
@@ -8880,6 +8880,23 @@ parser once. Then S1 to S3.
     `statement_item`, ~6-9% each). From here a rewrite buys ~0.1-0.3 s
     on ibex. Since §6.39 began: ibex cold parse 49.4 -> 4.4 s, UVM 103.4
     -> 2.3 s, ibex `--build-db` 63 -> 9.6 s (749 -> 164 MB).
+- **`property_expr` implications and formal port types** (2026-11-20):
+  a bare sequence and `sequence_expr '|->' / '|=>' / '#=#' property_expr`
+  share one alternative, `sequence_expr (('|->' | '|=>' | '#-#' | '#=#')
+  property_expr)?`, which also adds IEEE's `#-#` (16.12.9). The new
+  parser test found an older SLL failure: `property p(x); @(posedge clk)
+  ...` read `x` as a type, because `sequence_formal_type` /
+  `let_formal_type` went through `data_type_or_implicit`, which can be
+  empty, so SLL reached its end and took every caller's follow (`)`
+  included). The formal types are now never empty (`data_type | signing
+  packed_dimension* | packed_dimension+ | ...`) and the property,
+  sequence, checker and let port items make them optional. Every file
+  with an untyped SVA port before a clocking event used to fall back to
+  LL. Paired cold SLL: ibex 4.78 -> 4.17 s, UVM 2.31 -> 2.19 s; ibex
+  `--build-db` 8.8 s / 151 MB. Walk dumps identical on UVM and ibex;
+  sv-tests 1007 / 13 / 0 regressions; units, Emacs 346/346, corpus green.
+  Still untried: the `( ... )` property/sequence/expression overlap and
+  `expression_or_dist` vs `sequence_instance`.
 - **sv-tests** (github.com/chipsalliance/sv-tests, ~/src/sv-tests):
   `tools/sv_tests_compare.sh` preprocesses its 1028 tests (UVM on the
   include path) and parses each with grammar/Sv.g4 at HEAD and as edited

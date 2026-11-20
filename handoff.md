@@ -365,7 +365,10 @@ Second follow-up:
    statement, not a declaration) and mintypmax shares its expression: ibex
    6.0 -> 4.9 s, `--build-db` 9.6 s / 164 MB. Left open
    (plan.md §6.39): cold prediction is now flat (top decision ~0.36 s of
-   ~4 s on ibex); `property_expr` investigated, see plan.md.
+   ~4 s on ibex). Then `property_expr` implications share one alternative
+   (adds `#-#`) and SVA/let formal port types are optional rather than
+   empty, fixing an SLL failure on untyped ports: ibex 4.78 -> 4.17 s,
+   `--build-db` 8.8 s / 151 MB. Untried: the `( ... )` overlap in SVA.
 7. Optional, LL cost on files with syntax errors (only they reach LL now):
    the remaining LL time is true ambiguity in `primary` (decision 1068)
    and `hierarchical_identifier` (1103): `a.b` is a name, a name + select
