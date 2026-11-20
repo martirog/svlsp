@@ -1157,3 +1157,46 @@ TEST_CASE("a request after didOpen waits for the open's compile in full (plan.md
     client.didClose(uri);
     client.shutdownAndExit();
 }
+
+TEST_CASE("a project's library DBs are reported: attached with counts, or why not "
+          "(plan.md §6.40 D1)",
+          "[lsp][server][d1]")
+{
+    namespace fs = std::filesystem;
+    const std::string dir = "/tmp/svlsp_test_d1";
+    fs::remove_all(dir);
+    writeFileAt(dir + "/lib/lib_pkg.sv", "package d1_lib;\n  class d1_c; endclass\nendpackage\n");
+    writeFileAt(dir + "/lib/lib.json", R"({"files": ["lib_pkg.sv"]})");
+    REQUIRE(LibraryDbBuilder::build(dir + "/lib/lib.json", dir + "/lib/lib.db").ok);
+    const std::string use = "module d1_m; import d1_lib::*; d1_c c; endmodule\n";
+    writeFileAt(dir + "/proj/use.sv", use);
+    writeFileAt(dir + "/proj/.svlsp.json",
+                R"({"files": ["use.sv"], "database": ":memory:",)"
+                R"( "libraryDbs": ["../lib/lib.db", "../lib/missing.db"]})");
+
+    std::vector<std::string> logged, shown;
+    {
+        TestClient client;
+        client.initializeWithProgress();
+        client.didOpen("file://" + dir + "/proj/use.sv", use, 1);
+        for (const auto& msg : client.recvUntilProgressEnd()) {
+            const auto* method = msg.object().find("method");
+            if (!method) continue;
+            const auto text = [&] {
+                return msg.object().get("params").object().get("message").string();
+            };
+            if (method->string() == "window/logMessage") logged.push_back(text());
+            if (method->string() == "window/showMessage") shown.push_back(text());
+        }
+        client.shutdownAndExit();
+    }
+    auto has = [](const std::vector<std::string>& msgs, const std::string& part) {
+        return std::any_of(msgs.begin(), msgs.end(),
+                           [&](const std::string& m) { return m.find(part) != std::string::npos; });
+    };
+    CHECK(has(logged, "attached library DB " + dir + "/lib/lib.db (1 files, "));
+    CHECK(has(shown, "library DB " + dir + "/lib/missing.db (listed in " + dir +
+                         "/proj/.svlsp.json) does not exist"));
+    CHECK_FALSE(fs::exists(dir + "/lib/missing.db"));
+    fs::remove_all(dir);
+}

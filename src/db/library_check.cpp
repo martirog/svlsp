@@ -2,7 +2,10 @@
 #include "db/database.h"
 #include "compiler/content_hash.h"
 #include "compiler/file_utils.h"
+#include "db/schema.h"
+#include "db/symbol_database.h"
 #include <exception>
+#include <filesystem>
 
 std::string LibraryStatus::describe() const
 {
@@ -58,4 +61,59 @@ LibraryStatus checkLibraryDb(const std::string& dbPath)
         st = LibraryStatus{};
     }
     return st;
+}
+
+LibraryDbInfo inspectLibraryDb(const std::string& dbPath)
+{
+    namespace fs = std::filesystem;
+    LibraryDbInfo info;
+    std::error_code ec;
+    info.exists = fs::is_regular_file(dbPath, ec);
+    if (!info.exists) return info;
+    try {
+        Database db(":memory:");
+        db.reopen(dbPath, /*readOnly=*/true);
+        info.schema = db.schemaVersion();
+        if (info.schema == 0) {
+            info.error = "no svlsp schema in it";
+            return info;
+        }
+        auto count = [&](const char* table) {
+            auto stmt = db.prepare(std::string("SELECT COUNT(*) FROM ") + table);
+            return stmt.step() ? static_cast<int>(stmt.columnInt(0)) : 0;
+        };
+        info.files   = count("files");
+        info.symbols = count("symbols");
+        SymbolDatabase sdb(db);
+        for (const auto& dir : sdb.libraryIncludeDirs())
+            if (!fs::is_directory(dir, ec)) info.missingIncludeDirs.push_back(dir);
+    } catch (const std::exception& e) {
+        info.error = e.what();
+    }
+    return info;
+}
+
+std::vector<std::string> libraryDbProblems(const LibraryDbInfo& info)
+{
+    if (!info.exists) return {"does not exist"};
+    if (!info.error.empty()) return {"can't be read as an svlsp database: " + info.error};
+    std::vector<std::string> out;
+    if (info.schema > db::SCHEMA_VERSION)
+        out.push_back("was built by a newer svlsp (schema " + std::to_string(info.schema) +
+                      ", this one reads up to " + std::to_string(db::SCHEMA_VERSION) +
+                      "): rebuild it with this svlsp's --build-db");
+    if (info.files == 0)
+        out.push_back("holds no files (an empty database: a wrong path, or a failed --build-db?)");
+    if (!info.missingIncludeDirs.empty()) {
+        std::string dirs;
+        for (const auto& d : info.missingIncludeDirs) dirs += (dirs.empty() ? "" : ", ") + d;
+        out.push_back("records include dirs that don't exist here: " + dirs +
+                      " (built on another machine or from another path?)");
+    }
+    return out;
+}
+
+std::string libraryDbSummary(const LibraryDbInfo& info)
+{
+    return std::to_string(info.files) + " files, " + std::to_string(info.symbols) + " symbols";
 }

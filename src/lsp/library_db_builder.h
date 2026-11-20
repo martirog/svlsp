@@ -22,6 +22,9 @@ public:
         int64_t     diagnosticCount{0};
         std::string error; // set only when !ok
         ProjectRefresher::Result refresh{}; // what the refresh did (plan.md §6.34 S2)
+        // The config's library DBs that can't be used or look wrong
+        // (plan.md §6.40 D1): "library DB <path> (listed in <config>) <problem>".
+        std::vector<std::string> libraryWarnings;
     };
 
     // Dispatches `configPath` to ProjectManifestParser or FilelistParser by

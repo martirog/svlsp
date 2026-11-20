@@ -583,6 +583,28 @@ top.sv
 ```
 
 Each path is attached read-only to the project's own database at load time.
+
+**Checking that it was attached.** When a project loads, each library DB
+it lists is reported once: an attached one is logged with its counts
+(`window/logMessage` -- lsp-mode's `*lsp-log*` buffer -- and stderr),
+
+```
+svlsp: attached library DB /vip/uvm/uvm.db (152 files, 4120 symbols) for /proj/.svlsp.f
+```
+
+and one that can't be used is a warning (`window/showMessage` -- the echo
+area and `*Messages*` -- and stderr) naming the config that lists it:
+
+```
+svlsp: library DB /proj/uvm.db (listed in /proj/.svlsp.f) does not exist
+```
+
+The other warnings: a file that isn't an svlsp database, an empty one, one
+built by a newer svlsp, and one whose recorded include dirs don't exist on
+this machine (its macro headers then won't be found -- add a `+incdir+`).
+A DB that doesn't exist or can't be read is not attached, and nothing is
+created at its path. `--build-db` prints the same warnings for the
+library DBs of the config it builds.
 Library symbols become visible the same way any other file's top-level
 symbols already are — including through a wildcard import
 (`import uvm_pkg::*;`) that reaches a package declared entirely inside the

@@ -114,3 +114,85 @@ TEST_CASE("--build-db --check: up to date, then stale after an edit, without wri
 
     CHECK(LibraryDbBuilder::check(lib.path("lib.json"), lib.path("missing.db"), "v1").stale);
 }
+
+// ---------------------------------------------------------------------------
+// plan.md §6.40 D1: what a library DB holds, and what makes it unusable.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("inspectLibraryDb: counts a built library; a missing, foreign or empty file is a "
+          "problem", "[library][d1]")
+{
+    Lib lib("inspect");
+    REQUIRE(LibraryDbBuilder::build(lib.path("lib.json"), lib.path("lib.db")).ok);
+
+    const auto good = inspectLibraryDb(lib.path("lib.db"));
+    CHECK(good.exists);
+    CHECK(good.error.empty());
+    CHECK(good.files == 2);
+    CHECK(good.symbols >= 2); // st_lib, st_cls
+    CHECK(libraryDbProblems(good).empty());
+    CHECK(libraryDbSummary(good) == "2 files, " + std::to_string(good.symbols) + " symbols");
+
+    const auto missing = inspectLibraryDb(lib.path("nope.db"));
+    CHECK_FALSE(missing.exists);
+    REQUIRE(libraryDbProblems(missing).size() == 1);
+    CHECK(libraryDbProblems(missing)[0] == "does not exist");
+    CHECK_FALSE(fs::exists(lib.path("nope.db"))); // looking doesn't create it
+
+    lib.write("junk.db", "not a database\n");
+    const auto junk = inspectLibraryDb(lib.path("junk.db"));
+    CHECK(junk.exists);
+    CHECK_FALSE(junk.error.empty());
+    REQUIRE(libraryDbProblems(junk).size() == 1);
+    CHECK(libraryDbProblems(junk)[0].rfind("can't be read as an svlsp database", 0) == 0);
+
+    {
+        Database d(lib.path("empty.db"));
+        d.initSchema();
+    }
+    const auto empty = inspectLibraryDb(lib.path("empty.db"));
+    CHECK(empty.error.empty());
+    CHECK(empty.files == 0);
+    REQUIRE(libraryDbProblems(empty).size() == 1);
+    CHECK(libraryDbProblems(empty)[0] == "holds no files (an empty database: a wrong path, or a "
+                                         "failed --build-db?)");
+}
+
+TEST_CASE("inspectLibraryDb: include dirs recorded at build time that don't exist here",
+          "[library][d1]")
+{
+    Lib lib("incdirs");
+    REQUIRE(LibraryDbBuilder::build(lib.path("lib.json"), lib.path("lib.db")).ok);
+    {
+        Database d(lib.path("lib.db"));
+        SymbolDatabase sdb(d);
+        sdb.setLibraryIncludeDirs({lib.dir, "/no/such/uvm/src"});
+    }
+    const auto info = inspectLibraryDb(lib.path("lib.db"));
+    REQUIRE(info.missingIncludeDirs.size() == 1);
+    CHECK(info.missingIncludeDirs[0] == "/no/such/uvm/src");
+    REQUIRE(libraryDbProblems(info).size() == 1);
+    CHECK(libraryDbProblems(info)[0] ==
+          "records include dirs that don't exist here: /no/such/uvm/src (built on another "
+          "machine or from another path?)");
+}
+
+TEST_CASE("--build-db reports a library DB its config names that is missing (plan.md §6.40 D1)",
+          "[library][d1]")
+{
+    Lib lib("builddb");
+    // A missing file, one in a directory that doesn't exist, and a file
+    // that isn't a database: each reported, none attached, the build fine.
+    lib.write("top.json", R"({"files": ["lib_pkg.sv"], "libraryDbs": ["missing_uvm.db",)"
+                          R"( "no_dir/uvm.db", "lib_cls.svh"]})");
+    const auto r = LibraryDbBuilder::build(lib.path("top.json"), lib.path("top.db"));
+    REQUIRE(r.ok);
+    REQUIRE(r.libraryWarnings.size() == 3);
+    CHECK(r.libraryWarnings[0] == "library DB " + lib.path("missing_uvm.db") + " (listed in " +
+                                      lib.path("top.json") + ") does not exist");
+    CHECK(r.libraryWarnings[1].find("no_dir/uvm.db") != std::string::npos);
+    CHECK(r.libraryWarnings[2].rfind("library DB " + lib.path("lib_cls.svh") + " (listed in " +
+                                         lib.path("top.json") +
+                                         ") can't be read as an svlsp database", 0) == 0);
+    CHECK_FALSE(fs::exists(lib.path("missing_uvm.db")));
+}

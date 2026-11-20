@@ -8922,7 +8922,8 @@ the library DB found, which config is in use, why does Emacs hang after
 a save. Each point below is its own change, with a unit test and an
 Emacs test.
 
-**D1. Report library DB attaches, and never create an empty one.**
+**D1. Report library DB attaches, and never create an empty one -- done
+2026-11-20.**
 - Now (read 2026-11-20): `SymbolDatabase::attachLibraryDbs` runs
   `ATTACH DATABASE ?` on the read-write project connection. For a path
   whose directory exists but whose file doesn't, SQLite creates an empty
@@ -8941,6 +8942,26 @@ Emacs test.
   (`mergeIncludeDirsFromLibraryDbs`) that don't exist on this machine --
   a DB built elsewhere makes `` `include "uvm_macros.svh" `` fail with no
   hint why.
+- Done: `inspectLibraryDb` / `libraryDbProblems` / `libraryDbSummary`
+  (`src/db/library_check`): a read-only look (never creates the file) at
+  existence, readability, schema, file and symbol counts and missing
+  recorded include dirs. `attachLibraryDbs` skips a DB that doesn't
+  exist or can't be read -- a missing one was created empty, and a file
+  that isn't a database was attached and failed every query after (a
+  `--build-db` died with "file is not a database"; one in a missing
+  directory, "unable to open database"). The server reports each DB once
+  per session at project load: `window/logMessage` "attached library DB
+  <path> (N files, M symbols) for <config>", `window/showMessage`
+  warnings "library DB <path> (listed in <config>) <problem>"; both also
+  on stderr. `--build-db` prints the warnings (`Result::libraryWarnings`).
+  The ATTACH stays read-write: the connections don't take URI filenames,
+  and the pre-check makes `mode=ro` unnecessary. Tests: unit `[d1]`
+  (inspection of a built, missing, foreign and empty DB and of missing
+  include dirs; attach skipping a missing file -- fails on the old code;
+  `--build-db` with three bad entries; the server's messages), Emacs
+  test_61 (the warning in `*Messages*`, the attach line in `*lsp-log*`;
+  fails on the old binary). docs/usage.md "Checking that it was
+  attached".
 
 **D2. A timeout for requests waiting on a didSave compile (release the
 editor, keep compiling) -- done 2026-11-20.**
@@ -9000,6 +9021,40 @@ editor, keep compiling) -- done 2026-11-20.**
   time.h`, glibc 2.12) ahead of the system's. Print the last ~15 lines
   of the probe log, and for a header error the header path the compiler
   picked (`-H`), so a foreign sysroot is visible at once.
+
+**D5. An `include whose file has errors says so at the directive.**
+- Found 2026-11-20 helping a user: `tb.sv` includes `common.svh`, which
+  includes `uvm_macros.svh`. When the inner include fails, the only error
+  about it is on `common.svh`'s own directive; `tb.sv` shows "undefined
+  macro `uvm_info`" and the syntax errors that follow, and Emacs shows a
+  file's diagnostics only while it is open -- the cause stays hidden.
+- Change: a compile that reads an included file with include or
+  preprocessor errors adds one Information diagnostic on the including
+  directive in the unit's own file: "`common.svh` has errors: line 3:
+  `include: cannot find \"uvm_macros.svh\"" (the first one or two, and a
+  count). Nested: the outermost directive in the unit's file carries it.
+- Tests: unit (a nested missing include: the note on the outer directive,
+  naming the inner file and line; cleared when fixed), Emacs (the note
+  shows in the opened file).
+
+**D8. A pre-include option: headers read before every unit.**
+- Simulators compile a filelist as one compilation unit: a `define in an
+  earlier file (often `uvm_macros.svh` listed first) is visible in every
+  later one, and some projects rely on that and never include the
+  macros where they use them. svlsp preprocesses each unit on its own
+  (seeded only with the config's defines, and an included file with its
+  includer's macros, §6.39), so such a file shows "undefined macro".
+- Change: `-svlsp_preinclude <file>` in a `.f` (repeatable), `"preincludes":
+  [...]` in `.svlsp.json`: each named header is preprocessed before
+  every unit's own text, like `gcc -include` -- its macros defined, its
+  records not repeated per unit. Resolved against the config's directory,
+  then the include dirs. Simulator-style carry-over in filelist order was
+  the alternative; rejected: each file's result would depend on the
+  files before it, and an opened file's on the whole list.
+- Tests: unit (parser for both config forms; a unit using a macro only
+  the pre-include defines compiles clean; the header's own records
+  stored once), Emacs (a file using `uvm_info` without including the
+  macros, clean with the option).
 
 **D7. documentSymbol on a large file freezes Emacs after every edit.**
 - Measured 2026-11-20 (test_60's first version, a proxy timing each

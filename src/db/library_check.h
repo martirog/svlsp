@@ -23,3 +23,25 @@ struct LibraryStatus {
 // Checks the library DB at `dbPath` (opened read-only, never migrated).
 // A DB that can't be opened is reported with total 0.
 LibraryStatus checkLibraryDb(const std::string& dbPath);
+
+// What a library DB holds, for reporting it (plan.md §6.40 D1). Looking
+// never creates the file: SQLite's ATTACH would, silently, for a path
+// whose directory exists.
+struct LibraryDbInfo {
+    bool exists{false};
+    std::string error; // why it can't be read as an svlsp DB ("" if it can)
+    int schema{0};
+    int files{0};
+    int symbols{0};
+    std::vector<std::string> missingIncludeDirs; // recorded at build time, not here
+};
+
+// Opens `dbPath` read-only when it is a file and counts what it holds.
+LibraryDbInfo inspectLibraryDb(const std::string& dbPath);
+
+// What makes it unusable or suspect, each a phrase to follow its path
+// ("does not exist"); empty when it is fine.
+std::vector<std::string> libraryDbProblems(const LibraryDbInfo& info);
+
+// "152 files, 4120 symbols".
+std::string libraryDbSummary(const LibraryDbInfo& info);

@@ -78,6 +78,12 @@ LibraryDbBuilder::Result LibraryDbBuilder::build(
         controller.setTypeChecker(checkTypeRefs);
         if (walker) controller.setWalker(walker);
 
+        for (const auto& lib : config.libraryDbs)
+            for (const auto& problem : libraryDbProblems(inspectLibraryDb(lib)))
+                result.libraryWarnings.push_back("library DB " + lib + " (listed in " +
+                                                 pathnames::canonical(configPath) + ") " +
+                                                 problem);
+
         result.fileCount = ProjectCompiler::loadProject(
             config, controller, sdb,
             pathnames::canonical(configPath), buildVersion,

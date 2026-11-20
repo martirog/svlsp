@@ -175,6 +175,7 @@ int buildDb(const std::string& configPath, const std::string& outputPath, bool c
         return 1;
     }
 
+    for (const auto& w : result.libraryWarnings) std::cerr << "svlsp: warning: " << w << '\n';
     std::cerr << "svlsp: built '" << outputPath << "' -- " << result.fileCount
                << " files compiled, " << result.refresh.removed << " removed, "
                << result.diagnosticCount << " diagnostics";

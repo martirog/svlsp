@@ -272,3 +272,16 @@ TEST_CASE("attachLibraryDbs: findMacrosByNamePrefix sees an attached DB's macros
     CHECK(rows[0].filePath == "/lib/uvm_macros.svh");
     CHECK(rows[1].name == "uvm_top_m");
 }
+
+TEST_CASE("attachLibraryDbs: a path with no file is skipped, never created empty "
+          "(plan.md §6.40 D1)", "[db][library][d1]")
+{
+    const std::string path = "/tmp/svlsp_test_attach_missing.db";
+    std::remove(path.c_str());
+    Database db(":memory:");
+    db.initSchema();
+    SymbolDatabase sdb(db);
+    REQUIRE_NOTHROW(sdb.attachLibraryDbs({path}));
+    CHECK_FALSE(std::filesystem::exists(path));
+    CHECK(sdb.findSymbolsByName("anything").empty());
+}

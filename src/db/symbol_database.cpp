@@ -1,8 +1,10 @@
 #include <tuple>
 #include "db/symbol_database.h"
+#include "db/library_check.h"
 #include "compiler/parse_record.h"
 #include "compiler/content_hash.h"
 #include <algorithm>
+#include <filesystem>
 #include <limits>
 #include <map>
 #include <unordered_map>
@@ -71,6 +73,12 @@ void SymbolDatabase::attachLibraryDbs(const std::vector<std::string>& paths)
         if (std::find(m_attachedLibraryPaths.begin(), m_attachedLibraryPaths.end(), path)
             != m_attachedLibraryPaths.end())
             continue;
+        // ATTACH creates a missing file, empty, and attaches a file that
+        // isn't a database, failing every query after (plan.md §6.40 D1):
+        // skip both; the project load reports them, and a later load
+        // attaches one once it is usable.
+        const LibraryDbInfo info = inspectLibraryDb(path);
+        if (!info.exists || !info.error.empty()) continue;
         std::string alias = "lib" + std::to_string(m_attachedLibraryPaths.size());
         m_db.prepare("ATTACH DATABASE ? AS " + alias).bind(1, path).step();
         m_attachedLibraryPaths.push_back(path);

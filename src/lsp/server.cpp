@@ -564,6 +564,28 @@ void LanguageServer::loadProject(const std::string& configPath, bool rehash)
     } catch (const std::exception& e) {
         std::cerr << "svlsp: " << e.what() << '\n';
     }
+    // What each library DB holds, or why it can't be used (plan.md §6.40
+    // D1), once per DB a server session: a wrong path used to attach an
+    // empty file in silence.
+    for (const auto& lib : config.libraryDbs) {
+        if (!m_libraryReported.insert(lib).second) continue;
+        const LibraryDbInfo info = inspectLibraryDb(lib);
+        const auto problems = libraryDbProblems(info);
+        for (const auto& problem : problems) {
+            const std::string msg = "svlsp: library DB " + lib + " (listed in " + configPath +
+                                    ") " + problem;
+            std::cerr << msg << '\n';
+            m_messageHandler.sendNotification<lsp::notifications::Window_ShowMessage>(
+                lsp::ShowMessageParams{.type = lsp::MessageType::Warning, .message = msg});
+        }
+        if (info.exists && info.error.empty()) {
+            const std::string msg = "svlsp: attached library DB " + lib + " (" +
+                                    libraryDbSummary(info) + ") for " + configPath;
+            std::cerr << msg << '\n';
+            m_messageHandler.sendNotification<lsp::notifications::Window_LogMessage>(
+                lsp::LogMessageParams{.type = lsp::MessageType::Info, .message = msg});
+        }
+    }
     {
         std::set<std::string> owned;
         for (const auto& src : config.libraryDbSources) owned.insert(src.cachePath);
