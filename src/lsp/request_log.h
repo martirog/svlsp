@@ -16,6 +16,22 @@
 // excluding JSON (de)serialization and transport. The line is written
 // before the mutex is released, so the mutex also serializes writes from
 // the debounce threads. With no log it is a plain lock_guard.
+// Appends one finished line to the request log, one writer at a time (the
+// lock TimedLock's lines take too).
+inline std::mutex& requestLogMutex()
+{
+    static std::mutex m;
+    return m;
+}
+
+inline void logRequestLine(std::ostream* log, const std::string& line)
+{
+    if (!log) return;
+    std::lock_guard l{requestLogMutex()};
+    *log << line;
+    log->flush();
+}
+
 class TimedLock {
 public:
     using Clock = std::chrono::steady_clock;
@@ -33,8 +49,7 @@ public:
         if (m_log) {
             // Requests on the reader connection (plan.md §6.34 S5) log under
             // another mutex than compiles: one line at a time.
-            static std::mutex logMutex;
-            std::lock_guard logLock{logMutex};
+            std::lock_guard logLock{requestLogMutex()};
             const auto done = Clock::now();
             auto ms = [](Clock::duration d) {
                 return std::chrono::duration<double, std::milli>(d).count();

@@ -8943,7 +8943,7 @@ Emacs test.
   hint why.
 
 **D2. A timeout for requests waiting on a didSave compile (release the
-editor, keep compiling).**
+editor, keep compiling) -- done 2026-11-20.**
 - Now: after `didSave` (and `didOpen`) the document is in `m_awaiting`;
   a request on it waits in `waitForDocument` until its compile has run
   (§6.34 S4). The wait is off the message thread, but lsp-mode's
@@ -8957,9 +8957,25 @@ editor, keep compiling).**
   text, as during typing. The compile is not cancelled; its diagnostics
   publish when it finishes. Completion answered this way is marked
   `isIncomplete`, so lsp-mode asks again.
-- Open: whether `didOpen` gets the same timeout. A document opened for
-  the first time may have no previous state except what the project DB
-  indexed.
+- Decided: `didOpen` keeps the full wait (a document opened for the
+  first time may have nothing to answer from). A save while an open's
+  wait is pending keeps the full wait.
+- Done as planned: `m_awaiting` maps a path to "only a save waits";
+  `waitForDocument` waits until `saveWaitTimeoutMs`
+  (`ServerState::saveWaitTimeoutMs`, default 1000, 0 = no wait) and
+  returns whether the compile came in time; `answer()` passes that to a
+  body taking a bool (completion: `isIncomplete`). `--log-requests`
+  logs every wait (`compile-wait <path> N ms`, `(timed out: ...)`).
+  Tests: unit `[d2]` (the option; a gated save compile: documentSymbol
+  answered from the previous compile after >= the timeout, completion
+  incomplete, the compile publishing after; a gated open compile still
+  waited for in full -- the save test fails on the old code), Emacs
+  test_60 (timeout 0: `M-.` right after a save answers from the
+  previous compile, then the new class resolves; fails on the old
+  binary). docs/usage.md `saveWaitTimeoutMs`.
+- Found writing test_60 (see D7): on a file with thousands of symbols,
+  the freeze after an edit is lsp-mode reading its own documentSymbol
+  reply, not a compile wait.
 - `--log-requests` notes a request answered after a timeout (`wait
   1000 ms (timed out)`), so a hang can be told apart from a slow answer.
 - Tests: unit test with a compile held back (the queue's test hooks), a
@@ -8984,6 +9000,20 @@ editor, keep compiling).**
   time.h`, glibc 2.12) ahead of the system's. Print the last ~15 lines
   of the probe log, and for a header error the header path the compiler
   picked (`-H`), so a foreign sysroot is visible at once.
+
+**D7. documentSymbol on a large file freezes Emacs after every edit.**
+- Measured 2026-11-20 (test_60's first version, a proxy timing each
+  message): lsp-mode sends `textDocument/documentSymbol` after each edit
+  (the headerline breadcrumb / imenu), and for a 4000-class package the
+  reply is 3.25 MB (16000 symbols: class, field, function, argument).
+  svlsp answers in ~0.1 s; Emacs then takes ~5 s to read and process it,
+  and every request behind it (`M-.`, completion) waits. Not a compile
+  wait -- D2 doesn't help.
+- To look at: the reply's size per symbol (`detail`, both ranges,
+  empty `children`), leaving out locals/arguments (lsp-mode's
+  breadcrumb needs only the scopes), and how lsp-mode caches it. Ask the
+  user whether their big files show it: a proxy log, or
+  `(setq lsp-headerline-breadcrumb-enable nil)` as a test.
 
 **D6. One name per file: symlinks resolved inside svlsp -- done
 2026-11-20.**

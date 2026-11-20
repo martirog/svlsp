@@ -334,6 +334,14 @@ public:
             R"("textDocument":{"uri":")" + uri + R"("}}})");
     }
 
+    void completion(int id, const std::string& uri, int line, int character)
+    {
+        sendRaw(R"({"jsonrpc":"2.0","id":)" + std::to_string(id) +
+                R"(,"method":"textDocument/completion","params":{"textDocument":{"uri":")" + uri +
+                R"("},"position":{"line":)" + std::to_string(line) + R"(,"character":)" +
+                std::to_string(character) + "}}}");
+    }
+
     void documentSymbol(int id, const std::string& uri)
     {
         sendRaw(
@@ -1051,4 +1059,101 @@ TEST_CASE("an included file reached through a symlink keeps its includer's macro
         CHECK_FALSE(underDir(pubs, "file://" + dir + "/real/"));
     }
     fs::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// plan.md §6.40 D2: a request waits for a didSave's compile at most
+// saveWaitTimeoutMs, then is answered from the previous compile; the
+// compile goes on and publishes. A didOpen's compile is waited for in full.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// The next message with an "id" (a response), skipping publishes; nullopt
+// when none arrives within `timeoutMs`.
+std::optional<lsp::json::Value> recvResponse(TestClient& client, int timeoutMs)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{timeoutMs};
+    while (true) {
+        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now()).count();
+        if (left <= 0 || !client.hasPendingMessage(static_cast<int>(left))) return std::nullopt;
+        auto msg = client.recvMessage();
+        if (msg.object().find("id")) return msg;
+    }
+}
+
+} // namespace
+
+TEST_CASE("a request after didSave waits for the save's compile at most saveWaitTimeoutMs, "
+          "then answers from the previous compile",
+          "[lsp][server][d2]")
+{
+    ParseGate gate;
+    TestClient client{gate.walker()};
+    struct ReleaseOnExit { ParseGate& g; ~ReleaseOnExit() { g.release(); } } releaseOnExit{gate};
+    client.initializeWithProgress(R"("saveWaitTimeoutMs": 300)");
+
+    const std::string uri = "file:///d2_save_wait.sv";
+    client.didOpen(uri, kValidSv, 1);
+    CHECK(asPublishDiagnostics(client.recvMessage()).first == 1);
+
+    gate.arm();
+    client.didChange(uri, "module m2; endmodule\n", 2);
+    client.didSave(uri);
+    REQUIRE(gate.waitEntered(5s));
+
+    const auto start = std::chrono::steady_clock::now();
+    client.documentSymbol(7, uri);
+    const auto response = recvResponse(client, 3000);
+    const auto waited = std::chrono::steady_clock::now() - start;
+    REQUIRE(response.has_value()); // answered while the compile is still held
+    CHECK(response->object().get("id").number() == 7);
+    CHECK(waited >= 250ms);        // it did wait for the compile first
+    const auto& result = response->object().get("result");
+    REQUIRE(result.isArray());
+    REQUIRE(result.array().size() == 1);
+    CHECK(result.array()[0].object().get("name").string() == "m"); // the previous compile's
+
+    // Completion answered this way is incomplete: the client asks again.
+    client.completion(8, uri, 0, 0);
+    const auto comp = recvResponse(client, 3000);
+    REQUIRE(comp.has_value());
+    CHECK(comp->object().get("id").number() == 8);
+    const auto& list = comp->object().get("result");
+    REQUIRE(list.isObject());
+    CHECK(list.object().get("isIncomplete").boolean());
+
+    // The compile wasn't cancelled: it publishes once released.
+    gate.release();
+    CHECK(asPublishDiagnostics(client.recvMessage()).first == 2);
+
+    client.didClose(uri);
+    client.shutdownAndExit();
+}
+
+TEST_CASE("a request after didOpen waits for the open's compile in full (plan.md §6.40 D2)",
+          "[lsp][server][d2]")
+{
+    ParseGate gate;
+    TestClient client{gate.walker()};
+    struct ReleaseOnExit { ParseGate& g; ~ReleaseOnExit() { g.release(); } } releaseOnExit{gate};
+    client.initializeWithProgress(R"("saveWaitTimeoutMs": 100)");
+
+    const std::string uri = "file:///d2_open_wait.sv";
+    gate.arm();
+    client.didOpen(uri, kValidSv, 1);
+    REQUIRE(gate.waitEntered(5s));
+    client.documentSymbol(7, uri);
+    CHECK_FALSE(client.hasPendingMessage(600)); // no answer before its first compile
+
+    gate.release();
+    const auto response = recvResponse(client, 5000);
+    REQUIRE(response.has_value());
+    const auto& result = response->object().get("result");
+    REQUIRE(result.isArray());
+    REQUIRE(result.array().size() == 1); // from the open's own compile
+
+    client.didClose(uri);
+    client.shutdownAndExit();
 }

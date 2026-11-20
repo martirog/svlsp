@@ -20,6 +20,14 @@ auto ServerState::handleInitialize(lsp::InitializeParams params)
     }
     m_fuzzyCompletionEnabled = extractBoolOption(params, "fuzzyCompletion");
     m_docCommentsEnabled     = extractBoolOption(params, "docComments");
+    m_saveWaitTimeoutMs      = 1000;
+    if (params.initializationOptions && params.initializationOptions->isObject()) {
+        const auto* svlsp = params.initializationOptions->object().find("svlsp");
+        const auto* ms = svlsp && svlsp->isObject() ? svlsp->object().find("saveWaitTimeoutMs")
+                                                    : nullptr;
+        if (ms && ms->isNumber() && ms->number() >= 0 && ms->number() <= 3600000)
+            m_saveWaitTimeoutMs = static_cast<int>(ms->number());
+    }
     m_workDoneProgress = params.capabilities.window && params.capabilities.window->workDoneProgress &&
                          *params.capabilities.window->workDoneProgress;
     m_phase.store(Phase::Active);

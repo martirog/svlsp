@@ -16,6 +16,7 @@
 #include <thread>
 #include <iostream>
 #include <optional>
+#include <sstream>
 #include <lsp/messages.h>
 #include <lsp/process.h>
 #include <lsp/uri.h>
@@ -248,10 +249,12 @@ LanguageServer::Request::~Request()
     }
 }
 
-void LanguageServer::awaitCompile(const std::string& path)
+void LanguageServer::awaitCompile(const std::string& path, bool afterSave)
 {
     std::lock_guard l{m_awaitMutex};
-    m_awaiting.insert(path);
+    // A didOpen's wait still pending stays a full one.
+    const auto [it, inserted] = m_awaiting.emplace(path, afterSave);
+    if (!inserted) it->second = it->second && afterSave;
 }
 
 void LanguageServer::compiled(const std::string& path)
@@ -263,11 +266,43 @@ void LanguageServer::compiled(const std::string& path)
     m_awaitCv.notify_all();
 }
 
-void LanguageServer::waitForDocument(const lsp::DocumentUri& uri)
+bool LanguageServer::waitForDocument(const lsp::DocumentUri& uri)
 {
+    using Clock = std::chrono::steady_clock;
     const std::string path{uri.path()};
-    std::unique_lock l{m_awaitMutex};
-    m_awaitCv.wait(l, [&] { return !m_awaiting.count(path) || m_dbWaiting.load(); });
+    const auto start = Clock::now();
+    const auto timeout = std::chrono::milliseconds{m_state.saveWaitTimeoutMs()};
+    bool inTime = true;
+    {
+        std::unique_lock l{m_awaitMutex};
+        auto done = [&] { return !m_awaiting.count(path) || m_dbWaiting.load(); };
+        auto afterSave = [&] {
+            const auto it = m_awaiting.find(path);
+            return it != m_awaiting.end() && it->second;
+        };
+        // A save's wait ends at the timeout, unless a didOpen's joins it.
+        while (!done()) {
+            if (!afterSave()) {
+                m_awaitCv.wait(l);
+                continue;
+            }
+            if (m_awaitCv.wait_until(l, start + timeout) == std::cv_status::timeout &&
+                !done() && afterSave()) {
+                inTime = false;
+                break;
+            }
+        }
+    }
+    if (m_requestLog) {
+        const double ms = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
+        std::ostringstream line;
+        line << std::fixed;
+        line.precision(3);
+        line << "[request] compile-wait " << path << ' ' << ms << " ms"
+             << (inTime ? "\n" : " (timed out: answered from the previous compile)\n");
+        logRequestLine(m_requestLog, line.str());
+    }
+    return inTime;
 }
 
 bool LanguageServer::awaiting(const lsp::DocumentUri& uri)
@@ -891,7 +926,7 @@ void LanguageServer::registerHandlers()
                 // a stale, already-superseded timer can't fire a redundant
                 // publish right after this one — see plan.md §6.18.
                 m_debouncer.cancel(uri.toString());
-                awaitCompile(std::string{uri.path()});
+                awaitCompile(std::string{uri.path()}, /*afterSave=*/true);
                 enqueueCompile(std::string{uri.path()}, CompileQueue::kOpenDocument);
 
                 // Cross-file invalidation (plan.md §6.4): every file whose
@@ -959,16 +994,18 @@ void LanguageServer::registerHandlers()
             [this](lsp::CompletionParams&& params) {
                 toInternal(params.textDocument.uri);
                 const auto uri = params.textDocument.uri;
-                return answer<lsp::requests::TextDocument_Completion>(uri, [this, params]() {
+                return answer<lsp::requests::TextDocument_Completion>(uri, [this, params](bool stale) {
                     Request req{*this, "textDocument/completion",
                                 requestWhere(params.textDocument.uri, params.position)};
                     const auto doc = m_store.find(params.textDocument.uri);
                     if (!doc) return lsp::TextDocument_CompletionResult{nullptr};
                     auto result = CompletionProvider::getCompletion(
                         params, req.db(), doc->text, m_state.fuzzyCompletionEnabled());
-                    // While indexing, the list is incomplete: the client asks
-                    // again as the user types (plan.md §6.34 S4).
-                    if (!m_indexing) return result;
+                    // While indexing, or answered from the previous compile
+                    // (a save's wait timed out, plan.md §6.40 D2), the list
+                    // is incomplete: the client asks again as the user types
+                    // (plan.md §6.34 S4).
+                    if (!m_indexing && !stale) return result;
                     lsp::CompletionList list{.isIncomplete = true, .items = {}};
                     if (!result.isNull()) {
                         if (result.holdsAlternative<lsp::Array<lsp::CompletionItem>>())

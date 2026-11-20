@@ -316,3 +316,25 @@ TEST_CASE("ServerState: completion advertises resolveProvider (plan.md §6.31)",
     REQUIRE(result.capabilities.completionProvider.has_value());
     CHECK(result.capabilities.completionProvider->resolveProvider.value_or(false));
 }
+
+// ---------------------------------------------------------------------------
+// saveWaitTimeoutMs (plan.md §6.40 D2)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("ServerState: saveWaitTimeoutMs defaults to 1000 ms; a non-negative number sets it",
+          "[lsp][server-state][d2]")
+{
+    auto withOptions = [](const char* json) {
+        ServerState s;
+        auto params = makeParams();
+        if (json) params.initializationOptions = lsp::json::parse(json);
+        s.handleInitialize(params);
+        return s.saveWaitTimeoutMs();
+    };
+    CHECK(withOptions(nullptr) == 1000);
+    CHECK(withOptions(R"({"svlsp":{"saveWaitTimeoutMs":250}})") == 250);
+    CHECK(withOptions(R"({"svlsp":{"saveWaitTimeoutMs":0}})") == 0);
+    // Not a usable number: the default.
+    CHECK(withOptions(R"({"svlsp":{"saveWaitTimeoutMs":-5}})") == 1000);
+    CHECK(withOptions(R"({"svlsp":{"saveWaitTimeoutMs":"fast"}})") == 1000);
+}

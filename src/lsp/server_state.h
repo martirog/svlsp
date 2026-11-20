@@ -62,6 +62,12 @@ public:
     // signature help and completion show none.
     bool docCommentsEnabled() const { return m_docCommentsEnabled; }
 
+    // `initializationOptions.svlsp.saveWaitTimeoutMs` (plan.md §6.40 D2):
+    // how long a request on a just-saved document waits for the save's
+    // compile before it is answered from the previous one; 0 = it doesn't
+    // wait. 1000 unless present and a non-negative number.
+    int saveWaitTimeoutMs() const { return m_saveWaitTimeoutMs; }
+
     // The client's `window.workDoneProgress` capability: it accepts
     // `window/workDoneProgress/create` and `$/progress` (plan.md §6.34 S4).
     bool workDoneProgressSupported() const { return m_workDoneProgress; }
@@ -81,6 +87,7 @@ private:
     std::string        m_explicitProjectConfigPath;
     bool               m_fuzzyCompletionEnabled{true};
     bool               m_docCommentsEnabled{true};
+    int                m_saveWaitTimeoutMs{1000};
     bool               m_workDoneProgress{false};
     std::string        m_databasePath;
     bool               m_watchedFiles{false};

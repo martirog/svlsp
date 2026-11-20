@@ -22,7 +22,8 @@ implemented.
       "fuzzyCompletion": false,
       "docComments": false,
       "projectConfig": "/path/to/.svlsp.json",
-      "database": "/path/to/project.db"
+      "database": "/path/to/project.db",
+      "saveWaitTimeoutMs": 1000
     }
   }
 }
@@ -45,6 +46,25 @@ one) via `:initialization-options` when registering the client:
   :initialization-options
   (lambda () (list :svlsp (list :fuzzyCompletion :json-false)))))
 ```
+
+### Requests after a save (`saveWaitTimeoutMs`)
+
+After a save, a request on that file (completion, definition, hover, ...)
+waits for the save's compile, so it answers from what was saved. Many
+lsp-mode requests are synchronous -- completion-at-point, `M-.` -- and
+Emacs freezes while they wait. `saveWaitTimeoutMs` caps the wait (default
+1000 ms; 0 = don't wait): after it, the request is answered from the
+previous compile and the current buffer text, as while typing, and
+completion comes back marked incomplete so lsp-mode asks again. The
+compile isn't cancelled; its diagnostics are published when it finishes.
+With `--log-requests`, each wait is logged:
+
+```
+[request] compile-wait /p/tb.sv 1000.112 ms (timed out: answered from the previous compile)
+```
+
+A file just opened is always waited for in full: before its first compile
+there is nothing to answer from.
 
 **Emacs: raise `gc-cons-threshold`.** lsp-mode's own performance guide
 recommends it, and for svlsp it is what makes large completion lists

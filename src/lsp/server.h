@@ -31,6 +31,7 @@
 #include <future>
 #include <map>
 #include <set>
+#include <type_traits>
 #include <unordered_set>
 
 // LanguageServer wires the lsp-framework transport and dispatch layer to the
@@ -147,35 +148,45 @@ private:
     // Documents whose compile since didOpen / didSave hasn't run yet, by
     // path: a request on one waits for it (plan.md §6.34 S4) -- the
     // document's own answers need its own compile, not the project load's.
-    // Not while the queue waits for a --build-db (m_dbWaiting).
-    std::mutex              m_awaitMutex;
-    std::condition_variable m_awaitCv;
-    std::set<std::string>   m_awaiting;
-    std::atomic<bool>       m_dbWaiting{false};
-    void awaitCompile(const std::string& path);
+    // Not while the queue waits for a --build-db (m_dbWaiting). The value
+    // is whether only a didSave is waited for: such a wait ends after
+    // saveWaitTimeoutMs, and the request is answered from the previous
+    // compile (plan.md §6.40 D2); a didOpen's is waited for in full.
+    std::mutex                  m_awaitMutex;
+    std::condition_variable     m_awaitCv;
+    std::map<std::string, bool> m_awaiting;
+    std::atomic<bool>           m_dbWaiting{false};
+    void awaitCompile(const std::string& path, bool afterSave = false);
     void compiled(const std::string& path);
-    void waitForDocument(const lsp::DocumentUri& uri);
+    // Waits for `uri`'s compile; false if a save's wait timed out first.
+    bool waitForDocument(const lsp::DocumentUri& uri);
     bool awaiting(const lsp::DocumentUri& uri);
 
     // Answers request M with `body`: at once, or -- when `uri` still waits
     // for its compile -- from another thread once it has run, so the
     // message thread keeps handling messages (the client's answers to the
-    // server's own requests among them).
+    // server's own requests among them). A body taking a bool is told
+    // whether it answers from the previous compile because a save's wait
+    // timed out (plan.md §6.40 D2).
     template <typename M, typename F>
     lsp::AsyncRequestResult<M> answer(const lsp::DocumentUri& uri, F body)
     {
+        auto run = [](F& f, bool stale) {
+            if constexpr (std::is_invocable_v<F&, bool>) return f(stale);
+            else return f();
+        };
         if (!awaiting(uri)) {
             std::promise<typename M::Result> done;
             try {
-                done.set_value(body());
+                done.set_value(run(body, false));
             } catch (...) {
                 done.set_exception(std::current_exception());
             }
             return done.get_future();
         }
-        return std::async(std::launch::async, [this, uri, body = std::move(body)]() {
-            waitForDocument(uri);
-            return body();
+        return std::async(std::launch::async, [this, uri, run, body = std::move(body)]() mutable {
+            const bool stale = !waitForDocument(uri);
+            return run(body, stale);
         });
     }
 
