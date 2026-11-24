@@ -116,11 +116,22 @@ public:
     bool parseStillValid(const Parsed& parsed, const ProjectConfig* config) const;
     // Persists `parsed` and returns compile()'s result; `includedFiles` as
     // in compile(). `refreshedFiles`: the files outside this compile whose
-    // 'reference' diagnostics this compile cleared (it declared what they
-    // name), to republish.
+    // 'reference' / 'import' diagnostics this compile cleared (it declared
+    // what they name), to republish. Only the warnings naming something the
+    // unit declares are re-checked (all of them when it has an `export`,
+    // plan.md §6.40 D9).
+    // `deferRefresh`: a project load's commit (plan.md §6.40 D9). The other
+    // files' warnings are not re-checked here; the names are kept until
+    // refreshDeferred(), which ProjectRefresher::finish calls once.
     std::vector<ParseError> commit(Parsed&& parsed,
                                    std::vector<std::string>* includedFiles = nullptr,
-                                   std::vector<std::string>* refreshedFiles = nullptr);
+                                   std::vector<std::string>* refreshedFiles = nullptr,
+                                   bool deferRefresh = false);
+
+    // Re-checks, once, the other files' 'reference' / 'import' warnings that
+    // the deferred commits since the last call can clear; their files go to
+    // `refreshedFiles`. Nothing to do without a deferred commit.
+    void refreshDeferred(std::vector<std::string>* refreshedFiles = nullptr);
 
     // Whether doc comments (plan.md §6.31) are extracted and stored; on by
     // default. Off leaves symbol_docs empty and macros.doc "", saving the
@@ -227,12 +238,22 @@ private:
     std::string inputsKeyFor(const std::string& path, const ProjectConfig* config,
                              std::optional<IncludeSiteRow>* context,
                              std::vector<MacroRow>* contextMacros) const;
+    // The names a commit declared, whose warnings elsewhere it may clear;
+    // `all`: every warning (a unit with an `export`).
+    struct DeclaredNames {
+        std::unordered_set<std::string> names;
+        bool all{false};
+        bool covers(const std::string& name) const { return all || names.count(name) > 0; }
+    };
+    std::optional<DeclaredNames> m_deferred; // what deferred commits declared
     void refreshTypeRefDiagnostics(int64_t fid, const std::vector<std::string>& included,
-                                   std::vector<std::string>* refreshedFiles);
+                                   std::vector<std::string>* refreshedFiles,
+                                   const DeclaredNames& declared);
     std::vector<ParseError> runImportCheck(int64_t fid, const std::vector<ImportRecord>& imports,
                                            const std::vector<std::string>& unitFiles);
     void refreshImportDiagnostics(int64_t fid, const std::vector<std::string>& included,
-                                  std::vector<std::string>* refreshedFiles);
+                                  std::vector<std::string>* refreshedFiles,
+                                  const DeclaredNames& declared);
     Walker          m_walker;
 
     static std::string hashContent(const std::string& text);

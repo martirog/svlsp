@@ -232,6 +232,9 @@ ProjectRefresher::Result ProjectRefresher::finish(Progress&& pr, const Plan& pla
         }
     }
 
+    // The other files' warnings the load's commits can clear, once
+    // (plan.md §6.40 D9: a commit used to re-check all of them).
+    controller.refreshDeferred();
     // The cross-file checks of every unit that what was declared or removed
     // can change.
     if (!pr.names.empty()) {
@@ -304,11 +307,15 @@ ProjectRefresher::Result ProjectRefresher::apply(const Plan& plan, const Project
         const auto before = sdb.declarationsOfUnit(f.unit);
         if (f.parse) {
             auto parsed = f.parse->get();
+            // Other files' warnings are re-checked once, in finish()
+            // (plan.md §6.40 D9).
             if (controller.parseStillValid(parsed, &config)) {
-                controller.commit(std::move(parsed));
+                controller.commit(std::move(parsed), nullptr, nullptr, /*deferRefresh=*/true);
             } else {
                 auto job = controller.prepare(f.unit, f.text, &config, contains(plan.force, f.unit));
-                if (!job.cached) controller.commit(controller.parse(std::move(job)));
+                if (!job.cached)
+                    controller.commit(controller.parse(std::move(job)), nullptr, nullptr,
+                                      /*deferRefresh=*/true);
             }
         }
         unitCompiled(pr, plan, f.unit, before, sdb);

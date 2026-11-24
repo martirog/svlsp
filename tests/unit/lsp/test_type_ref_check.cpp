@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -245,4 +246,68 @@ TEST_CASE("type refs: recompiling with the type fixed clears its warning",
               .empty());
     CHECK(f.rows().empty());
     CHECK(f.sdb.diagnosticsForFile("/tr11/use.sv").empty());
+}
+
+// plan.md §6.40 D9: a commit used to re-check every 'reference' warning in
+// the project, so a load cost units x warnings lookups (a user's project:
+// 12 h at 100% CPU). Now only the warnings naming what it declares.
+TEST_CASE("type refs: a commit re-checks only the warnings naming what it declares",
+          "[typecheck][d9]")
+{
+    F f;
+    size_t checked = 0;
+    f.ctrl.setTypeChecker([&](SymbolDatabase& db, const std::string& path,
+                              const std::unordered_map<std::string, std::string>& texts,
+                              const std::vector<TypeRefRecord>& refs) {
+        checked += refs.size();
+        return checkTypeRefs(db, path, texts, refs);
+    });
+    REQUIRE(f.compile("/tr12/b.sv",
+                      "module tr12_b;\n  import tr12_p::*;\n  Tr12X x;\n  Tr12Y y;\nendmodule\n")
+                .size() == 2);
+    REQUIRE(f.compile("/tr12/c.sv", "module tr12_c;\n  Tr12Z z;\nendmodule\n")
+                .size() == 1);
+    checked = 0;
+    std::vector<std::string> refreshed;
+    f.compile("/tr12/a.sv", "package tr12_p;\n  class Tr12X; endclass\nendpackage\n", &refreshed);
+    CHECK(checked == 1); // b's Tr12X; not Tr12Y, not c's Tr12Z
+    CHECK(refreshed == std::vector<std::string>{"/tr12/b.sv"});
+    std::vector<std::string> left;
+    for (const auto& r : f.rows()) left.push_back(r.subject);
+    CHECK(left == std::vector<std::string>{"Tr12Y", "Tr12Z"});
+}
+
+TEST_CASE("type refs: a unit with an export re-checks every warning", "[typecheck][d9]")
+{
+    F f;
+    f.compile("/tr13/q.sv", "package tr13_q;\n  class Tr13T; endclass\nendpackage\n");
+    f.compile("/tr13/p.sv", "package tr13_p;\nendpackage\n");
+    REQUIRE(f.compile("/tr13/u.sv", "module tr13_u;\n  import tr13_p::*;\n  Tr13T t;\nendmodule\n")
+                .size() == 1);
+    // p declares no Tr13T, but now exports it.
+    std::vector<std::string> refreshed;
+    f.compile("/tr13/p.sv",
+              "package tr13_p;\n  import tr13_q::*;\n  export tr13_q::*;\nendpackage\n",
+              &refreshed);
+    CHECK(f.rows().empty());
+    CHECK(refreshed == std::vector<std::string>{"/tr13/u.sv"});
+}
+
+TEST_CASE("type refs: a load's commits defer the re-check to refreshDeferred", "[typecheck][d9]")
+{
+    F f;
+    REQUIRE(f.compile("/tr14/b.sv", "module tr14_b;\n  import tr14_p::*;\n  Tr14X x;\nendmodule\n")
+                .size() == 1);
+    auto job = f.ctrl.prepare("/tr14/a.sv", "package tr14_p;\n  class Tr14X; endclass\nendpackage\n",
+                              &f.config);
+    REQUIRE(!job.cached);
+    std::vector<std::string> refreshed;
+    f.ctrl.commit(f.ctrl.parse(std::move(job)), nullptr, &refreshed, /*deferRefresh=*/true);
+    CHECK(refreshed.empty());
+    CHECK(f.rows().size() == 1); // not yet
+    f.ctrl.refreshDeferred(&refreshed);
+    CHECK(f.rows().empty());
+    CHECK(refreshed == std::vector<std::string>{"/tr14/b.sv"});
+    f.ctrl.refreshDeferred(&refreshed); // nothing left
+    CHECK(refreshed.empty());
 }

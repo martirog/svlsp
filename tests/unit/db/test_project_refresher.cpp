@@ -15,6 +15,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -339,4 +340,49 @@ TEST_CASE("refresh: parsing in parallel commits the same rows as one by one (pla
     CHECK(std::any_of(a.begin(), a.end(), [](const std::string& r) {
         return r.find("unknown type 'rp_missing'") != std::string::npos;
     }));
+}
+
+// plan.md §6.40 D9: a load re-checks other files' warnings once, at its end,
+// not at every unit's commit (units x warnings lookups before).
+TEST_CASE("refresh: a load re-checks other files' type warnings once, at its end",
+          "[db][refresh][d9]")
+{
+    RF f("d9-load");
+    size_t checked = 0;
+    f.ctrl.setTypeChecker([&](SymbolDatabase& db, const std::string& path,
+                              const std::unordered_map<std::string, std::string>& texts,
+                              const std::vector<TypeRefRecord>& refs) {
+        checked += refs.size();
+        return checkTypeRefs(db, path, texts, refs);
+    });
+    // Each unit uses two types nothing declares and the next unit's type, so
+    // its warning for that one clears only once the next unit is committed.
+    const int n = 8;
+    std::vector<std::string> rels;
+    for (int i = 0; i < n; ++i) {
+        std::string text = "package d9_p" + std::to_string(i) + ";\n  class d9_c" +
+                           std::to_string(i) + ";\n    d9_missA" + std::to_string(i) +
+                           " a;\n    d9_missB" + std::to_string(i) + " b;\n";
+        if (i + 1 < n)
+            text += "    d9_p" + std::to_string(i + 1) + "::d9_c" + std::to_string(i + 1) +
+                    " next;\n";
+        text += "  endclass\nendpackage\n";
+        rels.push_back("u" + std::to_string(i) + ".sv");
+        f.write(rels.back(), text);
+    }
+    f.config.files.clear();
+    for (const auto& r : rels) f.config.files.push_back(f.file(r));
+    f.refresh();
+
+    // Every unit's own check (3 refs, 2 in the last), plus one re-check per
+    // forward reference at the end: 7 + 23. Each commit re-checking every
+    // warning so far was 3 + 3 + ... (> 100 here).
+    CHECK(checked == static_cast<size_t>(3 * n - 1 + (n - 1)));
+    size_t unknown = 0;
+    for (const auto& r : f.sdb.diagnosticsFromSource("reference")) {
+        INFO(r.filePath << ":" << r.line << " " << r.message);
+        CHECK(r.subject.find("d9_miss") == 0); // the forward ones cleared
+        ++unknown;
+    }
+    CHECK(unknown == static_cast<size_t>(2 * n));
 }

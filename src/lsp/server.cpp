@@ -182,7 +182,8 @@ std::optional<LanguageServer::CompileOutcome> LanguageServer::compileCurrent(
     std::vector<std::string> includedFiles, refreshedFiles;
     auto primary = job->cached ? *job->cached
                                : m_compiler.commit(std::move(*parsed), &includedFiles,
-                                                   &refreshedFiles);
+                                                   &refreshedFiles,
+                                                   /*deferRefresh=*/loadOf() != nullptr);
     if (!job->cached) ++m_commitGeneration;
     if (ProjectLoad* load = loadOf()) {
         ProjectRefresher::unitCompiled(load->progress, load->plan, path, declarationsBefore,

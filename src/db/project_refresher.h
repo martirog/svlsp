@@ -72,7 +72,8 @@ public:
     // apply() in steps, for a caller that runs each unit's compile itself
     // (the server's background queue, plan.md §6.34 S4): begin() snapshots
     // the diagnostics and does the removals; after each unit of
-    // `plan.compile` is compiled, unitCompiled() records it, given the
+    // `plan.compile` is compiled (committed with `deferRefresh`, plan.md
+    // §6.40 D9), unitCompiled() records it, given the
     // unit's SymbolDatabase::declarationsOfUnit from just before its compile;
     // finish() does the rest of apply(). apply() is exactly that.
     struct Progress {

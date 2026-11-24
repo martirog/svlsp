@@ -604,7 +604,8 @@ CompilationController::Parsed CompilationController::parseTo(Prepared&& job,
 
 std::vector<ParseError> CompilationController::commit(Parsed&& parsed,
                                                       std::vector<std::string>* includedFiles,
-                                                      std::vector<std::string>* refreshedFiles)
+                                                      std::vector<std::string>* refreshedFiles,
+                                                      bool deferRefresh)
 {
     if (refreshedFiles) refreshedFiles->clear();
     if (m_log && !parsed.bufferedLog.empty()) {
@@ -818,13 +819,27 @@ std::vector<ParseError> CompilationController::commit(Parsed&& parsed,
     const std::vector<ParseError> primaryTypeDiags =
         parsed.checkTypes ? runTypeCheck(path, fid, text, walked.typeRefs, unitFiles)
                           : std::vector<ParseError>{};
-    refreshTypeRefDiagnostics(fid, allIncluded, refreshedFiles);
+    // Another file's warning can only clear when this unit declares the
+    // name it is about -- or, through an `export`, makes a name visible it
+    // doesn't declare (plan.md §6.40 D9: re-checking every warning at every
+    // commit made a load units x warnings lookups).
+    DeclaredNames declared;
+    for (const auto& rec : walked.records) declared.names.insert(rec.name);
+    declared.all = std::any_of(walked.imports.begin(), walked.imports.end(),
+                               [](const ImportRecord& imp) { return imp.isExport; });
+    if (deferRefresh && m_typeChecker) {
+        if (!m_deferred) m_deferred.emplace();
+        m_deferred->all = m_deferred->all || declared.all;
+        if (!m_deferred->all) m_deferred->names.merge(declared.names);
+    } else {
+        refreshTypeRefDiagnostics(fid, allIncluded, refreshedFiles, declared);
+    }
     // Imports (plan.md §6.37), the same way: this unit's checked, then the
     // other files' warnings this commit may have cleared.
     const std::vector<ParseError> primaryImportDiags =
         parsed.checkTypes ? runImportCheck(fid, walked.imports, unitFiles)
                           : std::vector<ParseError>{};
-    refreshImportDiagnostics(fid, allIncluded, refreshedFiles);
+    if (!deferRefresh) refreshImportDiagnostics(fid, allIncluded, refreshedFiles, declared);
 
     // Each file's identity as this compile read it (plan.md §6.34 S1), last:
     // the steps above may add rows for these files. An included file's rows
@@ -938,7 +953,8 @@ std::vector<ParseError> CompilationController::runImportCheck(
 // `refreshedFiles`.
 void CompilationController::refreshImportDiagnostics(int64_t fid,
                                                      const std::vector<std::string>& included,
-                                                     std::vector<std::string>* refreshedFiles)
+                                                     std::vector<std::string>* refreshedFiles,
+                                                     const DeclaredNames& declared)
 {
     if (!m_typeChecker) return;
     for (const auto& row : m_sdb.diagnosticsFromSource("import")) {
@@ -950,6 +966,8 @@ void CompilationController::refreshImportDiagnostics(int64_t fid,
         ImportRecord imp;
         imp.pkgName = row.subject.substr(0, sep);
         imp.item = row.subject.substr(sep + 2);
+        // The package now declared, or the item.
+        if (!declared.covers(imp.pkgName) && !declared.covers(imp.item)) continue;
         imp.line = row.line;
         imp.file = row.filePath;
         // A row is over the package name if the package was unknown, else
@@ -1032,8 +1050,8 @@ void CompilationController::recheckUnits(const std::vector<std::string>& units,
                 callIdx.push_back(i);
         }
         // Type references: one whose name changed. A declaration added
-        // clears warnings at the commit that adds it
-        // (refreshTypeRefDiagnostics).
+        // clears warnings at the commit that adds it, or for a load's
+        // commits in refreshDeferred (refreshTypeRefDiagnostics).
         std::vector<TypeRefRecord> unitRefs;
         if (const std::string types = m_sdb.unitChecks(fid, "types"); !types.empty())
             for (auto& r : parseTypeRefs(types))
@@ -1110,14 +1128,22 @@ void CompilationController::refreshContextDiagnostics(const std::vector<std::str
 // added. Deletes the ones that do; their files go to `refreshedFiles`.
 void CompilationController::refreshTypeRefDiagnostics(int64_t fid,
                                                       const std::vector<std::string>& included,
-                                                      std::vector<std::string>* refreshedFiles)
+                                                      std::vector<std::string>* refreshedFiles,
+                                                      const DeclaredNames& declared)
 {
     if (!m_typeChecker) return;
     std::vector<SubjectDiagnosticRow> rows;
-    for (auto& row : m_sdb.diagnosticsFromSource("reference"))
-        if (row.fileId != fid &&
-            std::find(included.begin(), included.end(), row.filePath) == included.end())
-            rows.push_back(std::move(row));
+    for (auto& row : m_sdb.diagnosticsFromSource("reference")) {
+        if (row.fileId == fid ||
+            std::find(included.begin(), included.end(), row.filePath) != included.end())
+            continue;
+        // The type's own name (`p::T` names T; a package now declared
+        // declares T with it).
+        const size_t sep = row.subject.rfind("::");
+        if (!declared.covers(sep == std::string::npos ? row.subject : row.subject.substr(sep + 2)))
+            continue;
+        rows.push_back(std::move(row));
+    }
     for (size_t begin = 0; begin < rows.size();) {
         size_t end = begin;
         std::vector<TypeRefRecord> refs;
@@ -1138,5 +1164,22 @@ void CompilationController::refreshTypeRefDiagnostics(int64_t fid,
             }
         if (cleared && refreshedFiles) refreshedFiles->push_back(rows[begin].filePath);
         begin = end;
+    }
+}
+
+void CompilationController::refreshDeferred(std::vector<std::string>* refreshedFiles)
+{
+    if (refreshedFiles) refreshedFiles->clear();
+    if (!m_deferred) return;
+    const DeclaredNames declared = std::move(*m_deferred);
+    m_deferred.reset();
+    std::vector<std::string> types, imports;
+    refreshTypeRefDiagnostics(-1, {}, &types, declared);
+    refreshImportDiagnostics(-1, {}, &imports, declared);
+    if (refreshedFiles) {
+        refreshedFiles->insert(refreshedFiles->end(), types.begin(), types.end());
+        for (auto& f : imports)
+            if (std::find(refreshedFiles->begin(), refreshedFiles->end(), f) == refreshedFiles->end())
+                refreshedFiles->push_back(std::move(f));
     }
 }
