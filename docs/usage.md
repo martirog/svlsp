@@ -21,6 +21,7 @@ implemented.
     "svlsp": {
       "fuzzyCompletion": false,
       "docComments": false,
+      "protectedNotes": false,
       "projectConfig": "/path/to/.svlsp.json",
       "database": "/path/to/project.db",
       "saveWaitTimeoutMs": 1000
@@ -463,6 +464,60 @@ compiled. Removing a name from a package re-flags the files that import
 it on the next refresh
 ([Branch switches](#branch-switches-file-watching-and-svlsprefresh)) or
 when they are recompiled.
+
+## Protected (encrypted) code: `` `pragma protect ``
+
+Vendor IP often comes encrypted (IEEE 1800 §34):
+
+```systemverilog
+package ip_pkg;
+`pragma protect begin_protected
+`pragma protect key_block
+...base64...
+`pragma protect data_block
+...base64...
+`pragma protect end_protected
+endpackage
+```
+
+svlsp skips everything from `` `pragma protect begin_protected `` to
+`` `pragma protect end_protected `` (and VCS's `` `protected `` ...
+`` `endprotected ``): the encrypted lines are no syntax error. An envelope
+with no end is an Error at its begin. `` `pragma protect begin `` / `end``
+(plain code marked for encryption) is parsed as usual.
+
+Names declared inside an envelope can't be seen, so a use of one doesn't
+resolve. Where protected code could declare the name, svlsp gives an
+**Information** note instead of the Warning:
+
+```
+unknown type 'hidden_t'; it may be declared in protected code (ip_pkg.sv:2)
+```
+
+| The unresolved name | Protected code in reach |
+|---|---|
+| a type `T` | an envelope in a scope around the use (the module, class, package), in a package imported there, or at file level (outside any module or package) |
+| a qualified type `p::T` | an envelope in `p`; at file level, when `p` itself is unknown |
+| `import p::x` | an envelope in `p` |
+| `import p::*` of an unknown `p`, an unknown module | an envelope at file level |
+
+An envelope at file level (a whole encrypted file) can declare any
+package, module or class, so it turns every unknown type in the project
+into a note. The note names the envelope.
+
+Encrypted code rarely changes, which makes it a good fit for a
+[pre-built library database](#pre-building-a-library-database---build-db):
+the envelopes are recorded there too, and a project attaching it gets the
+same notes.
+
+To get no diagnostic at all for such names instead of the note:
+
+```json
+{ "initializationOptions": { "svlsp": { "protectedNotes": false } } }
+```
+
+and `svlsp --build-db ... --no-protected-notes` for a database built
+ahead.
 
 ## A project database built ahead: `database`
 

@@ -9164,8 +9164,12 @@ editor, keep compiling) -- done 2026-11-20.**
 
 ### 6.41 Protected (Encrypted) Code: `` `pragma protect ``
 
-**Status:** planned 2026-11-24. Asked for by the user (a big project with
-vendor IP).
+**Status:** done 2026-11-24 (P1-P4; see "Outcome"). Asked for by the
+user (a big project with vendor IP). P-D1 decided 2026-11-24: an
+Information note, with an option to turn it off. Encrypted code changes
+rarely, so it will often live in a library DB built ahead (the user's
+intent for a later step): regions are recorded there and read across the
+attached DBs.
 
 **Now** (checked 2026-11-24 on a two-file project): an IEEE 1800 §34
 envelope -- `` `pragma protect begin_protected `` ... `` `pragma protect
@@ -9228,6 +9232,48 @@ instantiation of an encrypted module an unresolved-instantiation one.
 blanks it; the D9 re-check already re-runs only for names a unit declares,
 and a region declares none it can see, so P3 adds one region lookup per
 otherwise-unresolved name.
+
+**Outcome (2026-11-24).**
+- P1: `CompilerDirectiveStripper` (pass 1, every file) blanks an envelope
+  and returns it in `StripResult::protectedRegions`; VCS's `` `protected ``
+  ... `` `endprotected `` too. The preprocessor collects included files'
+  (`PreprocessorResult::protectedRegions`, once per file); the controller
+  adds the primary's. An envelope with no end is an **Error**
+  (`'preprocess'`, "protected envelope has no end"), not the planned
+  Warning: every preprocessor error is an Error (§6.35 P4).
+- P2: schema **v21**, `protected_regions`. The scope comes from the DB in
+  `commit` (`scopeAtPosition(file, {line, 0}, false)`, once symbols and
+  include sites are stored) rather than from the walker -- the walker
+  never sees the blanked lines, and this needs no parse-worker encoding.
+  `SymbolDatabase::protectedRegions()` reads this DB and every attached
+  library DB (one built before v21 has none).
+- P3: `SymbolDatabase::protectedRegionReaching(regions, reach, path,
+  pos, qualifier)` with `ProtectedReach::{Type, Package, PackageItem,
+  Design}`; `markProtected` appends "; it may be declared in protected
+  code (file:line)" and sets severity 3, or drops the diagnostic when
+  `protectedNotes` is off. Used by the type check (`runTypeCheck`,
+  `recheckUnits`, `refreshTypeRefDiagnostics` -- which also turns a
+  standing Warning into a note), the import check (`importDiagnostic`,
+  all three paths) and unresolved instantiations (`LibraryResolver`,
+  `refreshLibraryDiagnostics`). A unit with a region re-checks every
+  other file's warning (D9's `all`): the Warnings written before it was
+  compiled become notes. The callee check needed nothing (fails closed).
+- Option: `initializationOptions.svlsp.protectedNotes` (server) and
+  `--build-db --no-protected-notes` (`LibraryDbBuilder::setProtectedNotes`,
+  process-wide). Off is part of the inputs key (`configKey`), so switching
+  recompiles; the default key is unchanged.
+- Dropped: hover / definition text on such a name. The note is a
+  diagnostic at the same position, which the editor already shows there.
+- Not covered: a `-v` file that is encrypted as a whole is never compiled
+  (it is only scanned for module names), so its region isn't recorded;
+  a `-y` file named after the module is compiled, and its region is.
+- Tests: unit `[protected]` (stripper: envelope, VCS form, unclosed,
+  begin/end kept; DB: v21 migration; controller: scopes file / package /
+  class / module and their removal, unclosed error, unqualified types by
+  chain / import / unit level, qualified into a package with and without
+  a region, unknown package, imports and instantiations, a Warning that
+  becomes a note when the protected unit comes later, notes off, a
+  library DB built from protected code), Emacs test_64_protected.sh.
 
 ---
 

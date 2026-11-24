@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-11-24 (§6.40 D9: one cross-file re-check per load, not per commit; §6.41 planned).
+**Last updated:** 2026-11-24 (§6.40 D9: one cross-file re-check per load, not per commit; §6.41 done: protected code).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -382,16 +382,30 @@ Second follow-up:
    `ProjectRefresher::finish`. Generated 400-unit project: `--build-db`
    162 -> 1.3 s. Open: D3 `svlsp.status`, D4 `find-cxx20.sh` diagnostics,
    D7 documentSymbol size in Emacs.
-8. **plan.md §6.41 planned** (2026-11-24): `` `pragma protect `` envelopes
-   -- today a syntax error (and the LL re-parse) and every name inside
-   "unknown". P1 blank them in the preprocessor, P2 record their scope
-   (schema v21), P3 unresolved names with a region in scope become an
-   Information note or nothing (decision P-D1 open), P4 perf.
+8. **plan.md §6.41 done** (2026-11-24): `` `pragma protect `` envelopes
+   (and VCS `` `protected ``) are blanked in pass 1 instead of being a
+   syntax error; each is recorded with its scope (schema **v21**,
+   `protected_regions`, also in library DBs). A name that doesn't resolve
+   while one is in reach is an Information note ("...; it may be declared
+   in protected code (ip.sv:2)") -- types, imports, instantiations; off
+   with `initializationOptions.svlsp.protectedNotes: false` /
+   `--build-db --no-protected-notes`. Next (user's intent): build the
+   encrypted IP into a library DB.
 9. Optional, LL cost on files with syntax errors (only they reach LL now):
    the remaining LL time is true ambiguity in `primary` (decision 1068)
    and `hierarchical_identifier` (1103): `a.b` is a name, a name + select
    `.b`, or a name + the method loop. Profile with `tools/grammar_profile.sh
    -- --profile`.
+
+What §6.41 changes for other work:
+- Schema **v21**: `protected_regions(file_id, line, end_line, scope)`,
+  written per unit file at commit. `StripResult` and `PreprocessorResult`
+  have a new last member (`protectedRegions`): structured bindings of
+  them need one more name.
+- A new check that reports an unresolved name should ask
+  `SymbolDatabase::protectedRegionReaching` and `markProtected`, as the
+  type, import and instantiation checks do. A note's message carries
+  `isProtectedNote`'s marker.
 
 What §6.38 changes for other work:
 - A daemon builds a **fresh `LanguageServer` per session**; anything
@@ -1041,7 +1055,7 @@ ASan+UBSan (10-100x slower) — use release for anything corpus-sized.
 | LSP framework | lsp-framework v1.3.1 (submodule) |
 | Unit tests | Catch2 v3.8.1 (FetchContent) |
 | Parser | ANTLR4 v4.13.2 (FetchContent) |
-| Database | SQLite3 amalgamation, schema v20 |
+| Database | SQLite3 amalgamation, schema v21 |
 | Preprocessor | in-house C++ (not slang) |
 | Transport | stdio |
 
@@ -1104,7 +1118,7 @@ uses `SymbolDatabase::pickSameFilePreferred` (the simpler half of
 - `""` as a *scope* means top level — `findSymbolsInScope("")` returns every
   top-level symbol, so guard against an empty resolved type.
 
-### Database (`src/db/`, schema v20)
+### Database (`src/db/`, schema v21)
 
 Tables: `files` (identity since v17: `content_hash` SHA-256, `size`, `mtime_ns`, `stat_ns`, `inputs_fp`), `include_directives`, `symbols (kind, name, line, col, parent, detail, end_line,
 scope, access)`, `diagnostics (… source, subject)`, `symbol_docs`, `imports (pkg_name, item, is_export, scope)`,
