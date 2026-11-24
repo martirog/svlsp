@@ -9125,6 +9125,110 @@ editor, keep compiling) -- done 2026-11-20.**
 - Library DBs built before this keep the paths they recorded; a project
   DB is reset by the version check (`checkDbVersion`) anyway.
 
+**D9. A commit re-checked every cross-file warning in the project -- done
+2026-11-24.**
+- Outcome: `commit` collects the names the unit declares
+  (`DeclaredNames`, every record's name; `all` when the unit has an
+  `export`) and `refreshTypeRefDiagnostics` / `refreshImportDiagnostics`
+  re-check only the rows naming one (a type row by its last segment, an
+  import row by package or item). `commit(..., deferRefresh)`: the
+  server's load jobs and `ProjectRefresher::apply` skip the re-check and
+  add their names to `m_deferred`; `ProjectRefresher::finish` runs
+  `refreshDeferred()` once. A compile of an open document during a load
+  still refreshes at once. A generated project of N packages, each with 5
+  unresolved types: `--build-db` N=200 47.4 -> 0.56 s, N=400 161.8 ->
+  1.29 s, diagnostics identical to the old binary's row for row. Tests:
+  unit `[d9]` (a commit checks only the matching warning -- 1 ref, not 3;
+  an `export` re-checks all; a deferred commit clears nothing until
+  `refreshDeferred`; a load of 8 units checks 30 refs, each commit
+  re-checking all was > 100). Verified: unit 1288/1288, Emacs 355/355,
+  corpus 1563 / 31, `test-integration-uvm` 15/15, UVM `--build-db`
+  symbols (18772) and diagnostics (0) identical to the old binary's,
+  `perf-check` no regression.
+- Found 2026-11-24 with `tools/svlsp-sample.sh` on the user's big project:
+  svlsp at 100% of a core for 12 h, the compile queue thread in
+  `CompilationController::commit` -> `refreshTypeRefDiagnostics` ->
+  `checkTypeRefs` -> `findSymbolsVisibleAt` (7.5 h of CPU in 9.7 h), the
+  message thread waiting on the data mutex the commit holds.
+- Cause: after each commit, `refreshTypeRefDiagnostics` re-resolves every
+  `'reference'` row of every other file, and `refreshImportDiagnostics`
+  every `'import'` row -- a project load is units x warnings lookups, and
+  every edit one full pass.
+- Change 1: re-check only the rows a commit can clear -- those whose name
+  (the type name; the package or the item for an import) the unit
+  declares. A unit with an `export` re-checks them all (`export q::*`
+  makes names visible without declaring them).
+- Change 2: a project load (the background queue's load jobs, and
+  `--build-db`) defers the re-check to the end of the load and runs it
+  once, over the names the whole load declared.
+
+### 6.41 Protected (Encrypted) Code: `` `pragma protect ``
+
+**Status:** planned 2026-11-24. Asked for by the user (a big project with
+vendor IP).
+
+**Now** (checked 2026-11-24 on a two-file project): an IEEE 1800 §34
+envelope -- `` `pragma protect begin_protected `` ... `` `pragma protect
+key_block `` / `data_block` + base64 lines ... `` `pragma protect
+end_protected `` -- is not recognised. `` `pragma `` lines pass the
+preprocessor, and the base64 lines are a syntax error ("no viable
+alternative at input 'aGVs...'"), so the file also takes the LL
+re-parse (C2's two-stage fallback; slow on a big encrypted file). Every
+name declared inside the envelope is unknown: a use of it in another file
+is an `'reference'` Warning ("unknown type 'hidden_t'"), and an
+instantiation of an encrypted module an unresolved-instantiation one.
+
+**P1. The preprocessor skips protected envelopes.**
+- `` `pragma protect begin_protected `` through `` `pragma protect
+  end_protected `` is blanked (newlines kept, so positions map), and
+  recorded as a `ProtectedRegion` (file, first and last line). A missing
+  `end_protected` ends the region at the end of the file, with a
+  `'preprocess'` Warning at the begin.
+- `` `pragma protect begin `` / `end` (plaintext marked for encryption,
+  §34.5.1) is ordinary code: parsed as before.
+- Every other `` `pragma `` is dropped silently (§22.11: unknown pragmas
+  are ignored by tools).
+- Tests: unit (an envelope blanked, no parse error, the region recorded;
+  a missing end; `begin`/`end` kept), and no `'compile'` diagnostic on the
+  fixture above.
+
+**P2. Where a region is: its scope (schema v21).**
+- The walker gives each region the scope open at its first line (as an
+  include site's scope, §6.30 / v16): `""` at file level, `ip_pkg`,
+  `ip_pkg::C`, `m` for one inside a module. New table
+  `protected_regions(file_id, line, end_line, scope)`, written by commit,
+  also in library DBs (an IP library is the usual case). A whole-file
+  envelope is a region at `""`.
+
+**P3. Unresolved names with protected code in scope.**
+- A name that doesn't resolve may be declared in a region the lookup
+  could have reached: one whose scope is on the reference's scope chain,
+  is a package it imports (wildcard, or `p::x` for `p`), or is `""` (the
+  compilation unit: modules, packages, classes, typedefs).
+- For such a name, instead of the Warning: an Information diagnostic
+  "'hidden_t' is not declared in visible code; it may be declared in
+  protected code (ip_pkg.sv:3)" -- or nothing. **Decision for the user**
+  (P-D1): Information (recommended: says why a name gets no hover or
+  definition) or suppressed.
+- Applies to: type references (§6.21), the import check (§6.37: an
+  item of a package with a region), unresolved instantiations (a region at
+  `""`, or in a `-v` / `-y` library file), and the callee check (already
+  fails closed). Qualified names (`ip_pkg::hidden_t`) look only at that
+  package's regions.
+- A region at `""` covers every unresolved type in the project; a
+  project with whole-file encrypted IP then reports no unknown types at all.
+  The note names the region, so that is visible.
+- Hover / definition on such a name: "may be declared in protected code
+  (file:line)" instead of nothing.
+- Tests: unit (each check, each region scope: file, package, class,
+  module; a region out of scope still flags), Emacs (the note in the
+  opened file, hover text).
+
+**P4. Performance.** A protected region costs nothing to parse once P1
+blanks it; the D9 re-check already re-runs only for names a unit declares,
+and a region declares none it can see, so P3 adds one region lookup per
+otherwise-unresolved name.
+
 ---
 
 ## Appendix A — Technology Stack Summary

@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-11-19 (§6.39 done: false diagnostics and load time on ibex).
+**Last updated:** 2026-11-24 (§6.40 D9: one cross-file re-check per load, not per commit; §6.41 planned).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -369,7 +369,25 @@ Second follow-up:
    (adds `#-#`) and SVA/let formal port types are optional rather than
    empty, fixing an SLL failure on untyped ports: ibex 4.78 -> 4.17 s,
    `--build-db` 8.8 s / 151 MB. Untried: the `( ... )` overlap in SVA.
-7. Optional, LL cost on files with syntax errors (only they reach LL now):
+7. **plan.md §6.40, debugging** (2026-11-20..24): D1 library DB attaches
+   reported (missing / unusable ones warned, never created empty); D2
+   `saveWaitTimeoutMs`; D5 a note at an `include whose file has errors;
+   D6 symlinks resolved inside svlsp (`pathnames::canonical`, URIs back
+   through `clientUri`); D8 pre-includes (`-svlsp_preinclude`,
+   `"preincludes"`); **D9** (2026-11-24): a commit re-checked every
+   `'reference'` / `'import'` warning in the project -- a user's big
+   project ran 12 h at 100% CPU (found with `tools/svlsp-sample.sh`). Now
+   only the warnings naming what the unit declares (all with an `export`),
+   and a load's commits defer that to one `refreshDeferred()` in
+   `ProjectRefresher::finish`. Generated 400-unit project: `--build-db`
+   162 -> 1.3 s. Open: D3 `svlsp.status`, D4 `find-cxx20.sh` diagnostics,
+   D7 documentSymbol size in Emacs.
+8. **plan.md §6.41 planned** (2026-11-24): `` `pragma protect `` envelopes
+   -- today a syntax error (and the LL re-parse) and every name inside
+   "unknown". P1 blank them in the preprocessor, P2 record their scope
+   (schema v21), P3 unresolved names with a region in scope become an
+   Information note or nothing (decision P-D1 open), P4 perf.
+9. Optional, LL cost on files with syntax errors (only they reach LL now):
    the remaining LL time is true ambiguity in `primary` (decision 1068)
    and `hierarchical_identifier` (1103): `a.b` is a name, a name + select
    `.b`, or a name + the method loop. Profile with `tools/grammar_profile.sh
@@ -1023,7 +1041,7 @@ ASan+UBSan (10-100x slower) — use release for anything corpus-sized.
 | LSP framework | lsp-framework v1.3.1 (submodule) |
 | Unit tests | Catch2 v3.8.1 (FetchContent) |
 | Parser | ANTLR4 v4.13.2 (FetchContent) |
-| Database | SQLite3 amalgamation, schema v19 |
+| Database | SQLite3 amalgamation, schema v20 |
 | Preprocessor | in-house C++ (not slang) |
 | Transport | stdio |
 
