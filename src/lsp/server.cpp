@@ -859,6 +859,7 @@ void LanguageServer::registerHandlers()
                 std::lock_guard lock{m_dataMutex};
                 m_projects.setExplicitConfigPath(m_state.explicitProjectConfigPath());
                 m_compiler.setCollectDocs(m_state.docCommentsEnabled());
+                m_symbolDb.setProtectedNotes(m_state.protectedNotesEnabled());
                 // The same string --build-db records (LibraryDbBuilder::build).
                 m_buildVersion = m_version.empty() || m_state.docCommentsEnabled()
                     ? m_version

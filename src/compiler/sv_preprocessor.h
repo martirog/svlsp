@@ -1,4 +1,5 @@
 #pragma once
+#include "compiler/compiler_directive_stripper.h"
 #include "compiler/parse_record.h"
 #include <iosfwd>
 #include <optional>
@@ -96,7 +97,16 @@ struct PreprocessorResult {
     std::vector<SourceLine>  sourceMap;  // one entry per output line; index = line - 1
     std::vector<IncludeSite> includeSites;
     std::vector<IncludeDirective> includeDirectives; // distinct (fromFile, name), in order
+    // Protected envelopes (plan.md §6.41) of the included files, once per
+    // file; the compiled file's own are its StripResult's.
+    std::vector<ProtectedRegion> protectedRegions{};
 };
+
+// The error at a protected envelope with no end (plan.md §6.41).
+inline std::string unclosedProtectedMessage()
+{
+    return "protected envelope has no end (`pragma protect end_protected)";
+}
 
 // Pass 2 of the two-pass SV preprocessing pipeline.
 //

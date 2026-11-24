@@ -56,6 +56,7 @@ struct Ctx {
     std::vector<SourceLine> sourceMap{};
     std::vector<IncludeSite> includeSites{};
     std::vector<IncludeDirective> includeDirectives{};
+    std::vector<ProtectedRegion> protectedRegions{}; // included files' (plan.md §6.41)
 
     void error(PreprocessorError::Kind kind, std::string message, const std::string& file,
                int line, int column, int endColumn) {
@@ -763,6 +764,15 @@ static void processInclude(const std::string& filename, const std::string& curre
     // undefined macro invocations. Line count is preserved (stripped
     // directives become blank lines), so the source map stays valid.
     auto stripped = CompilerDirectiveStripper::strip(ss.str(), found);
+    // Once per file, as its include site.
+    if (std::none_of(ctx.protectedRegions.begin(), ctx.protectedRegions.end(),
+                     [&](const ProtectedRegion& r) { return r.file == found; }))
+        for (auto& r : stripped.protectedRegions) {
+            r.file = found;
+            if (!r.closed) ctx.error(PreprocessorError::Kind::Other, unclosedProtectedMessage(),
+                                     found, r.line, 0, 0);
+            ctx.protectedRegions.push_back(r);
+        }
 
     // Logged here -- at the moment the include is actually resolved and
     // opened, before recursing into its own content -- rather than by the
@@ -1151,5 +1161,5 @@ PreprocessorResult SvPreprocessor::process(const std::string& source,
 
     return {std::move(ctx.output), std::move(ctx.errors), std::move(ctx.macroRecords),
             std::move(ctx.sourceMap), std::move(ctx.includeSites),
-            std::move(ctx.includeDirectives)};
+            std::move(ctx.includeDirectives), std::move(ctx.protectedRegions)};
 }

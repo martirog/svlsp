@@ -105,11 +105,17 @@ int LibraryResolver::resolve(const ProjectConfig& config, CompilationController&
     }
 
     sdb.clearDiagnostics("library");
+    // A design protected code may declare (plan.md §6.41): a note, or none.
+    const auto regions = failedNames.empty() ? std::vector<ProtectedRegionRow>{}
+                                             : sdb.protectedRegions();
+    const auto hidden = sdb.protectedRegionReaching(regions, ProtectedReach::Design, "", {0, 0});
     for (const auto& name : failedNames) {
         std::unordered_map<int64_t, std::vector<ParseError>> byFile;
-        for (const auto& ref : sdb.instantiationsOfType(name))
-            byFile[ref.fileId].push_back(
-                unresolvedInstantiationDiagnostic(name, ref.line, ref.conditional));
+        for (const auto& ref : sdb.instantiationsOfType(name)) {
+            ParseError e = unresolvedInstantiationDiagnostic(name, ref.line, ref.conditional);
+            if (hidden && !sdb.markProtected(e, *hidden)) continue;
+            byFile[ref.fileId].push_back(std::move(e));
+        }
         for (const auto& [fileId, errs] : byFile) sdb.appendDiagnostics(fileId, errs, "library", name);
     }
 

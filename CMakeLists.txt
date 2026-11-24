@@ -321,6 +321,7 @@ add_executable(unit_tests
     tests/unit/lsp/test_references_scoped.cpp
     tests/unit/lsp/test_references_library.cpp
     tests/unit/lsp/test_type_ref_check.cpp
+    tests/unit/lsp/test_protected_code.cpp
     tests/unit/lsp/test_import_check.cpp
     tests/unit/lsp/test_unix_socket.cpp
     tests/unit/lsp/test_rename.cpp

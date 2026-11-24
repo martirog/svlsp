@@ -867,6 +867,9 @@ std::vector<ParseError> SymbolDatabase::refreshLibraryDiagnostics(int64_t fileId
     auto ins = m_db.prepare(
         "INSERT INTO diagnostics (file_id,line,col,message,source,subject,severity) "
         "VALUES (?,?,?,?,'library',?,?)");
+    // A design protected code may declare (plan.md §6.41): a note, or none.
+    const auto hidden =
+        protectedRegionReaching(protectedRegions(), ProtectedReach::Design, "", {0, 0});
     for (const auto& typeName : tagged) {
         declared.reset();
         declared.bind(1, typeName);
@@ -876,6 +879,7 @@ std::vector<ParseError> SymbolDatabase::refreshLibraryDiagnostics(int64_t fileId
         while (lines.step()) {
             ParseError e = unresolvedInstantiationDiagnostic(
                 typeName, static_cast<int>(lines.columnInt(0)), lines.columnInt(1) != 0);
+            if (hidden && !markProtected(e, *hidden)) continue;
             ins.reset();
             ins.bind(1, fileId).bind(2, e.line).bind(3, 0).bind(4, e.message).bind(5, typeName)
                .bind(6, e.severity);
@@ -1875,4 +1879,100 @@ bool SymbolDatabase::declaresInstantiatedDesign(int64_t fileId) const
         "AND i.file_id <> ?1 LIMIT 1");
     stmt.bind(1, fileId);
     return stmt.step();
+}
+
+// --- Protected code (plan.md §6.41) -----------------------------------------
+
+std::string protectedNoteSuffix(const ProtectedRegionRow& region)
+{
+    return "; it may be declared in protected code (" +
+           std::filesystem::path(region.filePath).filename().string() + ":" +
+           std::to_string(region.line) + ")";
+}
+
+bool isProtectedNote(const std::string& message)
+{
+    return message.find("; it may be declared in protected code (") != std::string::npos;
+}
+
+void SymbolDatabase::replaceProtectedRegions(int64_t fileId,
+                                             const std::vector<ProtectedRegionRow>& regions)
+{
+    m_db.execute("SAVEPOINT sdb");
+    auto del = m_db.prepare("DELETE FROM protected_regions WHERE file_id = ?");
+    del.bind(1, fileId);
+    del.step();
+    auto ins = m_db.prepare(
+        "INSERT INTO protected_regions (file_id, line, end_line, scope) VALUES (?,?,?,?)");
+    for (const auto& r : regions) {
+        ins.reset();
+        ins.bind(1, fileId).bind(2, r.line).bind(3, r.endLine).bind(4, r.scope);
+        ins.step();
+    }
+    m_db.execute("RELEASE sdb");
+}
+
+std::vector<ProtectedRegionRow> SymbolDatabase::protectedRegions() const
+{
+    std::vector<ProtectedRegionRow> rows;
+    for (size_t i = 0; i <= m_attachedLibraryPaths.size(); ++i) {
+        const std::string schema = i == 0 ? "main" : "lib" + std::to_string(i - 1);
+        if (i > 0) {
+            auto chk = m_db.prepare("SELECT 1 FROM " + schema +
+                                    ".sqlite_master WHERE type='table' AND "
+                                    "name='protected_regions'");
+            if (!chk.step()) continue; // built before schema v21
+        }
+        auto stmt = m_db.prepare("SELECT f.path, r.line, r.end_line, r.scope FROM " + schema +
+                                 ".protected_regions r JOIN " + schema +
+                                 ".files f ON f.id = r.file_id ORDER BY f.path, r.line");
+        while (stmt.step())
+            rows.push_back({stmt.columnText(0), static_cast<int>(stmt.columnInt(1)),
+                            static_cast<int>(stmt.columnInt(2)), stmt.columnText(3)});
+    }
+    return rows;
+}
+
+std::optional<ProtectedRegionRow> SymbolDatabase::protectedRegionReaching(
+    const std::vector<ProtectedRegionRow>& regions, ProtectedReach reach, const std::string& path,
+    SrcPos pos, const std::string& qualifier) const
+{
+    if (regions.empty()) return std::nullopt;
+    auto inScope = [&](const std::string& scope) -> std::optional<ProtectedRegionRow> {
+        for (const auto& r : regions)
+            if (r.scope == scope) return r;
+        return std::nullopt;
+    };
+    switch (reach) {
+    case ProtectedReach::Package:
+    case ProtectedReach::Design:
+        return inScope("");
+    case ProtectedReach::PackageItem:
+        return qualifier.empty() ? std::nullopt : inScope(qualifier);
+    case ProtectedReach::Type:
+        break;
+    }
+    if (!qualifier.empty()) {
+        if (auto r = inScope(qualifier)) return r;
+        // `p::T` with `p` itself unknown: p may be protected.
+        const std::string first = qualifier.substr(0, qualifier.find("::"));
+        if (!isPackage(first) && findSymbolsByName(first).empty()) return inScope("");
+        return std::nullopt;
+    }
+    const auto chain = scopeChain(scopeAtPosition(path, pos, false));
+    for (const auto& scope : chain)
+        if (!scope.empty())
+            if (auto r = inScope(scope)) return r;
+    for (const auto& imp : importsVisibleFrom(path))
+        if (std::find(chain.begin(), chain.end(), imp.scope) != chain.end())
+            if (auto r = inScope(imp.pkgName)) return r;
+    return inScope("");
+}
+
+bool SymbolDatabase::markProtected(ParseError& e, const ProtectedRegionRow& region) const
+{
+    if (!m_protectedNotes) return false;
+    if (!isProtectedNote(e.message)) e.message += protectedNoteSuffix(region);
+    e.severity = 3;
+    return true;
 }

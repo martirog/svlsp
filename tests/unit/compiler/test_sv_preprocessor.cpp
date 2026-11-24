@@ -14,21 +14,21 @@
 
 TEST_CASE("object-like macro expands", "[compiler][preprocessor]") {
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process("`define WIDTH 8\nwire [`WIDTH-1:0] bus;\n", "f.sv");
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process("`define WIDTH 8\nwire [`WIDTH-1:0] bus;\n", "f.sv");
     REQUIRE(errs.empty());
     REQUIRE(out == "\nwire [8-1:0] bus;\n");
 }
 
 TEST_CASE("macro defined with no body expands to empty", "[compiler][preprocessor]") {
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process("`define SIM\n`ifdef SIM\nwire a;\n`endif\n", "f.sv");
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process("`define SIM\n`ifdef SIM\nwire a;\n`endif\n", "f.sv");
     REQUIRE(errs.empty());
     REQUIRE(out == "\n\nwire a;\n\n");
 }
 
 TEST_CASE("undef removes macro", "[compiler][preprocessor]") {
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "`define A 1\n"
         "`undef A\n"
         "`ifdef A\nwire a;\n`endif\n", "f.sv");
@@ -39,7 +39,7 @@ TEST_CASE("undef removes macro", "[compiler][preprocessor]") {
 
 TEST_CASE("undefineall clears all macros", "[compiler][preprocessor]") {
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "`define A 1\n"
         "`define B 2\n"
         "`undefineall\n"
@@ -53,7 +53,7 @@ TEST_CASE("undefineall clears all macros", "[compiler][preprocessor]") {
 TEST_CASE("recursive macro expansion", "[compiler][preprocessor]") {
     // A's body contains a backtick invocation of B, so `A → `B → 42
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "`define A `B\n"
         "`define B 42\n"
         "wire [`A];\n", "f.sv");
@@ -63,7 +63,7 @@ TEST_CASE("recursive macro expansion", "[compiler][preprocessor]") {
 
 TEST_CASE("undefined macro expands to empty and records error", "[compiler][preprocessor]") {
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process("wire [`UNDEF-1:0] bus;\n", "f.sv");
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process("wire [`UNDEF-1:0] bus;\n", "f.sv");
     REQUIRE(!errs.empty());
     // The undefined token is replaced with empty
     REQUIRE(out.find("`UNDEF") == std::string::npos);
@@ -72,7 +72,7 @@ TEST_CASE("undefined macro expands to empty and records error", "[compiler][prep
 TEST_CASE("predefined macro via define() is visible", "[compiler][preprocessor]") {
     SvPreprocessor pp;
     pp.define("CHIP_TOP", "my_chip");
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process("wire w = `CHIP_TOP;\n", "f.sv");
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process("wire w = `CHIP_TOP;\n", "f.sv");
     REQUIRE(errs.empty());
     REQUIRE(out.find("my_chip") != std::string::npos);
 }
@@ -83,7 +83,7 @@ TEST_CASE("predefined macro via define() is visible", "[compiler][preprocessor]"
 
 TEST_CASE("function-like macro single argument", "[compiler][preprocessor]") {
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "`define BITS(n) [n-1:0]\n"
         "wire `BITS(8) bus;\n", "f.sv");
     REQUIRE(errs.empty());
@@ -92,7 +92,7 @@ TEST_CASE("function-like macro single argument", "[compiler][preprocessor]") {
 
 TEST_CASE("function-like macro multiple arguments", "[compiler][preprocessor]") {
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "`define MAX(a,b) ((a)>(b)?(a):(b))\n"
         "assign x = `MAX(p, q);\n", "f.sv");
     REQUIRE(errs.empty());
@@ -101,7 +101,7 @@ TEST_CASE("function-like macro multiple arguments", "[compiler][preprocessor]") 
 
 TEST_CASE("function-like macro zero arguments", "[compiler][preprocessor]") {
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "`define NOP() begin end\n"
         "`NOP()\n", "f.sv");
     REQUIRE(errs.empty());
@@ -111,7 +111,7 @@ TEST_CASE("function-like macro zero arguments", "[compiler][preprocessor]") {
 TEST_CASE("function-like macro parameter with default value used when omitted",
           "[compiler][preprocessor][defaultargs]") {
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "`define GREET(NAME, GREETING=hello) GREETING NAME\n"
         "`GREET(world)\n", "f.sv");
     REQUIRE(errs.empty());
@@ -121,7 +121,7 @@ TEST_CASE("function-like macro parameter with default value used when omitted",
 TEST_CASE("function-like macro parameter with default value overridden when supplied",
           "[compiler][preprocessor][defaultargs]") {
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "`define GREET(NAME, GREETING=hello) GREETING NAME\n"
         "`GREET(world, hi)\n", "f.sv");
     REQUIRE(errs.empty());
@@ -134,7 +134,7 @@ TEST_CASE("function-like macro default value containing nested parens does not h
     // RO=uvm_get_report_object()) -- a default value that is itself a
     // function call, i.e. contains its own '(' and ')'.
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "`define M(A, B=default_call()) A B\n"
         "`M(x)\n", "f.sv");
     REQUIRE(errs.empty());
@@ -144,7 +144,7 @@ TEST_CASE("function-like macro default value containing nested parens does not h
 TEST_CASE("function-like macro missing required argument without default records error",
           "[compiler][preprocessor][defaultargs]") {
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "`define M(A, B) A B\n"
         "`M(x)\n", "f.sv");
     REQUIRE(!errs.empty());
@@ -153,7 +153,7 @@ TEST_CASE("function-like macro missing required argument without default records
 TEST_CASE("function-like macro too many arguments still records error",
           "[compiler][preprocessor][defaultargs]") {
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "`define M(A, B=default_val) A B\n"
         "`M(x, y, z)\n", "f.sv");
     REQUIRE(!errs.empty());
@@ -169,7 +169,7 @@ TEST_CASE("macro argument containing a brace expression with a comma is not spli
     // Mirrors real UVM: `uvm_warning(ID, {"part one ", part_two}) -- the
     // comma inside {...} must not be treated as the argument separator.
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "`define M(A, B) A B\n"
         "`M(\"id\", {\"part one \", part_two})\n", "f.sv");
     REQUIRE(errs.empty());
@@ -179,7 +179,7 @@ TEST_CASE("macro argument containing a brace expression with a comma is not spli
 TEST_CASE("macro argument containing a bracket expression with a comma is not split",
           "[compiler][preprocessor][bracenesting]") {
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "`define M(A, B) A B\n"
         "`M(\"id\", arr[i, j])\n", "f.sv");
     REQUIRE(errs.empty());
@@ -189,7 +189,7 @@ TEST_CASE("macro argument containing a bracket expression with a comma is not sp
 TEST_CASE("macro argument string literal containing a comma is not split",
           "[compiler][preprocessor][bracenesting]") {
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "`define M(A, B) A B\n"
         "`M(\"hello, world\", second)\n", "f.sv");
     REQUIRE(errs.empty());
@@ -201,7 +201,7 @@ TEST_CASE("macro argument string literal containing an unmatched paren is not sp
     // A quoted message string like "already exists (see above)" must not
     // perturb paren-depth tracking of the invocation itself.
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "`define M(A, B) A B\n"
         "`M(\"already exists (see above)\", second)\n", "f.sv");
     REQUIRE(errs.empty());
@@ -218,7 +218,7 @@ TEST_CASE("backtick-like text inside a line comment is not macro-expanded",
     // "// |`uvm_info(ID, MSG, VERBOSITY)" -- must not be treated as an
     // actual invocation of an undefined (or wrong-arity) macro.
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "// example: `uvm_info(ID, MSG, VERBOSITY)\n"
         "wire a;\n", "f.sv");
     REQUIRE(errs.empty());
@@ -228,7 +228,7 @@ TEST_CASE("backtick-like text inside a line comment is not macro-expanded",
 TEST_CASE("macro invocation before a trailing comment still expands",
           "[compiler][preprocessor][comments]") {
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "`define WIDTH 8\n"
         "wire [`WIDTH-1:0] bus; // uses `UNDEFINED_MACRO in the comment\n", "f.sv");
     REQUIRE(errs.empty());
@@ -242,7 +242,7 @@ TEST_CASE("macro invocation before a trailing comment still expands",
 
 TEST_CASE("ifdef defined — block included", "[compiler][preprocessor]") {
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "`define SIM\n"
         "`ifdef SIM\nwire sim_wire;\n`endif\n", "f.sv");
     REQUIRE(errs.empty());
@@ -251,7 +251,7 @@ TEST_CASE("ifdef defined — block included", "[compiler][preprocessor]") {
 
 TEST_CASE("ifdef undefined — block skipped", "[compiler][preprocessor]") {
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "`ifdef SIM\nwire sim_wire;\n`endif\n", "f.sv");
     REQUIRE(errs.empty());
     REQUIRE(out.find("wire sim_wire;") == std::string::npos);
@@ -259,7 +259,7 @@ TEST_CASE("ifdef undefined — block skipped", "[compiler][preprocessor]") {
 
 TEST_CASE("ifndef undefined — block included", "[compiler][preprocessor]") {
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "`ifndef SYNTHESIS\nwire sim_only;\n`endif\n", "f.sv");
     REQUIRE(errs.empty());
     REQUIRE(out.find("wire sim_only;") != std::string::npos);
@@ -268,7 +268,7 @@ TEST_CASE("ifndef undefined — block included", "[compiler][preprocessor]") {
 TEST_CASE("ifndef defined — block skipped", "[compiler][preprocessor]") {
     SvPreprocessor pp;
     pp.define("SYNTHESIS");
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "`ifndef SYNTHESIS\nwire sim_only;\n`endif\n", "f.sv");
     REQUIRE(errs.empty());
     REQUIRE(out.find("wire sim_only;") == std::string::npos);
@@ -276,7 +276,7 @@ TEST_CASE("ifndef defined — block skipped", "[compiler][preprocessor]") {
 
 TEST_CASE("else branch taken when ifdef false", "[compiler][preprocessor]") {
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "`ifdef SIM\nwire sim_wire;\n`else\nwire synth_wire;\n`endif\n", "f.sv");
     REQUIRE(errs.empty());
     REQUIRE(out.find("wire sim_wire;") == std::string::npos);
@@ -286,7 +286,7 @@ TEST_CASE("else branch taken when ifdef false", "[compiler][preprocessor]") {
 TEST_CASE("elsif first branch taken", "[compiler][preprocessor]") {
     SvPreprocessor pp;
     pp.define("A");
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "`ifdef A\nwire a;\n`elsif B\nwire b;\n`else\nwire c;\n`endif\n", "f.sv");
     REQUIRE(errs.empty());
     REQUIRE(out.find("wire a;") != std::string::npos);
@@ -297,7 +297,7 @@ TEST_CASE("elsif first branch taken", "[compiler][preprocessor]") {
 TEST_CASE("elsif second branch taken", "[compiler][preprocessor]") {
     SvPreprocessor pp;
     pp.define("B");
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "`ifdef A\nwire a;\n`elsif B\nwire b;\n`else\nwire c;\n`endif\n", "f.sv");
     REQUIRE(errs.empty());
     REQUIRE(out.find("wire a;") == std::string::npos);
@@ -308,7 +308,7 @@ TEST_CASE("elsif second branch taken", "[compiler][preprocessor]") {
 TEST_CASE("nested ifdef", "[compiler][preprocessor]") {
     SvPreprocessor pp;
     pp.define("OUTER");
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "`ifdef OUTER\n"
         "  `ifdef INNER\nwire inner;\n`endif\n"
         "wire outer;\n"
@@ -327,7 +327,7 @@ TEST_CASE("include inserts file content", "[compiler][preprocessor]") {
     { std::ofstream f(tmpPath); f << "wire from_include;\n"; }
 
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process("`include \"" + tmpPath + "\"\n", "test.sv");
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process("`include \"" + tmpPath + "\"\n", "test.sv");
     REQUIRE(errs.empty());
     REQUIRE(out.find("wire from_include;") != std::string::npos);
 }
@@ -337,7 +337,7 @@ TEST_CASE("include propagates macro definitions", "[compiler][preprocessor]") {
     { std::ofstream f(tmpPath); f << "`define INC_WIDTH 16\n"; }
 
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "`include \"" + tmpPath + "\"\n"
         "wire [`INC_WIDTH-1:0] bus;\n", "test.sv");
     REQUIRE(errs.empty());
@@ -349,14 +349,14 @@ TEST_CASE("include via include path", "[compiler][preprocessor]") {
     { std::ofstream f(tmpPath); f << "wire via_path;\n"; }
 
     SvPreprocessor pp({"/tmp"});
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process("`include \"svlsp_test_inc_c.sv\"\n", "test.sv");
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process("`include \"svlsp_test_inc_c.sv\"\n", "test.sv");
     REQUIRE(errs.empty());
     REQUIRE(out.find("wire via_path;") != std::string::npos);
 }
 
 TEST_CASE("include missing file records error", "[compiler][preprocessor]") {
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process("`include \"no_such_file.sv\"\n", "test.sv");
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process("`include \"no_such_file.sv\"\n", "test.sv");
     REQUIRE(!errs.empty());
 }
 
@@ -375,7 +375,7 @@ TEST_CASE("each include site carries the identity of the file read",
 
     const auto before = nowNs();
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites, dirs_] = pp.process("`include \"" + wrap + "\"\n", "top.sv");
+    auto [out, errs, macros_, map_, sites, dirs_, prot_] = pp.process("`include \"" + wrap + "\"\n", "top.sv");
     REQUIRE(errs.empty());
     REQUIRE(sites.size() == 2);
     // The wrapper holds nothing but an `include, and is reported too.
@@ -393,7 +393,7 @@ TEST_CASE("each include directive is reported with what it resolved to",
     const std::string inc = "/tmp/svlsp_test_ident_dir_a.svh";
     { std::ofstream f(inc); f << "wire a;\n"; }
     SvPreprocessor pp({"/tmp"});
-    auto [out, errs, macros_, map_, sites_, dirs] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs, prot_] = pp.process(
         "`include \"svlsp_test_ident_dir_a.svh\"\n"
         "`include \"svlsp_test_ident_dir_a.svh\"\n"   // the same directive: once
         "`include \"svlsp_test_no_such.svh\"\n", "/src/top.sv");
@@ -411,7 +411,7 @@ TEST_CASE("each include directive is reported with what it resolved to",
 TEST_CASE("a failed include's error is a not-found include error",
           "[compiler][preprocessor][file-identity]") {
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process("`include \"no_such_file.svh\"\n", "t.sv");
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process("`include \"no_such_file.svh\"\n", "t.sv");
     REQUIRE(errs.size() == 1);
     CHECK(errs[0].kind == PreprocessorError::Kind::IncludeNotFound);
     CHECK(sites_.empty());
@@ -446,7 +446,7 @@ TEST_CASE("a relative include is looked up beside its includer, not in the worki
     CwdGuard guard;
     std::filesystem::current_path(root / "cwd");
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites, dirs_] =
+    auto [out, errs, macros_, map_, sites, dirs_, prot_] =
         pp.process("`include \"base/a.svh\"\n", (root / "lib/top.sv").string());
     REQUIRE(errs.empty());
     CHECK(out.find("wire from_lib;") != std::string::npos);
@@ -464,7 +464,7 @@ TEST_CASE("a relative include found only in the working directory is not found",
     CwdGuard guard;
     std::filesystem::current_path(root);
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites, dirs_] =
+    auto [out, errs, macros_, map_, sites, dirs_, prot_] =
         pp.process("`include \"only_in_cwd.svh\"\n", (root / "lib/top.sv").string());
     REQUIRE(errs.size() == 1);
     CHECK(errs[0].message.find("cannot find \"only_in_cwd.svh\"") != std::string::npos);
@@ -482,7 +482,7 @@ TEST_CASE("an include found through an include dir is named by its full, normali
     CwdGuard guard;
     std::filesystem::current_path(root / "src");
     SvPreprocessor pp({(root / "src/.").string()});
-    auto [out, errs, macros_, map_, sites, dirs_] =
+    auto [out, errs, macros_, map_, sites, dirs_, prot_] =
         pp.process("`include \"base/a.svh\"\n", (root / "tb/top.sv").string());
     REQUIRE(errs.empty());
     CHECK(out.find("wire from_m;") != std::string::npos);
@@ -528,7 +528,7 @@ TEST_CASE("include error: a missing file is reported by name at its directive, a
           "[compiler][preprocessor][include-errors]") {
     const auto root = freshIncludeDir("svlsp_test_incerr_missing");
     SvPreprocessor pp({root.string()});
-    auto [out, errs, macros_, map_, sites, dirs] = pp.process(
+    auto [out, errs, macros_, map_, sites, dirs, prot_] = pp.process(
         "wire before;\n"
         "`include \"incerr_missing.svh\"\n"
         "wire after;\n", (root / "top.sv").string());
@@ -545,7 +545,7 @@ TEST_CASE("include error: a missing file is reported by name at its directive, a
 TEST_CASE("include error: the range covers the directive, not its indent or a trailing comment",
           "[compiler][preprocessor][include-errors]") {
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "module m;\n"
         "  `include <incerr_angle.svh>   // the reason\n"
         "endmodule\n", "/src/top.sv");
@@ -563,7 +563,7 @@ TEST_CASE("include error: a missing file named inside an included file is on tha
               "`include \"incerr_deeper_missing.svh\"\n"
               "wire in_outer_after;\n");
     SvPreprocessor pp({root.string()});
-    auto [out, errs, macros_, map_, sites, dirs] =
+    auto [out, errs, macros_, map_, sites, dirs, prot_] =
         pp.process("`include \"outer.svh\"\nwire top_after;\n", (root / "top.sv").string());
     REQUIRE(errs.size() == 1);
     CHECK(errs[0].message == "`include: cannot find \"incerr_deeper_missing.svh\"");
@@ -584,7 +584,7 @@ TEST_CASE("include error: a file that includes itself is a cycle",
     const auto self = (root / "self.svh").string();
     writeFile(root / "self.svh", "wire in_self;\n`include \"self.svh\"\n");
     SvPreprocessor pp({root.string()});
-    auto [out, errs, macros_, map_, sites_, dirs_] =
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] =
         pp.process("`include \"self.svh\"\nwire top_after;\n", (root / "top.sv").string());
     // Unguarded: the second visit reaches the directive again, and the
     // third entry is refused -- at self.svh's own directive.
@@ -602,7 +602,7 @@ TEST_CASE("include error: two files that include each other are a cycle",
     writeFile(a, "wire in_a;\n`include \"b.svh\"\n");
     writeFile(b, "wire in_b;\n`include \"a.svh\"\n");
     SvPreprocessor pp({root.string()});
-    auto [out, errs, macros_, map_, sites, dirs_] =
+    auto [out, errs, macros_, map_, sites, dirs_, prot_] =
         pp.process("`include \"a.svh\"\n", (root / "top.sv").string());
     // Reported once, at b.svh's directive on b's second visit.
     REQUIRE(errs.size() == 1);
@@ -619,7 +619,7 @@ TEST_CASE("include error: including the same file twice, one after the other, is
     writeFile(root / "g.svh",
               "`ifndef INCERR_G_SVH\n`define INCERR_G_SVH\nwire in_g;\n`endif\n");
     SvPreprocessor pp({root.string()});
-    auto [out, errs, macros_, map_, sites, dirs_] =
+    auto [out, errs, macros_, map_, sites, dirs_, prot_] =
         pp.process("`include \"g.svh\"\n`include \"g.svh\"\n", (root / "top.sv").string());
     CHECK(errs.empty());
     CHECK(out.find("wire in_g;") != std::string::npos);
@@ -640,7 +640,7 @@ TEST_CASE("include error: guarded headers that include each other are not a cycl
               "`ifndef INCERR_B_SVH\n`define INCERR_B_SVH\n"
               "`include \"a.svh\"\nwire in_b;\n`endif\n");
     SvPreprocessor pp({root.string()});
-    auto [out, errs, macros_, map_, sites, dirs_] =
+    auto [out, errs, macros_, map_, sites, dirs_, prot_] =
         pp.process("`include \"a.svh\"\n", (root / "top.sv").string());
     CHECK(errs.empty());
     CHECK(out.find("wire in_a;") != std::string::npos);
@@ -658,7 +658,7 @@ TEST_CASE("include error: nesting deeper than the limit",
                   "wire in_d" + std::to_string(k) + ";\n" +
                   (k + 1 < kChain ? "`include \"d" + std::to_string(k + 1) + ".svh\"\n" : ""));
     SvPreprocessor pp({root.string()});
-    auto [out, errs, macros_, map_, sites, dirs_] =
+    auto [out, errs, macros_, map_, sites, dirs_, prot_] =
         pp.process("`include \"d0.svh\"\nwire top_after;\n", (root / "top.sv").string());
     REQUIRE(errs.size() == 1);
     CHECK(errs[0].message == "`include: depth limit exceeded (cycle?)");
@@ -679,7 +679,7 @@ TEST_CASE("include error: a file that exists but cannot be read",
     writeFile(locked, "wire in_locked;\n");
     std::filesystem::permissions(locked, std::filesystem::perms::none);
     SvPreprocessor pp({root.string()});
-    auto [out, errs, macros_, map_, sites, dirs] =
+    auto [out, errs, macros_, map_, sites, dirs, prot_] =
         pp.process("`include \"locked.svh\"\nwire top_after;\n", (root / "top.sv").string());
     std::filesystem::permissions(locked, std::filesystem::perms::owner_all);
     REQUIRE(errs.size() == 1);
@@ -707,7 +707,7 @@ TEST_CASE("include error: malformed directives",
     for (const auto& c : cases) {
         INFO(c.src);
         SvPreprocessor pp;
-        auto [out, errs, macros_, map_, sites, dirs] =
+        auto [out, errs, macros_, map_, sites, dirs, prot_] =
             pp.process(std::string(c.src) + "wire after;\n", "/src/top.sv");
         REQUIRE(errs.size() == 1);
         CHECK(errs[0].message == "`include: missing or malformed filename");
@@ -723,7 +723,7 @@ TEST_CASE("include error: every failing directive in a unit is reported, in orde
     const auto root = freshIncludeDir("svlsp_test_incerr_many");
     writeFile(root / "ok.svh", "wire in_ok;\n");
     SvPreprocessor pp({root.string()});
-    auto [out, errs, macros_, map_, sites, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites, dirs_, prot_] = pp.process(
         "`include \"incerr_first.svh\"\n"
         "`include \"ok.svh\"\n"
         "`include bad\n"
@@ -748,7 +748,7 @@ TEST_CASE("preprocessor errors other than include errors carry their line",
     const auto inc = (root / "inc.svh").string();
     writeFile(inc, "wire w;\nwire x = `INCERR_UNDEFINED;\n");
     SvPreprocessor pp({root.string()});
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "`include \"inc.svh\"\n"
         "  `endif\n"
         "`ifdef INCERR_NOT_DEFINED\n"
@@ -785,7 +785,7 @@ TEST_CASE("include: __LINE__ inside included file resolves to its own line numbe
                                      "wire b = `__LINE__;\n"; }
 
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process("`include \"" + tmpPath + "\"\n", "test.sv");
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process("`include \"" + tmpPath + "\"\n", "test.sv");
     REQUIRE(errs.empty());
     REQUIRE(out.find("wire b = 2;") != std::string::npos);
 }
@@ -796,7 +796,7 @@ TEST_CASE("include: __FILE__ inside included file resolves to the included path"
     { std::ofstream f(tmpPath); f << "string s = `__FILE__;\n"; }
 
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process("`include \"" + tmpPath + "\"\n", "test.sv");
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process("`include \"" + tmpPath + "\"\n", "test.sv");
     REQUIRE(errs.empty());
     REQUIRE(out.find("string s = \"" + tmpPath + "\";") != std::string::npos);
 }
@@ -810,7 +810,7 @@ TEST_CASE("include: metadata directive inside included file is stripped without 
                                      "wire c;\n"; }
 
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process("`include \"" + tmpPath + "\"\n", "test.sv");
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process("`include \"" + tmpPath + "\"\n", "test.sv");
     REQUIRE(errs.empty());
     REQUIRE(out.find("wire c;") != std::string::npos);
     REQUIRE(out.find("timescale") == std::string::npos);
@@ -834,7 +834,7 @@ TEST_CASE("include resolution logs a progress line as soon as the file is opened
 
     std::ostringstream progress;
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] =
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] =
         pp.process("`include \"" + tmpPath + "\"\n", "test.sv", &progress);
     REQUIRE(errs.empty());
     CHECK(progress.str() == "[parsed]   included: " + tmpPath + "\n");
@@ -849,7 +849,7 @@ TEST_CASE("nested includes each log their own progress line, in encounter order"
 
     std::ostringstream progress;
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] =
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] =
         pp.process("`include \"" + midPath + "\"\n", "test.sv", &progress);
     REQUIRE(errs.empty());
     // mid.sv is opened (and logged) before its own nested `include` of
@@ -862,7 +862,7 @@ TEST_CASE("nested includes each log their own progress line, in encounter order"
 TEST_CASE("a missing include file logs no progress line", "[compiler][preprocessor]") {
     std::ostringstream progress;
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] =
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] =
         pp.process("`include \"no_such_file.sv\"\n", "test.sv", &progress);
     REQUIRE(!errs.empty());
     CHECK(progress.str().empty());
@@ -876,7 +876,7 @@ TEST_CASE("progressLog defaults to null and is a no-op when omitted",
     SvPreprocessor pp;
     // No progressLog argument at all -- must behave exactly like every
     // pre-existing `include` test above, not crash on a null stream.
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process("`include \"" + tmpPath + "\"\n", "test.sv");
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process("`include \"" + tmpPath + "\"\n", "test.sv");
     REQUIRE(errs.empty());
     REQUIRE(out.find("wire w;") != std::string::npos);
 }
@@ -887,7 +887,7 @@ TEST_CASE("progressLog defaults to null and is a no-op when omitted",
 
 TEST_CASE("directive lines become blank lines preserving line count", "[compiler][preprocessor]") {
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "`define A 1\n"  // line 1 → blank
         "wire a;\n"      // line 2 → kept
         "`define B 2\n"  // line 3 → blank
@@ -1810,7 +1810,7 @@ const MacroRecord* macroNamed(const std::vector<MacroRecord>& macros, const std:
 TEST_CASE("P1: a backtick inside a block comment is not a macro call",
           "[compiler][preprocessor][comments]") {
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "/*\n"
         " * when `cheriot_enable_i is set, `CapWidth bits\n"
         " */\n"
@@ -1823,7 +1823,7 @@ TEST_CASE("P1: a backtick inside a block comment is not a macro call",
 TEST_CASE("P1: a directive inside a block comment is comment text",
           "[compiler][preprocessor][comments]") {
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "/* example:\n"
         "`define B 2\n"
         "`ifdef NOPE\n"
@@ -1840,7 +1840,7 @@ TEST_CASE("P1: a directive inside a block comment is comment text",
 TEST_CASE("P1: code after a block comment's end is expanded, its columns mapped",
           "[compiler][preprocessor][comments]") {
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "`define W 8\n"
         "/* a comment\n"
         "   ends here */ wire [`W:0] x; /* and `opens\n"
@@ -1852,7 +1852,7 @@ TEST_CASE("P1: code after a block comment's end is expanded, its columns mapped"
 TEST_CASE("P1: // inside a string is not a comment",
           "[compiler][preprocessor][comments]") {
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "`define N 1\n"
         "string s = \"http://host\"; int i = `N; // `N in a comment\n", "f.sv");
     CHECK(messagesOf(errs).empty());
@@ -1862,7 +1862,7 @@ TEST_CASE("P1: // inside a string is not a comment",
 TEST_CASE("P2: a // comment inside a multi-line macro call ends at its line",
           "[compiler][preprocessor][comments]") {
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "`define CHK(C_, M_=\"m\") if (!(C_)) $error(M_);\n"
         "`define RANDW(V_, W_) `CHK(V_.randomize() with {W_})\n"
         "`define CB s\n"
@@ -1878,7 +1878,7 @@ TEST_CASE("P2: a // comment inside a multi-line macro call ends at its line",
 TEST_CASE("P2: continuation lines of a macro call are joined with a space",
           "[compiler][preprocessor][comments]") {
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "`define TWO(A_, B_) A_ B_\n"
         "`TWO(logic\n"
         "x, ;)\n", "f.sv");
@@ -1889,7 +1889,7 @@ TEST_CASE("P2: continuation lines of a macro call are joined with a space",
 TEST_CASE("P3: a // comment in a continued `define body ends at its line",
           "[compiler][preprocessor][comments]") {
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "`define INIT_CHK(N_, P_) \\\n"
         "  initial begin \\\n"
         "    // wait for the net \\\n"
@@ -1909,7 +1909,7 @@ TEST_CASE("P3: a // comment in a continued `define body ends at its line",
 TEST_CASE("P4: an empty argument takes the parameter's default",
           "[compiler][preprocessor][macro-args]") {
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "`define dv_fatal(M_, ID_) $fatal(1, M_);\n"
         "`define downcast(E_, B_, MSG_=\"\", SEV_=fatal, ID_=\"x\") "
         "if (!$cast(E_, B_)) `dv_``SEV_(MSG_, ID_)\n"
@@ -1921,7 +1921,7 @@ TEST_CASE("P4: an empty argument takes the parameter's default",
 TEST_CASE("P4: an empty argument without a default is empty text",
           "[compiler][preprocessor][macro-args]") {
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "`define PAIR(A_, B_) [A_|B_]\n"
         "`PAIR(, 2)\n", "f.sv");
     CHECK(messagesOf(errs).empty());
@@ -1931,7 +1931,7 @@ TEST_CASE("P4: an empty argument without a default is empty text",
 TEST_CASE("P5: a default value may be a string with a comma or a parenthesis",
           "[compiler][preprocessor][macro-args]") {
     SvPreprocessor pp;
-    auto [out, errs, macros_, map_, sites_, dirs_] = pp.process(
+    auto [out, errs, macros_, map_, sites_, dirs_, prot_] = pp.process(
         "`define gfn \"id\"\n"
         "`define GETQ(Q_, D_ = \",\", C_ = 0, P_ = \"a)b\", S_ = {1, 2}, ID_ = `gfn) "
         "f(Q_, D_, C_, P_, S_, ID_);\n"

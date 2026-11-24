@@ -91,6 +91,29 @@ struct InstantiationRow {
 ParseError unresolvedInstantiationDiagnostic(const std::string& typeName, int line,
                                              bool conditional);
 
+// A protected (encrypted) envelope's row (plan.md §6.41, schema v21):
+// its file, lines and the scope open at its first line ("" = compilation
+// unit). From this DB or an attached library DB.
+struct ProtectedRegionRow {
+    std::string filePath;
+    int         line{0};
+    int         endLine{0};
+    std::string scope;
+};
+
+// What an unresolved name is (plan.md §6.41 P3), for which protected
+// regions could declare it:
+//   Type        a type name written at a declaration (qualified or not);
+//   Package     an `import p::...` of a package nothing declares;
+//   PackageItem an item a known package `p` doesn't declare;
+//   Design      a module / interface / program nothing declares.
+enum class ProtectedReach { Type, Package, PackageItem, Design };
+
+// The text a note about protected code carries ("; it may be declared in
+// protected code (ip.sv:3)"), and whether a message has it.
+std::string protectedNoteSuffix(const ProtectedRegionRow& region);
+bool isProtectedNote(const std::string& message);
+
 // One `define (plan.md §6.29 part A), from the macros table.
 struct MacroRow {
     std::string name;
@@ -272,6 +295,32 @@ public:
     // True if `scope` names a package (a top-level Package row, this DB or
     // an attached one).
     bool isPackage(const std::string& scope) const;
+
+    // --- Protected code (plan.md §6.41) -------------------------------------
+
+    // Replaces `fileId`'s protected regions (each row's filePath unused).
+    void replaceProtectedRegions(int64_t fileId, const std::vector<ProtectedRegionRow>& regions);
+    // Every protected region, this DB's then each attached library DB's (one
+    // built before schema v21 has none).
+    std::vector<ProtectedRegionRow> protectedRegions() const;
+    // The region of `regions` that could declare the unresolved name at
+    // `path` / `pos`, nullopt if none: for a Type, one in a scope on the
+    // position's chain, then in a package imported there, then one at
+    // compilation-unit level; a qualified Type (`qualifier` "p" or "p::C")
+    // looks in that scope, and at unit level only when `p` itself is
+    // unknown. A Package or a Design: unit level; a PackageItem: in the
+    // package `qualifier`.
+    std::optional<ProtectedRegionRow> protectedRegionReaching(
+        const std::vector<ProtectedRegionRow>& regions, ProtectedReach reach,
+        const std::string& path, SrcPos pos, const std::string& qualifier = "") const;
+    // Whether an unresolved name protected code could declare gets an
+    // Information note (the default) or no diagnostic at all
+    // (initializationOptions.svlsp.protectedNotes, --no-protected-notes).
+    void setProtectedNotes(bool on) { m_protectedNotes = on; }
+    bool protectedNotes() const { return m_protectedNotes; }
+    // Turns `e` (the unresolved name's diagnostic) into the note about
+    // `region`; false when notes are off (drop `e`).
+    bool markProtected(ParseError& e, const ProtectedRegionRow& region) const;
 
     // Every path in `files`, in no particular order. Used by
     // ReferencesProvider/RenameProvider (plan.md item 3) to scan every file
@@ -592,6 +641,7 @@ public:
 private:
     Database& m_db;
     std::vector<std::string> m_attachedLibraryPaths; // dedup guard for attachLibraryDbs
+    bool m_protectedNotes{true}; // plan.md §6.41
 
     // includeSitesOf / includeSitesOfUnit results, by path. Every visible-
     // set query reads them (scopeAtPosition, keepDeclaredBefore), and

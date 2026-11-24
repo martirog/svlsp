@@ -4,7 +4,7 @@ namespace db {
 
 // Current schema version.  Increment and add a migration in Database::initSchema
 // whenever the schema changes.
-inline constexpr int SCHEMA_VERSION = 20;
+inline constexpr int SCHEMA_VERSION = 21;
 
 // DDL executed on a fresh (version-0) database — always reflects the latest schema.
 inline constexpr const char* SCHEMA_DDL = R"sql(
@@ -260,6 +260,37 @@ CREATE TABLE symbol_docs (
     doc     TEXT    NOT NULL,
     PRIMARY KEY (file_id, line, col)
 ) WITHOUT ROWID;
+
+-- Protected (encrypted) envelopes (plan.md §6.41, schema v21): the lines
+-- `pragma protect begin_protected .. end_protected span in a file, and
+-- the scope open at the first ('' = compilation unit). A name that doesn't
+-- resolve may be declared in one the lookup reaches.
+CREATE TABLE protected_regions (
+    file_id  INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    line     INTEGER NOT NULL,
+    end_line INTEGER NOT NULL,
+    scope    TEXT    NOT NULL DEFAULT ''
+);
+
+CREATE INDEX idx_protected_regions_file ON protected_regions(file_id);
+)sql";
+
+// SQL applied when migrating an existing v20 database to v21: protected
+// envelopes (plan.md §6.41).
+inline constexpr const char* MIGRATION_V20_TO_V21 = R"sql(
+-- Protected (encrypted) envelopes (plan.md §6.41, schema v21): the lines
+-- `pragma protect begin_protected .. end_protected span in a file, and
+-- the scope open at the first ('' = compilation unit). A name that doesn't
+-- resolve may be declared in one the lookup reaches.
+CREATE TABLE protected_regions (
+    file_id  INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    line     INTEGER NOT NULL,
+    end_line INTEGER NOT NULL,
+    scope    TEXT    NOT NULL DEFAULT ''
+);
+
+CREATE INDEX idx_protected_regions_file ON protected_regions(file_id);
+UPDATE schema_version SET version = 21;
 )sql";
 
 // SQL applied when migrating an existing v19 database to v20: whether an

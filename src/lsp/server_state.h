@@ -62,6 +62,11 @@ public:
     // signature help and completion show none.
     bool docCommentsEnabled() const { return m_docCommentsEnabled; }
 
+    // `initializationOptions.svlsp.protectedNotes` (plan.md §6.41), same
+    // rules: true unless present and false. Off, an unresolved name that
+    // protected code may declare gets no diagnostic instead of a note.
+    bool protectedNotesEnabled() const { return m_protectedNotesEnabled; }
+
     // `initializationOptions.svlsp.saveWaitTimeoutMs` (plan.md §6.40 D2):
     // how long a request on a just-saved document waits for the save's
     // compile before it is answered from the previous one; 0 = it doesn't
@@ -87,6 +92,7 @@ private:
     std::string        m_explicitProjectConfigPath;
     bool               m_fuzzyCompletionEnabled{true};
     bool               m_docCommentsEnabled{true};
+    bool               m_protectedNotesEnabled{true};
     int                m_saveWaitTimeoutMs{1000};
     bool               m_workDoneProgress{false};
     std::string        m_databasePath;

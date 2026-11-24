@@ -20,6 +20,7 @@ auto ServerState::handleInitialize(lsp::InitializeParams params)
     }
     m_fuzzyCompletionEnabled = extractBoolOption(params, "fuzzyCompletion");
     m_docCommentsEnabled     = extractBoolOption(params, "docComments");
+    m_protectedNotesEnabled  = extractBoolOption(params, "protectedNotes");
     m_saveWaitTimeoutMs      = 1000;
     if (params.initializationOptions && params.initializationOptions->isObject()) {
         const auto* svlsp = params.initializationOptions->object().find("svlsp");

@@ -113,4 +113,14 @@ public:
     };
     static CheckResult check(const std::string& configPath, const std::string& outputPath,
                              const std::string& currentVersion = "", bool collectDocs = true);
+
+    // Whether builds give an unresolved name that protected code may
+    // declare an Information note (true) or no diagnostic (plan.md §6.41;
+    // `--build-db --no-protected-notes`). For the whole process.
+    static void setProtectedNotes(bool on) { protectedNotesFlag() = on; }
+    static bool& protectedNotesFlag()
+    {
+        static bool on = true;
+        return on;
+    }
 };

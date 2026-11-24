@@ -329,6 +329,8 @@ int main(int argc, char** argv)
             buildDbOutputPath = argv[++i];
         } else if (std::strcmp(argv[i], "--no-doc-comments") == 0) {
             collectDocs = false;
+        } else if (std::strcmp(argv[i], "--no-protected-notes") == 0) {
+            LibraryDbBuilder::setProtectedNotes(false);
         } else if (std::strcmp(argv[i], "--wait") == 0) {
             waitForLock = true;
         } else if (std::strcmp(argv[i], "--check") == 0) {

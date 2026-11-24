@@ -186,6 +186,13 @@ void Database::initSchema()
         execute(col.step() ? "UPDATE schema_version SET version = 20;"
                            : db::MIGRATION_V19_TO_V20);
     }
+    if (v < 21) {
+        // Same guard as v12, for the table.
+        auto tbl = prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                           "AND name = 'protected_regions'");
+        execute(tbl.step() ? "UPDATE schema_version SET version = 21;"
+                           : db::MIGRATION_V20_TO_V21);
+    }
 }
 
 void Database::execute(const std::string& sql)

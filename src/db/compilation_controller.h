@@ -254,6 +254,13 @@ private:
     void refreshImportDiagnostics(int64_t fid, const std::vector<std::string>& included,
                                   std::vector<std::string>* refreshedFiles,
                                   const DeclaredNames& declared);
+    // A check's diagnostic with protected code in reach (plan.md §6.41): a
+    // note, or nullopt when notes are off. `regions` is read on first use.
+    std::optional<ParseError> typeRefDiagnostic(
+        const TypeRefRecord& ref, const std::string& unitPath, const std::string& message,
+        std::optional<std::vector<ProtectedRegionRow>>& regions) const;
+    std::optional<ParseError> importDiagnostic(
+        const ImportRecord& imp, std::optional<std::vector<ProtectedRegionRow>>& regions) const;
     Walker          m_walker;
 
     static std::string hashContent(const std::string& text);

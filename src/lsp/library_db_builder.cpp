@@ -57,6 +57,7 @@ LibraryDbBuilder::Result LibraryDbBuilder::build(
         db.useWal();
         db.initSchema();
         SymbolDatabase sdb(db);
+        sdb.setProtectedNotes(protectedNotesFlag());
 
         // A stale-cache guard, not a correctness requirement of the compile
         // pipeline itself: the per-file content-hash cache below has no way
@@ -207,6 +208,7 @@ LibraryDbBuilder::CheckResult LibraryDbBuilder::check(const std::string& configP
             return r;
         }
         SymbolDatabase sdb(db);
+        sdb.setProtectedNotes(protectedNotesFlag());
         if (!buildVersion.empty() && sdb.builtByVersion() != buildVersion) {
             r.stale = true;
             r.why = "built by svlsp " + sdb.builtByVersion();

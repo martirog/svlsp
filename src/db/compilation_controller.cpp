@@ -178,13 +178,14 @@ void addField(std::string& key, const std::string& field)
 // directive by directive (inputsUnchanged), so a branch that adds an
 // include dir doesn't recompile the units that don't include from it.
 std::string configKey(const ProjectConfig* config, bool collectDocs, bool calleeCheck,
-                      bool typeCheck)
+                      bool typeCheck, bool protectedNotes)
 {
     std::string key = "svlsp-inputs-v1";
     addField(key, config ? "config" : "no-config");
     addField(key, collectDocs ? "docs" : "no-docs");
     addField(key, calleeCheck ? "callees" : "no-callees");
     addField(key, typeCheck && config ? "types+imports" : "no-types"); // §6.37
+    if (!protectedNotes) addField(key, "no-protected-notes"); // §6.41; keeps the default key
     if (!config) return key;
     for (const auto& [name, value] : config->defines) {  // a std::map: sorted
         addField(key, name);
@@ -459,7 +460,8 @@ std::string CompilationController::hashContent(const std::string& text)
 
 std::string CompilationController::configFingerprint(const ProjectConfig* config) const
 {
-    return contentHash(configKey(config, m_collectDocs, bool(m_calleeResolver), bool(m_typeChecker)));
+    return contentHash(configKey(config, m_collectDocs, bool(m_calleeResolver), bool(m_typeChecker),
+                     m_sdb.protectedNotes()));
 }
 
 std::string CompilationController::inputsKeyFor(const std::string& path,
@@ -470,7 +472,8 @@ std::string CompilationController::inputsKeyFor(const std::string& path,
     auto ctx = m_sdb.includeContextOf(path);
     std::vector<MacroRow> macros;
     if (ctx) macros = m_sdb.macrosOfUnit(*ctx, path);
-    std::string key = configKey(config, m_collectDocs, bool(m_calleeResolver), bool(m_typeChecker));
+    std::string key = configKey(config, m_collectDocs, bool(m_calleeResolver), bool(m_typeChecker),
+                     m_sdb.protectedNotes());
     addContext(key, ctx, macros);
     if (context) *context = std::move(ctx);
     if (contextMacros) *contextMacros = std::move(macros);
@@ -593,6 +596,14 @@ CompilationController::Parsed CompilationController::parseTo(Prepared&& job,
 
     auto stripped = CompilerDirectiveStripper::strip(job.text, job.path);
     auto preprocessed = job.preprocessor.process(stripped.source, job.path, log);
+    // The compiled file's own protected envelopes (plan.md §6.41), before
+    // its included files'.
+    for (const auto& r : stripped.protectedRegions)
+        if (!r.closed)
+            preprocessed.errors.push_back({unclosedProtectedMessage(), "", r.line, 0, 0});
+    preprocessed.protectedRegions.insert(preprocessed.protectedRegions.begin(),
+                                         stripped.protectedRegions.begin(),
+                                         stripped.protectedRegions.end());
     auto walked = walk(preprocessed.source, preprocessed.sourceMap, m_collectDocs,
                        job.initialScope);
     if (!m_collectDocs)
@@ -813,6 +824,22 @@ std::vector<ParseError> CompilationController::commit(Parsed&& parsed,
     for (const auto& file : sitedFiles)
         m_sdb.replaceDiagnostics(m_sdb.upsertFile(file, ""), contextDiagnostics(m_sdb, file),
                                  "context");
+    // Protected envelopes (plan.md §6.41), each with the scope open at its
+    // first line -- known once the symbols and include sites above are.
+    {
+        std::unordered_map<std::string, std::vector<ProtectedRegionRow>> byFile;
+        byFile[path];
+        for (const auto& f : allIncluded) byFile[f];
+        for (const auto& r : preprocessed.protectedRegions) {
+            const std::string& file = r.file.empty() ? path : r.file;
+            byFile[file].push_back(
+                {file, r.line, r.endLine, m_sdb.scopeAtPosition(file, {r.line, 0}, false)});
+        }
+        for (const auto& [file, rows] : byFile) {
+            const int64_t id = file == path ? fid : m_sdb.fileIdFor(file);
+            if (id >= 0) m_sdb.replaceProtectedRegions(id, rows);
+        }
+    }
     // Declared types (plan.md §6.21 step 3), once the include sites above
     // are persisted: an included file's package-level positions are in the
     // scope it is `include'd in only through them.
@@ -825,7 +852,10 @@ std::vector<ParseError> CompilationController::commit(Parsed&& parsed,
     // commit made a load units x warnings lookups).
     DeclaredNames declared;
     for (const auto& rec : walked.records) declared.names.insert(rec.name);
-    declared.all = std::any_of(walked.imports.begin(), walked.imports.end(),
+    // A unit with protected code may hide any name (plan.md §6.41): the
+    // other files' warnings become notes.
+    declared.all = !preprocessed.protectedRegions.empty() ||
+                   std::any_of(walked.imports.begin(), walked.imports.end(),
                                [](const ImportRecord& imp) { return imp.isExport; });
     if (deferRefresh && m_typeChecker) {
         if (!m_deferred) m_deferred.emplace();
@@ -898,11 +928,12 @@ std::vector<ParseError> CompilationController::runTypeCheck(
 
     std::unordered_map<std::string, std::vector<ParseError>> warningsByFile;
     std::unordered_map<std::string, std::vector<std::string>> subjectsByFile;
+    std::optional<std::vector<ProtectedRegionRow>> regions;
     for (size_t i = 0; i < refs.size() && i < problems.size(); ++i) {
         if (!problems[i]) continue;
-        ParseError diag{refs[i].line, refs[i].column, *problems[i]};
-        diag.severity = 2;
-        warningsByFile[refs[i].file].push_back(diag);
+        const auto diag = typeRefDiagnostic(refs[i], path, *problems[i], regions);
+        if (!diag) continue;
+        warningsByFile[refs[i].file].push_back(*diag);
         subjectsByFile[refs[i].file].push_back(
             refs[i].qualifier.empty() ? refs[i].name : refs[i].qualifier + "::" + refs[i].name);
     }
@@ -936,8 +967,9 @@ std::vector<ParseError> CompilationController::runImportCheck(
     if (!m_typeChecker) return {};
     m_sdb.clearDiagnostics("import", unitFiles);
     std::vector<ParseError> primary;
+    std::optional<std::vector<ProtectedRegionRow>> regions;
     for (const auto& imp : imports) {
-        auto diag = importProblem(m_sdb, imp);
+        auto diag = importDiagnostic(imp, regions);
         if (!diag) continue;
         const int64_t fileId = imp.file.empty() ? fid : knownFileId(m_sdb, imp.file);
         m_sdb.appendDiagnostics(fileId, {*diag}, "import", importSubject(imp));
@@ -957,6 +989,7 @@ void CompilationController::refreshImportDiagnostics(int64_t fid,
                                                      const DeclaredNames& declared)
 {
     if (!m_typeChecker) return;
+    std::optional<std::vector<ProtectedRegionRow>> regions;
     for (const auto& row : m_sdb.diagnosticsFromSource("import")) {
         if (row.fileId == fid ||
             std::find(included.begin(), included.end(), row.filePath) != included.end())
@@ -976,7 +1009,7 @@ void CompilationController::refreshImportDiagnostics(int64_t fid,
         const bool overPackage = row.message.rfind("unknown package", 0) == 0;
         imp.pkgColumn = overPackage ? row.col : 0;
         imp.column = overPackage ? row.col + static_cast<int>(sep) + 2 : row.col;
-        const auto now = importProblem(m_sdb, imp);
+        const auto now = importDiagnostic(imp, regions);
         if (now && now->message == row.message) continue;
         m_sdb.deleteDiagnostic(row.fileId, row.line, row.col, "import");
         if (now) m_sdb.appendDiagnostics(row.fileId, {*now}, "import", row.subject);
@@ -1059,6 +1092,7 @@ void CompilationController::recheckUnits(const std::vector<std::string>& units,
         // Imports (plan.md §6.37): one whose package or name changed or
         // was added. Their rows are replaced here, from the stored records.
         if (m_typeChecker) {
+            std::optional<std::vector<ProtectedRegionRow>> regions;
             const std::string stored = m_sdb.unitChecks(fid, "imports");
             for (const auto& imp : stored.empty() ? std::vector<ImportRecord>{}
                                                   : parseImports(stored)) {
@@ -1069,7 +1103,7 @@ void CompilationController::recheckUnits(const std::vector<std::string>& units,
                 const int64_t fileId = imp.file.empty() ? fid : knownFileId(m_sdb, imp.file);
                 m_sdb.deleteDiagnostic(fileId, imp.line, imp.column, "import");
                 m_sdb.deleteDiagnostic(fileId, imp.line, imp.pkgColumn, "import");
-                if (const auto diag = importProblem(m_sdb, imp))
+                if (const auto diag = importDiagnostic(imp, regions))
                     m_sdb.appendDiagnostics(fileId, {*diag}, "import", importSubject(imp));
                 ++imports;
             }
@@ -1091,14 +1125,15 @@ void CompilationController::recheckUnits(const std::vector<std::string>& units,
                 if (!ref.file.empty() && !texts.count(ref.file))
                     if (auto t = readFile(ref.file)) texts.emplace(ref.file, std::move(*t));
             const auto problems = m_typeChecker(m_sdb, unit, texts, unitRefs);
+            std::optional<std::vector<ProtectedRegionRow>> regions;
             for (size_t i = 0; i < unitRefs.size() && i < problems.size(); ++i) {
                 const auto& ref = unitRefs[i];
                 const int64_t fileId = ref.file.empty() ? fid : knownFileId(m_sdb, ref.file);
                 m_sdb.deleteDiagnostic(fileId, ref.line, ref.column, "reference");
                 if (!problems[i]) continue;
-                ParseError diag{ref.line, ref.column, *problems[i]};
-                diag.severity = 2;
-                m_sdb.appendDiagnostics(fileId, {diag}, "reference",
+                const auto diag = typeRefDiagnostic(ref, unit, *problems[i], regions);
+                if (!diag) continue;
+                m_sdb.appendDiagnostics(fileId, {*diag}, "reference",
                                         ref.qualifier.empty() ? ref.name
                                                               : ref.qualifier + "::" + ref.name);
             }
@@ -1132,6 +1167,7 @@ void CompilationController::refreshTypeRefDiagnostics(int64_t fid,
                                                       const DeclaredNames& declared)
 {
     if (!m_typeChecker) return;
+    std::optional<std::vector<ProtectedRegionRow>> regions;
     std::vector<SubjectDiagnosticRow> rows;
     for (auto& row : m_sdb.diagnosticsFromSource("reference")) {
         if (row.fileId == fid ||
@@ -1156,12 +1192,22 @@ void CompilationController::refreshTypeRefDiagnostics(int64_t fid,
         }
         const auto problems = m_typeChecker(m_sdb, rows[begin].filePath, {}, refs);
         bool cleared = false;
-        for (size_t i = 0; i < refs.size() && i < problems.size(); ++i)
+        for (size_t i = 0; i < refs.size() && i < problems.size(); ++i) {
+            const auto& row = rows[begin + i];
             if (!problems[i]) {
-                const auto& row = rows[begin + i];
                 m_sdb.deleteDiagnostic(row.fileId, row.line, row.col, "reference");
                 cleared = true;
+                continue;
             }
+            // Still unresolved, but protected code may now be in reach
+            // (plan.md §6.41): the Warning becomes a note, or goes.
+            if (isProtectedNote(row.message)) continue;
+            const auto diag = typeRefDiagnostic(refs[i], row.filePath, *problems[i], regions);
+            if (diag && !isProtectedNote(diag->message)) continue;
+            m_sdb.deleteDiagnostic(row.fileId, row.line, row.col, "reference");
+            if (diag) m_sdb.appendDiagnostics(row.fileId, {*diag}, "reference", row.subject);
+            cleared = true;
+        }
         if (cleared && refreshedFiles) refreshedFiles->push_back(rows[begin].filePath);
         begin = end;
     }
@@ -1182,4 +1228,39 @@ void CompilationController::refreshDeferred(std::vector<std::string>* refreshedF
             if (std::find(refreshedFiles->begin(), refreshedFiles->end(), f) == refreshedFiles->end())
                 refreshedFiles->push_back(std::move(f));
     }
+}
+
+// A declared-type warning (plan.md §6.21 step 3) for `ref`, written in the
+// unit whose primary is `unitPath`: a Warning, or -- when protected code in
+// reach may declare the name (plan.md §6.41) -- an Information note, or
+// nothing when notes are off. `regions` is fetched on first use.
+std::optional<ParseError> CompilationController::typeRefDiagnostic(
+    const TypeRefRecord& ref, const std::string& unitPath, const std::string& message,
+    std::optional<std::vector<ProtectedRegionRow>>& regions) const
+{
+    ParseError diag{ref.line, ref.column, message};
+    diag.severity = 2;
+    if (!regions) regions = m_sdb.protectedRegions();
+    if (const auto region = m_sdb.protectedRegionReaching(
+            *regions, ProtectedReach::Type, ref.file.empty() ? unitPath : ref.file,
+            {ref.line, ref.column}, ref.qualifier))
+        if (!m_sdb.markProtected(diag, *region)) return std::nullopt;
+    return diag;
+}
+
+// importProblem, with protected code in reach (plan.md §6.41): an unknown
+// package may be one at compilation-unit level, a missing item one in the
+// package.
+std::optional<ParseError> CompilationController::importDiagnostic(
+    const ImportRecord& imp, std::optional<std::vector<ProtectedRegionRow>>& regions) const
+{
+    auto diag = importProblem(m_sdb, imp);
+    if (!diag) return diag;
+    if (!regions) regions = m_sdb.protectedRegions();
+    const bool unknownPackage = diag->message.rfind("unknown package", 0) == 0;
+    if (const auto region = m_sdb.protectedRegionReaching(
+            *regions, unknownPackage ? ProtectedReach::Package : ProtectedReach::PackageItem,
+            imp.file, {imp.line, imp.column}, imp.pkgName))
+        if (!m_sdb.markProtected(*diag, *region)) return std::nullopt;
+    return diag;
 }

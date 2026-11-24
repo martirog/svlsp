@@ -6,7 +6,7 @@
 // ---------------------------------------------------------------------------
 
 TEST_CASE("timescale stripped and recorded", "[compiler][stripper]") {
-    auto [out, dirs] = CompilerDirectiveStripper::strip("`timescale 1ns/1ps\n", "f.sv");
+    auto [out, dirs, prot_] = CompilerDirectiveStripper::strip("`timescale 1ns/1ps\n", "f.sv");
     REQUIRE(out == "\n");
     REQUIRE(dirs.size() == 1);
     CHECK(dirs[0].kind == DirectiveKind::Timescale);
@@ -15,7 +15,7 @@ TEST_CASE("timescale stripped and recorded", "[compiler][stripper]") {
 }
 
 TEST_CASE("default_nettype stripped and recorded", "[compiler][stripper]") {
-    auto [out, dirs] = CompilerDirectiveStripper::strip("`default_nettype none\n", "f.sv");
+    auto [out, dirs, prot_] = CompilerDirectiveStripper::strip("`default_nettype none\n", "f.sv");
     REQUIRE(out == "\n");
     REQUIRE(dirs.size() == 1);
     CHECK(dirs[0].kind == DirectiveKind::DefaultNettype);
@@ -25,7 +25,7 @@ TEST_CASE("default_nettype stripped and recorded", "[compiler][stripper]") {
 
 TEST_CASE("celldefine and endcelldefine stripped", "[compiler][stripper]") {
     std::string src = "`celldefine\nmodule m; endmodule\n`endcelldefine\n";
-    auto [out, dirs] = CompilerDirectiveStripper::strip(src, "f.sv");
+    auto [out, dirs, prot_] = CompilerDirectiveStripper::strip(src, "f.sv");
     REQUIRE(out == "\nmodule m; endmodule\n\n");
     REQUIRE(dirs.size() == 2);
     CHECK(dirs[0].kind == DirectiveKind::Celldefine);
@@ -36,7 +36,7 @@ TEST_CASE("celldefine and endcelldefine stripped", "[compiler][stripper]") {
 }
 
 TEST_CASE("unconnected_drive stripped and recorded", "[compiler][stripper]") {
-    auto [out, dirs] = CompilerDirectiveStripper::strip("`unconnected_drive pull1\n", "f.sv");
+    auto [out, dirs, prot_] = CompilerDirectiveStripper::strip("`unconnected_drive pull1\n", "f.sv");
     REQUIRE(out == "\n");
     REQUIRE(dirs.size() == 1);
     CHECK(dirs[0].kind == DirectiveKind::UnconnectedDrive);
@@ -44,7 +44,7 @@ TEST_CASE("unconnected_drive stripped and recorded", "[compiler][stripper]") {
 }
 
 TEST_CASE("nounconnected_drive stripped", "[compiler][stripper]") {
-    auto [out, dirs] = CompilerDirectiveStripper::strip("`nounconnected_drive\n", "f.sv");
+    auto [out, dirs, prot_] = CompilerDirectiveStripper::strip("`nounconnected_drive\n", "f.sv");
     REQUIRE(out == "\n");
     REQUIRE(dirs.size() == 1);
     CHECK(dirs[0].kind == DirectiveKind::NounconnectedDrive);
@@ -52,7 +52,7 @@ TEST_CASE("nounconnected_drive stripped", "[compiler][stripper]") {
 }
 
 TEST_CASE("resetall stripped", "[compiler][stripper]") {
-    auto [out, dirs] = CompilerDirectiveStripper::strip("`resetall\n", "f.sv");
+    auto [out, dirs, prot_] = CompilerDirectiveStripper::strip("`resetall\n", "f.sv");
     REQUIRE(out == "\n");
     REQUIRE(dirs.size() == 1);
     CHECK(dirs[0].kind == DirectiveKind::Resetall);
@@ -61,7 +61,7 @@ TEST_CASE("resetall stripped", "[compiler][stripper]") {
 
 TEST_CASE("begin_keywords and end_keywords stripped", "[compiler][stripper]") {
     std::string src = "`begin_keywords \"1800-2017\"\nmodule m; endmodule\n`end_keywords\n";
-    auto [out, dirs] = CompilerDirectiveStripper::strip(src, "f.sv");
+    auto [out, dirs, prot_] = CompilerDirectiveStripper::strip(src, "f.sv");
     REQUIRE(out == "\nmodule m; endmodule\n\n");
     REQUIRE(dirs.size() == 2);
     CHECK(dirs[0].kind == DirectiveKind::BeginKeywords);
@@ -71,7 +71,7 @@ TEST_CASE("begin_keywords and end_keywords stripped", "[compiler][stripper]") {
 }
 
 TEST_CASE("pragma stripped and recorded", "[compiler][stripper]") {
-    auto [out, dirs] = CompilerDirectiveStripper::strip("`pragma protect begin\n", "f.sv");
+    auto [out, dirs, prot_] = CompilerDirectiveStripper::strip("`pragma protect begin\n", "f.sv");
     REQUIRE(out == "\n");
     REQUIRE(dirs.size() == 1);
     CHECK(dirs[0].kind == DirectiveKind::Pragma);
@@ -79,7 +79,7 @@ TEST_CASE("pragma stripped and recorded", "[compiler][stripper]") {
 }
 
 TEST_CASE("line directive stripped and recorded", "[compiler][stripper]") {
-    auto [out, dirs] = CompilerDirectiveStripper::strip("`line 42 \"other.sv\" 1\n", "f.sv");
+    auto [out, dirs, prot_] = CompilerDirectiveStripper::strip("`line 42 \"other.sv\" 1\n", "f.sv");
     REQUIRE(out == "\n");
     REQUIRE(dirs.size() == 1);
     CHECK(dirs[0].kind == DirectiveKind::Line);
@@ -91,19 +91,19 @@ TEST_CASE("line directive stripped and recorded", "[compiler][stripper]") {
 // ---------------------------------------------------------------------------
 
 TEST_CASE("__FILE__ replaced with quoted filepath", "[compiler][stripper]") {
-    auto [out, dirs] = CompilerDirectiveStripper::strip("wire a = `__FILE__;\n", "/src/foo.sv");
+    auto [out, dirs, prot_] = CompilerDirectiveStripper::strip("wire a = `__FILE__;\n", "/src/foo.sv");
     REQUIRE(out == "wire a = \"/src/foo.sv\";\n");
     REQUIRE(dirs.empty());
 }
 
 TEST_CASE("__FILE__ uses the filepath argument not a temp-buffer path", "[compiler][stripper]") {
-    auto [out, dirs] = CompilerDirectiveStripper::strip("`__FILE__\n", "original.sv");
+    auto [out, dirs, prot_] = CompilerDirectiveStripper::strip("`__FILE__\n", "original.sv");
     CHECK(out.find("original.sv") != std::string::npos);
 }
 
 TEST_CASE("__LINE__ replaced with decimal line number", "[compiler][stripper]") {
     std::string src = "line1\nwire a = `__LINE__;\nline3\n";
-    auto [out, dirs] = CompilerDirectiveStripper::strip(src, "f.sv");
+    auto [out, dirs, prot_] = CompilerDirectiveStripper::strip(src, "f.sv");
     REQUIRE(out == "line1\nwire a = 2;\nline3\n");
     REQUIRE(dirs.empty());
 }
@@ -112,13 +112,13 @@ TEST_CASE("__LINE__ reflects original source line even after prior directive rem
     std::string src =
         "`timescale 1ns/1ps\n"   // line 1 — stripped to blank
         "wire a = `__LINE__;\n"; // line 2 — __LINE__ should be 2
-    auto [out, dirs] = CompilerDirectiveStripper::strip(src, "f.sv");
+    auto [out, dirs, prot_] = CompilerDirectiveStripper::strip(src, "f.sv");
     REQUIRE(out == "\nwire a = 2;\n");
 }
 
 TEST_CASE("__FILE__ and __LINE__ both substituted in the same line", "[compiler][stripper]") {
     std::string src = "$display(\"%s:%0d\", `__FILE__, `__LINE__);\n";
-    auto [out, dirs] = CompilerDirectiveStripper::strip(src, "top.sv");
+    auto [out, dirs, prot_] = CompilerDirectiveStripper::strip(src, "top.sv");
     REQUIRE(out == "$display(\"%s:%0d\", \"top.sv\", 1);\n");
     REQUIRE(dirs.empty());
 }
@@ -129,7 +129,7 @@ TEST_CASE("__FILE__ and __LINE__ both substituted in the same line", "[compiler]
 
 TEST_CASE("non-directive lines pass through unchanged", "[compiler][stripper]") {
     std::string src = "module top;\n  wire a;\nendmodule\n";
-    auto [out, dirs] = CompilerDirectiveStripper::strip(src, "f.sv");
+    auto [out, dirs, prot_] = CompilerDirectiveStripper::strip(src, "f.sv");
     REQUIRE(out == src);
     REQUIRE(dirs.empty());
 }
@@ -141,7 +141,7 @@ TEST_CASE("multiline: directives replaced with blank lines preserving line numbe
         "  wire a;\n"            // line 3
         "`default_nettype none\n"// line 4 — stripped
         "endmodule\n";           // line 5
-    auto [out, dirs] = CompilerDirectiveStripper::strip(src, "top.sv");
+    auto [out, dirs, prot_] = CompilerDirectiveStripper::strip(src, "top.sv");
     REQUIRE(out ==
         "module top;\n"
         "\n"
@@ -156,14 +156,14 @@ TEST_CASE("multiline: directives replaced with blank lines preserving line numbe
 }
 
 TEST_CASE("trailing line comment excluded from recorded value", "[compiler][stripper]") {
-    auto [out, dirs] = CompilerDirectiveStripper::strip("`timescale 1ns/1ps // sim unit\n", "f.sv");
+    auto [out, dirs, prot_] = CompilerDirectiveStripper::strip("`timescale 1ns/1ps // sim unit\n", "f.sv");
     REQUIRE(out == "\n");
     REQUIRE(dirs.size() == 1);
     CHECK(dirs[0].value == "1ns/1ps");
 }
 
 TEST_CASE("directive with leading whitespace is detected", "[compiler][stripper]") {
-    auto [out, dirs] = CompilerDirectiveStripper::strip("  `resetall\n", "f.sv");
+    auto [out, dirs, prot_] = CompilerDirectiveStripper::strip("  `resetall\n", "f.sv");
     REQUIRE(out == "\n");
     REQUIRE(dirs.size() == 1);
     CHECK(dirs[0].kind == DirectiveKind::Resetall);
@@ -172,7 +172,58 @@ TEST_CASE("directive with leading whitespace is detected", "[compiler][stripper]
 TEST_CASE("backtick token that is not a known directive passes through", "[compiler][stripper]") {
     // `define and `ifdef are pass-2 preprocessor directives — not stripped here
     std::string src = "`define WIDTH 8\n`ifdef SIM\nwire w;\n`endif\n";
-    auto [out, dirs] = CompilerDirectiveStripper::strip(src, "f.sv");
+    auto [out, dirs, prot_] = CompilerDirectiveStripper::strip(src, "f.sv");
     REQUIRE(out == src);
     REQUIRE(dirs.empty());
+}
+
+// ---------------------------------------------------------------------------
+// Protected envelopes (plan.md §6.41)
+// ---------------------------------------------------------------------------
+
+TEST_CASE("a protected envelope is blanked and recorded", "[compiler][stripper][protected]") {
+    const std::string src =
+        "package p;\n"                                              // 1
+        "`pragma protect begin_protected\n"                         // 2
+        "`pragma protect version=1\n"                               // 3
+        "`pragma protect encoding=(enctype=\"base64\", bytes=8)\n"  // 4
+        "`pragma protect data_block\n"                              // 5
+        "aGVsbG8gd29y`bGQ=\n"                                       // 6: a backtick too
+        "Zm9vIGJhcg==\n"                                            // 7
+        "`pragma protect end_protected\n"                           // 8
+        "endpackage\n";                                             // 9
+    const auto r = CompilerDirectiveStripper::strip(src, "f.sv");
+    CHECK(r.source == "package p;\n\n\n\n\n\n\n\nendpackage\n");
+    REQUIRE(r.protectedRegions.size() == 1);
+    CHECK(r.protectedRegions[0].line == 2);
+    CHECK(r.protectedRegions[0].endLine == 8);
+    CHECK(r.protectedRegions[0].closed);
+}
+
+TEST_CASE("VCS's `protected ... `endprotected is an envelope too",
+          "[compiler][stripper][protected]") {
+    const auto r = CompilerDirectiveStripper::strip(
+        "module m;\n`protected\nXyZ+/abc\n  `endprotected\nendmodule\n", "f.sv");
+    CHECK(r.source == "module m;\n\n\n\nendmodule\n");
+    REQUIRE(r.protectedRegions.size() == 1);
+    CHECK(r.protectedRegions[0].line == 2);
+    CHECK(r.protectedRegions[0].endLine == 4);
+}
+
+TEST_CASE("an envelope without an end runs to the end of the file",
+          "[compiler][stripper][protected]") {
+    const auto r = CompilerDirectiveStripper::strip(
+        "module m;\n`pragma protect begin_protected\nabc\ndef\n", "f.sv");
+    CHECK(r.source == "module m;\n\n\n\n");
+    REQUIRE(r.protectedRegions.size() == 1);
+    CHECK_FALSE(r.protectedRegions[0].closed);
+    CHECK(r.protectedRegions[0].endLine == 4);
+}
+
+TEST_CASE("`pragma protect begin / end (plaintext to encrypt) stays code",
+          "[compiler][stripper][protected]") {
+    const auto r = CompilerDirectiveStripper::strip(
+        "`pragma protect begin\nmodule m; endmodule\n`pragma protect end\n", "f.sv");
+    CHECK(r.source == "\nmodule m; endmodule\n\n");
+    CHECK(r.protectedRegions.empty());
 }
