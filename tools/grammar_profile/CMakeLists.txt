@@ -72,5 +72,6 @@ add_executable(pp_dump pp_dump.cpp
     "${SVLSP_ROOT}/src/compiler/compiler_directive_stripper.cpp"
     "${SVLSP_ROOT}/src/compiler/doc_comment.cpp"
     "${SVLSP_ROOT}/src/compiler/file_utils.cpp"
-    "${SVLSP_ROOT}/src/compiler/content_hash.cpp")
+    "${SVLSP_ROOT}/src/compiler/content_hash.cpp"
+    "${SVLSP_ROOT}/src/compiler/path_names.cpp")
 target_include_directories(pp_dump PRIVATE "${SVLSP_ROOT}/src")

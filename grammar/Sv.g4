@@ -1071,10 +1071,14 @@ limit_value :
       constant_mintypmax_expression
 ;
 
+// A class variable or dynamic array is one initialized with `new` (plan.md
+// §6.42): a bare `x` or `v[]` is a variable_identifier (whose dimensions
+// tag `v[]` the same). With the `= new` optional, every bare name matched both, which the parse already gave to variable_identifier, and LL
+// read each one to its `;` (16% of LL prediction on UVM).
 variable_decl_assignment :
       variable_identifier variable_dimension* ('=' expression)?
-    | dynamic_array_variable_identifier unsized_dimension variable_dimension* ('=' dynamic_array_new)?
-    | class_variable_identifier ('=' class_new)?
+    | dynamic_array_variable_identifier unsized_dimension variable_dimension* '=' dynamic_array_new
+    | class_variable_identifier '=' class_new
 ;
 
 class_new :
@@ -3175,13 +3179,35 @@ system_tf_argument :
 // greedy primary take the whole call and then want another '.'. The chain
 // is spelled out after each callee form instead -- a bare call, a name
 // (with call parens, as in primary: `a.b(...).c()`) and `this.`/`super.`.
+// A name takes call parens, or no tail, only when dotted or after `local::`
+// / `this.` (plan.md §6.42, as scoped_name in primary, §6.39): `f(...)`,
+// `pkg::f(...)`, `C::f(...)` and `f;` are tf_call / paren_less_tf_call only,
+// and `this.` takes a method_call_body chain only for a keyword-named
+// method (`this.f(...)` is the name forms').
+// With both, the two alternatives tied on every such call, which the parse
+// already gave to tf_call, and LL read each call's arguments to the closing
+// paren to find the tie (46% of LL prediction on UVM).
 subroutine_call :
       tf_call ('.' method_call_body)*
     | system_tf_call
     | ('std' '::')? randomize_call
     | paren_less_tf_call
-    | (package_scope | class_qualifier) hierarchical_identifier select name_tail?
-    | implicit_class_handle '.' method_call_body ('.' method_call_body)*
+    | (package_scope | class_qualifier) dotted_identifier select name_tail?
+    | (package_scope | class_qualifier) IDENTIFIER (plain_name_tail | nonempty_select plain_name_tail?)
+    | ('local' '::' (implicit_class_handle '.' | class_scope)? | implicit_class_handle '.')
+          IDENTIFIER (select call_name_tail)?
+    | implicit_class_handle '.' keyword_method_body ('.' method_call_body)*
+;
+
+// name_tail's call parens alone
+call_name_tail :
+      '(' list_of_arguments ')' with_clause? ('.' method_call_body)*
+;
+
+// select, not empty
+nonempty_select :
+      ('[' expression ']')+ ('[' part_select_range ']' ('.' method_call_body)*)?
+    | '[' part_select_range ']' ('.' method_call_body)*
 ;
 
 
@@ -3434,11 +3460,14 @@ module_path_primary :
 // parenthesized primary.
 // Casts are cast_tail on what they cast by, and a name takes call parens only
 // when dotted (scoped_name); `this.`/`super.` names are the
-// implicit_class_handle alternative's (plan.md §6.39).
+// implicit_class_handle alternative's (plan.md §6.39). `p::x` is the
+// class_scope alternative's, whether p is a package or a class (plan.md
+// §6.42): a package_scope alternative tied with it on every such name, which
+// the parse gave to package_scope. Only `$unit::` is not a class_scope.
 primary :
       primary_literal cast_tail? ('.' method_call_body)*
     | tf_call cast_tail? ('.' method_call_body)*
-    | package_scope scoped_name
+    | '$unit' '::' scoped_name
     | ('local' '::')? implicit_class_handle '.' hierarchical_identifier select name_tail?
     | ('local' '::')? class_scope? scoped_name
     | empty_unpacked_array_concatenation

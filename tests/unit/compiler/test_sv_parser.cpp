@@ -3,6 +3,7 @@
 #include "SvLexer.h"
 #include "SvParser.h"
 #include <fstream>
+#include <map>
 #include <sstream>
 
 static std::string readFile(const std::string& path) {
@@ -862,4 +863,83 @@ TEST_CASE("property implications parse under LL and SLL",
         "endchecker\n";
     CHECK(parseErrors(src) == 0);
     CHECK(parseErrors(src, true) == 0);
+}
+
+// LL ambiguities found while parsing `src`, per rule name (ANTLR's profiler,
+// as tools/grammar_profile's --profile).
+static std::map<std::string, size_t> llAmbiguities(const std::string& src) {
+    antlr4::ANTLRInputStream input(src);
+    SvLexer lexer(&input);
+    antlr4::CommonTokenStream tokens(&lexer);
+    SvParser parser(&tokens);
+    lexer.removeErrorListeners();
+    parser.removeErrorListeners();
+    parser.setProfile(true);
+    parser.source_text();
+    std::map<std::string, size_t> out;
+    const auto& atn = parser.getATN();
+    for (const auto& d : parser.getParseInfo().getDecisionInfo())
+        if (!d.ambiguities.empty())
+            out[parser.getRuleNames()[atn.getDecisionState(d.decision)->ruleIndex]] +=
+                d.ambiguities.size();
+    return out;
+}
+
+TEST_CASE("call statements and class variables parse under LL and SLL without an LL tie",
+          "[compiler][parser][sll][ll-ambiguity]") {
+    // plan.md §6.42: `f(...)` was both a tf_call and a name with call parens
+    // (subroutine_call), and a bare declared name both a variable_identifier
+    // and a class_variable_identifier with its `= new` left out. The parse
+    // gave each to the first, but LL read every such call to its closing
+    // paren, and every such name to its `;`, to find the tie -- the cost of
+    // a file with a syntax error. Each form of the narrowed alternatives is
+    // here, so neither lost one. Not accepted any more, as in a primary since
+    // §6.39: an undotted call with a `with` (`f(1) with (...)`) -- only an
+    // array method (dotted) or randomize takes one (IEEE 1800-2017 7.12).
+    const std::string src =
+        "package pkg; function void f(int a = 0); endfunction endpackage\n"
+        "class B; function void g(int a = 0); endfunction int q[$]; endclass\n"
+        "class C extends B;\n"
+        "  int a, b, c; C o; C o2 = new; C o3 = new(); int arr[];\n"
+        "  B bb = new, bb2, bb3 = new;\n"
+        "  static function void sf(); endfunction\n"
+        "  function void h(int x); endfunction\n"
+        "  function void run();\n"
+        "    h(1); h(1).foo(); h; pkg::f(1); pkg::f; C::sf(); C::sf;\n"
+        "    o.h(1); o.o.h(2).foo(); o.h; o.q.delete(); $root.top.h(1);\n"
+        "    this.h(1); this.h; super.g(2); this.o.h(3); local::h(4); local::this.h(5);\n"
+        "    local::C::sf(); o.q.unique(); o.q[0]; q.sort with (item);\n"
+        "    this.h(1) with (item); o.q.find(x) with (x > 0);\n"
+        "    begin C l1, l2 = new, l3; int i1 = 1, i2; end\n"
+        "  endfunction\n"
+        "endclass\n"
+        "module m; C c1, c2 = new; initial begin c1.run(); c1.h(1); end endmodule\n";
+    CHECK(parseErrors(src) == 0);
+    CHECK(parseErrors(src, true) == 0);
+    const auto ambiguities = llAmbiguities(src);
+    CHECK(ambiguities.count("subroutine_call") == 0);
+    CHECK(ambiguities.count("variable_decl_assignment") == 0);
+}
+
+TEST_CASE("package- and class-scoped names in expressions parse under LL and SLL without an LL tie",
+          "[compiler][parser][sll][ll-ambiguity]") {
+    // plan.md §6.42: `p::x` in an expression was both a package_scope name
+    // and a class_scope one (the parse gave it to package_scope), which LL
+    // resolved on every `uvm_pkg::UVM_NONE`. A package-scoped name is the
+    // class_scope alternative's now; only `$unit::x` keeps its own.
+    const std::string src =
+        "package pkg; typedef enum {A, B} e_t; int v; function int f(); return 1; endfunction\n"
+        "  class K; static int s; typedef int t; endclass endpackage\n"
+        "class C #(type T = int); static int s; static function int g(); return 1; endfunction endclass\n"
+        "int top_v;\n"
+        "module m; int x;\n"
+        "  initial begin\n"
+        "    x = pkg::A + pkg::v + pkg::f() + pkg::K::s + C::s + C#(int)::s + C::g();\n"
+        "    x = $unit::top_v + pkg::e_t'(1) + pkg::K::t'(x) + pkg::v[0] + C#(byte)::g();\n"
+        "    x = (pkg::B == pkg::A) ? pkg::v : $unit::top_v;\n"
+        "  end\n"
+        "endmodule\n";
+    CHECK(parseErrors(src) == 0);
+    CHECK(parseErrors(src, true) == 0);
+    CHECK(llAmbiguities(src).count("primary") == 0);
 }
