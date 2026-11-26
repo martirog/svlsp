@@ -9275,6 +9275,74 @@ otherwise-unresolved name.
   becomes a note when the protected unit comes later, notes off, a
   library DB built from protected code), Emacs test_64_protected.sh.
 
+### 6.42 LL Cost on Files With a Syntax Error: Ties the Parse Already Broke
+
+**Status:** done 2026-11-25 (6d6ef4a). handoff's "Optional, LL cost"
+item. A file with a syntax error is parsed twice (C2's two-stage parse:
+SLL up to the error, then LL over the whole file), and while typing the
+file usually has one, so each compile of a big unit pays LL.
+
+**Measured first** (2026-11-25, release, all of UVM preprocessed): SLL
+2.0 s cold / 0.29 s warm, LL 8.6 / 7.8 s -- LL's full-context
+predictions are not cached, so a warm parse is no faster. One typo
+(`int svlsp_err = ;`) in the UVM unit, two-stage as svlsp parses
+(walk_dump): 3.6 s -> 10.3 s (line 1000) / 12.2 s (line 80000). The
+"1068 `primary`, 1103 `hierarchical_identifier`" of the old note were
+C2's numbering; after §6.39 the LL table was:
+
+| decision | share | cause (every LL fallback an ambiguity) |
+|---|---|---|
+| `subroutine_call` | 46% (3.6 s) | `f(...)`: `tf_call` and `(package_scope \| class_qualifier) hierarchical_identifier select name_tail?` with an empty qualifier; LL read to the call's `)` (up to 377 tokens) |
+| `variable_decl_assignment` | 16% | `e, es;`: `variable_identifier` and `class_variable_identifier ('=' class_new)?` |
+| `primary` | 12% | `uvm_pkg::UVM_NONE`: `package_scope scoped_name` and `class_scope? scoped_name` |
+
+Each is a true ambiguity the parse already resolves to the lower
+alternative (SLL and LL alike), so taking the overlapping inputs out of
+the higher alternative leaves every tree as it was.
+
+**Change** (`grammar/Sv.g4`; the walker reads none of these rules'
+inner structure, `variable_decl_assignment`'s alternatives aside):
+- `subroutine_call`, as `scoped_name` in `primary` (§6.39): a name takes
+  call parens, or no tail, only when dotted (`dotted_identifier`) or after
+  `local::` / `this.` (`call_name_tail`). An undotted name after an
+  optional scope takes a non-empty select (`nonempty_select`) or a
+  `plain_name_tail`. `implicit_class_handle '.' method_call_body ...` is
+  only for a keyword-named method (`this.unique()`); `this.f(...)` is the
+  name forms'.
+- `variable_decl_assignment`: a dynamic array and a class variable need
+  their `= new` (`v[] = new[n]`, `x = new(...)`); a bare `x` / `v[]` is a
+  `variable_identifier`, which the parse chose before too (its
+  `variable_dimension` tags `v[]` the same).
+- `primary`: no `package_scope scoped_name`; `p::x` is the class_scope
+  alternative's (a lone `p::` is a one-segment class_scope), and only
+  `'$unit' '::' scoped_name` stays.
+- No longer accepted: an undotted call with a `with` clause as a
+  statement (`f(1) with (...)`) -- already rejected in an expression since
+  §6.39; only array methods (dotted) and randomize take one (IEEE
+  1800-2017 7.12).
+
+**Outcome.** LL on all of UVM 8.0-8.75 -> **2.1 s** (warm); the typo
+case 11.5 -> 4.4 s (line 1000), 12.7 -> 5.2 s (line 80000); SLL
+unchanged (0 errors, 2.0 s cold). What LL still spends (2.6 s prediction)
+is type-or-value ties on a bare name -- `data_type` (class_type /
+type_identifier / covergroup: `uvm_hdl_data_t value`), `system_tf_argument`
+and `param_expression` (`$bits(T)`, `#(T)`: a type or an expression) and
+`expression` -- which syntax can't decide and whose alternatives the
+walker reads (`data_type`); not attempted.
+
+**Verified:** unit `[ll-ambiguity]` (2 cases: every narrowed form parses
+under LL and SLL, and LL finds no tie in `subroutine_call`,
+`variable_decl_assignment`, `primary`; both fail on the old grammar);
+walk_dump identical to the old grammar's on all of UVM (two-stage and
+LL), on both typo files, and on all 113 ibex files (each preprocessed from
+`.svlsp.json`, UVM on the include path; two-stage and LL);
+`tools/sv_tests_compare.sh` 0 regressions under LL and SLL; unit
+1303/1303 (release and debug), Emacs 357/357, corpus 1563 / 31 (log
+`build/release/corpus_2026-11-25.log`), `test-integration-uvm` 15/15,
+`perf-check` small / uvm no regression. Also fixed:
+`tools/grammar_profile` hadn't built since §6.40 D6 (`pp_dump` lacked
+`path_names.cpp`).
+
 ---
 
 ## Appendix A — Technology Stack Summary

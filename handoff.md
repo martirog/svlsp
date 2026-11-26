@@ -1,6 +1,6 @@
 # svlsp — Handoff Document
 
-**Last updated:** 2026-11-24 (§6.40 D9: one cross-file re-check per load, not per commit; §6.41 done: protected code).
+**Last updated:** 2026-11-25 (§6.42: LL cost on files with a syntax error, 8.0 -> 2.1 s on UVM).
 
 This file covers only **current state, what's next, and what you need to know
 to work in the repo**. The full design and implementation history of every
@@ -391,11 +391,28 @@ Second follow-up:
    with `initializationOptions.svlsp.protectedNotes: false` /
    `--build-db --no-protected-notes`. Next (user's intent): build the
    encrypted IP into a library DB.
-9. Optional, LL cost on files with syntax errors (only they reach LL now):
-   the remaining LL time is true ambiguity in `primary` (decision 1068)
-   and `hierarchical_identifier` (1103): `a.b` is a name, a name + select
-   `.b`, or a name + the method loop. Profile with `tools/grammar_profile.sh
-   -- --profile`.
+9. **plan.md §6.42 done** (2026-11-25, 6d6ef4a): LL cost on files with a syntax
+   error. Three ties the parse already broke to the lower alternative
+   were narrowed out of the higher one (`subroutine_call`'s name form,
+   `variable_decl_assignment`'s class / dynamic-array forms without `new`,
+   `primary`'s `package_scope`): LL on all of UVM 8.0 -> 2.1 s, one typo in
+   the UVM unit 11.5-12.7 -> 4.4-5.2 s; walk_dump identical on UVM and
+   ibex, sv-tests 0 regressions, unit 1303/1303, Emacs 357/357, corpus
+   1563 / 31, `test-integration-uvm` 15/15, `perf-check` ok. Left: type-or-value ties on a bare name
+   (`data_type`, `system_tf_argument`, `param_expression`; 2.6 s of LL
+   prediction on UVM), which the walker reads. Profile with
+   `tools/grammar_profile.sh -- --profile --where D`.
+
+What §6.42 changes for other work:
+- In `subroutine_call`, an undotted name with call parens or nothing after
+  it is only a `tf_call` / `paren_less_tf_call`; in `primary`, `p::x` is only
+  the class_scope alternative (`$unit::` aside). A new form there must not
+  tie with those again: unit `[ll-ambiguity]` counts LL ambiguities per
+  rule (`llAmbiguities`) -- add the form to its source.
+- `variable_decl_assignment`'s `class_variable_identifier` /
+  `dynamic_array_variable_identifier` alternatives exist only with their
+  `= new`; a bare name is always `variable_identifier`.
+- An undotted call with `with` (`f(1) with (...)`) is a syntax error.
 
 What §6.41 changes for other work:
 - Schema **v21**: `protected_regions(file_id, line, end_line, scope)`,
